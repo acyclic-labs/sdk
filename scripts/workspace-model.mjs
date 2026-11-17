@@ -290,6 +290,23 @@ function targetMatches(cfg, triple) {
   });
 }
 
+function lockedOwner(lock, {name, version}) {
+  const owner = (lock.package ?? []).find(pkg => pkg.name === name && pkg.version === version && !pkg.source);
+  if (!owner) throw Error(`Cargo.lock lacks local package ${name}@${version}`);
+  return owner;
+}
+
+function lockedCandidates(candidates, declaration, owner) {
+  return candidates.filter(pkg => pkg.name === declaration.name && versionMatches(pkg.version, declaration.req) &&
+    (owner.dependencies ?? []).some(key =>
+      key === pkg.name || key === `${pkg.name} ${pkg.version}` || key.startsWith(`${pkg.name} ${pkg.version} (`)));
+}
+
+function uniqueDependency(owner, declaration, matches) {
+  if (matches.length !== 1) throw Error(`${owner.name}: ambiguous or missing locked dependency ${declaration.name}`);
+  return matches[0];
+}
+
 // Inputs to crate_universe come from the current Cargo lock and declarations.
 // The resolved features themselves remain crate_universe's responsibility.
 export function registryInputs(root) {
@@ -309,8 +326,7 @@ export function registryInputs(root) {
       for (const p of local.filter(p => reachable.has(p.id))) {
         const features = enabled.get(p.id);
         for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
-        const locked = (lock.package ?? []).find(x => x.name === p.name && x.version === p.version && !x.source);
-        if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
+        const locked = lockedOwner(lock, p);
         for (const d of p.dependencies) {
           if ((d.kind === 'dev' && !p.workspace_member) || !targetMatches(d.target, triple) ||
               !dependencyEnabled(features, d)) continue;
@@ -323,10 +339,7 @@ export function registryInputs(root) {
             for (const feature of requested) add(target, feature);
             if (d.uses_default_features && Object.hasOwn(dep.features, 'default')) add(target, 'default');
           } else {
-            const matches = candidates.filter(x => x.name === d.name && versionMatches(x.version, d.req) &&
-              (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
-            if (matches.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
-            const input = matches[0];
+            const input = uniqueDependency(p, d, lockedCandidates(candidates, d, locked));
             inputs.add(input);
             for (const feature of requested) input.features.add(feature);
             input.defaultFeatures ||= d.uses_default_features;
@@ -381,12 +394,7 @@ export function workspaceBrowserGraph(root, selections) {
   }
   const localDependency = (pkg, d) => {
     if (d.resolved_path) return byPath.get(d.resolved_path);
-    const locked = lock.package.find(p => p.name === pkg.name && p.version === pkg.version && !p.source);
-    if (!locked) throw Error(`Cargo.lock lacks local package ${pkg.name}@${pkg.version}`);
-    const candidates = registry.filter(p => p.name === d.name && versionMatches(p.version, d.req) &&
-      (locked.dependencies ?? []).some(key => key === p.name || key === `${p.name} ${p.version}` || key.startsWith(`${p.name} ${p.version} (`)));
-    if (candidates.length !== 1) throw Error(`${pkg.name}: ambiguous or missing locked dependency ${d.name}`);
-    return candidates[0];
+    return uniqueDependency(pkg, d, lockedCandidates(registry, d, lockedOwner(lock, pkg)));
   };
   const nodes = new Map();
   let changed = true;
@@ -461,7 +469,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
       features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, allPlatforms ? null : triple).map(f => [f, []])),
       targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
   });
-  const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
+  const packages = [...local, ...registry];
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
   const active = (p, d) => dependencyEnabled(enabled.get(p.id), d);
@@ -482,14 +490,12 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
     }
   }
   const nodes = local.map(p => {
-    const locked = lock.package.find(x => x.name === p.name && x.version === p.version && !x.source);
-    if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
+    const locked = lockedOwner(lock, p);
     const deps = new Map();
     for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d))) {
-      const candidates = d.resolved_path ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : byName(d.name).filter(x => versionMatches(x.version, d.req) &&
-        (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
-      if (candidates.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
-      const dependency = candidates[0], name = (d.rename ?? d.name).replaceAll('-', '_');
+      const dependency = uniqueDependency(p, d, d.resolved_path
+        ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : lockedCandidates(packages, d, locked));
+      const name = (d.rename ?? d.name).replaceAll('-', '_');
       const key = `${name}:${dependency.id}`;
       if (!deps.has(key)) deps.set(key, {name, pkg: dependency.id, dep_kinds: []});
       deps.get(key).dep_kinds.push({kind: d.kind, target: d.target});
