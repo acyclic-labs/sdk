@@ -31,10 +31,6 @@ fn sandbox_policy() {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let executable = std::env::current_exe().unwrap();
-    #[cfg(target_os = "linux")]
-    let rg = crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-        .resolve_native("rg")
-        .unwrap();
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
     for (confined, access, primary_write, volume_write) in [
         (false, ExecutionAccess::WorkspaceWrite, true, true),
@@ -44,8 +40,6 @@ fn sandbox_policy() {
     ] {
         for custodied in [false, true] {
             let read = vec![executable.clone()];
-            #[cfg(target_os = "linux")]
-            let read = read.into_iter().chain([rg.clone()]).collect::<Vec<_>>();
             let grant =
                 ExecutionGrant::workspace_default(&workspace, access, [volume.clone()], read)
                     .unwrap();
@@ -90,12 +84,7 @@ fn sandbox_policy() {
             #[cfg(target_os = "linux")]
             command.env(
                 "PATH",
-                std::env::join_paths([
-                    rg.parent().unwrap(),
-                    Path::new("/usr/bin"),
-                    Path::new("/bin"),
-                ])
-                .unwrap(),
+                std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap(),
             );
             #[cfg(windows)]
             command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
@@ -220,7 +209,7 @@ fn sandbox_policy_probe() {
     assert_eq!(output.stdout, b"runtime");
     #[cfg(target_os = "linux")]
     {
-        let listing = shell("ls -la && rg --files");
+        let listing = shell("ls -la && find . -maxdepth 1 -type f");
         assert!(
             listing.status.success(),
             "workspace browsing failed: {listing:?}"
@@ -2158,29 +2147,23 @@ fn directory_inspection_handles_unavailable_local_sockets() -> io::Result<()> {
         .env("ACYCLIC_LOCAL_SOCKET_PATH", &socket)
         .output()?;
     assert!(control.status.success(), "{control:?}");
-    let rg = crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-        .resolve_native("rg")?;
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::ReadOnly,
         [],
-        [rg.clone(), executable.clone()],
+        [executable.clone()],
     )?;
     let shell = crate::platform_shell()?;
     let custody = crate::ProcessCustody::open(&root.path().join("custody"))?;
-    let path = std::env::join_paths([
-        rg.parent().ok_or(io::ErrorKind::NotFound)?,
-        Path::new("/usr/bin"),
-        Path::new("/bin"),
-    ])
-    .map_err(io::Error::other)?;
+    let path = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")])
+        .map_err(io::Error::other)?;
     for custody in [None, Some(&custody)] {
         let mut probe = Command::new(&executable);
         probe.args(probe_arguments);
         let mut inspection = Command::new(shell);
         inspection
             .args(acyclic_host_platform::shell::PLATFORM.arguments)
-            .arg("ls -l readable && stat readable && which -a sh && file readable && rg --files");
+            .arg("ls -l readable && stat readable && which -a sh && file readable && find . -maxdepth 1 -type f");
         for mut command in [probe, inspection] {
             command
                 .env_clear()
