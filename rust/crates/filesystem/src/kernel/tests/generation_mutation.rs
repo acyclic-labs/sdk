@@ -5,7 +5,7 @@ use crate::kernel::{
     BlobBuildOptions, BlobNode, ExtentKind, ExtentMutationError, ExtentPage, FileMetadata,
     FileTablePage, InlineFileData, MAXIMUM_INLINE_FILE_BYTES, NameEncoding, TreePage,
     TreeReadError, build_blob, decode_blob_page, decode_extent_page, decode_file_table_page,
-    lookup_file_record, lookup_path, lookup_path_refs,
+    lookup_file_record, lookup_path,
 };
 use crate::memory::MemoryObjectStore;
 use crate::model::Lifecycle;
