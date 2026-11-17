@@ -611,6 +611,59 @@ mod tests {
         Ok(())
     }
 
+    /// A failed immediate drain is not a failed handback: the durable enqueue
+    /// already owns the publication, and the parent's next command retries it.
+    #[tokio::test]
+    async fn gc_wait_failed_immediate_handback_drain_keeps_the_durable_publication() -> Result<()> {
+        let (_directory, local) = fixture().await?;
+        let workspace = local
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("no workspace".into()))?;
+        let id = workspace.view().workspace().id();
+        let owner = super::super::owner::AgentOwner;
+        let scope = crate::runtime::RuntimeScope::new(
+            local.signed.capabilities().clone(),
+            Default::default(),
+        )?;
+        let configuration = super::super::super::checkout_tools::capture::configuration(workspace);
+        let commands = super::super::git::Commands {
+            workspace,
+            signed: &local.signed,
+            verifier: &local.verifier,
+            clock: local.clock.as_ref(),
+            capture_options: &configuration.0,
+            capture_policy: &configuration.1,
+        };
+        let context = super::super::git::CommandContext {
+            owner: &owner,
+            operation: OperationId::new(),
+            scope: &scope,
+            request: None,
+        };
+        // The source names no workspace in this graph, so the immediate drain
+        // refuses it after the durable enqueue has already committed.
+        commands
+            .hand_back(
+                &context,
+                "missing".into(),
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: acyclic_fs::WorkspaceId::from_bytes([0; 16]),
+                    generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
+                        [0; 32],
+                    )),
+                },
+            )
+            .await?;
+        assert!(
+            workspace
+                .publication_debt
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert!(LocalWorkspace::owes_publication(&workspace.filesystem, id).await?);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn durable_cursor_releases_only_acknowledged_publication_after_interruption() -> Result<()>
     {

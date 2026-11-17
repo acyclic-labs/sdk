@@ -5964,18 +5964,14 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         let server = Arc::clone(hosted.server());
         let credential = server
             .bound()
-            .client_credential(server.root(), server.resource(), harness.clock.clone())
+            .client_credential(server.root(), server.resource())
             .await
             .map_err(agent)?;
         let credential = acyclic_auth::credential::capability_text(&credential.credential);
         let changes = server.bound().changes().map_err(agent)?;
-        let composition = crate::server::Hosted::new(
-            server,
-            harness.clock.clone(),
-            harness.clone(),
-            Some(Arc::new(changes)),
-        )
-        .with_completion(hosted.runtime.completion());
+        let composition =
+            crate::server::Hosted::new(server, harness.clone(), Some(Arc::new(changes)))
+                .with_completion(hosted.runtime.completion());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(agent)?;

@@ -21,13 +21,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let reference = bounded_io::content_workspace(&self.provider, volume, Some(&io))?;
         let workspace = self.open(&reference, Some(&io)).await?;
         let payload = access::capability_payload(Some(label), VolumeOperation::Write, &io)?;
-        let view = access::access_view(&workspace, scope, None, payload, None, &io).await?;
+        let now = self.access_now()?;
+        let view = access::access_view(&workspace, scope, None, payload, None, &io, now).await?;
         if !view.0.allows_every_path(
             &[
                 acyclic_fs::access::Action::Create,
                 acyclic_fs::access::Action::Write,
             ],
-            access::access_now()?,
+            now,
         ) {
             return Err(Error::Unauthorized(
                 "admission does not grant the retained private writer".into(),
@@ -81,7 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             tags: Default::default(),
             attributes: Default::default(),
         };
-        let now = access::access_now()?;
+        let now = self.access_now()?;
         let view = PathTrie::compile(
             &policy,
             &principal,

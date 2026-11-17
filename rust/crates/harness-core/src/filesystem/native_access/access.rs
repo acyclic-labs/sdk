@@ -42,6 +42,7 @@ async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
         payload,
         Some(ceiling),
         io,
+        crate::filesystem::access::access_now()?,
     )
     .await?;
     let mut custody = io

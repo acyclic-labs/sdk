@@ -1614,13 +1614,18 @@ where
                 .await
                 .map_err(|failure| Error::Storage(failure.error.to_string()))?
                 .value;
-            let view =
-                super::access::access_view(&workspace, &authority.scope, None, payload, None, &io)
-                    .await?;
-            if !view
-                .0
-                .allows_every_path(actions, super::access::access_now()?)
-            {
+            let now = self.host.access_now()?;
+            let view = super::access::access_view(
+                &workspace,
+                &authority.scope,
+                None,
+                payload,
+                None,
+                &io,
+                now,
+            )
+            .await?;
+            if !view.0.allows_every_path(actions, now) {
                 return Err(Error::Unauthorized(
                     "project selection requires authority over the whole volume".into(),
                 ));

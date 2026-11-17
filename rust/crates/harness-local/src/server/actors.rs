@@ -13,7 +13,7 @@ use crate::{
     preset::Preset,
     tool::Tool,
 };
-use acyclic_actors::{domain::ActorLimits, local::SystemClock};
+use acyclic_actors::{domain::ActorLimits, local::Clock};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
@@ -30,6 +30,8 @@ pub struct Execution {
     pub turns: TurnLimits,
     /// Explicit Actors execution policy.
     pub actors: ActorLimits,
+    /// One clock for actor alarms and the session's credential time checks.
+    pub clock: Arc<dyn Clock>,
     /// Compaction selected for the model's context window.
     pub compaction: CompactionPolicy,
     /// Host tools in addition to the preset's stock tools.
@@ -189,8 +191,13 @@ where
                 provider,
                 within,
             } = self.placement;
-            let volumes = FilesystemHost::new(filesystem.clone(), &provider, None)?
-                .with_changes(filesystem.stream_provider())?;
+            let volumes = FilesystemHost::new_with_clock(
+                filesystem.clone(),
+                &provider,
+                None,
+                execution.clock.clone(),
+            )?
+            .with_changes(filesystem.stream_provider())?;
             let bound = Bound::admitted_host(
                 self.issuer,
                 self.caller,
@@ -200,7 +207,7 @@ where
                     executors: Arc::new(executors),
                     limits: execution.turns,
                     actors: execution.actors,
-                    clock: Arc::new(SystemClock),
+                    clock: execution.clock,
                     approval_policy: self.preset.approval_policy.clone(),
                 },
                 // No lazy checkout keeps fork cuts beside these volumes, so a
@@ -233,11 +240,5 @@ fn started<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static>(
     let changes = server.bound().changes().map_err(super::failed)?;
     let runtime = Runtime::start(server.clone());
     let completion = runtime.completion();
-    Ok(Hosted::new(
-        server,
-        Arc::new(acyclic_stream::SystemUnixMillisClock),
-        runtime,
-        Some(Arc::new(changes)),
-    )
-    .with_completion(completion))
+    Ok(Hosted::new(server, runtime, Some(Arc::new(changes))).with_completion(completion))
 }

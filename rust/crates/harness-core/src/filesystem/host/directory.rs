@@ -175,6 +175,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             scope.capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
+        let now = self.access_now()?;
         let view = crate::filesystem::access::access_view(
             &workspace,
             scope,
@@ -182,20 +183,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
             request.ceiling,
             io,
+            now,
         )
         .await?;
         guard().await?;
-        super::super::access::require(&view.0, Action::List, request.path, io)?;
+        super::super::access::require_at(&view.0, Action::List, request.path, io, now)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
             generation,
             scope,
             request.ceiling,
             io,
+            now,
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require(&view.0, Action::List, request.path, io)?;
+            super::super::access::require_at(&view.0, Action::List, request.path, io, now)?;
         }
         Ok(DirectorySelection {
             workspace,
@@ -267,7 +270,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read_directory_listing(&selection, (&requested.0, after, chunk), io)
                 .await?
             else {
-                selection.require_current(io).await?;
+                selection.require_current(io, self.clock()).await?;
                 request.grant.recheck(Some(io))?;
                 return Ok(None);
             };
@@ -276,7 +279,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 items_examined: incoming.0.entries.len() as u64,
                 ..Default::default()
             })?;
-            let now = super::super::access::access_now()?;
+            let now = self.access_now()?;
             let removed = filter_page(&mut incoming.0, parent, data_parent, now);
             incoming.1.substitute(incoming.1.bytes() - removed)?;
             if incoming.0.entries.is_empty()
@@ -343,7 +346,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 |left, right| left.name.as_bytes().cmp(right.name.as_bytes()),
             )
         })?;
-        selection.require_current(io).await?;
+        selection.require_current(io, self.clock()).await?;
         request.grant.recheck(Some(io))?;
         Ok(Some(selected))
     }
@@ -469,10 +472,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DirectorySelection<'_, A, O> {
     }
 
     /// Linearizes a disclosure from this selection against the current policy.
-    pub(super) async fn require_current(&self, io: &PreparationIo) -> Result<()> {
-        super::super::access::require_current(&self.workspace, &self.view.0, io).await?;
+    pub(super) async fn require_current(
+        &self,
+        io: &PreparationIo,
+        clock: &dyn acyclic_stream::UnixMillisClock,
+    ) -> Result<()> {
+        super::super::access::require_current(&self.workspace, &self.view.0, io, clock).await?;
         if let Some((workspace, view)) = &self.data_access {
-            super::super::access::require_current(workspace, &view.0, io).await?;
+            super::super::access::require_current(workspace, &view.0, io, clock).await?;
         }
         Ok(())
     }

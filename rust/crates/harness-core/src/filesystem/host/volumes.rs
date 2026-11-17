@@ -112,8 +112,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let forked = io.sdk(
             workspace
                 .with_stable_policy(io, io.cancellation(), || async {
-                    super::volume_access::authorize_fork(&workspace, grant, pinned.id(), io)
-                        .await?;
+                    super::volume_access::authorize_fork(
+                        &workspace,
+                        grant,
+                        pinned.id(),
+                        io,
+                        host.clock(),
+                    )
+                    .await?;
                     let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
                     let options = match paths {
                         Some(paths) => options.inherit_paths(paths),
@@ -223,6 +229,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 acyclic_fs::access::Action::List,
             ],
             &io,
+            self.clock(),
         )
         .await?;
         let destination_access = super::volume_access::compile(
@@ -232,6 +239,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             VolumeOperation::Write,
             &[acyclic_fs::access::Action::MergeInto],
             &io,
+            self.clock(),
         )
         .await?;
         let plan = source_workspace
@@ -245,10 +253,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| map_error(failure.error))?;
-        super::super::access::require_current(&source_workspace, &source_access.0, &io).await?;
-        super::super::access::require_current(&destination_workspace, &destination_access.0, &io)
-            .await?;
-        Ok(VolumeImportPlan::new(plan, source_grant, destination_grant))
+        super::super::access::require_current(
+            &source_workspace,
+            &source_access.0,
+            &io,
+            self.clock(),
+        )
+        .await?;
+        super::super::access::require_current(
+            &destination_workspace,
+            &destination_access.0,
+            &io,
+            self.clock(),
+        )
+        .await?;
+        Ok(VolumeImportPlan::new(
+            plan,
+            source_grant,
+            destination_grant,
+            self.clock.clone(),
+        ))
     }
 
     /// Configuration and initial access policy of every harness volume.

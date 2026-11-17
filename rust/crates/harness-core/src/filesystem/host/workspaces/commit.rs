@@ -109,6 +109,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_fs::StagedContent,
         )>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        let clock = self.clock_handle();
         crate::conversation::BoundedContentFuture::new(Some(io), || {
             let operation = async move {
                 let operation = operation()?;
@@ -144,7 +145,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(fence) = publication.fence() {
                     io.sdk(
                         transaction
-                            .observe_policy_fence(fence, io, io.cancellation())
+                            .observe_policy_fence(
+                                fence,
+                                crate::filesystem::access::clock_now(clock.as_ref())?,
+                                io,
+                                io.cancellation(),
+                            )
                             .await,
                     )?;
                 }
@@ -196,7 +202,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let context = evidence
                     .map(|(evidence, _)| publication_context(evidence, io))
                     .transpose()?;
-                Self::commit_contextual_publication(transaction, io, publication, context)?.await
+                Self::commit_contextual_publication(
+                    transaction,
+                    io,
+                    publication,
+                    context,
+                    clock.clone(),
+                )?
+                .await
             };
             match root_cut {
                 Some(cut) => futures::future::Either::Left(cut.scope(operation)),
@@ -257,6 +270,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_stream::OwnedBytes,
             acyclic_fs::PublicationPermit,
         )>,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let commit = loop {
@@ -289,14 +303,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         } else {
                             None
                         };
+                        let native_clock = clock.clone();
                         let mut native_before =
                             move |work: &acyclic_fs::NativeMaterializationWork| {
                                 let work = work.clone();
                                 let authority = authority.clone();
+                                let clock = native_clock.clone();
                                 async move {
                                     let check = || -> Result<()> {
-                                        require_publication_fence(fence, "volume")?;
-                                        require_publication_fence(root_fence, "root")?;
+                                        let now =
+                                            crate::filesystem::access::clock_now(clock.as_ref())?;
+                                        require_publication_fence(fence, "volume", now)?;
+                                        require_publication_fence(root_fence, "root", now)?;
                                         if let Some(authority) = &authority {
                                             let io = PreparationIo::from_native_work(&work)?;
                                             authority.0.verify(
@@ -326,13 +344,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 acyclic_fs::PublicationPermit::Unrestricted,
                                 io.remaining()?,
                                 io.cancellation(),
-                                &mut |_| async move {
-                                    require_publication_time(publication, Some(io))
+                                &mut |_| {
+                                    let clock = clock.clone();
+                                    async move {
+                                        require_publication_time(
+                                            publication,
+                                            Some(io),
+                                            crate::filesystem::access::clock_now(clock.as_ref())
+                                                .map_err(
+                                                    acyclic_fs::OperationFailure::before_work,
+                                                )?,
+                                        )
                                         .map_err(acyclic_fs::OperationFailure::before_work)?;
-                                    Ok(acyclic_fs::OperationReceipt {
-                                        value: (),
-                                        work: acyclic_fs::WorkCounters::default(),
-                                    })
+                                        Ok(acyclic_fs::OperationReceipt {
+                                            value: (),
+                                            work: acyclic_fs::WorkCounters::default(),
+                                        })
+                                    }
                                 },
                             )
                             .await,

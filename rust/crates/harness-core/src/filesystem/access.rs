@@ -26,6 +26,7 @@ pub(in crate::filesystem) async fn selected_data_access<
     scope: &Scope,
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<Option<(Workspace<A, O>, CompiledAccess<'a>)>> {
     if generation.workspace_id() == root.id() {
         return Ok(None);
@@ -40,6 +41,7 @@ pub(in crate::filesystem) async fn selected_data_access<
         capability_payload(label, VolumeOperation::Read, io)?,
         ceiling,
         io,
+        now,
     )
     .await?;
     Ok(Some((workspace, view)))
@@ -105,29 +107,48 @@ pub(in crate::filesystem) fn whole_volume_payload(
 }
 
 pub(crate) fn access_now() -> Result<u64> {
-    acyclic_fs::access::unix_seconds(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+    access_now_at(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+}
+
+pub(crate) fn access_now_at(unix_millis: u64) -> Result<u64> {
+    acyclic_fs::access::unix_seconds(unix_millis)
         .map_err(|_| Error::FilesystemAccessConfiguration("access clock is unavailable"))
+}
+
+pub(crate) fn clock_now(clock: &dyn acyclic_stream::UnixMillisClock) -> Result<u64> {
+    access_now_at(clock.now_unix_millis())
 }
 
 pub(crate) fn require_unrestricted(
     view: &PathTrie,
     actions: &[Action],
     surface: &'static str,
+    clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<()> {
-    if view.allows_every_path(actions, access_now()?) {
+    require_unrestricted_at(view, actions, surface, clock_now(clock)?)
+}
+
+pub(crate) fn require_unrestricted_at(
+    view: &PathTrie,
+    actions: &[Action],
+    surface: &'static str,
+    now: u64,
+) -> Result<()> {
+    if view.allows_every_path(actions, now) {
         Ok(())
     } else {
         Err(Error::FilesystemAccessConfiguration(surface))
     }
 }
 
-pub(in crate::filesystem) fn require(
+pub(in crate::filesystem) fn require_at(
     view: &PathTrie,
     action: Action,
     path: &str,
     io: &PreparationIo,
+    now: u64,
 ) -> Result<()> {
-    if view.decide(action, path, access_now()?).allowed {
+    if view.decide(action, path, now).allowed {
         Ok(())
     } else {
         Err(stock_boundary(
@@ -221,9 +242,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             capability_payload(label, VolumeOperation::Read, io)?,
             ceiling,
             io,
+            self.access_now()?,
         )
         .await?;
-        require(&compiled.0, Action::Read, reference.path(), io)?;
+        self.require(&compiled.0, Action::Read, reference.path(), io)?;
         let mut observation =
             ReadObservation::new(self, workspace.clone(), selected, compiled, reference, io);
         if observation.data_workspace_id() != workspace.id() {
@@ -261,6 +283,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
     payload: &[u8],
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<CompiledAccess<'a>> {
     let reference = workspace.name().as_str();
     bound_access_view(
@@ -271,6 +294,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
         payload,
         ceiling,
         io,
+        now,
     )
     .await
 }
@@ -288,6 +312,7 @@ pub(crate) async fn bound_access_view<'a, A: AsyncAuthorityStore, O: AsyncObject
     payload: &[u8],
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<CompiledAccess<'a>> {
     crate::conversation::BoundedContentFuture::new(Some(io), || async move {
         let capability = intersect_capabilities(payload, ceiling, io)?;
@@ -318,10 +343,7 @@ pub(crate) async fn bound_access_view<'a, A: AsyncAuthorityStore, O: AsyncObject
                         reference,
                         facts: acyclic_fs::access::AuthenticatedFacts::IdentityAndRoles,
                         generation,
-                        context: Context {
-                            now: access_now()?,
-                            approvals: 0,
-                        },
+                        context: Context { now, approvals: 0 },
                     },
                     io,
                     io.cancellation(),

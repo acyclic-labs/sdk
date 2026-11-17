@@ -108,12 +108,18 @@ async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStor
         payload,
         Some(ceiling),
         &io,
+        access::access_now()?,
     )
     .await?;
     if compiled.0.generation_sensitive() || compiled.0.valid_until().is_some() {
         return Err(Error::FilesystemAccessConfiguration(surface));
     }
-    access::require_unrestricted(&compiled.0, &acyclic_fs::access::Action::ALL, surface)
+    access::require_unrestricted_at(
+        &compiled.0,
+        &acyclic_fs::access::Action::ALL,
+        surface,
+        access::access_now()?,
+    )
 }
 
 fn require_volume_operations(
@@ -188,6 +194,7 @@ pub async fn require_workspace_subtree_read<
         access::capability_payload(label, VolumeOperation::Read, io)?,
         None,
         io,
+        access::access_now()?,
     )
     .await?;
     if view.0.valid_until().is_some() {

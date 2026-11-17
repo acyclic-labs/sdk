@@ -180,11 +180,7 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
         // grant in a test credential. It must not enroll directory authority.
         let enrolled = server
             .bound()
-            .client_credential(
-                server.root(),
-                server.resource(),
-                Arc::new(acyclic_stream::SystemUnixMillisClock),
-            )
+            .client_credential(server.root(), server.resource())
             .await?;
         let client = Client::in_process_with_products(
             stream.clone(),

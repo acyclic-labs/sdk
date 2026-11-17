@@ -919,6 +919,13 @@ impl CommitRequest {
 pub trait UnixMillisClock: Send + Sync + 'static {
     /// Current Unix time in milliseconds.
     fn now_unix_millis(&self) -> u64;
+
+    /// Whether this is the host's system clock, the default when no clock is
+    /// configured. Two system clocks are interchangeable even when they are
+    /// distinct values.
+    fn is_system_clock(&self) -> bool {
+        false
+    }
 }
 
 /// Production wall clock for deadline-aware providers.
@@ -926,6 +933,10 @@ pub trait UnixMillisClock: Send + Sync + 'static {
 pub struct SystemUnixMillisClock;
 
 impl UnixMillisClock for SystemUnixMillisClock {
+    fn is_system_clock(&self) -> bool {
+        true
+    }
+
     fn now_unix_millis(&self) -> u64 {
         #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
         if let Some(millis) = acyclic_native_runtime::testing::unix_millis() {

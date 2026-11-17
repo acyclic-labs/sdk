@@ -52,18 +52,29 @@ impl crate::hosting::Platform for Owner {
 
 impl Mode {
     pub(super) async fn open(self, provider: Arc<dyn ModelProvider>) -> Result<Platform> {
+        self.open_configured(
+            provider,
+            Arc::new(acyclic_actors::local::SystemClock),
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn open_configured(
+        self,
+        provider: Arc<dyn ModelProvider>,
+        clock: Arc<dyn acyclic_actors::local::Clock>,
+        tools: Vec<String>,
+    ) -> Result<Platform> {
         let directory = tempfile::tempdir().map_err(super::super::storage)?;
         match self {
             Self::Local => {
                 let project = volume(directory.path()).await?;
-                let local = Arc::new(
-                    LocalHarness::open(
-                        volume_config(directory.path(), project, provider)?
-                            .without_default_tools()
-                            .compaction(crate::context::CompactionPolicy::default()),
-                    )
-                    .await?,
-                );
+                let mut config = volume_config(directory.path(), project, provider)?
+                    .clock(clock)
+                    .compaction(crate::context::CompactionPolicy::default());
+                config.default_tools = tools;
+                let local = Arc::new(LocalHarness::open(config).await?);
                 Ok(Platform {
                     connection: local.connect().await?,
                     _directory: directory,
@@ -72,20 +83,27 @@ impl Mode {
                     stop: None,
                 })
             }
-            Self::Hosted => Self::hosted(directory, provider).await,
+            Self::Hosted => Self::hosted(directory, provider, clock, tools).await,
         }
     }
 
     async fn hosted(
         directory: tempfile::TempDir,
         provider: Arc<dyn ModelProvider>,
+        clock: Arc<dyn acyclic_actors::local::Clock>,
+        tools: Vec<String>,
     ) -> Result<Platform> {
         let root = crate::agent::AgentId::from_bytes([37; 16]);
         let audience = Authority {
             kind: AggregateKind::Task,
             id: "agent-conformance".into(),
         };
-        let issuer = AuthorityRoot::new("agent-conformance", [37; 32], audience.clone());
+        let issuer = AuthorityRoot::with_clock(
+            "agent-conformance",
+            [37; 32],
+            audience.clone(),
+            clock.clone(),
+        );
         let filesystem = crate::resources::ProviderRef::new(
             "conformance".into(),
             "filesystem".into(),
@@ -118,7 +136,10 @@ impl Mode {
             VerifiedCaller { audience, scope },
             Placement {
                 filesystem: Fs::new(
-                    StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+                    StreamAuthorityStore::new(Arc::new(MemoryStream::new_with_clock(
+                        Default::default(),
+                        clock.clone(),
+                    ))),
                     LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
                     EmbeddedCapabilities::MEMORY,
                 ),
@@ -142,6 +163,7 @@ impl Mode {
                 },
             ),
             Execution {
+                clock,
                 models: None,
                 model: (model()?, provider),
                 limits: Default::default(),
@@ -152,7 +174,7 @@ impl Mode {
                 actors: ActorLimits::default(),
                 compaction: Default::default(),
                 tools: Vec::new(),
-                default_tools: Vec::new(),
+                default_tools: tools,
                 workspace: false,
                 context: None,
                 approvers: Default::default(),
@@ -245,6 +267,94 @@ impl Platform {
         }
         Ok(())
     }
+}
+
+async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
+    use crate::test_support::ScriptedEvent;
+    // The trust owner's protected time never moves backwards, so the controlled
+    // clock starts at the wall time that already signed this platform's
+    // admission. One millisecond covers the signing clock reaching that instant.
+    const LEAD_MS: u64 = 1;
+    let start =
+        acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
+            .saturating_add(LEAD_MS);
+    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(start);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(crate::model::ModelEvent::ToolCall(
+                    crate::model::ToolCall::new(
+                        "original-alarm".into(),
+                        "wait".into(),
+                        serde_json::json!({"input":true,"timeout_ms":10_000}),
+                    ),
+                )),
+                ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ]),
+            ScriptedTurn::Text("original deadline reached".into()),
+            ScriptedTurn::Text("none".into()),
+        ])
+        .with_context_capacity(capacity())
+        .reading_content(),
+    );
+    let platform = mode
+        .open_configured(provider.clone(), Arc::new(clock), vec!["wait".into()])
+        .await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut observed = ObservedConversation::observe(conversation.clone(), None).await?;
+    let input = conversation
+        .send("clock", "wait for the original alarm")
+        .await?;
+    let deadline = loop {
+        match observed.observer.next().await? {
+            Event::Status(status) => {
+                if let crate::agent::Phase::Waiting {
+                    deadline_unix_ms,
+                    input: true,
+                } = status.phase
+                {
+                    break deadline_unix_ms;
+                }
+                assert!(
+                    !matches!(status.phase, crate::agent::Phase::Done { .. }),
+                    "agent ended before its original alarm: {status:?}"
+                );
+            }
+            Event::Turn { entry, .. } if entry.inbox == input => {
+                panic!(
+                    "input settled before its original alarm: {:?}",
+                    entry.outcome
+                );
+            }
+            _ => {}
+        }
+    };
+    let deadline = deadline.expect("wait published no alarm deadline");
+    assert_eq!(provider.request_count(), 1);
+    let mut settlement = Box::pin(observed.settled_at(input));
+    assert!(futures::poll!(settlement.as_mut()).is_pending());
+    control
+        .advance_to(deadline)
+        .map_err(super::super::storage)?;
+    // Advancing the configured clock must fire the actor alarm. A host that
+    // ignores it waits for the real ten-second deadline instead.
+    let (sequence, entry) = tokio::time::timeout(std::time::Duration::from_secs(2), settlement)
+        .await
+        .map_err(|_| {
+            super::super::Error::Storage("wait did not use the platform clock".into())
+        })??;
+    assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+    assert_eq!(
+        conversation.output_text_at(sequence, &entry).await?,
+        "original deadline reached"
+    );
+    assert_eq!(provider.request_count(), 3);
+    assert_eq!(provider.remaining(), 0);
+    drop(observed);
+    drop(conversation);
+    platform.close().await
 }
 
 async fn summaries_remain_readable(mode: Mode) -> Result<()> {
@@ -511,6 +621,7 @@ macro_rules! dual_mode {
 }
 
 dual_mode! {
+    gc_wait_waits_resume_on_the_original_platform_clock,
     summaries_remain_readable,
     cancelled_input_remains_in_context,
     cancelling_current_input_preserves_a_newer_queued_prompt,

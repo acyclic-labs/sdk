@@ -30,6 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 scope.capabilities(),
                 &mut Some(&mut io.history_io()),
             )?;
+            let now = self.access_now()?;
             let view = crate::filesystem::access::access_view(
                 workspace,
                 scope,
@@ -37,6 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 capability_payload(label, VolumeOperation::Write, io)?,
                 ceiling,
                 io,
+                now,
             )
             .await?;
             let fence = view
@@ -44,14 +46,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .publication_fence()
                 .ok_or_else(|| io.invalid("missing write policy fence"))?;
             if !inspect_destination {
-                if !view.0.decide(Action::Create, path, access_now()?).allowed {
-                    require(&view.0, Action::Write, path, io)?;
+                if !view.0.decide(Action::Create, path, now).allowed {
+                    self.require(&view.0, Action::Write, path, io)?;
                 }
                 return Ok((self.generation_ref_id(view.2, Some(io))?, fence));
             }
             // Refuse before probing existence when neither mutation can succeed.
-            if !view.0.decide(Action::Create, path, access_now()?).allowed {
-                require(&view.0, Action::Write, path, io)?;
+            if !view.0.decide(Action::Create, path, now).allowed {
+                self.require(&view.0, Action::Write, path, io)?;
             }
             let generation = io.sdk(workspace.generation(view.2, io, io.cancellation()).await)?;
             let absolute = crate::executor::with_history_io(Some(io), |work| {
@@ -79,7 +81,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     } else {
                         Action::Create
                     };
-                    require(&view.0, action, candidate, io)?;
+                    self.require(&view.0, action, candidate, io)?;
                 }
                 if candidate == path
                     && stat.is_some_and(|stat| stat.kind == acyclic_fs::kernel::FileKind::Directory)
