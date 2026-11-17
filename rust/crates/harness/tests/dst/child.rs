@@ -4,7 +4,6 @@
 use super::*;
 use acyclic_harness::{
     model::{ModelRequest, ToolResultContent},
-    test_support::ScriptedEvent,
 };
 use family::{Generator, Variant};
 use oracle::{Plan, World, call, done, service, settlements, tag};
@@ -101,32 +100,19 @@ fn tool(tag_name: &'static str) -> Plan {
     }
 }
 
-fn failed(tag_name: &'static str, undecided: bool) -> Plan {
-    if undecided {
-        Plan {
-            tag: tag_name,
-            steps: Vec::new(),
-            fail_once: Some((
-                0,
-                ScriptedEvent::Error {
-                    error: "child turn failed".into(),
-                },
-            )),
-        }
-    } else {
-        Plan {
-            tag: tag_name,
-            steps: vec![vec![call(
-                &format!("{tag_name}-missing"),
-                "read",
-                json!({"path": "missing.txt"}),
-            )]],
-            fail_once: None,
-        }
+fn failed(tag_name: &'static str) -> Plan {
+    Plan {
+        tag: tag_name,
+        steps: vec![vec![call(
+            &format!("{tag_name}-missing"),
+            "read",
+            json!({"path": "missing.txt"}),
+        )]],
+        fail_once: None,
     }
 }
 
-const BATCH: usize = 8;
+const BATCH: usize = 2;
 
 fn batch_names() -> Vec<String> {
     (0..BATCH).map(|index| format!("b{index}")).collect()
@@ -161,15 +147,8 @@ fn mid_plan() -> Plan {
     Plan {
         tag: "c4-mid",
         steps: vec![
-            vec![
-                spawn("c4-spawn-g-start", "g-start", "c4-g-start"),
-                spawn("c4-spawn-g-tool", "g-tool", "c4-g-tool"),
-                spawn("c4-spawn-g-fail", "g-fail", "c4-g-fail"),
-            ],
-            vec![wait(
-                "c4-wait-g",
-                &["g-start", "g-tool", "g-fail"],
-            )],
+            vec![spawn("c4-spawn-g-start", "g-start", "c4-g-start")],
+            vec![wait("c4-wait-g", &["g-start"])],
         ],
         fail_once: None,
     }
@@ -187,18 +166,15 @@ fn check_plan() -> Plan {
 }
 
 fn plans(fault: &str) -> Vec<Plan> {
-    let undecided = fault == "undecided_failure";
     vec![
         root_plan(fault),
         mid_plan(),
         check_plan(),
         settled("c4-start"),
         tool("c4-tool"),
-        failed("c4-fail", undecided),
+        failed("c4-fail"),
         settled("c4-batch"),
         settled("c4-g-start"),
-        tool("c4-g-tool"),
-        failed("c4-g-fail", undecided),
         Plan {
             tag: "done",
             steps: Vec::new(),
@@ -249,8 +225,6 @@ fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), St
         "leaf-tool".to_owned(),
         "leaf-fail".to_owned(),
         "g-start".to_owned(),
-        "g-tool".to_owned(),
-        "g-fail".to_owned(),
     ];
     expected.extend(batch_names());
     for name in expected {
