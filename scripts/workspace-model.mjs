@@ -171,11 +171,32 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     if (at !== tokens.length) throw Error(`invalid target condition ${cfg}`);
     return result;
   };
+  const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : [])]));
+  const active = (p, d) => !d.optional || [...enabled.get(p.id)].some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const add = (set, value) => {if (!set.has(value)) {set.add(value); changed = true;}};
+    for (const p of local) {
+      const features = enabled.get(p.id);
+      for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
+      for (const d of p.dependencies.filter(d => matches(d.target) && active(p, d) && d.resolved_path)) {
+        const dependency = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
+        const target = enabled.get(dependency.id), alias = d.rename ?? d.name;
+        for (const feature of d.features) add(target, feature);
+        if (d.uses_default_features && Object.hasOwn(dependency.features, 'default')) add(target, 'default');
+        for (const feature of features) {
+          const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
+          if (match?.[1] === alias) add(target, match[2]);
+        }
+      }
+    }
+  }
   const nodes = local.map(p => {
     const locked = lock.package.find(x => x.name === p.name && x.version === p.version && !x.source);
     if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
     const deps = new Map();
-    for (const d of p.dependencies.filter(d => matches(d.target))) {
+    for (const d of p.dependencies.filter(d => matches(d.target) && active(p, d))) {
       const candidates = d.resolved_path ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : byName(d.name).filter(x => versionMatches(x.version, d.req) &&
         (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
       if (candidates.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
@@ -184,7 +205,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
       if (!deps.has(key)) deps.set(key, {name, pkg: dependency.id, dep_kinds: []});
       deps.get(key).dep_kinds.push({kind: d.kind, target: d.target});
     }
-    return {id: p.id, deps: [...deps.values()], features: Object.keys(p.features).sort()};
+    return {id: p.id, deps: [...deps.values()], features: Object.keys(p.features).filter(f => enabled.get(p.id).has(f)).sort()};
   });
   nodes.push(...registry.map(p => ({id: p.id, deps: [], features: Object.keys(p.features)})));
   return {packages, workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
