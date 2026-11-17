@@ -14,6 +14,53 @@ fn refusal(step: u32) -> ExecutionEvent {
     }
 }
 
+fn legacy_tool_settlement_key(
+    step: u32,
+    call_id: &str,
+    outcome: ToolTerminalOutcome,
+) -> Result<String> {
+    let kind = match outcome {
+        ToolTerminalOutcome::Completed => "completed",
+        ToolTerminalOutcome::Failed => "failed",
+    };
+    crate::executor::with_history_io(None, |work| {
+        crate::executor::preparation_format(format_args!("tool:{step}:{call_id}:{kind}"), work)
+    })
+}
+
+#[tokio::test]
+async fn terminal_lookup_reads_settlements_written_before_the_shared_identity() -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
+    let turn = OperationId::new();
+    journal
+        .append(
+            turn,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let key = legacy_tool_settlement_key(0, "call", ToolTerminalOutcome::Failed)?;
+    journal.append(turn, &key, &refusal(0), None)?.await?;
+    let query = ToolSettlementQuery {
+        turn,
+        step: 0,
+        call_id: "call",
+        effect: crate::tool::ToolInvocation::model_call_operation(turn, 0, "call", None)?,
+    };
+    assert_eq!(
+        journal.tool_settlement(query, None)?.await?,
+        Some(ToolSettlement {
+            cut: 2,
+            sequence: 2,
+            outcome: ToolTerminalOutcome::Failed,
+        })
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> Result<()> {
     for native in [false, true] {
