@@ -25,6 +25,8 @@ jobs:
         run: node scripts/check-git-pins.mjs
       - name: Install Bazelisk
         run: npm install --global @bazel/bazelisk@1.26.0
+      - name: Audit resolved Rust dependencies offline
+        run: bazelisk test --test_output=errors //toolchains/cargo-deny:offline_test
       - name: Check lockfile and manifests without compiling
         run: node scripts/check-cargo-lock.mjs
         env:

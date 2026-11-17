@@ -200,7 +200,6 @@ filegroup(
 )
 
 
-
 cc_toolchain(
     name = "windows_cc_toolchain",
     toolchain_config = "//toolchains/windows:windows_cc_config",
