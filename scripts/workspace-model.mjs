@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {evaluateCfg, manifestDependencies, toml, tomlFiles} from './policy-core.mjs';
+import {evaluateCfg, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -93,24 +93,21 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
     if (!lock) return;
     const selected = (lock.package ?? []).filter(item => item.name === name && item.version === version && !item.source);
     if (selected.length !== 1) throw Error(`Cargo.lock lacks local package ${name}@${version}`);
-    const visited = new Set(), queue = [...selected];
-    for (const item of queue) {
-      if (visited.has(item)) continue;
-      visited.add(item);
+    reachable(selected, item => {
       if (!item.source) for (const patch of patches.filter(candidate => candidate.name === item.name)) {
         const file = slash(path.relative(root, path.join(patch.directory, 'Cargo.toml')));
         if (toml(root, file).package?.version !== item.version) continue;
         if (!manifests.has(file)) {manifests.add(file); pending.push(file);}
       }
-      for (const dependency of item.dependencies ?? []) {
+      return (item.dependencies ?? []).map(dependency => {
         const match = /^(\S+)(?: (\S+))?(?: \((.+)\))?$/.exec(dependency);
         if (!match) throw Error(`invalid Cargo.lock dependency ${dependency}`);
         const candidates = (lock.package ?? []).filter(candidate => candidate.name === match[1] &&
           (!match[2] || candidate.version === match[2]) && (!match[3] || candidate.source === match[3]));
         if (candidates.length !== 1) throw Error(`ambiguous or missing Cargo.lock dependency ${dependency}`);
-        queue.push(candidates[0]);
-      }
-    }
+        return candidates[0];
+      });
+    });
   };
   for (const file of pending) if (!withinSource(path.dirname(path.resolve(root, file)))) throw Error(`workspace dependency escapes source root: ${file}`);
   tomlFiles(root, pending);
@@ -251,14 +248,14 @@ export function workspaceProfileMetadata(root, {workspaceOnly = false, sourceRoo
   if (Object.hasOwn(metadata, 'acyclic_profile_manifest_v1')) throw Error('workspace metadata uses the reserved profile manifest key');
   if (Object.hasOwn(metadata, 'acyclic_profile_local_resolution_v1')) throw Error('workspace metadata uses the reserved profile resolution key');
   if (Object.hasOwn(metadata, 'acyclic_profile_selection_v1')) throw Error('workspace metadata uses the reserved profile selection key');
-  const reached = new Set(members);
+  let reached;
   if (resolved) {
     const nodes = new Map(resolved.resolve.nodes.map(node => [node.id, node]));
-    for (const id of reached) {
+    reached = reachable(members, id => {
       const node = nodes.get(id);
       if (!node || node.incomplete) throw Error(`workspace graph has an incomplete resolution for ${id}`);
-      for (const dependency of node.deps) reached.add(dependency.pkg);
-    }
+      return node.deps.map(dependency => dependency.pkg);
+    });
   }
   return {
     packages: packages.filter(p => !workspaceOnly || p.workspace_member)
