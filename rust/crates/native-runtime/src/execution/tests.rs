@@ -2236,7 +2236,7 @@ fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
     let root = tempfile::tempdir()?;
     let node =
         crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-            .resolve_native("node")?;
+            .resolve_native(acyclic_test_support::host_tool!("node"))?;
     let timeout =
         crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
             .resolve_native("timeout")?;

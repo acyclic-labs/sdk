@@ -191,6 +191,7 @@ rust_test(
 isolated_test(
     name = "acyclic_native_runtime_test",
     binary = ":acyclic_native_runtime_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-native-runtime",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
