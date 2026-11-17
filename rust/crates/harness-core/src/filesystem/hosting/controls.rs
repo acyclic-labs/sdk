@@ -1,7 +1,7 @@
 //! Private control files are original filesystem events consumed by an actor.
 //! Its checkpoint and every admission/inbox effect share one publication.
 use super::*;
-use crate::agent::{AgentOutcome, AgentRecord as _, Phase, StatusRecord};
+use crate::agent::{AgentRecord as _, Phase, StatusRecord};
 use acyclic_actors::{
     guest::{
         AlarmChange, Checkpoint, CodecIdentity, Delivery, GuestError, GuestFuture, Handler,
