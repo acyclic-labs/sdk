@@ -2237,14 +2237,11 @@ fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
     let node =
         crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
             .resolve_native(acyclic_test_support::host_tool!("node"))?;
-    let timeout =
-        crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-            .resolve_native("timeout")?;
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::WorkspaceWrite,
         [],
-        [node.clone(), timeout.clone()],
+        [node.clone()],
     )?;
     std::fs::write(
         root.path().join("capture.mjs"),
@@ -2256,14 +2253,14 @@ process.stdout.write(readFileSync("written"));"#,
         root.path().join("capture.test.mjs"),
         "import {test} from 'node:test'; test('capture', async () => { await import('./capture.mjs'); });",
     )?;
-    // timeout establishes a process group; node --test creates child IPC pairs.
-    // Zero disables the timer: completion must come from the real process exit.
-    let mut commands = [Command::new(&node), Command::new(timeout)];
-    commands[0].arg("capture.mjs");
-    commands[1]
-        .arg("0")
-        .arg(&node)
-        .args(["--test", "capture.test.mjs"]);
+    // A new process group and node --test's child IPC pairs both exercise capture.
+    let mut direct = Command::new(&node);
+    direct.arg("capture.mjs");
+    let mut grouped = Command::new(&node);
+    grouped
+        .args(["--test", "capture.test.mjs"])
+        .process_group(0);
+    let commands = [direct, grouped];
     for mut command in commands {
         command
             .current_dir(root.path())

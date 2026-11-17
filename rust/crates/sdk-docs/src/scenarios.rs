@@ -548,6 +548,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn current_source_closure_is_present_and_digested() {
+        let root = acyclic_test_support::source_path("");
+        let metadata = crate::rustdoc_profiles::load_workspace_metadata(
+            &root,
+            &acyclic_test_support::source_path(
+                "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+            ),
+        )
+        .expect("generated workspace metadata");
+        let sources = validate(&root, &metadata).expect("registered scenario sources should exist");
+        assert_eq!(sources.len(), SCENARIOS.len());
+        let records = catalog(&sources);
+        let projected = records
+            .scenarios
+            .iter()
+            .filter(|record| record.typescript_projection)
+            .map(|record| record.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            projected,
+            std::collections::BTreeSet::from([
+                "actors/typescript-consumer",
+                "stream/typescript-consumer",
+                "machines/typescript-consumer",
+                "inference/typescript-consumer",
+            ])
+        );
+        for id in ["plugin/cli-help", "native-runtime/positional-io"] {
+            assert!(records.scenarios.iter().any(|record| record.id == id));
+        }
+        for record in &records.scenarios {
+            assert_eq!(
+                serde_json::to_value(record).unwrap()["typescriptProjection"],
+                projected.contains(record.id)
+            );
+        }
+        assert!(sources.iter().all(|source| {
+            source.scenario.fixture_script.is_some()
+                == (source.scenario.mode == ScenarioMode::ExecuteWithEndpoint)
+        }));
+        assert!(sources.iter().all(|source| {
+            source.source_sha256.starts_with("sha256:")
+                && source.source_files.len()
+                    == if source.scenario.mode == ScenarioMode::ExecuteWithEndpoint {
+                        4
+                    } else {
+                        3
+                    }
+        }));
+    }
+
+    #[test]
     fn projection_catalog_binds_source_and_output() {
         let execution = ScenarioExecution {
             scenario: SCENARIOS[1],
