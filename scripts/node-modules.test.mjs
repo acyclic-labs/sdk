@@ -34,7 +34,7 @@ local_path_override(module_name = "dependency", path = "dependency")
     const run = (...args) => execFileSync(bazelCommand(), ["--batch", `--output_base=${join(root, "output")}`, ...args], {
       cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     });
-    run("build", "@dependency//:runtime");
+    run("build", "--remote_download_outputs=toplevel", "@dependency//:runtime");
     const output = run("cquery", "@dependency//:runtime", "--output=files").trim();
     const executionRoot = run("info", "execution_root").trim();
     assert.deepEqual(readdirSync(join(executionRoot, output), { recursive: true }).sort(), [
