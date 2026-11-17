@@ -13,7 +13,7 @@ if (($#)); then
   while IFS= read -r package || [ -n "$package" ]; do
     package=${package%$'\r'}
     case "$package" in
-      acyclic-harness) facade=1;;
+      acyclic-harness|acyclic-harness-local) facade=1;;
     esac
   done < "$2"
 fi

@@ -8,7 +8,7 @@ cargo +nightly fuzz run --dev --fuzz-dir rust/crates/harness-fuzz --no-default-f
 ```
 
 `corpus/oidc/dex-jwks` is the unchanged public JWKS response in
-`harness/fixtures/conformance/identity/dex/jwks.body`; `dex-id-token` is the
+`harness-suite/fixtures/conformance/identity/dex/jwks.body`; `dex-id-token` is the
 original `id_token` field of that capture's `token.body`. Its capture manifest
 and README retain issuer, source, original response hashes and subject. These
 expired disposable tokens are replayed against the injected original clock,

@@ -5,7 +5,7 @@
 replace the decoder or the settlement path.
 
 Reuse the original corpus at
-`rust/crates/harness/src/local/host_process/fixtures` and its README provenance.
+`rust/crates/harness-local/src/local/host_process/fixtures` and its README provenance.
 The Claude acceptance seed is the unchanged completed response from Claude Code
 2.1.278, selected from the existing installed-host capture. Escaped member and
 session-type spellings are equivalent JSON representations derived in memory;
@@ -16,7 +16,7 @@ reject-all implementation cannot pass.
 From the repository root:
 
 ```sh
-cargo run --locked -p acyclic-harness-fuzz --no-default-features --features runtime --bin native_session_log -- rust/crates/harness/src/local/host_process/fixtures -runs=0 -seed=1
+cargo run --locked -p acyclic-harness-fuzz --no-default-features --features runtime --bin native_session_log -- rust/crates/harness-local/src/local/host_process/fixtures -runs=0 -seed=1
 cargo test --locked -p acyclic-harness --features test-support --lib local::host_owner::tests::claude_native_session_lifecycle -- --exact
 ```
 

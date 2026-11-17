@@ -206,11 +206,11 @@ export function qualifyCaptureCursorMutations(run = runCommand) {
 
 function qualifyNativeSourceMutation({ name, selector, source, model, test, mutation, mutations = [mutation] }, run) {
   const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
-  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness-local", "acyclic_harness_local",
     ["--features", "test-support"], run, {
       kind: "--lib", modelFeatures: [], expectedFailure, recovery, filter: test,
     });
-  const root = "../rust/crates/harness/src/local/";
+  const root = "../rust/crates/harness-local/src/local/";
   return qualifySourceMutationsLoom({
     name, recovery, source: `${root}${source}.rs`, model: `${root}${model}.rs`,
     mutations, qualify, restored: run => qualify(run),
@@ -220,15 +220,15 @@ function qualifyNativeSourceMutation({ name, selector, source, model, test, muta
 function qualifyProjectionSourceMutations(mutations, recovery, run) {
   const prefix = "local::workspace::projection::tests::";
   const oracles = Object.fromEntries(mutations.map(([, , message, test]) => [message, `${prefix}${test}`]));
-  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness-local", "acyclic_harness_local",
     ["--all-features"], run, {
       kind: "--lib", env: loomEnvironment(), expectedFailure, recovery,
       filters: expectedFailure ? [oracles[expectedFailure]] : Object.values(oracles),
     });
   return qualifySourceMutationsLoom({
     name: "Projection", recovery,
-    source: "../rust/crates/harness/src/local/workspace/projection.rs",
-    model: "../rust/crates/harness/src/local/workspace/projection/tests.rs",
+    source: "../rust/crates/harness-local/src/local/workspace/projection.rs",
+    model: "../rust/crates/harness-local/src/local/workspace/projection/tests.rs",
     mutations,
     qualify, restored: run => qualify(run),
   }, run);
@@ -272,7 +272,7 @@ function qualifySourceMutationsLoom({ name, source, model, mutations, qualify, r
 
 // These models check shared projection ownership; native process cleanup is separate.
 export function qualifyHookLifecycleLoom(features = ["--features", "test-support"], run = runCommand) {
-  return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
+  return qualifyLoom("acyclic-harness-local", "acyclic_harness_local", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
       "local::workspace::projection::tests::failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
@@ -565,7 +565,7 @@ export function qualifyOwnershipLoom(run = runCommand) {
 // Retained workspace suites, including every negative control.
 /** @type {Record<string, string[]>} */
 export const harnessModelSuites = {
-  "acyclic-harness": [
+  "acyclic-harness-local": [
     "local::workspace::bootstrap::loom_tests::",
     "local::workspace::projection::tests::",
     "local::checkout_tools::tests::",
@@ -573,8 +573,8 @@ export const harnessModelSuites = {
 };
 
 export function qualifyHarnessModelsLoom(features = ["--all-features"], run = runCommand) {
-  return qualifyHarnessSuite("acyclic-harness", "acyclic_harness", features, run, {
-    kind: "--lib", suites: harnessModelSuites["acyclic-harness"],
+  return qualifyHarnessSuite("acyclic-harness-local", "acyclic_harness_local", features, run, {
+    kind: "--lib", suites: harnessModelSuites["acyclic-harness-local"],
   });
 }
 

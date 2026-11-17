@@ -257,7 +257,7 @@ fn product_code_names_no_workspace_entry() {
 
 #[test]
 fn planted_workspace_names_fail_the_scan() {
-    let target = "rust/crates/harness/src/local/workspace.rs";
+    let target = "rust/crates/harness-local/src/local/workspace.rs";
     let facade = "rust/crates/harness-core/src/filesystem/workspace_policy.rs";
     let files = sources()
         .into_iter()

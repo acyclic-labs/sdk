@@ -168,7 +168,7 @@ test('workspace exports pass and restoring the original answer cfg is rejected',
   const files = execFileSync('git', ['ls-files', '--', '*.rs'], {encoding: 'utf8'}).split('\n').filter(Boolean);
   const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
   assert.ok(checkTestSupportExports(sources) > 0, 'workspace re-export inventory must not be empty');
-  const answer = sources.find(([file]) => file === 'rust/crates/harness/src/local/host_process/children/answer.rs');
+  const answer = sources.find(([file]) => file === 'rust/crates/harness-local/src/local/host_process/children/answer.rs');
   assert.ok(answer);
   assert.match(answer[1], /#\[cfg\(any\(test, feature = "test-support"\)\)\]/);
   answer[1] = answer[1].replace('#[cfg(any(test, feature = "test-support"))]', '#[cfg(feature = "test-support")]');

@@ -33,4 +33,5 @@ pub mod server;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use local::{LocalHarness, LocalHarnessConfig};

@@ -46,7 +46,9 @@ test("publication check rejects a newly publishable workspace crate until its in
     const missing = check();
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /must contain every publishable local crate exactly once/);
-    inventory(["alpha", "beta"]);
+    const generated = spawnSync(process.execPath, ["scripts/publish-cargo-crates.mjs", "generate"],
+      { cwd: repository, encoding: "utf8" });
+    assert.equal(generated.status, 0, generated.stderr);
     const repaired = check();
     assert.equal(repaired.status, 0, repaired.stderr);
   } finally {
