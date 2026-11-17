@@ -1236,7 +1236,8 @@ impl MemoryStream {
         // Only the immutable pin and one inline page survive opening.
         // History traversal and key selection belong to cursor pulls.
         meter.admit_examination(1, 0)?;
-        let cursor = FiniteRead::new(path, request, &mut HistoryIndexWork(self))?;
+        let cursor = FiniteRead::new(path, request, &mut HistoryIndexWork(self))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         meter.record_examination(1, 0)?;
         let snapshot = self.revisions.at(state.decision);
         let selection = cursor.selection();
