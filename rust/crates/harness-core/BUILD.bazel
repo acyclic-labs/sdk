@@ -960,21 +960,7 @@ filegroup(
 )
 
 
-exports_files([
-        "proto/harness/v2/harness.proto",
-        "proto/protocol/v1/protocol.proto",
-        "src/conversation/epochs/kernel.rs",
-        "src/conversation/epochs/protocol.rs",
-        "src/filesystem/agent_publication.rs",
-        "src/filesystem/workspace_policy.rs",
-        "src/filesystem/workspace_publication.rs",
-        "src/native_environment.rs",
-        "src/native_environment/checkout.rs",
-        "src/sync/owned.rs",
-        "src/tools/git/materialize.rs",
-        "src/tools/git/path.rs",
-        "tests/fixtures/notebook-output.png",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",
