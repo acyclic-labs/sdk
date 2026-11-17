@@ -24,10 +24,6 @@ function fixture({ module = false } = {}) {
   writeFileSync(join(root, "scripts/bazel-executables.mjs"), readFileSync("scripts/bazel-executables.mjs"));
   writeFileSync(join(root, "scripts/check-bazel-lockfile.mjs"), readFileSync("scripts/check-bazel-lockfile.mjs"));
   writeFileSync(join(root, "scripts/policy-core.mjs"), readFileSync("scripts/policy-core.mjs"));
-  writeFileSync(join(root, "scripts/wasm-packages.mjs"), readFileSync("scripts/wasm-packages.mjs"));
-  writeFileSync(join(root, "scripts/native-family-contract.mjs"), readFileSync("scripts/native-family-contract.mjs"));
-  mkdirSync(join(root, "compatibility/native-families"), { recursive: true });
-  writeFileSync(join(root, "compatibility/native-families/stream.json"), readFileSync("compatibility/native-families/stream.json"));
   writeFileSync(join(root, "scripts/jsonc.mjs"), readFileSync("scripts/jsonc.mjs"));
   writeFileSync(join(root, "scripts/protobuf-bindings.mjs"), readFileSync("scripts/protobuf-bindings.mjs"));
   writeFileSync(join(root, "scripts/generate-stream-token-operations.mjs"), readFileSync("scripts/generate-stream-token-operations.mjs"));

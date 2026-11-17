@@ -118,7 +118,7 @@ pub struct ActorNamespace(String);
 impl ActorNamespace {
     /// Parse an exact namespace, including the reserved legacy namespace.
     pub fn new(value: String) -> Result<Self, DomainError> {
-        crate::addressing::NamespaceId::new(value.as_bytes())?;
+        crate::addressing::NamespaceId::validate(value.as_bytes())?;
         Ok(Self(value))
     }
     /// Exact namespace text for logging and wire projection.

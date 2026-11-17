@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-harness-control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dependency-free actor and epoch control for the harness"
+documentation = "https://docs.rs/acyclic-harness-control"
+
+[features]
+test-support = []
+
+[lints]
+workspace = true

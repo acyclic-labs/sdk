@@ -1450,6 +1450,131 @@ async fn a_release_never_unpins_a_concurrent_equal_retain() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Two stores race a terminal release against a retain parked after its
+/// original fence read or after writing its batch, before conditional commit.
+#[tokio::test]
+async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std::error::Error>> {
+    for (fence, operation, key) in [
+        (0_u64, "read", "/t/"),
+        (1, "read", "/t/"),
+        (u64::MAX - 1, "read", "/t/"),
+        (0, "create", "/f/"),
+        (1, "create", "/f/"),
+        (u64::MAX - 1, "create", "/f/"),
+    ] {
+        let medium = Shared::default();
+        let retaining = Store::new(medium.clone()).account(b"terminal-account")?;
+        let releasing = Store::new(medium.clone()).account(b"terminal-account")?;
+        let digest = retaining
+            .put(vec![7; 32].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown put")?
+            .digest;
+        let root = RootId::new(b"accepted-intent".to_vec())?;
+        let (mut reached, resume) = medium.park(operation, key);
+        let pending = retaining.retain_fenced(&root, fence, vec![digest]);
+        tokio::pin!(pending);
+        drive_to_park(pending.as_mut(), &mut reached).await;
+        releasing.release_terminal(&root, fence).await?;
+        resume
+            .send(())
+            .map_err(|()| "retain lost its original cut")?;
+        assert_eq!(
+            pending.await.map_err(|error| error.code),
+            Err(ErrorCode::TerminalFence)
+        );
+        assert_eq!(
+            retaining
+                .retain_fenced(&root, fence, vec![digest])
+                .await
+                .map_err(|error| error.code),
+            Err(ErrorCode::TerminalFence)
+        );
+        if fence > 0 {
+            assert_eq!(
+                retaining
+                    .retain_fenced(&root, fence - 1, vec![digest])
+                    .await
+                    .map_err(|error| error.code),
+                Err(ErrorCode::TerminalFence)
+            );
+        }
+        retaining
+            .retain_fenced(&root, fence + 1, vec![digest])
+            .await?;
+        releasing.release_terminal(&root, fence).await?;
+        releasing.release(&root).await?;
+        assert_eq!(retaining.delete(digest).await?.outcome, Delete::Referenced);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_fence_collection_cleans_an_interrupted_retain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let retaining = Store::new(medium.clone()).account(b"terminal-recovery")?;
+    let releasing = Store::new(medium.clone()).account(b"terminal-recovery")?;
+    let digest = retaining
+        .put(vec![3; 32].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"interrupted-intent".to_vec())?;
+    releasing.release_terminal(&root, 2).await?;
+    {
+        let (mut read, resume_read) = medium.park("read", "/t/");
+        let pending = retaining.retain_fenced(&root, 7, vec![digest]);
+        tokio::pin!(pending);
+        drive_to_park(pending.as_mut(), &mut read).await;
+        releasing.release_terminal(&root, 7).await?;
+        let (mut created, _resume_create) = medium.park("create", "/f/");
+        resume_read
+            .send(())
+            .map_err(|()| "retain lost its fence read")?;
+        drive_to_park(pending.as_mut(), &mut created).await;
+        // Dropping the still-pending operation simulates loss of its owner.
+    }
+    releasing.collect().await?;
+    assert_eq!(releasing.delete(digest).await?.outcome, Delete::Deleted);
+    assert_eq!(
+        retaining
+            .retain_fenced(&root, 7, vec![digest])
+            .await
+            .map_err(|error| error.code),
+        Err(ErrorCode::TerminalFence)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_fence_retry_finishes_interrupted_batch_cleanup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let original = Store::new(medium.clone()).account(b"terminal-cleanup")?;
+    let digest = original
+        .put(vec![6; 32].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"cleanup-intent".to_vec())?;
+    original.retain_fenced(&root, 1, vec![digest]).await?;
+    {
+        let (mut removed, _resume) = medium.park("remove", "/f/");
+        let release = original.release_terminal(&root, 1);
+        tokio::pin!(release);
+        drive_to_park(release.as_mut(), &mut removed).await;
+        // The batch removal took effect, but its owner is lost before reply.
+    }
+    let recovered = Store::new(medium).account(b"terminal-cleanup")?;
+    recovered.release_terminal(&root, 1).await?;
+    assert_eq!(recovered.delete(digest).await?.outcome, Delete::Deleted);
+    Ok(())
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 async fn a_delete_never_removes_a_writers_pending_reference()
@@ -3372,6 +3497,21 @@ impl Blobs for Overlap {
     }
     async fn release(&self, root: &RootId) -> Result<crate::Released, crate::Error> {
         self.inner.release(root).await
+    }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<crate::Retained, crate::Error> {
+        self.inner.retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(
+        &self,
+        root: &RootId,
+        fence: u64,
+    ) -> Result<crate::Released, crate::Error> {
+        self.inner.release_terminal(root, fence).await
     }
     async fn collect(&self) -> Result<crate::Collection, crate::Error> {
         self.inner.collect().await

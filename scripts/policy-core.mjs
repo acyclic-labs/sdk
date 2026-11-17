@@ -90,10 +90,8 @@ export function checkFileCopies(root, copies) {
     throw new Error(`packaged source drift: ${copy}`);
 }
 
-// Evaluate the positive cfg formula directly, without expanding its Cartesian
-// product of alternatives. A negated feature cannot be expressed by Cargo's
-// positive required-features list, even inside a currently satisfied branch.
-export function testGateEnabled(gate, enabled) {
+// One cfg grammar, with unknown atoms retained for partial platform knowledge.
+export function evaluateCfg(gate, atom, positiveFeatures = false) {
   const tokens = gate.match(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]/g) ?? [];
   let at = 0;
   const invalid = () => { throw new Error(`unsupported cfg gate: ${gate}`); };
@@ -116,17 +114,21 @@ export function testGateEnabled(gate, enabled) {
       at++;
     }
     const feature = name === 'feature' || Boolean(children?.some(child => child.feature));
-    if (name === 'not' && feature) throw new Error('negated feature gate cannot be represented by required-features; move this gate inside the test target');
+    if (positiveFeatures && name === 'not' && feature) throw new Error('negated feature gate cannot be represented by required-features; move this gate inside the test target');
     if (['all', 'any', 'not'].includes(name) && !children) invalid();
-    return {feature, enabled: name === 'feature' ? enabled.has(value)
-      : ['loom', 'kani'].includes(name) ? enabled.has('model-checking')
-      : name === 'all' ? children.every(child => child.enabled)
-      : name === 'any' ? children.some(child => child.enabled) : true};
+    const decisive = name === 'any';
+    return {feature, enabled: ['all', 'any'].includes(name)
+      ? children.some(child => child.enabled === decisive) ? decisive : children.some(child => child.enabled === undefined) ? undefined : !decisive
+      : name === 'not' ? positiveFeatures ? true : children[0]?.enabled === undefined ? undefined : !children[0].enabled : atom(name, value)};
   };
   const result = parse();
   if (at !== tokens.length) invalid();
   return result.enabled;
 }
+
+// Required-features is positive; non-feature negations remain platform conditions.
+export const testGateEnabled = (gate, enabled) => evaluateCfg(gate, (name, value) =>
+  name === 'feature' ? enabled.has(value) : ['loom', 'kani'].includes(name) ? enabled.has('model-checking') : true, true);
 
 export function testFeatureFindings(root) {
   const errors = [];

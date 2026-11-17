@@ -95,6 +95,8 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
         case "blobs/list": return await unary(wire.ListBlobsRequestSchema, wire.ListBlobsResponseSchema, value => blobs.listBlobs(value, { signal }));
         case "blobs/retain": return await unary(wire.RetainRequestSchema, wire.RetainResponseSchema, value => blobs.retain(value, { signal }));
         case "blobs/release": return await unary(wire.ReleaseRequestSchema, wire.ReleaseResponseSchema, value => blobs.release(value, { signal }));
+        case "blobs/retain-fenced": return await unary(wire.RetainFencedRequestSchema, wire.RetainResponseSchema, value => blobs.retainFenced(value, { signal }));
+        case "blobs/release-terminal": return await unary(wire.ReleaseTerminalRequestSchema, wire.ReleaseResponseSchema, value => blobs.releaseTerminal(value, { signal }));
         case "blobs/collect": return await unary(wire.CollectRequestSchema, wire.CollectResponseSchema, value => blobs.collect(value, { signal }));
         case "blobs/usage": return await unary(wire.UsageRequestSchema, wire.UsageResponseSchema, value => blobs.usage(value, { signal }));
         default: throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT);

@@ -8,32 +8,6 @@ pub(crate) struct HistoryCursor {
     opening_tail: Option<u64>,
     registration: Option<crate::interest::Interest<StreamPath, Signals>>,
 }
-#[cfg(not(target_arch = "wasm32"))]
-type CursorWork<'a> = Option<&'a crate::native::Work>;
-#[cfg(target_arch = "wasm32")]
-type CursorWork<'a> = Option<&'a ()>;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn pinned_with_work(
-    path: &PathState,
-    tail: u64,
-    work: Option<&crate::native::Work>,
-) -> Result<PinnedHistory, StreamError> {
-    match work {
-        Some(work) => PinnedHistory::new(path, tail, &mut MeterWork(work)),
-        None => PinnedHistory::new(path, tail, &mut ReadOnlyWork),
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn pinned_with_work(
-    path: &PathState,
-    tail: u64,
-    _work: Option<&()>,
-) -> Result<PinnedHistory, StreamError> {
-    PinnedHistory::new(path, tail, &mut ReadOnlyWork)
-}
-
 impl HistoryCursor {
     async fn initial(
         path: Option<&PathState>,
@@ -107,11 +81,7 @@ impl HistoryCursor {
         } else {
             from
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let cut_work = work.as_deref();
-        #[cfg(target_arch = "wasm32")]
-        let cut_work = None;
-        let mut cursor = Self::new(path, path.tail, start, cut_work)?;
+        let mut cursor = Self::new(path, path.tail, start);
         #[cfg(not(target_arch = "wasm32"))]
         {
             cursor.work = work;
@@ -180,7 +150,7 @@ impl HistoryCursor {
             .position()
             .checked_sub(1)
             .ok_or(StreamError::InvalidArgument)?;
-        let mut pinned = PinnedHistory::new(path, path.tail, &mut ReadOnlyWork)?;
+        let mut pinned = PinnedHistory::new(path, path.tail);
         let previous = crate::pages::PageSource::next_page(&mut pinned, from, 1).await?;
         if previous
             .and_then(|window| window.records.record(window.start))
@@ -207,20 +177,15 @@ impl HistoryCursor {
             registration: None,
         }
     }
-    fn new(
-        path: &PathState,
-        tail: u64,
-        next: u64,
-        work: CursorWork<'_>,
-    ) -> Result<Self, StreamError> {
+    fn new(path: &PathState, tail: u64, next: u64) -> Self {
         let records = FiniteRead {
-            history: pinned_with_work(path, tail, work)?,
+            history: PinnedHistory::new(path, tail),
             window: path.prefix_window(next, tail),
             key: None,
             next,
             remaining: 0,
         };
-        Ok(Self {
+        Self {
             end: None,
             records,
             #[cfg(not(target_arch = "wasm32"))]
@@ -228,7 +193,7 @@ impl HistoryCursor {
             awaiting_creation: false,
             opening_tail: None,
             registration: None,
-        })
+        }
     }
     fn sync(&mut self, path: &PathState) -> Result<(), StreamError> {
         let root = path.history.as_ref();
@@ -245,11 +210,7 @@ impl HistoryCursor {
         let appended = matches!((&history.root, root.map(AsRef::as_ref)),
             (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
         let keep_page = appended && tail >= history.tail;
-        #[cfg(not(target_arch = "wasm32"))]
-        let work = self.work.as_deref();
-        #[cfg(target_arch = "wasm32")]
-        let work = None;
-        let pinned = pinned_with_work(path, tail, work)?;
+        let pinned = PinnedHistory::new(path, tail);
         self.records.history = pinned;
         if !keep_page {
             self.records.window = None;
@@ -312,11 +273,7 @@ impl FiniteRead {
         }
     }
 
-    fn new(
-        path: &PathState,
-        request: ReadRequest,
-        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
-    ) -> Result<Self, StreamError> {
+    fn new(path: &PathState, request: ReadRequest) -> Self {
         let tail = request.key.as_ref().map_or_else(
             || {
                 path.tail
@@ -324,20 +281,17 @@ impl FiniteRead {
             },
             |key| key.before.min(path.tail),
         );
-        Ok(Self {
-            history: PinnedHistory::new(path, tail, work)?,
+        Self {
+            history: PinnedHistory::new(path, tail),
             window: request
                 .key
                 .is_none()
                 .then(|| path.prefix_window(request.from, tail))
                 .flatten(),
-            key: request
-                .key
-                .map(|key| path.keys.key_pin(path.tail, work).map(|pin| (key, pin)))
-                .transpose()?,
+            key: request.key.map(|key| (key, path.keys.key_pin(path.tail))),
             next: request.from,
             remaining: request.limit,
-        })
+        }
     }
 
     fn peek<E>(

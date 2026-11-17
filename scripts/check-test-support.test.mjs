@@ -154,8 +154,8 @@ test('test-visible re-exports require test-visible targets, including gated pare
   }
   assert.equal(checkTestSupportExports(fixture('#[cfg(any(test, feature = "test-support"))]')), 1);
   // A platform predicate on the export must not conceal a feature-only target.
-  assert.throws(() => checkTestSupportExports(fixture('#[cfg(feature = "test-support")]', '#[cfg(windows)]')),
-    /requires test-support/);
+  for (const cfg of ['#[cfg(windows)]', '#[cfg(not(test = "other"))]', '#[cfg(not(all(test, windows)))]'])
+    assert.throws(() => checkTestSupportExports(fixture('#[cfg(feature = "test-support")]', cfg)), /requires test-support/);
   const sources = fixture('');
   sources[0][1] = '#[cfg(any(test, feature = "test-support"))]\npub mod test_support;\n#[cfg(feature = "test-support")]\nmod answer;';
   assert.throws(() => checkTestSupportExports(sources), /demo\/src\/lib.rs::answer.*requires test-support/);

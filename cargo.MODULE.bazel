@@ -85,6 +85,9 @@ crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 
 crate.annotation(
     crate = "sha2",
+    repositories = [
+        "sdk_crates",
+    ],
     rustc_flags = [
         "-Copt-level=3",
     ],
@@ -92,6 +95,9 @@ crate.annotation(
 
 crate.annotation(
     crate = "blake3",
+    repositories = [
+        "sdk_crates",
+    ],
     rustc_flags = [
         "-Copt-level=3",
     ],
@@ -99,6 +105,9 @@ crate.annotation(
 
 crate.annotation(
     crate = "loom",
+    repositories = [
+        "sdk_crates",
+    ],
     rustc_flags = [
         "-Copt-level=3",
     ],
@@ -106,6 +115,9 @@ crate.annotation(
 
 crate.annotation(
     crate = "curve25519-dalek",
+    repositories = [
+        "sdk_crates",
+    ],
     rustc_flags = [
         "-Copt-level=3",
     ],
@@ -113,64 +125,97 @@ crate.annotation(
 
 crate.annotation(
     crate = "rquickjs-core",
+    repositories = [
+        "sdk_crates",
+    ],
     override_target_lib = "//rust/vendor/rquickjs-core-0.14.0:rquickjs_core",
 )
 
 crate.annotation(
     crate = "ts-rs-macros",
+    repositories = [
+        "sdk_crates",
+    ],
     override_target_proc_macro = "//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros",
 )
 
 crate.spec(
     package = "alacritty_terminal",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.26.0",
     default_features = True,
 )
 
 crate.spec(
     package = "arc-swap",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.9.2",
     default_features = True,
 )
 
 crate.spec(
     package = "arrayvec",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.7.8",
     default_features = True,
 )
 
 crate.spec(
     package = "arrow-array",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=60.1.0",
     default_features = True,
 )
 
 crate.spec(
     package = "arrow-ipc",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=60.1.0",
     default_features = False,
 )
 
 crate.spec(
     package = "arrow-schema",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=60.1.0",
     default_features = True,
 )
 
 crate.spec(
     package = "async-stream",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.6",
     default_features = True,
 )
 
 crate.spec(
     package = "async-trait",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.92",
     default_features = True,
 )
 
 crate.spec(
     package = "axum",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.8.9",
     default_features = True,
     features = [
@@ -180,6 +225,9 @@ crate.spec(
 
 crate.spec(
     package = "base64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.22.1",
     package_alias = "base64-0_22_1",
     default_features = True,
@@ -187,6 +235,9 @@ crate.spec(
 
 crate.spec(
     package = "base64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.23.1",
     package_alias = "base64-0_23_1",
     default_features = True,
@@ -194,18 +245,27 @@ crate.spec(
 
 crate.spec(
     package = "bitflags",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.13.2",
     default_features = True,
 )
 
 crate.spec(
     package = "blake3",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.8.7",
     default_features = True,
 )
 
 crate.spec(
     package = "bytes",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.12.1",
     default_features = True,
     features = [
@@ -215,42 +275,63 @@ crate.spec(
 
 crate.spec(
     package = "cap-fs-ext",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=4.0.3",
     default_features = True,
 )
 
 crate.spec(
     package = "cap-primitives",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=4.0.3",
     default_features = True,
 )
 
 crate.spec(
     package = "cap-std",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=4.0.3",
     default_features = True,
 )
 
 crate.spec(
     package = "cargo_metadata",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.23.1",
     default_features = True,
 )
 
 crate.spec(
     package = "caseless",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.2",
     default_features = True,
 )
 
 crate.spec(
     package = "cc",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.10.0",
     default_features = True,
 )
 
 crate.spec(
     package = "chacha20poly1305",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.11.0",
     default_features = False,
     features = [
@@ -260,6 +341,9 @@ crate.spec(
 
 crate.spec(
     package = "clap",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=4.6.7",
     default_features = True,
     features = [
@@ -270,6 +354,9 @@ crate.spec(
 
 crate.spec(
     package = "compio-buf",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.8.3",
     default_features = True,
     features = [
@@ -279,6 +366,9 @@ crate.spec(
 
 crate.spec(
     package = "compio-driver",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.12.5",
     default_features = False,
     features = [
@@ -288,12 +378,18 @@ crate.spec(
 
 crate.spec(
     package = "crc-fast",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.10.0",
     default_features = True,
 )
 
 crate.spec(
     package = "crossterm",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.29.0",
     default_features = True,
     features = [
@@ -303,30 +399,45 @@ crate.spec(
 
 crate.spec(
     package = "ctor",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.13",
     default_features = False,
 )
 
 crate.spec(
     package = "diffy",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.5.2",
     default_features = True,
 )
 
 crate.spec(
     package = "dirs",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=7.0.0",
     default_features = True,
 )
 
 crate.spec(
     package = "divan",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.21",
     default_features = True,
 )
 
 crate.spec(
     package = "ed25519-dalek",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.0.0",
     default_features = True,
     features = [
@@ -336,48 +447,72 @@ crate.spec(
 
 crate.spec(
     package = "fancy-regex",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.20.2",
     default_features = True,
 )
 
 crate.spec(
     package = "flatbuffers",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=25.12.19",
     default_features = True,
 )
 
 crate.spec(
     package = "flate2",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.1.10",
     default_features = True,
 )
 
 crate.spec(
     package = "fnv",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.7",
     default_features = True,
 )
 
 crate.spec(
     package = "fuser",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.18.0",
     default_features = False,
 )
 
 crate.spec(
     package = "futures",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.34",
     default_features = True,
 )
 
 crate.spec(
     package = "futures-core",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.34",
     default_features = True,
 )
 
 crate.spec(
     package = "futures-util",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.34",
     default_features = False,
     features = [
@@ -387,6 +522,9 @@ crate.spec(
 
 crate.spec(
     package = "getrandom",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.4.3",
     default_features = True,
     features = [
@@ -397,60 +535,90 @@ crate.spec(
 
 crate.spec(
     package = "h2",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.4.20",
     default_features = True,
 )
 
 crate.spec(
     package = "heck",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.5.0",
     default_features = True,
 )
 
 crate.spec(
     package = "hex",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.4.3",
     default_features = True,
 )
 
 crate.spec(
     package = "hmac",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.13.0",
     default_features = True,
 )
 
 crate.spec(
     package = "http",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.5.0",
     default_features = True,
 )
 
 crate.spec(
     package = "http-body",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.1.0",
     default_features = True,
 )
 
 crate.spec(
     package = "http-body-util",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.5",
     default_features = True,
 )
 
 crate.spec(
     package = "httpdate",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.3",
     default_features = True,
 )
 
 crate.spec(
     package = "humantime",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.4.0",
     default_features = True,
 )
 
 crate.spec(
     package = "hyper",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.12.0",
     default_features = True,
     features = [
@@ -463,6 +631,9 @@ crate.spec(
 
 crate.spec(
     package = "hyper-util",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.21",
     default_features = True,
     features = [
@@ -472,6 +643,9 @@ crate.spec(
 
 crate.spec(
     package = "icu_casemap",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.3.0",
     default_features = False,
     features = [
@@ -481,6 +655,9 @@ crate.spec(
 
 crate.spec(
     package = "image",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.25.10",
     default_features = False,
     features = [
@@ -490,24 +667,36 @@ crate.spec(
 
 crate.spec(
     package = "indexmap",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.14.2",
     default_features = True,
 )
 
 crate.spec(
     package = "js-sys",
-    version = "=0.3.98",
+    repositories = [
+        "sdk_crates",
+    ],
+    version = "=0.3.94",
     default_features = True,
 )
 
 crate.spec(
     package = "jsonschema",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.61.2",
     default_features = False,
 )
 
 crate.spec(
     package = "keyring",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.6.3",
     default_features = True,
     features = [
@@ -521,18 +710,27 @@ crate.spec(
 
 crate.spec(
     package = "libc",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.191",
     default_features = True,
 )
 
 crate.spec(
     package = "libfuzzer-sys",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.4.13",
     default_features = True,
 )
 
 crate.spec(
     package = "linux-keyutils",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.5",
     default_features = True,
     features = [
@@ -542,6 +740,9 @@ crate.spec(
 
 crate.spec(
     package = "loom",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.7.3",
     default_features = True,
     features = [
@@ -552,12 +753,18 @@ crate.spec(
 
 crate.spec(
     package = "memchr",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.8.3",
     default_features = True,
 )
 
 crate.spec(
     package = "napi-build",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.6.0",
     default_features = True,
     features = [
@@ -567,12 +774,18 @@ crate.spec(
 
 crate.spec(
     package = "napi-derive",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.6.13",
     default_features = True,
 )
 
 crate.spec(
     package = "napi-sys",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.4.1",
     default_features = False,
     features = [
@@ -589,6 +802,9 @@ crate.spec(
 
 crate.spec(
     package = "nix",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.31.3",
     default_features = False,
     features = [
@@ -601,12 +817,18 @@ crate.spec(
 
 crate.spec(
     package = "nohash-hasher",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.0",
     default_features = True,
 )
 
 crate.spec(
     package = "notify",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=8.2.2",
     default_features = False,
     features = [
@@ -616,6 +838,9 @@ crate.spec(
 
 crate.spec(
     package = "object_store",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.2",
     default_features = False,
     features = [
@@ -627,60 +852,90 @@ crate.spec(
 
 crate.spec(
     package = "once_cell",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.21.4",
     default_features = True,
 )
 
 crate.spec(
     package = "oxc_allocator",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.156.0",
     default_features = True,
 )
 
 crate.spec(
     package = "oxc_codegen",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.156.0",
     default_features = False,
 )
 
 crate.spec(
     package = "oxc_parser",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.156.0",
     default_features = False,
 )
 
 crate.spec(
     package = "oxc_semantic",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.156.0",
     default_features = False,
 )
 
 crate.spec(
     package = "oxc_span",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.156.0",
     default_features = True,
 )
 
 crate.spec(
     package = "oxc_transformer",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.156.0",
     default_features = False,
 )
 
 crate.spec(
     package = "oxrdf",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.5",
     default_features = False,
 )
 
 crate.spec(
     package = "oxttl",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.5",
     default_features = False,
 )
 
 crate.spec(
     package = "p256",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.0",
     default_features = False,
     features = [
@@ -690,12 +945,18 @@ crate.spec(
 
 crate.spec(
     package = "parking_lot",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.13.0",
     default_features = True,
 )
 
 crate.spec(
     package = "parquet",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=60.1.0",
     default_features = False,
     features = [
@@ -705,24 +966,36 @@ crate.spec(
 
 crate.spec(
     package = "pin-project-lite",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.17",
     default_features = True,
 )
 
 crate.spec(
     package = "prettyplease",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "proc-macro2",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.107",
     default_features = True,
 )
 
 crate.spec(
     package = "proptest",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.12.0",
     default_features = True,
     features = [
@@ -732,18 +1005,27 @@ crate.spec(
 
 crate.spec(
     package = "prost",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.4",
     default_features = True,
 )
 
 crate.spec(
     package = "prost-build",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.4",
     default_features = True,
 )
 
 crate.spec(
     package = "prost-reflect",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.16.5",
     default_features = True,
     features = [
@@ -753,84 +1035,126 @@ crate.spec(
 
 crate.spec(
     package = "prost-types",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.4",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-aarch_64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-ppcle_64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-s390_64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-x86_32",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-x86_64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-macos-aarch_64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-macos-x86_64",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-win32",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.3.0",
     default_features = True,
 )
 
 crate.spec(
     package = "public-api",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.52.2",
     default_features = True,
 )
 
 crate.spec(
     package = "pulldown-cmark",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.13.6",
     default_features = False,
 )
 
 crate.spec(
     package = "quick-xml",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.41.0",
     default_features = True,
 )
 
 crate.spec(
     package = "quote",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.47",
     default_features = True,
 )
 
 crate.spec(
     package = "ratatui",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.30.2",
     default_features = False,
     features = [
@@ -840,24 +1164,36 @@ crate.spec(
 
 crate.spec(
     package = "rcgen",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.10",
     default_features = True,
 )
 
 crate.spec(
     package = "regex-lite",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.9",
     default_features = True,
 )
 
 crate.spec(
     package = "regex-syntax",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.8.11",
     default_features = True,
 )
 
 crate.spec(
     package = "reqwest",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.12.28",
     package_alias = "reqwest-0_12_28",
     default_features = False,
@@ -871,6 +1207,9 @@ crate.spec(
 
 crate.spec(
     package = "reqwest",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.13.5",
     package_alias = "reqwest-0_13_5",
     default_features = False,
@@ -881,6 +1220,9 @@ crate.spec(
 
 crate.spec(
     package = "ring",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.17.14",
     default_features = True,
     features = [
@@ -890,6 +1232,9 @@ crate.spec(
 
 crate.spec(
     package = "rmcp",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.9.0",
     default_features = False,
     features = [
@@ -902,12 +1247,18 @@ crate.spec(
 
 crate.spec(
     package = "rmp-serde",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.3.1",
     default_features = True,
 )
 
 crate.spec(
     package = "rquickjs",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.0",
     default_features = False,
     features = [
@@ -919,6 +1270,9 @@ crate.spec(
 
 crate.spec(
     package = "rusqlite",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.41.0",
     default_features = True,
     features = [
@@ -928,18 +1282,27 @@ crate.spec(
 
 crate.spec(
     package = "rustc-hash",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.1.3",
     default_features = True,
 )
 
 crate.spec(
     package = "rustdoc-types",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.60.0",
     default_features = True,
 )
 
 crate.spec(
     package = "rustix",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.1.6",
     default_features = True,
     features = [
@@ -953,12 +1316,18 @@ crate.spec(
 
 crate.spec(
     package = "rustix-openpty",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.0",
     default_features = True,
 )
 
 crate.spec(
     package = "rustls",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.23.46",
     default_features = False,
     features = [
@@ -969,48 +1338,72 @@ crate.spec(
 
 crate.spec(
     package = "rustls-platform-verifier",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.7.1",
     default_features = True,
 )
 
 crate.spec(
     package = "ruzstd",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.9.1",
     default_features = True,
 )
 
 crate.spec(
     package = "s3s",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.17.0",
     default_features = True,
 )
 
 crate.spec(
     package = "same-file",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.6",
     default_features = True,
 )
 
 crate.spec(
     package = "schemars",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.2.3",
     default_features = True,
 )
 
 crate.spec(
     package = "security-framework",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.7.0",
     default_features = True,
 )
 
 crate.spec(
     package = "semver",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.28",
     default_features = True,
 )
 
 crate.spec(
     package = "serde",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.229",
     default_features = True,
     features = [
@@ -1021,6 +1414,9 @@ crate.spec(
 
 crate.spec(
     package = "serde-saphyr",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.0.0",
     default_features = True,
     features = [
@@ -1031,30 +1427,45 @@ crate.spec(
 
 crate.spec(
     package = "serde-wasm-bindgen",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.6.5",
     default_features = True,
 )
 
 crate.spec(
     package = "serde_bytes",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.11.19",
     default_features = True,
 )
 
 crate.spec(
     package = "serde_derive",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.229",
     default_features = True,
 )
 
 crate.spec(
     package = "serde_derive_internals",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.30.0",
     default_features = True,
 )
 
 crate.spec(
     package = "serde_json",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.154",
     default_features = True,
     features = [
@@ -1065,48 +1476,72 @@ crate.spec(
 
 crate.spec(
     package = "serde_path_to_error",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.20",
     default_features = True,
 )
 
 crate.spec(
     package = "serde_urlencoded",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.7.1",
     default_features = True,
 )
 
 crate.spec(
     package = "sha2",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.11.1",
     default_features = True,
 )
 
 crate.spec(
     package = "shell-words",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.1.1",
     default_features = True,
 )
 
 crate.spec(
     package = "shuttle",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.9.8",
     default_features = True,
 )
 
 crate.spec(
     package = "signal-hook",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.4.5",
     default_features = True,
 )
 
 crate.spec(
     package = "smallvec",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.16.2",
     default_features = True,
 )
 
 crate.spec(
     package = "strum",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.28.0",
     default_features = True,
     features = [
@@ -1116,12 +1551,18 @@ crate.spec(
 
 crate.spec(
     package = "subtle",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.6.1",
     default_features = True,
 )
 
 crate.spec(
     package = "syn",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.0.119",
     package_alias = "syn-2_0_119",
     default_features = True,
@@ -1133,6 +1574,9 @@ crate.spec(
 
 crate.spec(
     package = "syn",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.0.9",
     package_alias = "syn-3_0_9",
     default_features = True,
@@ -1144,6 +1588,9 @@ crate.spec(
 
 crate.spec(
     package = "sync_wrapper",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.0.2",
     default_features = True,
     features = [
@@ -1153,30 +1600,45 @@ crate.spec(
 
 crate.spec(
     package = "tar",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.4.46",
     default_features = True,
 )
 
 crate.spec(
     package = "tempfile",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=3.27.0",
     default_features = True,
 )
 
 crate.spec(
     package = "termcolor",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.4.1",
     default_features = True,
 )
 
 crate.spec(
     package = "thiserror",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.0.21",
     default_features = True,
 )
 
 crate.spec(
     package = "time",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.55",
     default_features = True,
     features = [
@@ -1187,6 +1649,9 @@ crate.spec(
 
 crate.spec(
     package = "tokio",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.54.1",
     default_features = True,
     features = [
@@ -1208,12 +1673,18 @@ crate.spec(
 
 crate.spec(
     package = "tokio-postgres",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.7.18",
     default_features = True,
 )
 
 crate.spec(
     package = "tokio-rustls",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.26.6",
     default_features = False,
     features = [
@@ -1223,6 +1694,9 @@ crate.spec(
 
 crate.spec(
     package = "tokio-stream",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.19",
     default_features = True,
     features = [
@@ -1232,6 +1706,9 @@ crate.spec(
 
 crate.spec(
     package = "tokio-util",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.7.20",
     default_features = True,
     features = [
@@ -1242,12 +1719,18 @@ crate.spec(
 
 crate.spec(
     package = "toml",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.1.6+spec-1.1.0",
     default_features = True,
 )
 
 crate.spec(
     package = "tonic",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.9",
     default_features = True,
     features = [
@@ -1261,24 +1744,36 @@ crate.spec(
 
 crate.spec(
     package = "tonic-prost",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.6",
     default_features = True,
 )
 
 crate.spec(
     package = "tonic-prost-build",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.6",
     default_features = True,
 )
 
 crate.spec(
     package = "tonic-web",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.14.6",
     default_features = True,
 )
 
 crate.spec(
     package = "tower",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.5.3",
     default_features = True,
     features = [
@@ -1288,6 +1783,9 @@ crate.spec(
 
 crate.spec(
     package = "tower-http",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.6.11",
     default_features = True,
     features = [
@@ -1297,6 +1795,9 @@ crate.spec(
 
 crate.spec(
     package = "tracing",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.44",
     default_features = False,
     features = [
@@ -1307,6 +1808,9 @@ crate.spec(
 
 crate.spec(
     package = "tracing-core",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.36",
     default_features = False,
     features = [
@@ -1316,6 +1820,9 @@ crate.spec(
 
 crate.spec(
     package = "tracing-subscriber",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.3.23",
     default_features = False,
     features = [
@@ -1328,12 +1835,18 @@ crate.spec(
 
 crate.spec(
     package = "ts-rs",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=12.0.1",
     default_features = True,
 )
 
 crate.spec(
     package = "tsify",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.5.8",
     default_features = True,
     features = [
@@ -1343,42 +1856,63 @@ crate.spec(
 
 crate.spec(
     package = "unicase",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.10.0",
     default_features = True,
 )
 
 crate.spec(
     package = "unicode-normalization",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.1.26",
     default_features = True,
 )
 
 crate.spec(
     package = "unicode-segmentation",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.13.3",
     default_features = True,
 )
 
 crate.spec(
     package = "unicode-width",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.2.2",
     default_features = True,
 )
 
 crate.spec(
     package = "url",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.5.8",
     default_features = True,
 )
 
 crate.spec(
     package = "urlencoding",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.1.3",
     default_features = True,
 )
 
 crate.spec(
     package = "uuid",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.29.0",
     default_features = True,
     features = [
@@ -1391,6 +1925,9 @@ crate.spec(
 
 crate.spec(
     package = "vhost",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.18.0",
     default_features = True,
     features = [
@@ -1401,12 +1938,18 @@ crate.spec(
 
 crate.spec(
     package = "virtio-queue",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.18.0",
     default_features = True,
 )
 
 crate.spec(
     package = "vm-memory",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.18.0",
     default_features = True,
     features = [
@@ -1416,37 +1959,55 @@ crate.spec(
 
 crate.spec(
     package = "vmm-sys-util",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.15.0",
     default_features = True,
 )
 
 crate.spec(
     package = "vte",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.15.0",
     default_features = True,
 )
 
 crate.spec(
     package = "walkdir",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=2.5.0",
     default_features = True,
 )
 
 crate.spec(
     package = "wasm-bindgen",
-    version = "=0.2.121",
+    repositories = [
+        "sdk_crates",
+    ],
+    version = "=0.2.117",
     default_features = True,
 )
 
 crate.spec(
     package = "wasm-bindgen-futures",
-    version = "=0.4.71",
+    repositories = [
+        "sdk_crates",
+    ],
+    version = "=0.4.67",
     default_features = True,
 )
 
 crate.spec(
     package = "web-sys",
-    version = "=0.3.98",
+    repositories = [
+        "sdk_crates",
+    ],
+    version = "=0.3.94",
     default_features = True,
     features = [
         "AbortController",
@@ -1477,18 +2038,27 @@ crate.spec(
 
 crate.spec(
     package = "web-time",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.1.0",
     default_features = True,
 )
 
 crate.spec(
     package = "which",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=8.0.6",
     default_features = True,
 )
 
 crate.spec(
     package = "windows",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.62.2",
     default_features = True,
     features = [
@@ -1513,6 +2083,9 @@ crate.spec(
 
 crate.spec(
     package = "windows-sys",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.61.2",
     default_features = True,
     features = [
@@ -1542,18 +2115,27 @@ crate.spec(
 
 crate.spec(
     package = "writeable",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.6.4",
     default_features = True,
 )
 
 crate.spec(
     package = "x509-parser",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=0.18.1",
     default_features = True,
 )
 
 crate.spec(
     package = "zeroize",
+    repositories = [
+        "sdk_crates",
+    ],
     version = "=1.9.1",
     default_features = True,
 )
@@ -1568,1729 +2150,802 @@ crate.from_specs(
         "x86_64-pc-windows-msvc",
     ],
 )
-crate.annotation(
-    crate = "protoc-bin-vendored-linux-x86_64",
-    version = "=3.3.0",
-    additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
-)
-
-crate.annotation(
-    crate = "protoc-bin-vendored-macos-aarch_64",
-    version = "=3.3.0",
-    additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
-)
-
-crate.annotation(
-    crate = "protoc-bin-vendored-win32",
-    version = "=3.3.0",
-    additive_build_file_content = "exports_files([\"bin/protoc.exe\",\"include\"])\n",
-)
-
-use_repo(crate, "sdk_crates", "sdk_crates__async-lock-3.4.2", "sdk_crates__hashbrown-0.17.1", "sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0", "sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0", "sdk_crates__protoc-bin-vendored-win32-3.3.0")
-crate_wasm = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate", isolate = True)
-
-crate_wasm.spec(
-    package = "accessory",
-    version = "=2.1.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "aead",
-    version = "=0.6.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-    ],
-)
-
-crate_wasm.spec(
-    package = "anyhow",
-    version = "=1.0.104",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "arrayvec",
     version = "=0.7.8",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "async-stream",
+    version = "=0.3.6",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
     package = "async-trait",
     version = "=0.1.92",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "base64",
     version = "=0.22.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     package_alias = "base64-0_22_1",
-    default_features = False,
-    features = [
-        "alloc",
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "base64",
     version = "=0.23.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     package_alias = "base64-0_23_1",
-    default_features = False,
-    features = [
-        "alloc",
-        "default",
-        "simd-unsafe",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "blake3",
     version = "=1.8.7",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "block-buffer",
-    version = "=0.12.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "bumpalo",
-    version = "=3.20.3",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "default",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "bytes",
     version = "=1.12.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
-        "default",
-        "std",
+        "serde",
     ],
 )
-
-crate_wasm.spec(
-    package = "cfg-if",
-    version = "=1.0.5",
+crate.spec(
+    package = "caseless",
+    version = "=0.2.2",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "chacha20",
-    version = "=0.10.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "cipher",
-        "xchacha",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "chacha20poly1305",
     version = "=0.11.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     default_features = False,
     features = [
         "alloc",
     ],
 )
-
-crate_wasm.spec(
-    package = "cipher",
-    version = "=0.5.2",
+crate.spec(
+    package = "crc-fast",
+    version = "=1.10.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "block-buffer",
-        "stream-wrapper",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "cmov",
-    version = "=0.5.4",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "const-oid",
-    version = "=0.10.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "constant_time_eq",
-    version = "=0.4.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "crypto-common",
-    version = "=0.2.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "ctutils",
-    version = "=0.4.8",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "curve25519-dalek",
-    version = "=5.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "digest",
-        "precomputed-tables",
-        "zeroize",
-    ],
-)
-
-crate_wasm.spec(
-    package = "delegate-display",
-    version = "=3.0.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "derive_more-impl",
-    version = "=2.1.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "as_ref",
-        "debug",
-        "default",
-        "deref",
-        "deref_mut",
-        "from",
-        "into",
-    ],
-)
-
-crate_wasm.spec(
-    package = "derive_more",
-    version = "=2.1.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "as_ref",
-        "debug",
-        "deref",
-        "deref_mut",
-        "from",
-        "into",
-    ],
-)
-
-crate_wasm.spec(
-    package = "digest",
-    version = "=0.11.3",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "block-api",
-        "default",
-        "mac",
-        "oid",
-    ],
-)
-
-crate_wasm.spec(
-    package = "displaydoc",
-    version = "=0.2.7",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "ed25519-dalek",
     version = "=3.0.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
-        "default",
-        "fast",
         "zeroize",
     ],
 )
-
-crate_wasm.spec(
-    package = "ed25519",
-    version = "=3.0.0",
+crate.spec(
+    package = "fancy-regex",
+    version = "=0.20.2",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "either",
-    version = "=1.19.0",
+crate.spec(
+    package = "flate2",
+    version = "=1.1.10",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "std",
-        "use_std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "fancy_constructor",
-    version = "=2.1.1",
+crate.spec(
+    package = "fnv",
+    version = "=1.0.7",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "form_urlencoded",
-    version = "=1.2.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "futures-channel",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "futures-sink",
-        "sink",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "futures-core",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "default",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "futures-executor",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "futures-io",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "futures-macro",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "futures-sink",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "default",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "futures-task",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "futures-util",
-    version = "=0.3.34",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "async-await",
-        "async-await-macro",
-        "channel",
-        "default",
-        "futures-channel",
-        "futures-io",
-        "futures-macro",
-        "futures-sink",
-        "io",
-        "memchr",
-        "sink",
-        "slab",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "futures",
     version = "=0.3.34",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "futures-util",
+    version = "=0.3.34",
+    repositories = [
+        "wasm_crates",
     ],
     default_features = False,
-    features = [
-        "alloc",
-        "async-await",
-        "default",
-        "executor",
-        "futures-executor",
-        "std",
-    ],
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "getrandom",
     version = "=0.4.3",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
         "wasm_js",
     ],
 )
-
-crate_wasm.spec(
-    package = "gloo-utils",
-    version = "=0.2.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "default",
-        "serde",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "heck",
     version = "=0.5.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "hex",
+    version = "=0.4.3",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
     package = "hmac",
     version = "=0.13.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "http-body-util",
-    version = "=0.1.5",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "default",
-    ],
-)
-
-crate_wasm.spec(
-    package = "http-body",
-    version = "=1.1.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "http",
     version = "=1.5.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "http-body",
+    version = "=1.1.0",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "http-body-util",
+    version = "=0.1.5",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
     package = "httparse",
     version = "=1.10.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "hybrid-array",
-    version = "=0.4.15",
+crate.spec(
+    package = "httpdate",
+    version = "=1.0.3",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "icu_collections",
+crate.spec(
+    package = "humantime",
+    version = "=2.4.0",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "icu_casemap",
     version = "=2.3.0",
     repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "icu_locale_core",
-    version = "=2.3.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "zerovec",
-    ],
-)
-
-crate_wasm.spec(
-    package = "icu_normalizer",
-    version = "=2.3.0",
-    repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     default_features = False,
     features = [
         "compiled_data",
     ],
 )
-
-crate_wasm.spec(
-    package = "icu_normalizer_data",
-    version = "=2.3.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "icu_properties",
-    version = "=2.3.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "compiled_data",
-    ],
-)
-
-crate_wasm.spec(
-    package = "icu_properties_data",
-    version = "=2.3.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "icu_provider",
-    version = "=2.3.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "baked",
-    ],
-)
-
-crate_wasm.spec(
-    package = "idna",
-    version = "=1.1.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "compiled_data",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "idna_adapter",
-    version = "=1.2.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "compiled_data",
-    ],
-)
-
-crate_wasm.spec(
-    package = "impartial-ord",
-    version = "=2.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "indexed_db_futures",
     version = "=0.6.4",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
         "typed-arrays",
     ],
 )
-
-crate_wasm.spec(
-    package = "indexed_db_futures_macros_internal",
-    version = "=1.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "inout",
-    version = "=0.2.6",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "itertools",
-    version = "=0.14.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "default",
-        "use_alloc",
-        "use_std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "itoa",
-    version = "=1.0.18",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "js-sys",
-    version = "=0.3.98",
+    version = "=0.3.94",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-        "unsafe-eval",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "lazy_static",
-    version = "=1.5.1",
+crate.spec(
+    package = "jsonschema",
+    version = "=0.61.2",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     default_features = False,
 )
-
-crate_wasm.spec(
-    package = "litemap",
-    version = "=0.8.3",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "macroific",
-    version = "=2.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific-2_0_0",
-    default_features = False,
-    features = [
-        "attr_parse",
-        "attributed",
-        "generic-impl",
-        "module-prefix",
-    ],
-)
-
-crate_wasm.spec(
-    package = "macroific",
-    version = "=3.1.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific-3_1_0",
-    default_features = False,
-    features = [
-        "attr_parse",
-        "full",
-        "generic-impl",
-        "module-prefix",
-    ],
-)
-
-crate_wasm.spec(
-    package = "macroific_attr_parse",
-    version = "=2.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific_attr_parse-2_0_0",
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "macroific_attr_parse",
-    version = "=3.1.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific_attr_parse-3_1_0",
-    default_features = False,
-    features = [
-        "full",
-    ],
-)
-
-crate_wasm.spec(
-    package = "macroific_core",
-    version = "=2.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific_core-2_0_0",
-    default_features = False,
-    features = [
-        "attributed",
-        "generic-impl",
-        "module-prefix",
-    ],
-)
-
-crate_wasm.spec(
-    package = "macroific_core",
-    version = "=3.1.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific_core-3_1_0",
-    default_features = False,
-    features = [
-        "generic-impl",
-        "module-prefix",
-    ],
-)
-
-crate_wasm.spec(
-    package = "macroific_macro",
-    version = "=2.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific_macro-2_0_0",
-    default_features = False,
-    features = [
-        "attr_parse",
-    ],
-)
-
-crate_wasm.spec(
-    package = "macroific_macro",
-    version = "=3.1.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "macroific_macro-3_1_0",
-    default_features = False,
-    features = [
-        "attr_parse",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "memchr",
     version = "=2.8.3",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "notify",
+    version = "=8.2.2",
+    repositories = [
+        "wasm_crates",
     ],
     default_features = False,
     features = [
-        "alloc",
-        "default",
-        "std",
+        "macos_kqueue",
     ],
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "once_cell",
     version = "=1.21.4",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "p256",
+    version = "=0.14.0",
+    repositories = [
+        "wasm_crates",
     ],
     default_features = False,
     features = [
-        "alloc",
-        "default",
-        "race",
-        "std",
+        "ecdsa",
     ],
 )
-
-crate_wasm.spec(
-    package = "percent-encoding",
-    version = "=2.3.2",
+crate.spec(
+    package = "parking_lot",
+    version = "=0.13.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "alloc",
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "pin-project-internal",
-    version = "=1.1.13",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "pin-project-lite",
-    version = "=0.2.17",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "pin-project",
     version = "=1.1.13",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "poly1305",
-    version = "=0.9.1",
+crate.spec(
+    package = "pin-project-lite",
+    version = "=0.2.17",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "potential_utf",
-    version = "=0.1.6",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "zerovec",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "proc-macro2",
     version = "=1.0.107",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "proc-macro",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "prost-derive",
-    version = "=0.14.4",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "prost",
     version = "=0.14.4",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
+)
+crate.spec(
+    package = "prost-reflect",
+    version = "=0.16.5",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
     features = [
-        "default",
-        "derive",
-        "std",
+        "serde",
     ],
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "pulldown-cmark",
+    version = "=0.13.6",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = False,
+)
+crate.spec(
     package = "quote",
     version = "=1.0.47",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "regex-lite",
+    version = "=0.1.9",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "regex-syntax",
+    version = "=0.8.11",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
+    package = "ring",
+    version = "=0.17.14",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+    features = [
+        "wasm32_unknown_unknown_js",
+    ],
+)
+crate.spec(
+    package = "rmcp",
+    version = "=3.9.0",
+    repositories = [
+        "wasm_crates",
     ],
     default_features = False,
     features = [
-        "default",
-        "proc-macro",
+        "client",
+        "transport-async-rw",
     ],
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "rmp-serde",
+    version = "=1.3.1",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
     package = "ruzstd",
     version = "=0.9.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "hash",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "sealed",
-    version = "=0.6.0",
+crate.spec(
+    package = "schemars",
+    version = "=1.2.3",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    package_alias = "sealed-0_6_0",
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "sealed",
-    version = "=0.7.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    package_alias = "sealed-0_7_0",
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "serde-wasm-bindgen",
-    version = "=0.6.5",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "serde",
     version = "=1.0.229",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
-        "default",
         "derive",
         "rc",
-        "serde_derive",
-        "std",
     ],
 )
-
-crate_wasm.spec(
-    package = "serde_core",
-    version = "=1.0.229",
+crate.spec(
+    package = "serde_bytes",
+    version = "=0.11.19",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "rc",
-        "result",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "serde_derive",
     version = "=1.0.229",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "serde_derive_internals",
-    version = "=0.29.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "serde_json",
     version = "=1.0.154",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
+    ],
+    default_features = True,
+    features = [
+        "raw_value",
+        "unbounded_depth",
+    ],
+)
+crate.spec(
+    package = "serde-saphyr",
+    version = "=2.0.0",
+    repositories = [
+        "wasm_crates",
     ],
     default_features = False,
     features = [
-        "default",
-        "std",
+        "deserialize",
     ],
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "serde-wasm-bindgen",
+    version = "=0.6.5",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
     package = "sha2",
     version = "=0.11.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "alloc",
-        "default",
-        "oid",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "sharded-slab",
-    version = "=0.1.7",
+crate.spec(
+    package = "shell-words",
+    version = "=1.1.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "signature",
-    version = "=3.0.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "slab",
-    version = "=0.4.12",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "std",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "smallvec",
     version = "=1.16.2",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "const_generics",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "stable_deref_trait",
-    version = "=1.2.1",
+crate.spec(
+    package = "strum",
+    version = "=0.28.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
+    features = [
+        "derive",
+    ],
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "subtle",
     version = "=2.6.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "const-generics",
-        "default",
-        "i128",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "syn",
     version = "=2.0.119",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     package_alias = "syn-2_0_119",
-    default_features = False,
+    default_features = True,
     features = [
-        "clone-impls",
-        "default",
-        "derive",
         "extra-traits",
         "full",
-        "parsing",
-        "printing",
-        "proc-macro",
-        "visit",
-        "visit-mut",
     ],
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "syn",
     version = "=3.0.9",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     package_alias = "syn-3_0_9",
-    default_features = False,
+    default_features = True,
     features = [
-        "clone-impls",
-        "default",
-        "derive",
-        "extra-traits",
-        "fold",
         "full",
-        "parsing",
-        "printing",
-        "proc-macro",
-        "visit",
-        "visit-mut",
     ],
 )
-
-crate_wasm.spec(
-    package = "sync_wrapper",
-    version = "=1.0.2",
+crate.spec(
+    package = "tar",
+    version = "=0.4.46",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     default_features = False,
 )
-
-crate_wasm.spec(
-    package = "synstructure",
-    version = "=0.14.0",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "default",
-        "proc-macro",
-    ],
-)
-
-crate_wasm.spec(
-    package = "termcolor",
-    version = "=1.4.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "thiserror-impl",
-    version = "=2.0.21",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "thiserror",
     version = "=2.0.21",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
+)
+crate.spec(
+    package = "time",
+    version = "=0.3.55",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
     features = [
-        "default",
-        "std",
+        "parsing",
     ],
 )
-
-crate_wasm.spec(
-    package = "thread_local",
-    version = "=1.1.10",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "tinystr",
-    version = "=0.8.4",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "zerovec",
-    ],
-)
-
-crate_wasm.spec(
-    package = "tokio-macros",
-    version = "=2.7.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "tokio-stream",
-    version = "=0.1.19",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "tokio-util",
-    version = "=0.7.20",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "default",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "tokio",
     version = "=1.54.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     default_features = False,
     features = [
-        "default",
+        "io-util",
         "macros",
         "rt",
         "sync",
         "time",
-        "tokio-macros",
     ],
 )
-
-crate_wasm.spec(
-    package = "tonic-prost",
-    version = "=0.14.6",
+crate.spec(
+    package = "tokio-util",
+    version = "=0.7.20",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
+    features = [
+        "codec",
+        "rt",
+    ],
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "toml",
+    version = "=1.1.6+spec-1.1.0",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
     package = "tonic",
     version = "=0.14.9",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     default_features = False,
     features = [
         "codegen",
     ],
 )
-
-crate_wasm.spec(
-    package = "tower-layer",
-    version = "=0.3.3",
+crate.spec(
+    package = "tonic-prost",
+    version = "=0.14.6",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "tower-service",
     version = "=0.3.3",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "tracing-attributes",
-    version = "=0.1.31",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "tracing-core",
-    version = "=0.1.36",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "once_cell",
-        "std",
-    ],
-)
-
-crate_wasm.spec(
-    package = "tracing-subscriber",
-    version = "=0.3.23",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "alloc",
-        "registry",
-        "sharded-slab",
-        "std",
-        "thread_local",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "tracing",
     version = "=0.1.44",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
     default_features = False,
     features = [
         "attributes",
-        "default",
         "std",
-        "tracing-attributes",
     ],
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "tracing-subscriber",
+    version = "=0.3.23",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = False,
+    features = [
+        "registry",
+    ],
+)
+crate.spec(
     package = "ts-rs",
     version = "=12.0.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "serde-compat",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "tsify-macros",
-    version = "=0.5.8",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "js",
-        "json",
-        "wasm-bindgen",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "tsify",
     version = "=0.5.8",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
-        "default",
         "js",
-        "json",
-        "wasm-bindgen",
     ],
 )
-
-crate_wasm.spec(
-    package = "twox-hash",
-    version = "=2.1.5",
+crate.spec(
+    package = "unicase",
+    version = "=2.10.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "xxhash64",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "typenum",
-    version = "=1.20.1",
+crate.spec(
+    package = "unicode-normalization",
+    version = "=0.1.26",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "const-generics",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "unicode-ident",
-    version = "=1.0.26",
+crate.spec(
+    package = "unicode-segmentation",
+    version = "=1.13.3",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "unicode-xid",
-    version = "=0.2.6",
+crate.spec(
+    package = "unicode-width",
+    version = "=0.2.2",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "universal-hash",
-    version = "=0.6.1",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "url",
     version = "=2.5.8",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "utf8_iter",
-    version = "=1.0.4",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "uuid",
     version = "=1.29.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
-        "default",
         "js",
-        "rng",
         "serde",
-        "std",
         "v4",
         "v7",
     ],
 )
-
-crate_wasm.spec(
-    package = "wasm-bindgen-futures",
-    version = "=0.4.71",
+crate.spec(
+    package = "vte",
+    version = "=0.15.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "wasm-bindgen-macro-support",
-    version = "=0.2.121",
+crate.spec(
+    package = "walkdir",
+    version = "=2.5.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "wasm-bindgen-macro",
-    version = "=0.2.121",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "wasm-bindgen-shared",
-    version = "=0.2.121",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "wasm-bindgen",
-    version = "=0.2.121",
+    version = "=0.2.117",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "default",
-        "std",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
+    package = "wasm-bindgen-futures",
+    version = "=0.4.67",
+    repositories = [
+        "wasm_crates",
+    ],
+    default_features = True,
+)
+crate.spec(
     package = "wasm-streams",
     version = "=0.7.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "web-sys",
-    version = "=0.3.98",
+    version = "=0.3.94",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
     features = [
         "AbortController",
         "AbortSignal",
         "BinaryType",
         "Blob",
+        "BlobPropertyBag",
         "BroadcastChannel",
         "CloseEvent",
-        "Document",
         "DomException",
-        "DomStringList",
-        "Element",
         "Event",
         "EventTarget",
         "File",
@@ -3301,38 +2956,12 @@ crate_wasm.spec(
         "FileSystemHandle",
         "FileSystemWritableFileStream",
         "Headers",
-        "History",
-        "HtmlElement",
-        "HtmlHeadElement",
-        "IdbDatabase",
-        "IdbFactory",
-        "IdbKeyRange",
-        "IdbObjectStore",
-        "IdbObjectStoreParameters",
-        "IdbOpenDbRequest",
-        "IdbRequest",
-        "IdbRequestReadyState",
-        "IdbTransaction",
-        "IdbTransactionMode",
-        "IdbVersionChangeEvent",
-        "Location",
         "MessageChannel",
         "MessageEvent",
         "MessagePort",
         "Navigator",
-        "Node",
-        "QueuingStrategy",
-        "ReadableByteStreamController",
         "ReadableStream",
-        "ReadableStreamByobReader",
-        "ReadableStreamByobRequest",
-        "ReadableStreamDefaultController",
         "ReadableStreamDefaultReader",
-        "ReadableStreamGetReaderOptions",
-        "ReadableStreamReadResult",
-        "ReadableStreamReaderMode",
-        "ReadableStreamType",
-        "ReadableWritablePair",
         "ReferrerPolicy",
         "Request",
         "RequestCache",
@@ -3343,191 +2972,78 @@ crate_wasm.spec(
         "Response",
         "ServiceWorkerGlobalScope",
         "StorageManager",
-        "StreamPipeOptions",
-        "TransformStream",
-        "TransformStreamDefaultController",
-        "Transformer",
-        "UnderlyingSink",
-        "UnderlyingSource",
         "Url",
         "WebSocket",
         "Window",
         "WorkerGlobalScope",
         "WritableStream",
-        "WritableStreamDefaultController",
-        "WritableStreamDefaultWriter",
-        "console",
-        "default",
-        "std",
     ],
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "web-time",
     version = "=1.1.0",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
+crate.spec(
     package = "writeable",
     version = "=0.6.4",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "yoke-derive",
-    version = "=0.8.4",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "yoke",
-    version = "=0.8.3",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "derive",
-        "zerofrom",
-    ],
-)
-
-crate_wasm.spec(
-    package = "zerofrom-derive",
-    version = "=0.1.8",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "zerofrom",
-    version = "=0.1.8",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "derive",
-    ],
-)
-
-crate_wasm.spec(
+crate.spec(
     package = "zeroize",
     version = "=1.9.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    default_features = False,
-    features = [
-        "alloc",
-        "default",
-    ],
+    default_features = True,
 )
-
-crate_wasm.spec(
-    package = "zerotrie",
-    version = "=0.2.5",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "yoke",
-        "zerofrom",
-    ],
-)
-
-crate_wasm.spec(
-    package = "zerovec-derive",
-    version = "=0.11.6",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.spec(
-    package = "zerovec",
-    version = "=0.11.8",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-    features = [
-        "derive",
-        "yoke",
-    ],
-)
-
-crate_wasm.spec(
-    package = "zmij",
-    version = "=1.0.23",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
-crate_wasm.annotation(
-    crate = "sha2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    rustc_flags = [
-        "-Copt-level=3",
-    ],
-)
-
-crate_wasm.annotation(
-    crate = "blake3",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    rustc_flags = [
-        "-Copt-level=3",
-    ],
-)
-
-crate_wasm.annotation(
-    crate = "curve25519-dalek",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    rustc_flags = [
-        "-Copt-level=3",
-    ],
-)
-
-crate_wasm.annotation(
+crate.annotation(
     crate = "ts-rs-macros",
-    version = "=12.0.1",
     repositories = [
-        "sdk_crates_wasm",
+        "wasm_crates",
     ],
-    override_target_lib = "@@//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros",
+    override_target_proc_macro = "//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros_wasm",
 )
-
-crate_wasm.from_specs(
-    name = "sdk_crates_wasm",
-    lockfile = "//:cargo-bazel-wasm-lock.json",
-    cargo_lockfile = "//:cargo-bazel-wasm.Cargo.lock",
+crate.from_specs(
+    name = "wasm_crates",
+    lockfile = "//:cargo-wasm-bazel-lock.json",
+    cargo_lockfile = "//:cargo-wasm-bazel.Cargo.lock",
     supported_platform_triples = [
         "x86_64-unknown-linux-gnu",
-        "aarch64-apple-darwin",
-        "x86_64-pc-windows-msvc",
         "wasm32-unknown-unknown",
     ],
 )
-use_repo(crate_wasm, "sdk_crates_wasm")
+crate.annotation(
+    crate = "protoc-bin-vendored-linux-x86_64",
+    version = "=3.3.0",
+    repositories = [
+        "sdk_crates",
+    ],
+    additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
+)
+
+crate.annotation(
+    crate = "protoc-bin-vendored-macos-aarch_64",
+    version = "=3.3.0",
+    repositories = [
+        "sdk_crates",
+    ],
+    additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
+)
+
+crate.annotation(
+    crate = "protoc-bin-vendored-win32",
+    version = "=3.3.0",
+    repositories = [
+        "sdk_crates",
+    ],
+    additive_build_file_content = "exports_files([\"bin/protoc.exe\",\"include\"])\n",
+)
+
+use_repo(crate, "sdk_crates", "wasm_crates", "sdk_crates__async-lock-3.4.2", "sdk_crates__hashbrown-0.17.1", "sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0", "sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0", "sdk_crates__protoc-bin-vendored-win32-3.3.0")

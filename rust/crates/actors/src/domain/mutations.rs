@@ -145,7 +145,7 @@ impl DeploymentRequest {
         jurisdiction: String,
         expected_revision: u64,
     ) -> Result<Self, DomainError> {
-        crate::addressing::AccountId::new(&account)?;
+        crate::addressing::validate_account(&account)?;
         if !matches!(jurisdiction.as_str(), "" | "eu" | "us" | "fedramp") {
             return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
         }

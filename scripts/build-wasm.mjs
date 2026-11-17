@@ -42,8 +42,14 @@ async function buildWasm() {
   if (!pinned) throw new Error("Cargo.toml no longer pins wasm-bindgen to an exact version");
   const expectedVersion = `wasm-bindgen ${pinned}`;
   const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
-  const wasmBindgen = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN
-    || capture("bash", [resolve(root, "scripts", "ensure-wasm-bindgen.sh")]);
+  const resolveWasmBindgen = () => {
+    const explicit = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN;
+    if (explicit) return explicit;
+    if (capture("wasm-bindgen", ["--version"]) === expectedVersion) return "wasm-bindgen";
+    if (process.platform === "win32") return resolve(cargoHome, "bin", "wasm-bindgen.exe");
+    return capture("bash", [resolve(root, "scripts", "ensure-wasm-bindgen.sh")]);
+  };
+  const wasmBindgen = resolveWasmBindgen();
   if (!wasmBindgen || capture(wasmBindgen, ["--version"]) !== expectedVersion) {
     throw new Error(`${expectedVersion} is required to build WASM packages`);
   }

@@ -393,12 +393,7 @@ fn run_drift(fixture: &Fixture) -> std::process::Output {
 
 fn fixture_path(support: &Path) -> std::ffi::OsString {
     std::env::join_paths(
-        std::iter::once(support.to_owned())
-            .chain(std::iter::once(
-                runtime::cargo().parent().unwrap().to_owned(),
-            ))
-            .chain(std::iter::once(runtime::git().parent().unwrap().to_owned()))
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        std::iter::once(support.to_owned()).chain(std::env::split_paths(&runtime::path())),
     )
     .unwrap()
 }

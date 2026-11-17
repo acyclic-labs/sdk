@@ -2,9 +2,10 @@
 load("//rust/crates/test-runner:isolated_test.bzl", "isolated_test")
 load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library", "rust_test")
-load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen")
 
 FEATURES = []
+
+WASM_FEATURES = []
 
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-auth-wasm","CARGO_PKG_DESCRIPTION":"WebAssembly holder API for the shared capability verifier","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
@@ -34,12 +35,12 @@ rust_shared_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
-        "@sdk_crates//js-sys-0.3.98",
+        "@sdk_crates//js-sys-0.3.94",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//url-2.5.8",
-        "@sdk_crates//wasm-bindgen-0.2.121",
-        "@sdk_crates//wasm-bindgen-futures-0.4.71",
-        "@sdk_crates//web-sys-0.3.98",
+        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-futures-0.4.67",
+        "@sdk_crates//web-sys-0.3.94",
         "@sdk_crates//zeroize-1.9.1",
     ],
     visibility = ["//visibility:public"],
@@ -65,12 +66,12 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
-        "@sdk_crates//js-sys-0.3.98",
+        "@sdk_crates//js-sys-0.3.94",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//url-2.5.8",
-        "@sdk_crates//wasm-bindgen-0.2.121",
-        "@sdk_crates//wasm-bindgen-futures-0.4.71",
-        "@sdk_crates//web-sys-0.3.98",
+        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-futures-0.4.67",
+        "@sdk_crates//web-sys-0.3.94",
         "@sdk_crates//zeroize-1.9.1",
     ],
     visibility = ["//visibility:public"],
@@ -99,13 +100,13 @@ rust_test(
         ":acyclic_auth_wasm",
     ] + [
         "//rust/crates/auth:acyclic_auth",
-        "@sdk_crates//js-sys-0.3.98",
+        "@sdk_crates//js-sys-0.3.94",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//url-2.5.8",
-        "@sdk_crates//wasm-bindgen-0.2.121",
-        "@sdk_crates//wasm-bindgen-futures-0.4.71",
-        "@sdk_crates//web-sys-0.3.98",
+        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-futures-0.4.67",
+        "@sdk_crates//web-sys-0.3.94",
         "@sdk_crates//zeroize-1.9.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
@@ -132,32 +133,6 @@ isolated_test(
     tags = ["manual"],
 )
 
-rust_library(
-    name = "acyclic_auth_wasm_wasm",
-    crate_name = "acyclic_auth_wasm",
-    crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    edition = "2024",
-    version = "0.2.0",
-    rustc_env = PACKAGE_ENV,
-    deps = [
-        "//rust/crates/auth:acyclic_auth_wasm",
-        "@sdk_crates_wasm//js-sys-0.3.98",
-        "@sdk_crates_wasm//prost-0.14.4",
-        "@sdk_crates_wasm//url-2.5.8",
-        "@sdk_crates_wasm//wasm-bindgen-0.2.121",
-        "@sdk_crates_wasm//wasm-bindgen-futures-0.4.71",
-        "@sdk_crates_wasm//web-sys-0.3.98",
-        "@sdk_crates_wasm//zeroize-1.9.1",
-    ],
-    target_compatible_with = [
-        "@platforms//cpu:wasm32",
-        "@platforms//os:none",
-    ],
-    visibility = ["//visibility:public"],
-)
-
 rust_shared_library(
     name = "acyclic_auth_wasm_wasm_cdylib",
     crate_name = "acyclic_auth_wasm",
@@ -166,32 +141,58 @@ rust_shared_library(
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
+    crate_features = WASM_FEATURES,
     rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth_wasm",
-        "@sdk_crates_wasm//js-sys-0.3.98",
-        "@sdk_crates_wasm//prost-0.14.4",
-        "@sdk_crates_wasm//url-2.5.8",
-        "@sdk_crates_wasm//wasm-bindgen-0.2.121",
-        "@sdk_crates_wasm//wasm-bindgen-futures-0.4.71",
-        "@sdk_crates_wasm//web-sys-0.3.98",
-        "@sdk_crates_wasm//zeroize-1.9.1",
-    ],
-    target_compatible_with = [
-        "@platforms//cpu:wasm32",
-        "@platforms//os:none",
+        "@wasm_crates//js-sys-0.3.94",
+        "@wasm_crates//prost-0.14.4",
+        "@wasm_crates//url-2.5.8",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+        "@wasm_crates//wasm-bindgen-futures-0.4.67",
+        "@wasm_crates//web-sys-0.3.94",
+        "@wasm_crates//zeroize-1.9.1",
     ],
     visibility = ["//visibility:public"],
 )
 
-rust_wasm_bindgen(
-    name = "acyclic_auth_wasm_wasm_bindgen",
-    wasm_file = ":acyclic_auth_wasm_wasm_cdylib",
-    target = "web",
-    out_name = "acyclic_auth_wasm",
-    bindgen_flags = [
-        "--remove-name-section",
-        "--remove-producers-section",
+rust_library(
+    name = "acyclic_auth_wasm_wasm",
+    crate_name = "acyclic_auth_wasm",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "//rust/crates/auth:acyclic_auth_wasm",
+        "@wasm_crates//js-sys-0.3.94",
+        "@wasm_crates//prost-0.14.4",
+        "@wasm_crates//url-2.5.8",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+        "@wasm_crates//wasm-bindgen-futures-0.4.67",
+        "@wasm_crates//web-sys-0.3.94",
+        "@wasm_crates//zeroize-1.9.1",
     ],
     visibility = ["//visibility:public"],
 )

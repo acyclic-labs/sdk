@@ -16,7 +16,7 @@
 //!   (`satisfy`) or its deadline resumes it, and `satisfy` touches no other
 //!   control.
 
-#[path = "../../src/agent/kernel.rs"]
+#[path = "../../../harness-control/src/agent.rs"]
 mod production;
 
 #[path = "../../src/agent/release.rs"]

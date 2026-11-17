@@ -128,7 +128,7 @@ impl AdmittedCaller {
 
     /// Set the exact admitted namespace; omitted legacy fields map to the reserved namespace.
     pub fn with_namespace(mut self, namespace: String) -> Result<Self, GuestMetadataError> {
-        crate::addressing::NamespaceId::new(namespace.as_bytes())
+        crate::addressing::NamespaceId::validate(namespace.as_bytes())
             .map_err(|_| GuestMetadataError("namespace"))?;
         self.namespace = namespace;
         Ok(self)

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createNativeProducer } from "./build-native-family.mjs";
-import { nativeFamily } from "./native-family-contract.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 
 test("both native admission baselines equal the actual Rust generator and refuse a missing producer", () => {
   const bazel = process.env.ACYCLIC_BAZEL;

@@ -9,7 +9,7 @@ import fc from "fast-check";
 import { packageClosure } from "./package-closure.mjs";
 import { contractModules, keepsGenerator } from "./generate-contracts.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
-import { nativeFamily } from "./native-family-contract.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 import ts from "typescript-parser";
 
 const source = readFileSync("scripts/package-closure.mjs", "utf8");

@@ -33,7 +33,7 @@ serde-wasm-bindgen.workspace = true
 web-sys.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.71"
+wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true

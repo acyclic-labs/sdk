@@ -232,6 +232,8 @@ export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
   list(value: MessageInitShape<typeof wire.ListBlobsRequestSchema>) { return this.call("blobs/list", wire.ListBlobsRequestSchema, wire.ListBlobsResponseSchema, value); }
   retain(root: Uint8Array, references: readonly wire.Digest[]) { return this.call("blobs/retain", wire.RetainRequestSchema, wire.RetainResponseSchema, { root, references: [...references] }); }
   release(root: Uint8Array) { return this.call("blobs/release", wire.ReleaseRequestSchema, wire.ReleaseResponseSchema, { root }); }
+  retainFenced(root: Uint8Array, fence: bigint, references: readonly wire.Digest[]) { return this.call("blobs/retain-fenced", wire.RetainFencedRequestSchema, wire.RetainResponseSchema, { root, fence, references: [...references] }); }
+  releaseTerminal(root: Uint8Array, fence: bigint) { return this.call("blobs/release-terminal", wire.ReleaseTerminalRequestSchema, wire.ReleaseResponseSchema, { root, fence }); }
   collect() { return this.call("blobs/collect", wire.CollectRequestSchema, wire.CollectResponseSchema, {}); }
   usage() { return this.call("blobs/usage", wire.UsageRequestSchema, wire.UsageResponseSchema, {}); }
 }

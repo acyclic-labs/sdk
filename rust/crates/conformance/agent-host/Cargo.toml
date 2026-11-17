@@ -32,7 +32,7 @@ acyclic-native-runtime = { path = "../../native-runtime" }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.71"
+wasm-bindgen-test = "=0.3.67"
 uuid.workspace = true
 
 [lints]

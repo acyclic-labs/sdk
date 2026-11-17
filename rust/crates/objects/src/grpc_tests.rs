@@ -108,6 +108,17 @@ impl Blobs for Replica {
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         self.primary.release(root).await
     }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        self.primary.retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        self.primary.release_terminal(root, fence).await
+    }
     async fn collect(&self) -> Result<Collection, Error> {
         self.primary.collect().await
     }
@@ -155,6 +166,34 @@ fn channel_over(resolve: AccountResolver) -> Channel {
             }
         },
     ))
+}
+
+#[tokio::test]
+async fn terminal_fence_survives_the_grpc_boundary() -> TestResult {
+    let provider = Arc::new(MemoryObjects::memory());
+    let resolve: AccountResolver = Arc::new(move |_| Ok(provider.clone() as Arc<dyn Blobs>));
+    let client = client_over(
+        resolve,
+        CredentialProvider::new(|| async { Ok("fixture".to_owned()) }),
+    );
+    let digest = client
+        .put(OwnedBytes::from(vec![9; 16]), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"grpc-terminal".to_vec())?;
+    client.retain_fenced(&root, 7, vec![digest]).await?;
+    client.release_terminal(&root, 7).await?;
+    assert_eq!(
+        client
+            .retain_fenced(&root, 7, vec![digest])
+            .await
+            .map_err(|error| error.code),
+        Err(wire::ErrorCode::TerminalFence)
+    );
+    client.retain_fenced(&root, 8, vec![digest]).await?;
+    Ok(())
 }
 
 #[tokio::test]

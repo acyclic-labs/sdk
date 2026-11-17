@@ -23,6 +23,7 @@ rust_library(
         "//rust/crates/sdk-generation/fuzz:identity_record.rs",
         "//rust/crates/sdk-generation/fuzz:source_identities.rs",
         "tests/support/archive.rs",
+        "tests/support/compiler.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//:rust-toolchain.toml",
@@ -116,7 +117,7 @@ rust_test(
 isolated_test(
     name = "sdk_generation_test",
     binary = ":sdk_generation_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-generation",
     exclude = ["::full_cloud::"],
     workers = 1,
@@ -127,7 +128,7 @@ isolated_test(
 isolated_test(
     name = "sdk_generation_test_full-cloud",
     binary = ":sdk_generation_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@nodejs//:node":"node"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
     id = "sdk-generation",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -220,6 +221,7 @@ rust_test(
         "tests/main.rs",
         "tests/profile_planner.rs",
         "tests/support/archive.rs",
+        "tests/support/compiler.rs",
     ],
     edition = "2021",
     version = "0.1.0",
@@ -288,7 +290,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-generation::main",
     exclude = ["::full_cloud::"],
     workers = 1,
@@ -299,7 +301,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@nodejs//:node":"node"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
     id = "sdk-generation::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

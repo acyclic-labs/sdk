@@ -1,4 +1,4 @@
-import { nativeFamily } from "./native-family-contract.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 import { createNativeAssembler } from "./assemble-native-family.mjs";
 const assembler = createNativeAssembler(nativeFamily("stream"));
 export const { assertNativeSet, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, qualifiedCompanionManifest } = assembler;

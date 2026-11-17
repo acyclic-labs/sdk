@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { nativeFamily } from "./native-family-contract.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 
 const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
 const stripHarnessClosureShims = output => {
@@ -14,10 +14,10 @@ const stripHarnessClosureShims = output => {
 
 /** Every published WASM package. Building and checking both read this one table. */
 export const wasmPackages = {
-  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm", bazel: true },
+  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
   actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
-  stream: { family: true, bazel: true, runtime: true },
+  stream: { family: true, runtime: true },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
   manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
@@ -38,18 +38,16 @@ export const wasmPackages = {
 export function wasmSelection(name) {
   const entry = wasmPackages[name];
   if (!entry.family) {
-    const { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory, runtime, outputPackage } = entry;
-    return { selection, artifact, outName, postprocess, targetDirectory, runtime, outputPackage };
+    const { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = entry;
+    return { selection, artifact, outName, postprocess, targetDirectory };
   }
   const family = nativeFamily(name);
   const { artifact, outName, targetDirectory } = family.wasm;
   const selection = ["-p", family.wasmPackageName,
     ...(family.wasm.noDefaultFeatures ? ["--no-default-features"] : []),
     ...(family.wasm.features.length ? ["--features", family.wasm.features.join(",")] : [])];
-  return { selection, artifact, outName, targetDirectory, family, runtime: entry.runtime };
+  return { selection, artifact, outName, targetDirectory, family };
 }
 
-/** Cargo packages whose Bazel tests run TypeScript that imports a wasm package's generated output. */
-export const wasmTestConsumers = {
-  "acyclic-stream-typescript-models": "stream",
-};
+// Tests that consume the assembled runtime rather than a checkout's generated tree.
+export const wasmTestConsumers = { "acyclic-stream-typescript-models": "stream" };

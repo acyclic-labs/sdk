@@ -77,6 +77,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     fs::write(config_directory.join("config.toml"), &config).unwrap();
                     // Negative control: maintained Cargo really discovers this automatic config.
                     let mut control = Command::new(&*runtime::cargo());
+                    runtime::configure(&mut control);
                     control.env("CARGO_HOME", fixture_cargo_home(&fixture));
                     control
                         .args([
@@ -873,10 +874,18 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
         &["commit", "--quiet", "-m", "procedural macro owner fixture"],
     );
 
-    let workspace_only = sdk_docs::rustdoc_profiles::load_metadata(
-        fixture.root.join("Cargo.toml"),
-        sdk_docs::rustdoc_profiles::CargoExecutionContext::default(),
-    )
+    let cargo = runtime::cargo();
+    let mut compiler = Command::new(cargo.as_path());
+    runtime::configure(&mut compiler);
+    let workspace_only = sdk_docs::with_command_environment(&compiler, || {
+        sdk_docs::rustdoc_profiles::load_metadata(
+            fixture.root.join("Cargo.toml"),
+            sdk_docs::rustdoc_profiles::CargoExecutionContext {
+                cargo_path: Some(cargo.as_path()),
+                ..Default::default()
+            },
+        )
+    })
     .unwrap();
     assert!(!workspace_only
         .packages

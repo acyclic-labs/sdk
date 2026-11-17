@@ -1,6 +1,6 @@
 import {workspaceGraph} from './workspace-model.mjs';
 import {readFileSync} from 'node:fs';
-import { trackedFiles } from './policy-core.mjs';
+import {evaluateCfg, trackedFiles} from './policy-core.mjs';
 
 // Inspect declarations, not unified enabled features: a dev dependency or
 // another workspace member must not accidentally supply the missing edge.
@@ -152,22 +152,9 @@ export function checkDeserializedTestSupport(sources) {
 // Evaluate only the two cfg inputs whose relationship this policy owns. Other
 // features and platform predicates remain unknown, so an OS-specific export
 // cannot hide a target that unconditionally requires test-support.
-function testCfg(attributes) {
-  const evaluate = expression => {
-    const call = /^(all|any|not)\((.*)\)$/s.exec(expression.trim());
-    if (call) {
-      const values = splitUse(call[2]).map(evaluate);
-      if (call[1] === 'not') return values[0] === undefined ? undefined : !values[0];
-      const decisive = call[1] === 'any';
-      return values.includes(decisive) ? decisive : values.includes(undefined) ? undefined : !decisive;
-    }
-    if (expression.trim() === 'test') return true;
-    if (/^feature\s*=\s*"test-support"$/.test(expression.trim())) return false;
-    return undefined;
-  };
-  return [...attributes.matchAll(/#\[\s*cfg\s*\((.*?)\)\s*\]/gs)]
-    .some(match => evaluate(match[1]) === false) ? false : undefined;
-}
+const testCfg = attributes => [...attributes.matchAll(/#\[\s*cfg\s*\((.*?)\)\s*\]/gs)]
+  .some(match => evaluateCfg(match[1], (name, value) => name === 'test' && value === undefined ? true
+    : name === 'feature' && value === 'test-support' ? false : undefined) === false) ? false : undefined;
 
 function splitUse(text) {
   let depth = 0, start = 0;
