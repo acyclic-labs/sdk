@@ -186,7 +186,10 @@ fn child_digest(seed: u64) -> std::result::Result<blake3::Hash, String> {
     let marker = format!("DST_X1_DIGEST={} ", class(seed));
     output
         .lines()
-        .find_map(|line| line.strip_prefix(&marker))
+        .find_map(|line| {
+            line.find(&marker)
+                .map(|index| &line[index + marker.len()..])
+        })
         .ok_or_else(|| format!("fresh-process replay printed no digest: {output}"))
         .and_then(|digest| {
             blake3::Hash::from_hex(digest.trim()).map_err(|error| error.to_string())
