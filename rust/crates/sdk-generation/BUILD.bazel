@@ -288,6 +288,7 @@ rust_test(
         "//rust/crates/sdk-docs:tests/fixtures/workspace-metadata.json",
         "//rust/crates/sdk-generation/fuzz:tree",
         "//rust/crates/sdk-generation:tree",
+        "//rust/proofs/sdk-rustdoc-fixtures:feature_profiles",
         "//rust/crates/stream:conformance/stream.json",
         "src/lib.rs",
         "src/main.rs",

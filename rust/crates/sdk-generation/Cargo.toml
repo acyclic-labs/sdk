@@ -24,6 +24,9 @@ CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
 rustup = "@sdk_compilers//:rustup"
 
+[package.metadata.bazel.test-data.main]
+rustdoc-fixtures = "//rust/proofs/sdk-rustdoc-fixtures:feature_profiles"
+
 [dependencies]
 sdk-docs = { path = "../sdk-docs" }
 sdk-file-identity = { path = "../sdk-docs/file-identity" }

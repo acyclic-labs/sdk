@@ -1,4 +1,4 @@
-load(":fixture.bzl", "rustdoc_fixture")
+load(":fixture.bzl", "rustdoc_fixture_set")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(default_visibility = ["//visibility:public"])
@@ -17,10 +17,17 @@ _INPUTS = [
     "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/src/lib.rs",
 ]
 
-rustdoc_fixture(name = "feature_default", srcs = _INPUTS)
-rustdoc_fixture(name = "feature_no_default", srcs = _INPUTS, cargo_flags = ["--no-default-features"])
-rustdoc_fixture(name = "feature_base", srcs = _INPUTS, cargo_flags = ["--no-default-features", "--features", "base"])
-rustdoc_fixture(name = "feature_extra", srcs = _INPUTS, cargo_flags = ["--no-default-features", "--features", "extra"])
-rustdoc_fixture(name = "feature_all", srcs = _INPUTS, cargo_flags = ["--features", "base,extra"])
+rustdoc_fixture_set(
+    srcs = _INPUTS,
+    fixture_root = "rust/crates/sdk-generation/tests/fixtures/feature-profile/",
+    package = "demo",
+    profiles = {
+        "feature_default": [],
+        "feature_no_default": ["--no-default-features"],
+        "feature_base": ["--no-default-features", "--features", "base"],
+        "feature_extra": ["--no-default-features", "--features", "extra"],
+        "feature_all": ["--features", "base,extra"],
+    },
+)
 
-filegroup(name = "feature_profiles", srcs = [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all"])
+filegroup(name = "feature_profiles", srcs = _INPUTS + [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all"])

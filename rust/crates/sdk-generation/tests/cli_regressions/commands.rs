@@ -112,7 +112,227 @@ pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
     if ACTIVE.get() {
         return operation();
     }
-    sdk_docs::with_command_executor(|command| command.output(), operation)
+    sdk_docs::with_command_executor(execute_command, operation)
+}
+
+fn execute_command(command: &mut Command) -> std::io::Result<Output> {
+    if let Some(output) = declared_rustdoc(command)? {
+        return Ok(output);
+    }
+    command.output()
+}
+
+// The action's metadata names every source and Cargo flag in its key. Reuse
+// its output only for byte-identical source and the same complete profile.
+fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
+    let args = command.get_args().collect::<Vec<_>>();
+    let value = |name: &str| {
+        args.windows(2)
+            .find(|pair| pair[0] == name)
+            .map(|pair| pair[1])
+    };
+    if args.first().and_then(|arg| arg.to_str()) != Some("rustdoc")
+        || !args.iter().any(|arg| *arg == "--lib")
+        || args.iter().any(|arg| *arg == "--config")
+    {
+        return Ok(None);
+    }
+    let Some(root) = value("--manifest-path")
+        .map(Path::new)
+        .and_then(Path::parent)
+    else {
+        return Ok(None);
+    };
+    let Some(package) = value("--package").and_then(|arg| arg.to_str()) else {
+        return Ok(None);
+    };
+    let Some(target) = value("--target").and_then(|arg| arg.to_str()) else {
+        return Ok(None);
+    };
+    let environment = command.get_envs().collect::<BTreeMap<_, _>>();
+    if environment
+        .get(std::ffi::OsStr::new("RUSTUP_TOOLCHAIN"))
+        .copied()
+        .flatten()
+        .and_then(|v| v.to_str())
+        != Some(format!("nightly-2026-07-01-{target}").as_str())
+    {
+        return Ok(None);
+    }
+    let rustflags = if cfg!(windows) {
+        "-C\u{1f}prefer-dynamic"
+    } else {
+        ""
+    };
+    if environment
+        .get(std::ffi::OsStr::new("CARGO_ENCODED_RUSTFLAGS"))
+        .copied()
+        .flatten()
+        .and_then(|v| v.to_str())
+        != Some(rustflags)
+    {
+        return Ok(None);
+    }
+    if root
+        .ancestors()
+        .any(|ancestor| ancestor.join(".cargo").exists())
+    {
+        return Ok(None);
+    }
+    if command.get_envs().any(|(key, value)| {
+        key == "CARGO_HOME"
+            && value.is_some_and(|home| {
+                let home = Path::new(home);
+                home.join("config").exists() || home.join("config.toml").exists()
+            })
+    }) {
+        return Ok(None);
+    }
+    let directory = acyclic_test_support::source_path("rust/proofs/sdk-rustdoc-fixtures");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Ok(None);
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".fixture.json")
+        {
+            continue;
+        }
+        let metadata: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+        if metadata["package"].as_str() != Some(package) {
+            continue;
+        }
+        let declared = metadata["cargo_flags"].as_array().unwrap();
+        let mut flags = Vec::new();
+        if args.iter().any(|arg| *arg == "--no-default-features") {
+            flags.push("--no-default-features");
+        }
+        if let Some(feature) = value("--features").and_then(|arg| arg.to_str()) {
+            flags.extend(["--features", feature]);
+        }
+        if declared
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            != flags
+        {
+            continue;
+        }
+        let manifest = value("--manifest-path").unwrap().to_str().unwrap();
+        let mut expected_args = vec![
+            "rustdoc",
+            "--locked",
+            "--manifest-path",
+            manifest,
+            "--package",
+            package,
+            "--lib",
+            "--target",
+            target,
+        ];
+        expected_args.extend(flags);
+        expected_args.extend(["--", "-Z", "unstable-options", "--output-format", "json"]);
+        if args
+            .iter()
+            .map(|arg| arg.to_str())
+            .collect::<Option<Vec<_>>>()
+            .as_deref()
+            != Some(expected_args.as_slice())
+        {
+            continue;
+        }
+        let fixture_root = metadata["fixture_root"].as_str().unwrap();
+        let sources = metadata["sources"].as_array().unwrap();
+        let mut relative_sources = Vec::new();
+        let mut matches = true;
+        for source in sources {
+            let source = source.as_str().unwrap();
+            let Some(relative) = source.strip_prefix(fixture_root) else {
+                matches = false;
+                break;
+            };
+            let expected = fs::read(acyclic_test_support::source_path(source))?;
+            if fs::read(root.join(relative)).ok().as_deref() != Some(expected.as_slice()) {
+                matches = false;
+                break;
+            }
+            if relative.ends_with("/Cargo.toml")
+                && root
+                    .join(relative)
+                    .parent()
+                    .unwrap()
+                    .join("build.rs")
+                    .exists()
+            {
+                matches = false;
+                break;
+            }
+            if relative.ends_with(".rs") {
+                relative_sources.push(relative.to_owned());
+            }
+        }
+        if !matches {
+            continue;
+        }
+        let output_path = metadata["output"].as_str().unwrap();
+        let mut json: Value =
+            serde_json::from_slice(&fs::read(acyclic_test_support::source_path(output_path))?)?;
+        if json["target"]["triple"].as_str() != Some(target) {
+            continue;
+        }
+        fn relocate(value: &mut Value, root: &Path, sources: &[String]) {
+            match value {
+                Value::Object(object) => {
+                    if let Some(Value::Object(span)) = object.get_mut("span") {
+                        if let Some(Value::String(filename)) = span.get_mut("filename") {
+                            let normalized = filename.replace('\\', "/");
+                            if let Some(source) = sources.iter().find(|source| {
+                                normalized.ends_with(source.as_str())
+                                    || normalized == "src/lib.rs" && source.ends_with("/src/lib.rs")
+                            }) {
+                                *filename = root.join(source).to_string_lossy().into_owned();
+                            }
+                        }
+                    }
+                    for child in object.values_mut() {
+                        relocate(child, root, sources);
+                    }
+                }
+                Value::Array(array) => {
+                    for child in array {
+                        relocate(child, root, sources);
+                    }
+                }
+                _ => {}
+            }
+        }
+        relocate(&mut json, root, &relative_sources);
+        let target_dir = command
+            .get_envs()
+            .find(|(key, _)| *key == "CARGO_TARGET_DIR")
+            .and_then(|(_, value)| value)
+            .map(Path::new)
+            .unwrap();
+        let output = target_dir
+            .join(target)
+            .join("doc")
+            .join(format!("{}.json", package.replace('-', "_")));
+        fs::create_dir_all(output.parent().unwrap())?;
+        fs::write(output, serde_json::to_vec(&json)?)?;
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        return Ok(Some(Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }));
+    }
+    Ok(None)
 }
 
 impl Queries {
@@ -142,7 +362,7 @@ impl Queries {
                     }
                     return Ok(output.clone());
                 }
-                let output = command.output()?;
+                let output = execute_command(command)?;
                 state.executed.set(state.executed.get() + 1);
                 let artifacts = if output.status.success() {
                     compiler_outputs(command)?
