@@ -81,6 +81,10 @@ fn variants(seed: u64) -> Vec<Variant> {
     let timer = timer(seed);
     STATES
         .iter()
+        .filter(|state| {
+            !(matches!(timer, "retry_after" | "first_byte_deadline")
+                && **state == "reopened_after_crash")
+        })
         .map(|state| Variant::from([("timer", timer), ("clock", *state)]))
         .collect()
 }

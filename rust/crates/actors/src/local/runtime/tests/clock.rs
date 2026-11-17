@@ -861,3 +861,41 @@ async fn a_recovered_alarm_armed_by_a_running_host_fires_once() -> TestResult {
     );
     Ok(())
 }
+
+/// A token parked by a predecessor after its replacement registered moves
+/// into the live registration, so the dispatcher does not keep waking an
+/// already elapsed alarm.
+#[tokio::test]
+async fn a_late_parked_alarm_moves_into_the_live_registration() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let (clock, _control) = ControlledClock::new(100);
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(clock) as Arc<dyn Clock>,
+    );
+    let address = actor("late-parked")?;
+    runtime.track(address.clone())?;
+    let first = runtime.slot(&address).ok_or("missing first slot")?;
+    first.registration.update_alarm(
+        &crate::local::Alarm {
+            generation: 1,
+            deadline_unix_ms: Some(150),
+            delivered_generation: None,
+        },
+        100,
+    )?;
+    runtime
+        .shard(&address)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&address);
+    runtime.track(address.clone())?;
+    drop(first);
+    runtime.track(address.clone())?;
+    let class = runtime.handler.admission_class(&address).index();
+    assert_eq!(runtime.ready[class].next_deadline(), Some(150));
+    Ok(())
+}

@@ -511,7 +511,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .shard(&actor)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if actors.contains_key(&actor) {
+        if let Some(slot) = actors.get(&actor) {
+            // A predecessor registration may have parked its alarm after this
+            // slot was installed; move that late token into the live slot.
+            slot.registration.adopt_parked();
             return Ok(());
         }
         let ready = &self.ready[self.handler.admission_class(&actor).index()];
