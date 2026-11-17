@@ -83,6 +83,10 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
   for (const member of rootManifest.workspace?.members ?? []) for (const file of expand(member)) if (!excluded(slash(file))) manifests.add(slash(file));
   if (rootManifest.package) manifests.add('Cargo.toml');
   const members = new Set(manifests);
+  // The root Bazel graph also renders patch crates that are not currently
+  // reached. Retained producer graphs instead use their selected lockfile.
+  if (!patchConfig && !lockFile) for (const patch of patches)
+    manifests.add(slash(path.relative(root, path.join(patch.directory, 'Cargo.toml'))));
   const packages = [];
   const pending = [...manifests];
   for (const file of pending) if (!withinSource(path.dirname(path.resolve(root, file)))) throw Error(`workspace dependency escapes source root: ${file}`);
