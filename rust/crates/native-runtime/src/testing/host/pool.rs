@@ -28,7 +28,7 @@ impl Pool {
     /// Records one worker this pool actually started. A seeded world starts
     /// only the workers its poller needs, so saturation is measured against
     /// the started width, never the host's maximum.
-    pub(super) fn started(&self) {
+    pub(crate) fn started(&self) {
         let started = self.started.fetch_add(1, Ordering::SeqCst) + 1;
         debug_assert!(started <= self.threads, "worker pool exceeded its width");
         self.changed();
