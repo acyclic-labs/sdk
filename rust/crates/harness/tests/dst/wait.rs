@@ -194,15 +194,15 @@ fn archive(id: &str, target: &str) -> ToolCall {
 
 fn child_plan(tag_name: &'static str, state: &str, form: &str) -> Plan {
     match (state, form) {
-        ("running", _) | ("archived", _) | ("stopped", _) => parked(tag_name),
+        ("archived", _) | ("stopped", _) => parked(tag_name),
         ("settled_failed", _) => failed(tag_name),
         ("merged", _) => writer(tag_name),
         _ => settled(tag_name),
     }
 }
 
-fn needs_sibling(form: &str, state: &str) -> bool {
-    form == "quorum_need" || (form == "named" && state == "running")
+fn needs_sibling(form: &str, _state: &str) -> bool {
+    form == "quorum_need"
 }
 
 /// The wait in the requested form. A running child is released first for the
@@ -420,28 +420,19 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
                 ));
             }
         }
-        "running" => match form {
-            "timeout" | "quorum_need" => {
-                let entry = unsettled
-                    .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
+        "running" => {
+            if let Some(entry) = settled {
+                if !is_settled(entry) {
+                    return Err(format!("wait {id} reported target not settled: {entry}"));
+                }
+            } else if let Some(entry) = unsettled {
                 if is_settled(entry) {
                     return Err(format!("wait {id} reported running target done: {entry}"));
                 }
+            } else {
+                return Err(format!("wait {id} reported no target: {value}"));
             }
-            _ => {
-                if let Some(entry) = settled {
-                    if !is_settled(entry) {
-                        return Err(format!("wait {id} reported target not settled: {entry}"));
-                    }
-                } else if let Some(entry) = unsettled {
-                    if is_settled(entry) {
-                        return Err(format!("wait {id} reported running target wrong: {entry}"));
-                    }
-                } else {
-                    return Err(format!("wait {id} reported no target: {value}"));
-                }
-            }
-        },
+        }
         "settled_failed" => {
             let entry =
                 settled.ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
