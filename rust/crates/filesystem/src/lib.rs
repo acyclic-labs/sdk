@@ -55,6 +55,7 @@ pub use windows_test_filesystems::junction as test_directory_junction;
 pub mod access;
 mod arc_layout;
 pub use arc_layout::shared_allocation_bytes;
+#[cfg(all(test, loom))]
 mod operation_claim;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
@@ -223,11 +224,11 @@ pub use distributed::{
 pub use distributed::{StreamStateStoreCause, StreamStateStoreError, UnresolvedCommit};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    ContentAddress, ContentChange, ContentFile, ContentTimes, CreationOperation, DetachedFile,
-    DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
-    FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsResult, GenerationDiff,
-    JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation, MergeConflict,
-    MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    ContentAddress, ContentChange, ContentFile, ContentTimes, CreationAttribute, CreationOperation,
+    DetachedFile, DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage,
+    EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
+    FsResult, GenerationDiff, JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation,
+    MergeConflict, MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };

@@ -146,9 +146,11 @@ impl Prepared {
         let mut journal_creation: acyclic_fs::CreateSpec<'_> =
             host.volume_create_spec(&journal).map_err(turn)?;
         if let Some(policy) = &policy {
-            journal_creation.creation = acyclic_fs::CreationOperation::populated(
+            let attributes = policy.attributes(&journal, journal_creation.creation.operation_id)?;
+            journal_creation.creation = acyclic_fs::CreationOperation::populated_with_attributes(
                 journal_creation.creation.operation_id,
                 policy.files(),
+                attributes,
             );
         }
         creations.push(journal_creation);

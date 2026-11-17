@@ -5264,7 +5264,6 @@ crate.spec(
     default_features = False,
     features = [
         "aarch64_neon",
-        "default",
         "public_imp",
         "std",
     ],
@@ -5368,17 +5367,6 @@ crate.spec(
         "once",
         "rwlock",
         "spin_mutex",
-    ],
-)
-
-crate.spec(
-    package = "sse-stream",
-    version = "=0.3.0",
-    default_features = False,
-    features = [
-        "default",
-        "memchr",
-        "simdutf8",
     ],
 )
 

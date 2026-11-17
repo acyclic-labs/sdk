@@ -30,6 +30,7 @@
   "acyclic-harness-layout",
   "acyclic-harness-modules",
   "acyclic-harness-json",
+  "acyclic-harness-sse",
   "acyclic-harness-core",
   "acyclic-harness-client",
   "acyclic-harness-hosting",

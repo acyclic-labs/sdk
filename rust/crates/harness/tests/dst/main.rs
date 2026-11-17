@@ -25,6 +25,7 @@ mod family;
 mod flushes;
 mod grants;
 mod oracle;
+mod protective;
 mod publication;
 mod recovery;
 mod redelivery;

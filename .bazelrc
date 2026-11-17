@@ -4,6 +4,9 @@
 # Actions see a fixed PATH and no job environment, so every job directory and host shares keys.
 common --incompatible_strict_action_env
 common --experimental_convenience_symlinks=ignore
+# Module resolution is reproducible: the committed MODULE.bazel.lock is the only result, and a command
+# fails on a stale lockfile instead of rewriting it. Update it with `bazel mod deps --lockfile_mode=update`.
+common --lockfile_mode=error
 # Every machine keeps a local disk cache of action results. A build host that shares a remote cache
 # replaces it from its own bazelrc, loaded after this one.
 common --disk_cache=~/.cache/bazel-disk

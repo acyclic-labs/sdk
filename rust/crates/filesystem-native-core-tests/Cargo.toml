@@ -16,6 +16,10 @@ path = "src/ready.rs"
 name = "callback_gate"
 path = "src/callback_gate.rs"
 
+[[test]]
+name = "recovery_order"
+path = "src/recovery_order.rs"
+
 [dev-dependencies]
 proptest.workspace = true
 

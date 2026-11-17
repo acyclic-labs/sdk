@@ -1,5 +1,5 @@
 {
-  "checksum": "bed0df431afd7ce933c8caf704372f1bf5a1ba87eb13f9a31d7c6d6799f1bfc9",
+  "checksum": "e7e93c47783c1db31dea68f0c7b28eaa7c37081ddf49e393cc8941415eac75fc",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -9885,10 +9885,6 @@
             "alias": "spin_0_10_1",
             "id": "spin 0.10.1",
             "target": "spin"
-          },
-          {
-            "id": "sse-stream 0.3.0",
-            "target": "sse_stream"
           },
           {
             "id": "stable_deref_trait 1.2.1",
@@ -31856,7 +31852,6 @@
       "common_attrs": {
         "crate_features": [
           "aarch64_neon",
-          "default",
           "public_imp",
           "std"
         ],
@@ -32318,74 +32313,6 @@
         }
       ],
       "version": "0.5.5"
-    },
-    "sse-stream 0.3.0": {
-      "common_attrs": {
-        "crate_features": [
-          "default",
-          "memchr",
-          "simdutf8"
-        ],
-        "deps": [
-          {
-            "id": "bytes 1.12.1",
-            "target": "bytes"
-          },
-          {
-            "id": "futures-util 0.3.34",
-            "target": "futures_util"
-          },
-          {
-            "id": "http-body 1.1.0",
-            "target": "http_body"
-          },
-          {
-            "id": "http-body-util 0.1.5",
-            "target": "http_body_util"
-          },
-          {
-            "id": "memchr 2.8.3",
-            "target": "memchr"
-          },
-          {
-            "id": "pin-project-lite 0.2.17",
-            "target": "pin_project_lite"
-          },
-          {
-            "id": "simdutf8 0.1.5",
-            "target": "simdutf8"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          }
-        ],
-        "edition": "2021"
-      },
-      "library_target_name": "sse_stream",
-      "license": "MIT OR Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "sse-stream",
-      "package_url": "https://github.com/4t145/sse-stream/",
-      "repository": {
-        "Http": {
-          "sha256": "d385160fc0fba84f7b9cc8ef3263e410d0e3ca7ab4927f1356df33145ace69a4",
-          "url": "https://static.crates.io/crates/sse-stream/0.3.0/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "sse_stream",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.3.0"
     },
     "stable_deref_trait 1.2.1": {
       "common_attrs": {
@@ -41731,7 +41658,6 @@
     "socket2 0.6.5",
     "spin 0.9.9",
     "spin 0.10.1",
-    "sse-stream 0.3.0",
     "stable_deref_trait 1.2.1",
     "static_assertions 1.1.0",
     "std-next 0.1.9",

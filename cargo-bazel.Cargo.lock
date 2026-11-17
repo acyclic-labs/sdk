@@ -2195,7 +2195,6 @@ dependencies = [
  "socket2",
  "spin 0.10.1",
  "spin 0.9.9",
- "sse-stream",
  "stable_deref_trait",
  "static_assertions",
  "std-next",
@@ -7109,22 +7108,6 @@ dependencies = [
  "js-sys",
  "rsqlite-vfs",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "sse-stream"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d385160fc0fba84f7b9cc8ef3263e410d0e3ca7ab4927f1356df33145ace69a4"
-dependencies = [
- "bytes",
- "futures-util",
- "http-body",
- "http-body-util",
- "memchr",
- "pin-project-lite",
- "simdutf8",
- "thiserror 2.0.21",
 ]
 
 [[package]]
