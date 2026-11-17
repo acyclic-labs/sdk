@@ -192,21 +192,9 @@ fn archive(id: &str, target: &str) -> ToolCall {
     call(id, "archive", json!({"agent": target}))
 }
 
-fn tool(tag_name: &'static str) -> Plan {
-    Plan {
-        tag: tag_name,
-        steps: vec![vec![call(
-            &format!("{tag_name}-read"),
-            "read",
-            json!({"path": "marker.txt"}),
-        )]],
-        fail_once: None,
-    }
-}
-
 fn child_plan(tag_name: &'static str, state: &str, form: &str) -> Plan {
     match (state, form) {
-        ("running", "named") => tool(tag_name),
+        ("running", "named") => settled(tag_name),
         ("running", _) | ("archived", _) | ("stopped", _) => parked(tag_name),
         ("settled_failed", _) => failed(tag_name),
         ("merged", _) => writer(tag_name),
