@@ -211,10 +211,7 @@ impl AuthorityVerifier {
         owner: AgentId,
         quota: &mut CodecQuota<'_, '_>,
     ) -> Result<(Self, Option<Self>)> {
-        let native = matches!(
-            self.admission,
-            runtime_signing::AdmissionPort::Native(_)
-        );
+        let native = matches!(self.admission, runtime_signing::AdmissionPort::Native(_));
         let owner_audience = Authority {
             kind: AggregateKind::Conversation,
             id: owner.to_string(),
