@@ -51,17 +51,23 @@ impl DemandSource for NativeDemandSource {
                 })?;
                 provider.check(&source, context)?;
                 provider.observe_parent(path, context)?;
-                let mut node = provider
-                    .metadata(path, context)?
-                    .as_ref()
-                    .map(|metadata| Self::node(&path_key(path), metadata));
+                let mut node = match provider.metadata(path, context)? {
+                    Some(metadata) => {
+                        let content = provider.fixture_content(path, &metadata, context)?;
+                        Some(NativeDemandSource::node(path_key(path), content, &metadata))
+                    }
+                    None => None,
+                };
                 if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
                     && provider.admit_to_watches(path, context)?
                 {
-                    node = provider
-                        .metadata(path, context)?
-                        .as_ref()
-                        .map(|metadata| Self::node(&path_key(path), metadata));
+                    node = match provider.metadata(path, context)? {
+                        Some(metadata) => {
+                            let content = provider.fixture_content(path, &metadata, context)?;
+                            Some(NativeDemandSource::node(path_key(path), content, &metadata))
+                        }
+                        None => None,
+                    };
                 }
                 provider.check(&source, context)?;
                 Ok(node)
@@ -164,7 +170,12 @@ impl DemandSource for NativeDemandSource {
                 if before.file_type() != crate::demand::SourceNodeKind::SymbolicLink {
                     return Err(DemandError::InvalidRequest);
                 }
-                if version(&path_key(path), &before) != expected {
+                if version(
+                    &path_key(path),
+                    fixture_content(&before, |_| Ok(())),
+                    &before,
+                ) != expected
+                {
                     return Err(DemandError::StaleVersion);
                 }
                 let (relative, allocation) = provider.relative(path, context)?;
@@ -172,11 +183,13 @@ impl DemandSource for NativeDemandSource {
                 drop(relative);
                 context.release(allocation)?;
                 let bytes = answer?;
-                if provider
-                    .metadata(path, context)?
-                    .as_ref()
-                    .map(|metadata| version(&path_key(path), metadata))
-                    != Some(expected)
+                if provider.metadata(path, context)?.as_ref().map(|metadata| {
+                    version(
+                        &path_key(path),
+                        fixture_content(metadata, |_| Ok(())),
+                        metadata,
+                    )
+                }) != Some(expected)
                 {
                     return Err(DemandError::StaleVersion);
                 }

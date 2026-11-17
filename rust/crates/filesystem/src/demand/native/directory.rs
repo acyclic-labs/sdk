@@ -255,7 +255,9 @@ impl NativeDemandSource {
                 .map_err(DemandError::from)?;
         }
         let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
-        let node = Self::node(&child_path_key(logical, &name), stat);
+        let host = directory.join(&entry.name);
+        let content = self.fixture_content_at(&host, stat, work)?;
+        let node = Self::node(child_path_key(logical, &name), content, stat);
         Ok(Some(SourceDirectoryEntry { name, node }))
     }
     fn page_entries(
@@ -349,7 +351,11 @@ impl NativeDemandSource {
         if !stat.is_dir() {
             return Err(DemandError::NotDirectory);
         }
-        let observed = version(&path_key(directory), &stat);
+        let observed = version(
+            &path_key(directory),
+            fixture_content(&stat, |_| Ok(())),
+            &stat,
+        );
         let restore = cursor.is_some();
         let (cursor, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
@@ -455,11 +461,13 @@ impl NativeDemandSource {
             native: Some(lease.cursor.clone().erase()),
         });
         self.check(&source, work)?;
-        if self
-            .metadata(directory, work)?
-            .as_ref()
-            .map(|metadata| version(&path_key(directory), metadata))
-            != Some(observed)
+        if self.metadata(directory, work)?.as_ref().map(|metadata| {
+            version(
+                &path_key(directory),
+                fixture_content(metadata, |_| Ok(())),
+                metadata,
+            )
+        }) != Some(observed)
         {
             *lease
                 .cursor

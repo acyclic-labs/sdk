@@ -351,18 +351,12 @@ pub struct SourceMetadata {
 }
 
 /// Metadata returned by an exact path lookup.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceNode {
     /// Source node kind.
     pub kind: SourceNodeKind,
-    /// Stable path-independent source identity written into replay traces.
-    /// A fixture replay derives it from the logical path, never the inode.
+    /// Stable path-independent source identity. Hard-link aliases share it.
     pub file_identity: [u8; 32],
-    /// Physical host identity, for held-versus-named replacement checks. It
-    /// is live evidence, never part of a saved record: skipping it keeps old
-    /// serialized nodes readable and their content addresses unchanged.
-    #[serde(skip)]
-    pub physical_identity: [u8; 32],
     /// Exact number of source namespace bindings when the provider exposes it.
     pub link_count: Option<u64>,
     /// Native device identity for character and block devices.
@@ -374,21 +368,6 @@ pub struct SourceNode {
     /// Explicitly available scalar metadata.
     pub metadata: SourceMetadata,
 }
-
-impl PartialEq for SourceNode {
-    fn eq(&self, other: &Self) -> bool {
-        // The physical identity is live evidence, not saved content.
-        self.kind == other.kind
-            && self.file_identity == other.file_identity
-            && self.link_count == other.link_count
-            && self.device == other.device
-            && self.logical_bytes == other.logical_bytes
-            && self.version == other.version
-            && self.metadata == other.metadata
-    }
-}
-
-impl Eq for SourceNode {}
 
 /// One directory entry in native enumeration order.
 #[derive(Clone, Debug, Eq, PartialEq)]

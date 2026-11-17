@@ -3,8 +3,7 @@ struct NativeDemandFile {
     provider: NativeDemandSource,
     source: SourceReference,
     relative: DemandPath,
-    path_key: Vec<u8>,
-    expected: SourceVersion,
+    physical: SourceVersion,
     logical_bytes: u64,
     #[cfg(windows)]
     file: Arc<std::sync::RwLock<Arc<SourceFile>>>,
@@ -62,16 +61,17 @@ impl NativeDemandFile {
             return Err(DemandError::NotRegularFile);
         }
         let path_key = path_key(path);
-        if version(&path_key, &opened) != expected {
+        let content = provider.fixture_content(path, &opened, context)?;
+        if version(&path_key, content, &opened) != expected {
             return Err(DemandError::StaleVersion);
         }
+        let physical = physical_version(&opened);
         Ok(Self {
             provider,
             source,
             relative,
-            path_key,
             _ownership: Arc::new(ownership),
-            expected,
+            physical,
             logical_bytes: opened.len(),
             #[cfg(windows)]
             file: Arc::new(std::sync::RwLock::new(Arc::new(file))),
@@ -155,7 +155,7 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&self.provider, &file, context)?;
-        if version(&opened) != self.expected {
+        if physical_version(&opened) != self.physical {
             return Err(DemandError::StaleVersion);
         }
         Ok(file)
@@ -289,12 +289,8 @@ impl NativeDemandFile {
             .root
             .held(context)
             .and_then(|root| root.stat(&self.relative, context));
-        if version(&self.path_key, &held) != self.expected
-            || named
-                .as_ref()
-                .map(|metadata| version(&self.path_key, metadata))
-                .ok()
-                != Some(self.expected)
+        if physical_version(&held) != self.physical
+            || named.as_ref().map(physical_version).ok() != Some(self.physical)
         {
             self.provider.check(&self.source, context)?;
             return Err(DemandError::StaleVersion);

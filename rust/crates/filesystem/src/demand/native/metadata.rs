@@ -1,39 +1,29 @@
-/// The logical path a fixture identity and version hash. Production reads
-/// physical metadata, so they never build or retain this buffer.
-pub(crate) fn path_key(path: &NamespacePath) -> Vec<u8> {
-    #[cfg(not(feature = "test-support"))]
-    {
-        let _ = path;
-        Vec::new()
+pub(crate) fn path_key(path: &NamespacePath) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic-fs-native-path-key-v1\0");
+    for name in path.components() {
+        hash.update(&(name.as_bytes().len() as u64).to_le_bytes());
+        hash.update(name.as_bytes());
     }
-    #[cfg(feature = "test-support")]
-    {
-        let mut key = Vec::new();
-        for name in path.components() {
-            key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
-            key.extend_from_slice(name.as_bytes());
-        }
-        key
-    }
+    *hash.finalize().as_bytes()
 }
 
-fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> Vec<u8> {
-    #[cfg(not(feature = "test-support"))]
-    {
-        let _ = (parent, name);
-        Vec::new()
+fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic-fs-native-path-key-v1\0");
+    for component in parent.components() {
+        hash.update(&(component.as_bytes().len() as u64).to_le_bytes());
+        hash.update(component.as_bytes());
     }
-    #[cfg(feature = "test-support")]
-    {
-        let mut key = path_key(parent);
-        key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
-        key.extend_from_slice(name.as_bytes());
-        key
-    }
+    hash.update(&(name.as_bytes().len() as u64).to_le_bytes());
+    hash.update(name.as_bytes());
+    *hash.finalize().as_bytes()
 }
 
 #[cfg(feature = "test-support")]
-fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing::NativeTimes> {
+pub(crate) fn fixture_times(
+    metadata: &HostStat,
+) -> Option<acyclic_native_runtime::testing::NativeTimes> {
     use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes, capture_native_times};
     let identity = metadata.identity();
     let nanos = |time: Option<i128>| time.and_then(|time| i64::try_from(time).ok());
@@ -51,11 +41,114 @@ fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing:
     })
 }
 
-fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
-    // The read-time version stays physical: a replacement between lookup and
-    // read must still be detected. Only the identity written into the
-    // generation root is fixture-derived.
-    let _ = path;
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct FixtureObject {
+    device: u64,
+    object: u64,
+    birth_ns: Option<i128>,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+struct FixtureVersions {
+    identities: std::collections::HashMap<FixtureObject, [u8; 32]>,
+}
+
+#[cfg(feature = "test-support")]
+fn fixture_versions() -> &'static std::sync::Mutex<FixtureVersions> {
+    static VERSIONS: std::sync::OnceLock<std::sync::Mutex<FixtureVersions>> =
+        std::sync::OnceLock::new();
+    VERSIONS.get_or_init(|| std::sync::Mutex::new(FixtureVersions::default()))
+}
+
+/// Starts a new replay's fixture identity sequence. A world owns one physical
+/// directory, so its first observation of each object is the same in every
+/// replay.
+#[cfg(feature = "test-support")]
+pub fn reset_fixture_versions() {
+    *fixture_versions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = FixtureVersions::default();
+}
+
+/// A fixture identity is the first logical name observed for one physical
+/// object. Every alias of that object shares it, and a rename keeps it, while
+/// a replacement is a new object with a new identity. The physical key is the
+/// host's, so a replay's recreated files each get the identity of the name
+/// they are first observed under, independent of the host's inode numbers.
+#[cfg(feature = "test-support")]
+fn fixture_identity(path: &[u8], metadata: &HostStat) -> Option<[u8; 32]> {
+    fixture_times(metadata)?;
+    let identity = metadata.identity();
+    let object = FixtureObject {
+        device: identity.device,
+        object: identity.object,
+        birth_ns: metadata.birth_time().and_then(system_time_nanos),
+    };
+    let mut versions = fixture_versions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Some(*versions.identities.entry(object).or_insert_with(|| {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-file-fixture-v2\0");
+        hash.update(path);
+        hash.update(&metadata.len().to_le_bytes());
+        *hash.finalize().as_bytes()
+    }))
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) type FixtureContent = Option<[u8; 32]>;
+#[cfg(not(feature = "test-support"))]
+pub(crate) type FixtureContent = ();
+
+/// Hashes a regular file's bytes for its fixture version. The closure is not
+/// called outside a fixture world, so production never reads content here.
+#[cfg(feature = "test-support")]
+pub(crate) fn fixture_content(
+    metadata: &HostStat,
+    read: impl FnOnce(&mut blake3::Hasher) -> std::io::Result<()>,
+) -> FixtureContent {
+    if metadata.file_type() != SourceNodeKind::RegularFile || fixture_times(metadata).is_none() {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    read(&mut hasher).ok()?;
+    Some(*hasher.finalize().as_bytes())
+}
+
+#[cfg(not(feature = "test-support"))]
+pub(crate) fn fixture_content(
+    _: &HostStat,
+    _: impl FnOnce(&mut blake3::Hasher) -> std::io::Result<()>,
+) -> FixtureContent {
+}
+
+fn version(path: &[u8], content: FixtureContent, metadata: &HostStat) -> SourceVersion {
+    #[cfg(feature = "test-support")]
+    if let Some(identity) = fixture_identity(path, metadata) {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-version-fixture-v2\0");
+        hash.update(&identity);
+        if let Some(content) = content {
+            hash.update(b"content\0");
+            hash.update(&content);
+        } else {
+            hash.update(b"path\0");
+            hash.update(path);
+            hash.update(&metadata.len().to_le_bytes());
+        }
+        return SourceVersion(*hash.finalize().as_bytes());
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = (path, content);
+    physical_version(metadata)
+}
+
+/// The host's own change token: length, identity and timestamps. It is never
+/// written into a replay trace; fixture versions above are.
+pub(crate) fn physical_version(metadata: &HostStat) -> SourceVersion {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-version-v1\0");
     hash.update(&metadata.len().to_le_bytes());
@@ -87,7 +180,19 @@ fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
 /// with neither handles nor birth times (a few) cannot tell reuse apart by
 /// identity alone.
 #[cfg(unix)]
-pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(path: &[u8], content: FixtureContent, metadata: &HostStat) -> [u8; 32] {
+    #[cfg(feature = "test-support")]
+    if let Some(identity) = fixture_identity(path, metadata) {
+        if let Some(content) = content {
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"acyclic-fs-native-file-fixture-content-v1\0");
+            hash.update(&content);
+            return *hash.finalize().as_bytes();
+        }
+        return identity;
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = (path, content);
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
@@ -105,36 +210,23 @@ pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
 }
 
 #[cfg(windows)]
-pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(path: &[u8], content: FixtureContent, metadata: &HostStat) -> [u8; 32] {
+    #[cfg(feature = "test-support")]
+    if let Some(identity) = fixture_identity(path, metadata) {
+        if let Some(content) = content {
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"acyclic-fs-native-file-fixture-content-v1\0");
+            hash.update(&content);
+            return *hash.finalize().as_bytes();
+        }
+        return identity;
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = (path, content);
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
         metadata.raw.FileId.cast_unsigned(),
     )
-}
-
-/// The stable identity a fixture replay writes into its generation root. It
-/// is a function of the logical path and length, never the host inode, so a
-/// recreated checkout replays the same root. Physical checks keep using
-/// [`file_identity`].
-#[cfg(feature = "test-support")]
-pub(crate) fn fixture_identity(path: &[u8], metadata: &HostStat) -> Option<[u8; 32]> {
-    fixture_times(metadata)?;
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
-    hash.update(path);
-    hash.update(&metadata.len().to_le_bytes());
-    Some(*hash.finalize().as_bytes())
-}
-
-/// The identity written into a generation root: the fixture identity when a
-/// replay installed one, else the physical identity.
-pub(crate) fn source_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
-    #[cfg(feature = "test-support")]
-    if let Some(identity) = fixture_identity(path, metadata) {
-        return identity;
-    }
-    let _ = path;
-    file_identity(metadata)
 }
 
 /// The identity of the file with host index `index` on the volume whose
