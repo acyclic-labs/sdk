@@ -63,6 +63,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-core:acyclic_harness_core",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//tokio-1.54.1",
     ],

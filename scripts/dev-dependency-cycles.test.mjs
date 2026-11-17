@@ -20,3 +20,15 @@ test("accepts a dev-dependency that stays outside the crate", () => {
   ]);
   assert.deepEqual(devDependencyCycles(new Set(["root"]), nodes), []);
 });
+
+test("checks every platform graph", () => {
+  const clean = new Map([
+    ["root", { deps: [edge("helper", "dev")] }],
+    ["helper", { deps: [] }],
+  ]);
+  const cyclic = new Map([
+    ["root", { deps: [edge("helper", "dev")] }],
+    ["helper", { deps: [edge("root")] }],
+  ]);
+  assert.deepEqual([clean, cyclic].flatMap(graph => devDependencyCycles(new Set(["root"]), graph)), [["helper", "root"]]);
+});

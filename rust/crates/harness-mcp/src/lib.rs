@@ -11,7 +11,9 @@ pub use config::{McpConfig, McpServer, McpTransport};
 mod install;
 mod paging;
 #[cfg(not(target_arch = "wasm32"))]
-pub use install::{McpClientLimits, McpConfigWatchExt, McpInstallation, McpServerFailure};
+pub use install::{
+    McpClientLimits, McpConfigInstall, McpConfigWatchExt, McpInstallation, McpServerFailure,
+};
 pub use paging::{McpDiscoveryLimits, tool_pages};
 pub mod http;
 #[cfg(not(target_arch = "wasm32"))]

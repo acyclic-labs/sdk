@@ -15,7 +15,7 @@ documentation = "https://docs.rs/acyclic-harness-local"
 [features]
 research = ["acyclic-harness-core/research"]
 conformance = ["acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
-test-support = ["acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-hosting/test-support", "acyclic-harness-search/test-support"]
+test-support = ["acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-hosting/test-support", "acyclic-harness-search/test-support", "acyclic-harness-mcp/test-support", "acyclic-harness-native-settings/test-support",]
 model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 wasm = []
 
@@ -30,6 +30,10 @@ pulldown-cmark.workspace = true
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-harness-mcp = { version = "=0.2.0", path = "../harness-mcp" }
+acyclic-harness-native-settings = { version = "=0.2.0", path = "../harness-native-settings" }
+acyclic-harness-input-watch = { version = "=0.2.0", path = "../harness-input-watch" }
+acyclic-harness-experiments = { version = "=0.2.0", path = "../harness-experiments" }
 acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }

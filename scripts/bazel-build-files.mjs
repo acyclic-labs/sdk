@@ -159,7 +159,7 @@ const packages = new Map([...runs, ...(wasm ? [wasm.run] : [])].flatMap(run => r
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
-const devCycles = devDependencyCycles(members, nodes[0]);
+const devCycles = nodes.flatMap(graph => devDependencyCycles(members, graph));
 if (devCycles.length) {
   const name = id => packages.get(id)?.name ?? id;
   throw new Error(`STEP_FAILED dev-dependency cycle: ${devCycles.map(path => path.map(name).join(" -> ")).join("; ")}`);

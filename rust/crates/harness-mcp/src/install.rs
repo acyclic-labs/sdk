@@ -54,7 +54,8 @@ pub struct McpInstallation {
     pub diagnostics: Vec<McpServerFailure>,
 }
 
-pub(crate) struct Connected {
+#[doc(hidden)]
+pub struct Connected {
     transport: Arc<dyn McpToolTransport>,
     tools: Vec<McpToolDefinition>,
     binding: [u8; 32],
@@ -62,7 +63,7 @@ pub(crate) struct Connected {
 }
 
 /// Connects configured MCP servers through the ordinary tool registry.
-pub(crate) trait McpConfigInstall {
+pub trait McpConfigInstall {
     /// Connects configured servers and adds their tools without replacing caller tools.
     /// `workspace` must be the absolute project root. Required failures reject startup.
     /// Credential references resolve only through the host's `secrets`.

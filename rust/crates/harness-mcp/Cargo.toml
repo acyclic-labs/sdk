@@ -53,6 +53,7 @@ acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tempfile = "3.27.0"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
