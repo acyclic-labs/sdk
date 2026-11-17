@@ -1,1 +1,1 @@
-exports_files(["repositories.bzl"])
+exports_files(["index-lock.json", "registry.bzl", "repositories.bzl"])

@@ -10,7 +10,7 @@ const names=[...new Set(lock.package.filter(pkg=>pkg.source?.startsWith('registr
  if(pkg.source!=='registry+https://github.com/rust-lang/crates.io-index')throw Error('unhandled registry '+pkg.source);
  return pkg.name;
 }))].sort();
-const indexPath=name=>name.length===1?'1/'+name:name.length===2?'2/'+name:name.length===3?'3/'+name[0]+'/'+name:name.slice(0,2)+'/'+name.slice(2,4)+'/'+name;
+const indexPath=value=>{const name=value.toLowerCase();return name.length===1?'1/'+name:name.length===2?'2/'+name:name.length===3?'3/'+name[0]+'/'+name:name.slice(0,2)+'/'+name.slice(2,4)+'/'+name;};
 const result={};let next=0;
 await Promise.all(Array.from({length:16},async()=>{
  for(;;){

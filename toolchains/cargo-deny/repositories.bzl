@@ -1,5 +1,7 @@
 """Pinned cargo-deny binaries and RustSec data for the offline policy test."""
 
+load(":registry.bzl", "registry")
+
 _VERSION = "0.19.9"
 _RUSTSEC = "233155b4025b854c68a4b199c0e32d7fd53291a2"
 _RUSTSEC_SHA256 = "638f3bde5819e3301e324bc2cdfc33c2047e6aa94ed84f53c37057782e91d0b4"
@@ -44,5 +46,6 @@ _advisories = repository_rule(implementation = _advisories_impl)
 def _extension_impl(_ctx):
     _binary(name = "cargo_deny_binary")
     _advisories(name = "cargo_deny_advisories")
+    registry(name = "cargo_deny_registry", cargo_lock = "//:Cargo.lock", index_lock = "//toolchains/cargo-deny:index-lock.json")
 
 cargo_deny = module_extension(implementation = _extension_impl)
