@@ -1308,15 +1308,18 @@ const wasmGeneratedRules = wasmGenerated.map(g => rule("wasm_package", [
 ])).join("\n");
 const wasmNodeModulesRules = wasmSelections.filter(selection => selection.runtime).map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
-  const filegroups = deps.filter(dep => dep.dir).map(dep => rule("filegroup", [
+  const filegroups = deps.filter(dep => dep.dir).map(dep => {
+    const contractOutputs = streamTokenOutputs.filter(file => file.startsWith(`${dep.dir}/`));
+    return rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
     // Pin and name runtime protobuf projections: absent files must fail analysis.
-    ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`, `${dep.dir}/generated/proto/**`, ...streamTokenOutputs]) + " + " + list(
+    ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`, `${dep.dir}/generated/proto/**`, ...contractOutputs]) + " + " + list(
       packagedTypeScriptBindings.filter(([, names]) => names.includes(dep.dir.split("/").at(-1)))
         .map(([stem]) => fileLabel(`${dep.dir}/generated/proto/${stem}.js`))
-        .concat(streamTokenOutputs.filter(file => file.startsWith(`${dep.dir}/`)).map(fileLabel)))],
+        .concat(contractOutputs.map(fileLabel)))],
     ["visibility", q(["//visibility:public"])],
-  ])).join("\n");
+    ]);
+  }).join("\n");
   const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
   for (const dep of deps.filter(dep => dep.dir)) {
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
