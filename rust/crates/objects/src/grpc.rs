@@ -469,6 +469,7 @@ impl Blobs for GrpcObjects {
                 wire::RetainRequest {
                     root: root.as_bytes().to_vec(),
                     references: convert::wire_digests(&references),
+                    fence: None,
                 },
                 None
             )?;
@@ -486,6 +487,50 @@ impl Blobs for GrpcObjects {
                 release,
                 wire::ReleaseRequest {
                     root: root.as_bytes().to_vec(),
+                    terminal_fence: None,
+                },
+                None
+            )?;
+            Ok(crate::Released {
+                existed: reply.0.existed,
+                revision: reply.1,
+            })
+        })
+        .await
+    }
+
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                retain,
+                wire::RetainRequest {
+                    root: root.as_bytes().to_vec(),
+                    references: convert::wire_digests(&references),
+                    fence: Some(fence),
+                },
+                None
+            )?;
+            let mut retained = convert::retained(&reply.0);
+            retained.revision = reply.1;
+            Ok(retained)
+        })
+        .await
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                release,
+                wire::ReleaseRequest {
+                    root: root.as_bytes().to_vec(),
+                    terminal_fence: Some(fence),
                 },
                 None
             )?;

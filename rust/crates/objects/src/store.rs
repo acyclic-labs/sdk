@@ -1904,6 +1904,19 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         self.retain_inner(root, references).await
     }
 
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        Account::retain_fenced(self, root, fence, references).await
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        Account::release_terminal(self, root, fence).await
+    }
+
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
         acyclic_observability::async_operation!(
             "acyclic.objects.release",

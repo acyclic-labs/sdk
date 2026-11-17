@@ -3424,6 +3424,21 @@ impl Blobs for Overlap {
     async fn release(&self, root: &RootId) -> Result<crate::Released, crate::Error> {
         self.inner.release(root).await
     }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<crate::Retained, crate::Error> {
+        self.inner.retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(
+        &self,
+        root: &RootId,
+        fence: u64,
+    ) -> Result<crate::Released, crate::Error> {
+        self.inner.release_terminal(root, fence).await
+    }
     async fn collect(&self) -> Result<crate::Collection, crate::Error> {
         self.inner.collect().await
     }

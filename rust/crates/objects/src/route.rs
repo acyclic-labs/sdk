@@ -244,9 +244,11 @@ pub async fn retain(
     request: wire::RetainRequest,
 ) -> Result<Served<wire::RetainResponse>, Error> {
     let references = convert::digests(&request.references)?;
-    let retained = blobs
-        .retain(&RootId::new(request.root)?, references)
-        .await?;
+    let root = RootId::new(request.root)?;
+    let retained = match request.fence {
+        Some(fence) => blobs.retain_fenced(&root, fence, references).await?,
+        None => blobs.retain(&root, references).await?,
+    };
     Ok((
         wire::RetainResponse {
             references: retained.references,
@@ -263,7 +265,11 @@ pub async fn release(
     blobs: &dyn Blobs,
     request: wire::ReleaseRequest,
 ) -> Result<Served<wire::ReleaseResponse>, Error> {
-    let released = blobs.release(&RootId::new(request.root)?).await?;
+    let root = RootId::new(request.root)?;
+    let released = match request.terminal_fence {
+        Some(fence) => blobs.release_terminal(&root, fence).await?,
+        None => blobs.release(&root).await?,
+    };
     Ok((
         wire::ReleaseResponse {
             existed: released.existed,

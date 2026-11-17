@@ -108,6 +108,17 @@ impl Blobs for Replica {
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         self.primary.release(root).await
     }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        self.primary.retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        self.primary.release_terminal(root, fence).await
+    }
     async fn collect(&self) -> Result<Collection, Error> {
         self.primary.collect().await
     }

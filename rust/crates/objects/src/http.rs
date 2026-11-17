@@ -503,6 +503,7 @@ impl Blobs for HttpObjects {
                     &wire::RetainRequest {
                         root: root.as_bytes().to_vec(),
                         references: convert::wire_digests(&references),
+                        fence: None,
                     },
                 )
                 .await?;
@@ -518,6 +519,48 @@ impl Blobs for HttpObjects {
                     "blobs/release",
                     &wire::ReleaseRequest {
                         root: root.as_bytes().to_vec(),
+                        terminal_fence: None,
+                    },
+                )
+                .await?;
+            Ok(crate::Released {
+                existed: reply.existed,
+                revision: None,
+            })
+        })
+        .await
+    }
+
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::RetainResponse = self
+                .call(
+                    "blobs/retain",
+                    &wire::RetainRequest {
+                        root: root.as_bytes().to_vec(),
+                        references: convert::wire_digests(&references),
+                        fence: Some(fence),
+                    },
+                )
+                .await?;
+            Ok(convert::retained(&reply))
+        })
+        .await
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::ReleaseResponse = self
+                .call(
+                    "blobs/release",
+                    &wire::ReleaseRequest {
+                        root: root.as_bytes().to_vec(),
+                        terminal_fence: Some(fence),
                     },
                 )
                 .await?;
