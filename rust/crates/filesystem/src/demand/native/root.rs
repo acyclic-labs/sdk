@@ -481,11 +481,17 @@ impl NativeDemandSource {
             {
                 return Ok(None);
             }
-            let mut file = self
-                .inner
-                .root
-                .held(context)
-                .and_then(|root| root.open_file(host, context))?;
+            let mut file = self.inner.root.held(context).and_then(|root| {
+                #[cfg(unix)]
+                let file = root.open_file(host, context);
+                #[cfg(windows)]
+                let file = root.open_file(
+                    host,
+                    windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+                    context,
+                );
+                file
+            })?;
             let mut hasher = blake3::Hasher::new();
             std::io::copy(&mut file, &mut hasher).map_err(DemandError::Io)?;
             Ok(Some(*hasher.finalize().as_bytes()))

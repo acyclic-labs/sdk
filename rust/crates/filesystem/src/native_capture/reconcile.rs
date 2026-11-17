@@ -717,10 +717,19 @@ pub(super) fn source_capture_id(
     #[cfg(not(target_os = "linux"))]
     let _ = (root, path);
     let content = crate::demand::native::fixture_content(metadata, |hasher| {
+        // Open through the held root, never the process's current directory.
         #[cfg(unix)]
-        let mut file = std::fs::File::open(path)?;
+        let mut file = root
+            .open_file(path, &mut meter.clone())
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         #[cfg(windows)]
-        let mut file = std::fs::File::open(std::ffi::OsString::from_wide(path.as_slice()))?;
+        let mut file = root
+            .open_file(
+                path,
+                windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+                &mut meter.clone(),
+            )
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         std::io::copy(&mut file, hasher).map(|_| ())
     });
     let identity = crate::demand::native::file_identity(logical, content, metadata);
