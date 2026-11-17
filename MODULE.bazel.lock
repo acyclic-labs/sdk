@@ -242,24 +242,13 @@
     },
     "//toolchains/cargo-deny:repositories.bzl%cargo_deny": {
       "general": {
-        "bzlTransitiveDigest": "PHuNXKVnQhACNGyimpLkxMJGHfAyUDmOTtJeuqy6tgg=",
+        "bzlTransitiveDigest": "a5NJiyGbpFfecCAyIe6fIVFB1CpHcG+xtA3we+vKZhU=",
         "usagesDigest": "BedfTFd2OqSe+bnsUkJuzOwP+dRYyyK1HarrpwFqhDU=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
-          "cargo_deny_binary": {
-            "repoRuleId": "@@//toolchains/cargo-deny:repositories.bzl%_binary",
-            "attributes": {}
-          },
           "cargo_deny_advisories": {
-            "repoRuleId": "@@//toolchains/cargo-deny:repositories.bzl%_advisories",
+            "repoRuleId": "@@//toolchains/cargo-deny:repositories.bzl%_archive",
             "attributes": {}
-          },
-          "cargo_deny_registry": {
-            "repoRuleId": "@@//toolchains/cargo-deny:registry.bzl%registry",
-            "attributes": {
-              "cargo_lock": "@@//:Cargo.lock",
-              "index_lock": "@@//toolchains/cargo-deny:index-lock.json"
-            }
           }
         }
       }
