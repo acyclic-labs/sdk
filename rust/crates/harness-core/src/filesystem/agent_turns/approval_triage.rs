@@ -4,9 +4,6 @@ use crate::agent::{Approval, ApprovalSelection, InboxRecord, OpenTriage, Out};
 use crate::approvals::{ApprovalResponder, RuleVerdict};
 use serde::Serialize;
 
-/// Reason an agent that can no longer run gives each ask it refuses.
-const PARENT_ENDED: &str = "approval parent has ended";
-
 /// An agent that completed or was archived runs no turn and reviews nothing,
 /// yet its children's asks still reach it; it refuses each one.
 fn ended(agent: &AgentState) -> bool {
@@ -125,6 +122,12 @@ where
                     "review source is not a direct child".into(),
                 ));
             }
+            // An archived parent's closing cascade answers the ask by archiving
+            // the child. Reading or writing the child's approval journal here
+            // cannot be admitted, and a failed write must never re-enter review.
+            if agent.closed {
+                continue;
+            }
             let child = crate::agent::observe_state(&self.stream, &self.within, &request.child)
                 .await
                 .map_err(Error::from)?;
@@ -136,10 +139,12 @@ where
                 .await?
                 .is_some()
             {
-                outs.push(Out::Send {
-                    to: request.child,
-                    record: InboxRecord::Approval(Approval { id: request.id }),
-                });
+                if !child.closed {
+                    outs.push(Out::Send {
+                        to: request.child,
+                        record: InboxRecord::Approval(Approval { id: request.id }),
+                    });
+                }
                 continue;
             }
             let (verdict, reason, action) = match (&review, policy) {
@@ -147,7 +152,11 @@ where
                     self.review_child_action(agent, &child, &request.id, journal, policy)
                         .await?
                 }
-                _ => (RuleVerdict::Deny, Some(PARENT_ENDED.to_owned()), Vec::new()),
+                _ => (
+                    RuleVerdict::Deny,
+                    Some(crate::approvals::PARENT_ENDED.to_owned()),
+                    Vec::new(),
+                ),
             };
             let decision = match verdict {
                 RuleVerdict::Allow => Some(crate::interaction::ApprovalVerdict::Approve),
@@ -163,10 +172,14 @@ where
                     reason,
                 )
                 .await?;
-                outs.push(Out::Send {
-                    to: request.child,
-                    record: InboxRecord::Approval(Approval { id: request.id }),
-                });
+                // A child its parent's closing cascade already archived cannot
+                // receive a wake; the retained decision is its answer.
+                if !child.closed {
+                    outs.push(Out::Send {
+                        to: request.child,
+                        record: InboxRecord::Approval(Approval { id: request.id }),
+                    });
+                }
             } else {
                 if summary.is_empty() {
                     summary
