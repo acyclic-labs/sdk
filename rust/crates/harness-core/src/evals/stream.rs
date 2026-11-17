@@ -363,18 +363,20 @@ fn result<T>(
         .map_err(stream_error)
 }
 fn stream_error(error: acyclic_stream::StreamError) -> DemandError {
-    use acyclic_stream::StreamError;
-    match error {
-        StreamError::NotFound => DemandError::Absent,
-        StreamError::RevisionForeign | StreamError::PrefixNotRetained | StreamError::OutOfRange => {
-            DemandError::StaleSource
-        }
-        StreamError::InvalidPath | StreamError::InvalidArgument | StreamError::LimitExceeded => {
-            DemandError::InvalidRequest
-        }
-        StreamError::Unsupported => DemandError::NativeWorkUnavailable,
-        error => DemandError::Io(std::io::Error::new(
-            if error == StreamError::AccessDenied {
+    use acyclic_stream::StreamCategory;
+    // A failure carrying a cause or refusal keeps its category; only the
+    // category, never the variant, classifies it.
+    match error.category() {
+        StreamCategory::NotFound => DemandError::Absent,
+        StreamCategory::RevisionForeign
+        | StreamCategory::PrefixNotRetained
+        | StreamCategory::OutOfRange => DemandError::StaleSource,
+        StreamCategory::InvalidPath
+        | StreamCategory::InvalidArgument
+        | StreamCategory::LimitExceeded => DemandError::InvalidRequest,
+        StreamCategory::Unsupported => DemandError::NativeWorkUnavailable,
+        category => DemandError::Io(std::io::Error::new(
+            if category == StreamCategory::AccessDenied {
                 std::io::ErrorKind::PermissionDenied
             } else {
                 std::io::ErrorKind::Other
