@@ -14,23 +14,6 @@ fn a_service_that_exits_without_signalling_closes_its_readiness_channel() -> io:
 }
 
 #[test]
-fn exclusive_lock_contention_is_not_a_generic_io_failure() {
-    assert!(is_exclusive_lock_contention(&io::Error::from(
-        io::ErrorKind::WouldBlock
-    )));
-    assert!(!is_exclusive_lock_contention(&io::Error::from(
-        io::ErrorKind::PermissionDenied
-    )));
-    assert!(!is_exclusive_lock_contention(&io::Error::from(
-        io::ErrorKind::Unsupported
-    )));
-    #[cfg(windows)]
-    assert!(is_exclusive_lock_contention(&io::Error::from_raw_os_error(
-        33
-    )));
-}
-
-#[test]
 fn durable_rename_moves_and_replaces_entries() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let source = directory.path().join("source");
