@@ -94,8 +94,10 @@ isolated_test(
 rust_test(
     name = "entry_attachment_cases",
     crate_root = "tests/entry_attachment.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "tests/entry_attachment.rs",
+    ],
+    compile_data = [
         "//rust/crates/manifest/fuzz:corpus/manifest_json/valid.json",
     ],
     edition = "2024",
@@ -154,8 +156,9 @@ isolated_test(
 rust_binary(
     name = "workers-authorization_example",
     crate_root = "examples/workers-authorization.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/workers-authorization.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

@@ -105,8 +105,17 @@ isolated_test(
 rust_test(
     name = "streaming_cases",
     crate_root = "tests/streaming.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/streaming.rs",
+    ],
+    compile_data = [
+        "tests/fixtures/grammar.md",
+        "tests/fixtures/grammar.txt",
+        "tests/fixtures/literals.md",
+        "tests/fixtures/literals.txt",
+        "tests/fixtures/selection.md",
+        "tests/fixtures/selection.txt",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -158,8 +167,11 @@ isolated_test(
 rust_test(
     name = "streaming_properties_cases",
     crate_root = "tests/streaming_properties.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "tests/streaming_properties.rs",
+        "tests/support/streaming_input.rs",
+    ],
+    compile_data = [
         "//rust/crates/markdown/fuzz:corpus/streaming/control-delimiter-context",
     ],
     edition = "2024",

@@ -350,7 +350,7 @@ isolated_test(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/agent/control_trace.rs",
         "src/agent/kernel.rs",
         "src/agent/machine.rs",
@@ -361,9 +361,43 @@ rust_test(
         "src/sync/atomic.rs",
         "src/sync/owned.rs",
         "src/tools/git/path.rs",
+        "tests/agent_control_mapping.rs",
+        "tests/agent_model.rs",
+        "tests/agent_model/awaiting.rs",
+        "tests/agent_model/control_trace.rs",
+        "tests/agent_model/corpus.rs",
+        "tests/agent_model/driver.rs",
+        "tests/agent_model/failed_publication.rs",
+        "tests/agent_model/hosting.rs",
+        "tests/agent_model/peers.rs",
+        "tests/agent_model/reply.rs",
+        "tests/agent_model/runtime.rs",
+        "tests/agent_model/slot_schedules.rs",
+        "tests/agent_model/steering.rs",
+        "tests/agent_model/wired.rs",
+        "tests/agent_model/wired/diagnostic.rs",
+        "tests/agent_model/wired/input_wait.rs",
+        "tests/agent_model/wired/journal_payloads.rs",
+        "tests/agent_model/wired/preparation.rs",
+        "tests/agent_model/wired/settlement.rs",
+        "tests/agent_model/wired/spawn_names.rs",
+        "tests/agent_model/wired/spawn_names/send_files.rs",
+        "tests/agent_model/wired/supervision.rs",
+        "tests/agent_model/wired/workspace_announcements.rs",
+        "tests/formal/agent_control.rs",
+        "tests/formal/agent_control_contract.rs",
+        "tests/formal/agent_control_model.rs",
+        "tests/git_executor.rs",
+        "tests/machine_workspace.rs",
+        "tests/machine_workspace_device.rs",
+        "tests/main.rs",
+        "tests/mcp_loom.rs",
+        "tests/skill_materializer_loom.rs",
+        "tests/target_lifecycle.rs",
+        "tests/target_lifecycle_native.rs",
         "//rust/crates/mcp:src/codec.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    compile_data = [
         "//rust/crates/harness-fuzz:corpus/agent_wait_selection/recorded-path.json",
     ],
     edition = "2024",
@@ -502,8 +536,9 @@ isolated_test(
 rust_test(
     name = "computed_ui_records_cases",
     crate_root = "tests/computed_ui_records.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/computed_ui_records.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -639,10 +674,10 @@ isolated_test(
 rust_binary(
     name = "agent-record-corpus_example",
     crate_root = "examples/agent-record-corpus.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True) + [
+    srcs = [
+        "examples/agent-record-corpus.rs",
         "tests/agent_model/corpus.rs",
     ],
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -751,8 +786,9 @@ rust_binary(
 rust_binary(
     name = "experiment-analysis_example",
     crate_root = "examples/experiment-analysis.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/experiment-analysis.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -861,8 +897,9 @@ rust_binary(
 rust_binary(
     name = "history-codec-corpus_example",
     crate_root = "examples/history-codec-corpus.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/history-codec-corpus.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -971,8 +1008,9 @@ rust_binary(
 rust_binary(
     name = "config-types_example",
     crate_root = "examples/config-types.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/config-types.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

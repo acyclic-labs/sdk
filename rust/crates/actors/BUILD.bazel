@@ -226,11 +226,24 @@ rust_binary(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/guest/state.rs",
+        "tests/descriptor_contract.rs",
+        "tests/digest_admission.rs",
+        "tests/guest_activation.rs",
+        "tests/guest_contract.rs",
+        "tests/guest_loom.rs",
+        "tests/guest_metadata.rs",
+        "tests/live_update.rs",
+        "tests/main.rs",
+        "tests/support/metadata.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    compile_data = [
         "//compatibility:descriptors/actors-v1.bin",
+        "tests/fixtures/actors/v1/actors-buf-v1.bin",
+        "tests/fixtures/actors/v1/adversarial_unknown_option.bin",
+        "tests/fixtures/guest-record.json",
+        "tests/fixtures/live-update-v1.json",
         "//rust/crates/auth:tests/fixtures/resource-identity-v1.json",
     ],
     edition = "2024",
@@ -322,8 +335,9 @@ isolated_test(
 rust_binary(
     name = "actors-authorization_example",
     crate_root = "examples/actors-authorization.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/actors-authorization.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -388,8 +402,9 @@ rust_binary(
 rust_binary(
     name = "actors-http-routes_example",
     crate_root = "examples/actors-http-routes.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/actors-http-routes.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -454,8 +469,9 @@ rust_binary(
 rust_binary(
     name = "actors-typescript-consumer_example",
     crate_root = "examples/actors-typescript-consumer.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/actors-typescript-consumer.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -520,8 +536,9 @@ rust_binary(
 rust_binary(
     name = "conformance-certificate_example",
     crate_root = "examples/conformance-certificate.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/conformance-certificate.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -586,8 +603,9 @@ rust_binary(
 rust_binary(
     name = "transport-conformance_example",
     crate_root = "examples/transport-conformance.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/transport-conformance.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

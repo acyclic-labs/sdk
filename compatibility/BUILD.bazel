@@ -207,8 +207,9 @@ isolated_test(
 rust_binary(
     name = "capture_descriptors_example",
     crate_root = "examples/capture_descriptors.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/capture_descriptors.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
