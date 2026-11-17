@@ -20,8 +20,6 @@
 //! within the admitted tree. The session carrier, not this module, owns
 //! admission, credit and fragmentation; no backend-specific route exists.
 
-use acyclic_harness_client as client;
-
 pub use acyclic_harness_core::filesystem::{
     attestation::{Attempt, Attestation, Attested, AttestedProvider, Attestor},
     hosting::{Bound, Placement, Prepared, RootRequest, RootSubmission, Turns, VerifiedCaller},

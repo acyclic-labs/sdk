@@ -66,7 +66,7 @@ thread_local! { static STEPS: std::cell::Cell<usize> = const { std::cell::Cell::
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{NameIndex, STEPS};
     use proptest::prelude::*;
 
     proptest! {

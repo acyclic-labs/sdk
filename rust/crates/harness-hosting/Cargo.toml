@@ -9,6 +9,9 @@ repository.workspace = true
 description = "The admitted agent-tree server behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-hosting"
 
+[features]
+test-support = []
+
 [dependencies]
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }

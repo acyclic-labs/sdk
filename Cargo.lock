@@ -635,6 +635,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
+ "proptest",
  "prost",
  "pulldown-cmark",
  "serde",

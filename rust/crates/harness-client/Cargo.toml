@@ -33,6 +33,9 @@ tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 url = "=2.5.8"
 
+[dev-dependencies]
+proptest.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-markdown = { path = "../markdown" }
 acyclic-stream = { path = "../stream", default-features = false, features = ["test-support"] }
