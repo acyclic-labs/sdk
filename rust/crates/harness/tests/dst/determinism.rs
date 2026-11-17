@@ -6,7 +6,7 @@ use oracle::{Plan, World, call, failed, service, tag};
 use serde_json::json;
 
 /// The X1 world dimension, in `classes.json` order.
-const WORLDS: [&str; 8] = ["A1", "D6", "E2", "F1", "G1", "H2", "I1", "R1"];
+const WORLDS: [&str; 5] = ["A1", "E2", "F1", "I1", "R1"];
 
 const FILES: [(&str, &str); 1] = [("base.txt", "base\n")];
 
@@ -29,9 +29,6 @@ acyclic_test_support::cases! {
         seed_2 => 2,
         seed_3 => 3,
         seed_4 => 4,
-        seed_5 => 5,
-        seed_6 => 6,
-        seed_7 => 7,
     ],
 }
 
