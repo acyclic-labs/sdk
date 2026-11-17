@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { bazelCommand } from "./bazel-executables.mjs";
+
+function makeDirectoriesWritable(directory) {
+  chmodSync(directory, 0o700);
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) makeDirectoriesWritable(join(directory, entry.name));
+  }
+}
 
 test("declared package files retain package-relative paths in a dependent workspace", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-node-modules-"));
@@ -33,6 +40,7 @@ local_path_override(module_name = "dependency", path = "dependency")
       assert.equal(readFileSync(join(root, output, "@scope/pkg", file), "utf8"), readFileSync(join(dependency, "pkg", file), "utf8"));
     }
   } finally {
+    if (existsSync(join(root, "output"))) makeDirectoriesWritable(join(root, "output"));
     rmSync(root, { recursive: true, force: true });
   }
 });
