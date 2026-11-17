@@ -84,6 +84,16 @@ pub fn services(enabled: bool) -> Builder {
         .emit_rerun_if_changed(false)
 }
 
+/// Generate native services, or messages alone for the WebAssembly target.
+///
+/// # Errors
+/// Returns an error when Cargo's target architecture is unavailable.
+pub fn target_services() -> Result<Builder, std::env::VarError> {
+    Ok(services(
+        std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32",
+    ))
+}
+
 /// Actors shares semantic wire aliases and exposes servers only on native hosts.
 #[must_use]
 pub fn actor_services() -> Builder {
