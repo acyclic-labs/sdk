@@ -5,10 +5,12 @@
 //! `ACYCLIC_TEST_BINARY` (the libtest executable), `ACYCLIC_TEST_ID` (its nextest binary id),
 //! `ACYCLIC_TEST_PACKAGE` (the Cargo package directory, each case's working directory as under
 //! Cargo), `ACYCLIC_TEST_SOURCE` (this SDK's own repository in the runfiles, which a consuming
-//! workspace sees as an external repository), `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit)
-//! and `ACYCLIC_TEST_TEMP_ROOT` (`memory`, or `disk` for a target tagged `requires-disk-tmp`; see
-//! `temporary_root`). A nextest profile's cases select through `ACYCLIC_TEST_ONLY` (run only cases
-//! whose name contains it) and
+//! workspace sees as an external repository), `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case
+//! limit) and `ACYCLIC_TEST_CPUS` (the CPUs the test reserved from Bazel as its `cpu:N` tag, and
+//! so the most cases it runs at once: never the host's count, which every test Bazel runs
+//! together would claim at once). `ACYCLIC_TEST_TEMP_ROOT` selects `memory`, or `disk` for a
+//! target tagged `requires-disk-tmp`; see `temporary_root`. A nextest profile's cases select
+//! through `ACYCLIC_TEST_ONLY` (run only cases whose name contains it) and
 //! `ACYCLIC_TEST_EXCLUDE` (newline-separated; skip cases whose name contains any), as
 //! nextest's `test(...)` default filters do; a profile whose cases nextest runs under a wrapper
 //! script names it as `ACYCLIC_TEST_WRAPPER`. Within those, cases are selected as libtest
@@ -66,6 +68,8 @@ struct Suite {
     /// This runner's own directory, where each case's temporary directory is made.
     temporary: RunnerDirectory,
     limit: Duration,
+    /// The CPUs the test reserved, and so the most cases it runs at once.
+    cpus: NonZero<usize>,
 }
 
 impl Suite {
@@ -99,6 +103,7 @@ fn main() -> ExitCode {
 /// the same name as its own input.
 const SETTINGS: [&str; 10] = [
     "ACYCLIC_TEST_BINARY",
+    "ACYCLIC_TEST_CPUS",
     "ACYCLIC_TEST_EXCLUDE",
     "ACYCLIC_TEST_ID",
     "ACYCLIC_TEST_LIMIT_SECONDS",
@@ -145,6 +150,9 @@ fn run() -> Result<usize, String> {
         )?)?,
         logs,
         limit: Duration::from_secs(limit),
+        cpus: setting("ACYCLIC_TEST_CPUS")?
+            .parse()
+            .map_err(|error| format!("ACYCLIC_TEST_CPUS: {error}"))?,
     };
     let selection: Vec<OsString> = env::var_os("TESTBRIDGE_TEST_ONLY")
         .into_iter()
@@ -222,7 +230,8 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
         .ok()
         .and_then(|workers| workers.parse().ok())
         .filter(|workers: &usize| *workers > 0)
-        .unwrap_or_else(|| thread::available_parallelism().map_or(1, NonZero::get))
+        .unwrap_or_else(|| suite.cpus.get())
+        .min(suite.cpus.get())
         .min(cases.len());
     let (sender, results) = mpsc::channel();
     thread::scope(|scope| {
@@ -632,6 +641,44 @@ mod tests {
         }
     }
 
+    /// The two ends of a FIFO named `meet`, which only `cases_run_at_once_up_to_the_reservation`
+    /// creates: opening either end blocks until the other is open, so both pass only when the
+    /// runner runs them at once.
+    #[cfg(unix)]
+    #[test]
+    fn rendezvous_reader() {
+        if acting() && Path::new("meet").exists() {
+            File::open("meet").unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rendezvous_writer() {
+        if acting() && Path::new("meet").exists() {
+            fs::OpenOptions::new().write(true).open("meet").unwrap();
+        }
+    }
+
+    /// A test runs as many cases at once as it reserved CPUs, and never more: the rendezvous
+    /// meets under a reservation of two, and under one each end waits out its limit alone.
+    #[cfg(unix)]
+    #[test]
+    fn cases_run_at_once_up_to_the_reservation() {
+        for (cpus, failed) in [(2, 0), (1, 2)] {
+            let mut reserved = suite(&format!("reservation-{cpus}"));
+            reserved.cpus = NonZero::new(cpus).unwrap();
+            reserved.limit = Duration::from_secs(1);
+            let fifo = Command::new("mkfifo")
+                .arg(reserved.package.join("meet"))
+                .status()
+                .unwrap();
+            assert!(fifo.success());
+            let (count, out) = report(&reserved, &["tests::rendezvous_"]);
+            assert_eq!(count, failed, "{cpus} CPU(s): {out}");
+        }
+    }
+
     /// A case started by a runner whose own settings are set: it sees its source root,
     /// executables and own resolved temporary directory, and none of the runner's settings.
     #[test]
@@ -857,6 +904,7 @@ mod tests {
                 .unwrap(),
                 logs: root,
                 limit: Duration::from_secs(10),
+                cpus: NonZero::<usize>::MIN,
             };
             let mut out = Vec::new();
             let failed = run_suite(
@@ -913,6 +961,7 @@ mod tests {
             .unwrap(),
             logs: dir,
             limit: Duration::from_secs(2),
+            cpus: NonZero::new(2).unwrap(),
         }
     }
 
