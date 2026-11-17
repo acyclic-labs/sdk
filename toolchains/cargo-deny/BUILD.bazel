@@ -1,9 +1,15 @@
-load(":deny_test.bzl", "deny_test")
+load(":deny_test.bzl", "advisory_index")
+load("@rules_rust//rust:defs.bzl", "rust_test")
 
-exports_files(["index-lock.json", "registry.bzl", "repositories.bzl", "snapshot.mjs", "offline.mjs"])
+advisory_index(name = "advisory_db")
 
-deny_test(
+rust_test(
     name = "offline_test",
-    srcs = ["//:Cargo.toml", "//:.cargo/config.toml", "//:deny.toml", "//:workspace-manifests", "//:workspace-rust-sources"],
-    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    srcs = ["audit.rs"],
+    data = [":advisory_db", "//:cargo-bazel-lock.json"],
+    env = {
+        "ADVISORY_INDEX": "$(rootpath :advisory_db)",
+        "CRATE_LOCK": "$(rootpath //:cargo-bazel-lock.json)",
+    },
+    deps = ["@sdk_crates//semver-1.0.28", "@sdk_crates//serde_json-1.0.154"],
 )

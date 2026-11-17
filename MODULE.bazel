@@ -57,6 +57,6 @@ include("//:cargo.MODULE.bazel")
 sdk_compilers = use_extension("//toolchains/sdk:repositories.bzl", "sdk_compilers", dev_dependency = True)
 use_repo(sdk_compilers, "sdk_compilers")
 
-# Security policy uses a pinned executable and a pinned advisory snapshot.
+# Security policy uses a pinned advisory snapshot.
 cargo_deny = use_extension("//toolchains/cargo-deny:repositories.bzl", "cargo_deny", dev_dependency = True)
-use_repo(cargo_deny, "cargo_deny_binary", "cargo_deny_advisories", "cargo_deny_registry")
+use_repo(cargo_deny, "cargo_deny_advisories")
