@@ -128,7 +128,7 @@ impl LocalHarness {
                 .as_ref()
                 .and_then(|profile| profile.topology.as_ref())
             {
-                tools.retain(|tool| topology.offers_tool(&tool.name, agent.parent.is_none()));
+                tools.retain(|tool| topology.offers_tool(&tool.name, agent.path.depth()));
             }
             let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
             ContextEpoch::open(publisher, operation, self.limits, || {

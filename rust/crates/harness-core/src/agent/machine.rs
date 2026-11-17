@@ -2170,20 +2170,22 @@ async fn apply_spawns(
             index += 1;
             continue;
         };
+        let topology = state
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.topology.as_ref());
+        let within_lifetime = topology
+            .and_then(|topology| topology.spawn_limit(state.parent.is_none()))
+            .is_none_or(|limit| {
+                (state.spawned_children.len() as u64).saturating_add(state.reserved_spawns) < limit
+            });
+        let within_width =
+            topology.is_none_or(|topology| topology.admits_children(state.open_children.len()));
         let opened = match state.spawned(intent) {
             Ok(child)
                 if !state.closed
                     && (state.spawned_children.contains(&child).await?
-                        || state
-                            .profile
-                            .as_ref()
-                            .and_then(|profile| profile.topology.as_ref())
-                            .and_then(|topology| topology.spawn_limit(state.parent.is_none()))
-                            .is_none_or(|limit| {
-                                (state.spawned_children.len() as u64)
-                                    .saturating_add(state.reserved_spawns)
-                                    < limit
-                            })) =>
+                        || (within_lifetime && within_width)) =>
             {
                 state.spawned_children.insert(&child).await?;
                 state.open_children.insert(&child).await?;

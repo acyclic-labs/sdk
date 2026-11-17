@@ -2,7 +2,7 @@
 
 Orchestrators are the root and user-facing role and can spawn orchestrators. Shipped roles inherit the session model. A model configured in a role's `AGENT.md` overrides the inherited model and explicit spawn selections. Fixed-provider embeddings must serve that model or use `LocalHarnessConfig::resolving` to resolve it.
 
-`--topology single` selects one coding root with no spawn, send, archive or wait tools and no delegation instructions. Spawn-capable roles share the atomic, parallel fork, speculative fork and sequence decision procedure. Every mode prioritizes correctness, then completion time; cost is not a goal.
+`--topology single` selects one coding root with no spawn, send, archive or wait tools and no delegation instructions. `--max-depth D` omits the spawn tool from every agent at depth D (the root is zero), so the tree cannot grow past it. `--max-children N` caps open children per agent. Both caps are unbounded when absent, and `--topology-file FILE` reads the same version-one topology JSON. Spawn-capable roles share the atomic, parallel fork, speculative fork and sequence decision procedure. Every mode prioritizes correctness, then completion time; cost is not a goal.
 
 Only the orchestrator role grants the question plugin. The plugin owns the ask declaration, input-fence recognition and attention policy. TUI, web and IDE hosts select it when starting a session with a user surface; non-interactive hosts leave it disabled. CLI --questions=true/false overrides selection. Browser session options user_surface and questions provide the same start-time choice. Later attachment never changes a session's toolset. Ordinary messages remain available.
 
