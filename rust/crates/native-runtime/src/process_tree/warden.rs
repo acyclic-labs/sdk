@@ -87,6 +87,12 @@ fn host_is_owned(pid: Pid) -> bool {
     if parent != Some(sys::getpid()) {
         return false;
     }
+    // The packet-device host leads its own process group. A nested warden
+    // runs the same image but belongs to the runner's group, so it is not a
+    // host and must still be retired with the tree.
+    if sys::getpgid(pid) != Ok(pid) {
+        return false;
+    }
     let Some(exe) = host_path(pid, b"/exe\0", &mut path) else {
         return false;
     };
