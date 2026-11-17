@@ -104,11 +104,12 @@ impl DeferredReply {
         }
         match outcome {
             PacketDevicePublication::Published => {}
-            PacketDevicePublication::Rejected(libc::ENOENT) => {
+            // A rejected frame published no bytes. Release this request's
+            // completion without turning its rejection into a session failure.
+            PacketDevicePublication::Rejected(_) => {
                 let request = PacketRequest::parse(&self.request)?;
                 completion.discard_rejected(&self.core, &request, &self.response)?;
             }
-            PacketDevicePublication::Rejected(errno) => return Err(errno.into()),
         }
         // Physical completion, including certified kernel rejection, releases
         // the original view, handle, work and packet storage together.
