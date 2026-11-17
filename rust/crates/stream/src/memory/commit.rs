@@ -308,22 +308,18 @@ impl MemoryStream {
                     &mut HistoryIndexWork(self),
                 )?,
             }
+        } else if let Some(before) = before {
+            lineage.cap(before)
         } else {
-            match before {
-                Some(before) => lineage.cap(before),
-                None => {
-                    let (index, extends) =
-                        lineage.base(target, tail, &mut HistoryIndexWork(self))?;
-                    lineage.publish(
-                        target,
-                        tail,
-                        extends,
-                        false,
-                        index,
-                        &mut HistoryIndexWork(self),
-                    )?
-                }
-            }
+            let (index, extends) = lineage.base(target, tail, &mut HistoryIndexWork(self))?;
+            lineage.publish(
+                target,
+                tail,
+                extends,
+                false,
+                index,
+                &mut HistoryIndexWork(self),
+            )?
         };
         if let Some(before) = before {
             keys = keys.cap(before);
