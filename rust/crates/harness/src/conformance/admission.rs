@@ -177,14 +177,7 @@ async fn admission(
             .volume()?
             .capability(VolumeOperation::Read, &mut None)?,
     ];
-    let acyclic_harness_core::conversation::VolumeOwner::Agent(owner) = binding.volume()?.owner()
-    else {
-        return Err("private fixture has no agent owner".into());
-    };
-    let journal = acyclic_harness_core::conversation::journal_volume(
-        binding.volume()?.provider().clone(),
-        &AgentId::from_bytes(owner.into_bytes()),
-    )?;
+    let journal = journal(binding)?;
     grants.push(acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned());
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(journal.capability(operation, &mut None)?);
@@ -280,6 +273,18 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         )
         .await
 }
+/// The implicit journal of the agent that owns `binding`'s volume.
+fn journal(binding: &WorkspaceEntry) -> Result<acyclic_harness_core::conversation::VolumeRef> {
+    let acyclic_harness_core::conversation::VolumeOwner::Agent(owner) = binding.volume()?.owner()
+    else {
+        return Err("private fixture has no agent owner".into());
+    };
+    Ok(acyclic_harness_core::conversation::journal_volume(
+        binding.volume()?.provider().clone(),
+        &AgentId::from_bytes(owner.into_bytes()),
+    )?)
+}
+
 async fn check_scope(
     root: &AuthorityRoot,
     admission: &TurnAdmission,
@@ -307,22 +312,31 @@ async fn check_scope(
             let TurnAdmission::Admitted { scope, .. } = admission else {
                 return Err("admitted control lost its scope".into());
             };
+            // The workload keeps every admitted grant except host custody: the
+            // host role and the journal write. It reads its journal; only the
+            // host writes it.
+            let journal_write = journal(binding)?.capability(VolumeOperation::Write, &mut None)?;
             let guest = Capabilities::new(
                 scope
                     .capabilities()
                     .iter()
                     .filter(|label| {
                         *label != acyclic_harness_core::contract::capability::HARNESS_HOST
+                            && **label != journal_write
                     })
                     .map(str::to_owned),
             );
-            if authority.scope.capabilities() != &guest
-                || authority.scope.agent()
-                    != Some(acyclic_harness_core::AgentId::from_bytes(
-                        path.id().to_bytes(),
-                    ))
-            {
-                return Err("delegated scope widened or lost its agent binding".into());
+            let agent = Some(acyclic_harness_core::AgentId::from_bytes(
+                path.id().to_bytes(),
+            ));
+            if authority.scope.capabilities() != &guest || authority.scope.agent() != agent {
+                return Err(format!(
+                    "delegated scope is not the admitted workload scope: granted={:?} \
+                     expected={guest:?}, agent={:?} expected={agent:?}",
+                    authority.scope.capabilities(),
+                    authority.scope.agent(),
+                )
+                .into());
             }
             Ok(acyclic_harness_core::Error::Invalid(EXECUTOR_SENTINEL.into()).to_string())
         }
