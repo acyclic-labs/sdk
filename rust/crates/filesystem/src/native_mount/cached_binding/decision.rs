@@ -16,42 +16,33 @@ mod proofs {
     use super::cached_binding_decision;
     use core::cell::Cell;
 
-    struct Lease<'a>(&'a Cell<bool>);
-
-    impl Drop for Lease<'_> {
-        fn drop(&mut self) {
-            self.0.set(false);
-        }
-    }
-
     #[kani::proof]
     #[kani::unwind(1)]
-    fn decision_requires_a_binding_and_lease_and_checks_each_path_at_most_once() {
+    fn selection_preserves_binding_errors_and_exact_callback_counts() {
         let (present, admitted, current, unchanged): (bool, bool, bool, bool) = kani::any();
-        let live = Cell::new(false);
+        let (binding, error): (u8, u8) = kani::any();
         let lease_calls = Cell::new(0_u8);
         let current_calls = Cell::new(0_u8);
         let fallback_calls = Cell::new(0_u8);
         let matched = cached_binding_decision(
-            present.then_some(()),
+            present.then_some(binding),
             || {
                 lease_calls.set(lease_calls.get() + 1);
-                live.set(admitted);
-                if admitted { Ok(Lease(&live)) } else { Err(()) }
+                if admitted { Ok(()) } else { Err(error) }
             },
-            |()| {
-                kani::assert(live.get(), "lease covers current binding check");
+            |value| {
+                kani::assert(value == binding, "current receives the original binding");
                 current_calls.set(current_calls.get() + 1);
                 current
             },
-            |()| {
-                kani::assert(live.get(), "lease covers fallback binding check");
+            |value| {
+                kani::assert(value == binding, "fallback receives the original binding");
                 fallback_calls.set(fallback_calls.get() + 1);
                 unchanged
             },
         );
         let expected = if present && !admitted {
-            Err(())
+            Err(error)
         } else {
             Ok(present && (current || unchanged))
         };
@@ -67,6 +58,40 @@ mod proofs {
         kani::assert(
             fallback_calls.get() == u8::from(present && admitted && !current),
             "fallback only after a leased current miss",
+        );
+    }
+
+    struct Lease<'a>(&'a Cell<bool>);
+
+    impl Drop for Lease<'_> {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn lease_covers_both_callbacks_and_is_released_after_decision() {
+        let (present, admitted, current, unchanged): (bool, bool, bool, bool) = kani::any();
+        let live = Cell::new(false);
+        let _ = cached_binding_decision(
+            present.then_some(()),
+            || {
+                if admitted {
+                    live.set(true);
+                    Ok(Lease(&live))
+                } else {
+                    Err(())
+                }
+            },
+            |()| {
+                kani::assert(live.get(), "lease covers current binding check");
+                current
+            },
+            |()| {
+                kani::assert(live.get(), "lease covers fallback binding check");
+                unchanged
+            },
         );
         kani::assert(!live.get(), "lease released after decision");
     }
