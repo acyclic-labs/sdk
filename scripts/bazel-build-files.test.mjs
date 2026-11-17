@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 // A one-member workspace with a local path crate and the repository's own toolchain and config inputs.
 // `module` adds the root MODULE.bazel whose resolution a write refreshes.
@@ -158,21 +159,31 @@ test("a profile's run wrapper starts each of its target's cases, with the siblin
 test("a write refreshes the module lockfile through the selected Bazel, a check never starts Bazel, and a failed refresh fails", () => {
   const { root, run } = fixture({ module: true });
   try {
-    const log = join(root, "bazel-args.txt");
-    const bazel = join(root, "fake-bazel");
-    // The selected Bazel is the only one generation may run, so it records every invocation.
-    writeFileSync(bazel, `#!/bin/sh\nprintf "%s\\n" "$@" >> "${log}"\nexit "\${FIXTURE_STATUS:-0}"\n`);
-    chmodSync(bazel, 0o755);
-    const written = run("write", { ACYCLIC_BAZEL: bazel });
+    const log = join(root, "bazel-args.log");
+    // Windows cannot execute a shebang script, so the selected Bazel is this Node executable running a
+    // recorder that answers only the `mod` invocation: the fixture runs on every platform.
+    const recorder = join(root, "fake-bazel.mjs");
+    writeFileSync(recorder, `import { appendFileSync } from "node:fs";
+if (process.argv[1] === "mod" && process.argv[2] === "deps") {
+  appendFileSync(process.env.FIXTURE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+  process.exit(Number(process.env.FIXTURE_STATUS ?? 0));
+}
+`);
+    const env = {
+      ACYCLIC_BAZEL: process.execPath,
+      FIXTURE_LOG: log,
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(recorder).href}`].filter(Boolean).join(" "),
+    };
+    const written = run("write", env);
     assert.equal(written.status, 0, written.stderr);
-    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["mod", "deps", "--lockfile_mode=update"]);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)), [["mod", "deps", "--lockfile_mode=update"]]);
     // Check mode verifies the checkout and never starts Bazel: its selected command does not exist.
     rmSync(log);
-    const checked = run("check", { ACYCLIC_BAZEL: join(root, "bazel-must-not-start") });
+    const checked = run("check", { ...env, ACYCLIC_BAZEL: join(root, "bazel-must-not-start") });
     assert.equal(checked.status, 0, checked.stderr);
     assert.equal(existsSync(log), false, "check mode started Bazel");
     // A lockfile the selected Bazel cannot refresh fails the write instead of passing with a stale one.
-    const failed = run("write", { ACYCLIC_BAZEL: bazel, FIXTURE_STATUS: "7" });
+    const failed = run("write", { ...env, FIXTURE_STATUS: "7" });
     assert.notEqual(failed.status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
