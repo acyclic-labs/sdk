@@ -373,6 +373,9 @@ impl LocalStream {
                           (stream, frames, cursor): &mut (Self, I, u64)| {
             let mut written = 0_u64;
             for mut frame in frames.by_ref() {
+                acyclic_native_runtime::cost::charge(
+                    acyclic_native_runtime::cost::Cost::JournalAppend,
+                );
                 #[cfg(feature = "test-support")]
                 if let Some(cut) = &cut
                     && !cut.admit()

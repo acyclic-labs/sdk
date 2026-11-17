@@ -25,6 +25,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Runs `future` as one named cost-ledger operation on native targets. Browser
+/// builds have no native runtime, so they await the original future.
+pub(crate) async fn cost_operation<F: std::future::Future>(
+    name: &'static str,
+    future: F,
+) -> F::Output {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        acyclic_native_runtime::cost::operation(name, future).await
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = name;
+        future.await
+    }
+}
+
 mod native_stock;
 use native_stock::*;
 pub(crate) use native_stock::{

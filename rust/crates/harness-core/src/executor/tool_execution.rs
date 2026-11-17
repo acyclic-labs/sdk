@@ -300,6 +300,32 @@ impl<'io> StockExecution<'io> {
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
+        let name = tool_operation_name(&invocation.name);
+        super::cost_operation(
+            name,
+            self.settle_tool_call_inner(
+                journal,
+                operation_id,
+                step,
+                (invocation, pinned),
+                invocation_index,
+                prior_messages,
+                _hook_context,
+            ),
+        )
+        .await
+    }
+
+    async fn settle_tool_call_inner(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
+        invocation_index: usize,
+        prior_messages: &mut Vec<ModelMessage>,
+        _hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         self.verify_invocation_binding(operation_id, &invocation, pinned.as_ref())?;
         let metadata = metadata_for_call(
             prior_messages,
@@ -1612,5 +1638,22 @@ mod cancellation_tests {
             ));
         }
         Ok(())
+    }
+}
+
+/// The cost-ledger operation a tool call is charged to.
+fn tool_operation_name(name: &str) -> &'static str {
+    match name.split('@').next().unwrap_or(name) {
+        "write" => "write",
+        "edit" => "edit",
+        "remove" => "remove",
+        "read" => "read",
+        "send" => "send",
+        "spawn" => "spawn",
+        "wait" => "wait",
+        "fs" => "fs_diff",
+        "shell" => "shell",
+        "code" => "code",
+        _ => "tool",
     }
 }

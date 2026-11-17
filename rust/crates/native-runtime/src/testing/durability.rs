@@ -266,8 +266,6 @@ pub fn durable_write(
     let Some(context) = Context::simulation() else {
         return write(bytes);
     };
-    super::ledger::charge(crate::cost::Cost::JournalAppend, 0);
-    super::ledger::charge(crate::cost::Cost::Copy, bytes.len() as u64);
     let _open = Open::enter(operation);
     let call = begin(context.schedule, operation, bytes.len())?;
     let result = call.before().and_then(|()| {
@@ -288,6 +286,9 @@ pub fn durable_write(
         };
         write(offered)
     });
+    if let Ok(written) = &result {
+        super::ledger::charge(crate::cost::Cost::Copy, *written as u64);
+    }
     call.finish(&result)?;
     call.after(&result)?;
     result
