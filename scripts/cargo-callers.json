@@ -35,7 +35,6 @@
   "scripts/bazel-build-files.mjs",
   "scripts/bench-client-requests.mjs",
   "scripts/build-host-fixture.sh",
-  "scripts/build-hosted-actors-conformance.mjs",
   "scripts/build-native-family.mjs",
   "scripts/build-product.mjs",
   "scripts/build-wasm.mjs",

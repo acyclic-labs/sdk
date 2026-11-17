@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createNativeProducer } from "./build-native-family.mjs";
-import { nativeFamily } from "./native-family.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 function run(command, args, env = process.env) {

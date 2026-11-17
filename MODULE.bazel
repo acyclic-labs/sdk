@@ -3,6 +3,7 @@ module(name = "acyclic_sdk")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_rust", version = "0.75.0")
+bazel_dep(name = "rules_rust_wasm_bindgen", version = "0.75.0")
 bazel_dep(name = "toolchains_llvm", version = "1.13.0")
 bazel_dep(name = "toolchains_musl", version = "0.2.0")
 
@@ -26,8 +27,15 @@ git_override(
 
 # Pinned C/C++ toolchain for build scripts, -sys crates and linking.
 llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm", dev_dependency = True)
-llvm.toolchain(llvm_version = "22.1.8")
+LLVM_VERSION = "22.1.8"
+llvm.toolchain(llvm_version = LLVM_VERSION)
 use_repo(llvm, "llvm_toolchain", "llvm_toolchain_llvm")
+
+# Browser modules need the same compiler when this SDK is a dependency too.
+# Its distinct repository name keeps a consumer's native toolchain independent.
+wasm_llvm = use_repo_rule("@toolchains_llvm//toolchain:rules.bzl", "llvm")
+wasm_llvm(name = "wasm_llvm_distribution", llvm_versions = {"": LLVM_VERSION})
+register_toolchains("//toolchains/browser:wasm_cc_toolchain", "//toolchains/browser:sdk_wasm_bindgen_toolchain")
 
 # The musl C/C++ toolchain: musl's headers, CRT and libc for the //:linux_musl platform's build
 # scripts, -sys crates and static links. It is registered first, because the LLVM toolchain matches
@@ -46,6 +54,9 @@ node = use_extension("//:node_repo.bzl", "node", dev_dependency = True)
 node.node(version = "24.22.2")
 use_repo(node, "nodejs")
 
+bun = use_extension("//:bun_repo.bzl", "bun", dev_dependency = True)
+use_repo(bun, "bunjs")
+
 # Standalone production proofs use the verifier's own pinned compiler.
 kani = use_extension("//toolchains/kani:repositories.bzl", "kani", dev_dependency = True)
 use_repo(kani, "kani")
@@ -56,3 +67,5 @@ include("//:cargo.MODULE.bazel")
 # Artifact conformance executes the published Cargo and Rustdoc producers.
 sdk_compilers = use_extension("//toolchains/sdk:repositories.bzl", "sdk_compilers", dev_dependency = True)
 use_repo(sdk_compilers, "sdk_compilers")
+wasm_bindgen_cli = use_repo_rule("//:wasm_bindgen.bzl", "wasm_bindgen_cli")
+wasm_bindgen_cli(name = "wasm_bindgen")

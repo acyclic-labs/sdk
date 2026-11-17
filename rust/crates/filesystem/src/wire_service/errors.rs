@@ -397,20 +397,7 @@ fn native_code(error: &crate::NativeTreeMaterializationError) -> Code {
 }
 
 fn objects_service_code(error: &acyclic_objects::Error) -> Code {
-    use acyclic_objects::wire::ErrorCode as E;
-    match error.code {
-        E::InvalidArgument | E::DigestMismatch => Code::InvalidArgument,
-        E::NotFound => Code::NotFound,
-        E::MissingReference | E::Conflict | E::RevisionForeign => Code::FailedPrecondition,
-        E::AccessDenied => Code::PermissionDenied,
-        E::QuotaExceeded => Code::ResourceExhausted,
-        E::Unavailable | E::Suspended | E::OutcomeUnknown => Code::Unavailable,
-        E::Corrupt => Code::DataLoss,
-        E::Unspecified => Code::Internal,
-        E::Unsupported => Code::Unimplemented,
-        E::RangeNotSatisfiable => Code::OutOfRange,
-        E::DeadlineElapsed => Code::DeadlineExceeded,
-    }
+    Code::from_i32(error.status_code())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

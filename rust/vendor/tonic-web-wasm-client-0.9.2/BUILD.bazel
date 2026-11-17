@@ -4,6 +4,8 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 
 FEATURES = []
 
+WASM_FEATURES = []
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-tonic-web-wasm-client","CARGO_PKG_DESCRIPTION":"grpc-web implementation for use by tonic clients in browsers via webassembly","CARGO_PKG_REPOSITORY":"https://github.com/devashishdxt/tonic-web-wasm-client","CARGO_PKG_LICENSE":"MIT/Apache-2.0"}
 
 extract_cargo_lints(
@@ -25,6 +27,42 @@ rust_library(
         "--check-cfg=cfg(feature, values())",
     ],
     lint_config = ":lints",
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "tonic_web_wasm_client_wasm",
+    crate_name = "tonic_web_wasm_client",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "@wasm_crates//base64_0_23_1-0.23.1",
+        "@wasm_crates//bytes-1.12.1",
+        "@wasm_crates//futures-util-0.3.34",
+        "@wasm_crates//http-1.5.0",
+        "@wasm_crates//http-body-1.1.0",
+        "@wasm_crates//http-body-util-0.1.5",
+        "@wasm_crates//httparse-1.10.1",
+        "@wasm_crates//js-sys-0.3.94",
+        "@wasm_crates//pin-project-1.1.13",
+        "@wasm_crates//thiserror-2.0.21",
+        "@wasm_crates//tonic-0.14.9",
+        "@wasm_crates//tower-service-0.3.3",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+        "@wasm_crates//wasm-bindgen-futures-0.4.67",
+        "@wasm_crates//wasm-streams-0.7.0",
+        "@wasm_crates//web-sys-0.3.94",
+    ],
     visibility = ["//visibility:public"],
 )
 

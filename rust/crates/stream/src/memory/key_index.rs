@@ -24,15 +24,12 @@ struct KeyPin {
 }
 
 impl KeyTree {
-    fn key_pin(
-        &self,
-        tail: u64,
-        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
-    ) -> Result<KeyPin, StreamError> {
-        Ok(KeyPin {
-            index: self.pin(tail, work)?,
-            before: self.before.map_or(tail, |before| before.min(tail)),
-        })
+    fn key_pin(&self, tail: u64) -> KeyPin {
+        let before = self.before.map_or(tail, |before| before.min(tail));
+        KeyPin {
+            index: self.newest().cap(before),
+            before,
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -87,8 +84,7 @@ impl KeyTree {
         before: u64,
         examine: &mut impl FnMut(u64) -> Result<(), StreamError>,
     ) -> Result<Option<u64>, StreamError> {
-        self.key_pin(before, &mut ReadOnlyWork)?
-            .seek(read, from, before, examine)
+        self.key_pin(before).seek(read, from, before, examine)
     }
 }
 

@@ -84,6 +84,23 @@ fn managed_usage_rejects_missing_lineage_authority() {
 }
 
 #[test]
+fn local_response_credential_refusal_keeps_recovery_identity() {
+    let key = IdempotencyKey::from_digest([1; 32]);
+    let mut response = Status::permission_denied("credential expired");
+    response.set_source(std::sync::Arc::new(
+        acyclic_auth::credential::ResponseCredentialError::from_browser(),
+    ));
+    assert_eq!(
+        mutation_error(key, response).classification(),
+        &ProviderError::Indeterminate(key)
+    );
+    assert_eq!(
+        mutation_error(key, Status::permission_denied("server denied")).classification(),
+        &ProviderError::Rejected("server denied".into())
+    );
+}
+
+#[test]
 fn rpc_failures_preserve_original_causes_and_outcomes() {
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")
         .unwrap_or_else(|_| unreachable!());
