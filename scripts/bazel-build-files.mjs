@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { toml, trackedFiles } from "./policy-core.mjs";
+import { toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
 // script, and --root points the same generator at another Cargo workspace (Cloud).
@@ -84,6 +84,7 @@ const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
+tomlFiles(root, [...new Set(["Cargo.toml", "rust-toolchain.toml", ...base.packages.filter(p => p.source === null).map(p => path.relative(root, p.manifest_path))])]);
 // Local path crates are first-party: their BUILD files are generated here, so the
 // crate universe must not carry them as local path dependencies. Cargo tests only the
 // workspace, so a path crate renders its library and build script alone.
