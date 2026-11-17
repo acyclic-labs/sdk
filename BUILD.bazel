@@ -145,6 +145,12 @@ wasm_package(
     visibility = ["//visibility:public"],
 )
 filegroup(
+    name = "workspace_acyclic_labs_stream",
+    srcs = glob(["typescript/packages/stream/**"], exclude = ["typescript/packages/stream/generated/wasm/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
     name = "workspace_acyclic_labs_core",
     srcs = glob(["typescript/packages/core/**"], exclude = ["typescript/packages/core/generated/wasm/**"], allow_empty = True),
     visibility = ["//visibility:public"],
@@ -159,8 +165,13 @@ filegroup(
 node_modules(
     name = "wasm_stream_node_modules",
     packages = {
+        ":workspace_acyclic_labs_stream": "@acyclic-labs/stream=typescript/packages/stream",
         ":workspace_acyclic_labs_core": "@acyclic-labs/core=typescript/packages/core",
+        "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
+        "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
+        "@npm_workspace_connectrpc_connect_node//:files": "@connectrpc/connect-node=",
         ":workspace_acyclic_labs_auth": "@acyclic-labs/auth=typescript/packages/auth",
+        ":wasm_stream_generated": "@acyclic-labs/stream/generated/wasm=",
         ":wasm_auth_generated": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],

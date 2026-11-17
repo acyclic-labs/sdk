@@ -173,7 +173,6 @@ const wasmGenerated = wasmSelections.map(selection => {
     entry: wasmArtifacts.get(selection.packageName),
   };
 });
-const wasmGeneratedTarget = name => `//:wasm_${name}_generated`;
 const wasmNodeModulesTarget = name => `//:wasm_${name}_node_modules`;
 const workspaceTargetName = name => `workspace_${name.replaceAll("@", "").replaceAll("/", "_").replaceAll("-", "_")}`;
 const starlarkDict = entries => `{\n${entries.map(([key, value]) => `        ${q(key)}: ${q(value)},\n`).join("")}    }`;
@@ -185,8 +184,9 @@ for (const file of execFileSync("git", ["ls-files", "typescript/packages/*/packa
 }
 // Assemble the complete locked runtime closure, including the consumer itself.
 // Its sources and generated artifacts then share one physical package directory.
-const npmLock = JSON.parse(execFileSync("bun", ["-e", "process.stdout.write(JSON.stringify(Bun.JSONC.parse(await Bun.stdin.text())))"],
-  { input: fs.readFileSync(path.join(root, "bun.lock")), encoding: "utf8" }));
+const npmLock = wasmSelections.some(selection => selection.wasmPackage)
+  ? JSON.parse(execFileSync("bun", ["-e", "process.stdout.write(JSON.stringify(Bun.JSONC.parse(await Bun.stdin.text())))"],
+    { input: fs.readFileSync(path.join(root, "bun.lock")), encoding: "utf8" })) : undefined;
 const npmRepositories = new Map();
 const wasmNodeModules = new Map();
 for (const selection of wasmSelections) {
@@ -993,7 +993,7 @@ function moduleFile() {
     ![...members].some(id => packages.get(id).name === name) && packageOpt(name) !== undefined ? [[name, packageOpt(name)]] : []);
   return [
     HEADER,
-    `npm_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")\n`,
+    npmRepositories.size ? `npm_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")\n` : "",
     ...[...npmRepositories].sort().map(([repository, pkg]) => rule("npm_archive", [
       ["name", q(repository)],
       ["urls", list([`https://registry.npmjs.org/${pkg.name}/-/${pkg.name.split("/").at(-1)}-${pkg.version}.tgz`])],
