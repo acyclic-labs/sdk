@@ -78,6 +78,7 @@ struct Session {
     control_pending: [u8; 64],
     control_filled: usize,
     control_sent: usize,
+    control_registered: bool,
 }
 
 enum Response {
@@ -223,6 +224,7 @@ impl Session {
                 control_pending: [0; 64],
                 control_filled: 0,
                 control_sent: 0,
+                control_registered: true,
             })
         };
         Ok(base)
@@ -277,13 +279,15 @@ impl Session {
 
     fn interest(&mut self, queue: Fd) -> Result<(), Errno> {
         let base = ptr::from_ref(self).addr() as u64;
-        sys::interest(
-            queue,
-            self.control,
-            false,
-            self.control_events(),
-            base | CONTROL,
-        )?;
+        if self.control_registered {
+            sys::interest(
+                queue,
+                self.control,
+                false,
+                self.control_events(),
+                base | CONTROL,
+            )?;
+        }
         if self.waiting_helper {
             sys::interest(
                 queue,
@@ -745,6 +749,7 @@ impl Session {
                 }
             }
             sys::unwatch(queue, self.control);
+            self.control_registered = false;
             if let Some(input) = self.input.as_mut() {
                 input.filled = 0;
                 input.sent = 0;

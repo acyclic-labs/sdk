@@ -61,6 +61,7 @@ const LIMITS: u32 = 16;
 
 /// The warden's host-registration pipe, inherited by the program.
 const HOST_PIDS: RawFd = 3;
+const HOST_MAGIC: [u8; 4] = *b"ACH0";
 
 /// Appends current launch settings restored after the static runner's exec.
 /// Kernel security restrictions are inherited by a fresh runner on every
@@ -805,10 +806,25 @@ extern "C" fn host_exec(argument: *mut libc::c_void) -> libc::c_int {
     }
 }
 
-/// A warded program inherits the warden's registration pipe at fd 3.
+/// A warded program inherits the warden's registration socket at fd 3. The
+/// warden writes a magic frame before the program starts, so an unrelated
+/// pipe or socket at the same descriptor is not mistaken for it.
 fn has_warden() -> bool {
-    use std::os::unix::fs::FileTypeExt as _;
-    std::fs::metadata("/proc/self/fd/3").is_ok_and(|metadata| metadata.file_type().is_fifo())
+    let mut magic = [0_u8; 4];
+    // SAFETY: fd 3 is this process's descriptor; the buffer is writable.
+    let peek = unsafe {
+        libc::recv(
+            HOST_PIDS,
+            magic.as_mut_ptr().cast(),
+            magic.len(),
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if peek != 4 || magic != HOST_MAGIC {
+        return false;
+    }
+    // SAFETY: the same descriptor and buffer; consume the magic frame.
+    unsafe { libc::recv(HOST_PIDS, magic.as_mut_ptr().cast(), magic.len(), 0) == 4 }
 }
 
 /// A top-level owner has no warden to register with and no tree custody to
@@ -936,17 +952,8 @@ fn host_frame(status: &mut File) -> io::Result<Option<(u8, i32)>> {
 /// The warden passes this pipe to the program at a fixed descriptor; a
 /// top-level owner has no warden and no pipe, so there is nothing to tell.
 fn register_host(host: i32) {
-    // SAFETY: fstat only reads this process's descriptor.
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstat only reads this process's descriptor into initialized
-    // storage.
-    if unsafe { libc::fstat(HOST_PIDS, &raw mut stat) } != 0
-        || stat.st_mode & libc::S_IFMT != libc::S_IFIFO
-    {
-        return;
-    }
-    // SAFETY: the warden's pipe is open for writing; a full pipe only delays
-    // registration, and the host is still a child of the warden.
+    // SAFETY: `has_warden` identified the warden's registration socket at
+    // this descriptor; a full socket only delays registration.
     unsafe {
         libc::write(HOST_PIDS, (&raw const host).cast(), 4);
     }

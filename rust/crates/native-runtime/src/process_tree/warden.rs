@@ -19,6 +19,8 @@ use core::ffi::CStr;
 #[cfg(target_os = "linux")]
 const HOST_PIDS: Fd = 3;
 #[cfg(target_os = "linux")]
+const HOST_MAGIC: [u8; 4] = *b"ACH0";
+#[cfg(target_os = "linux")]
 const MAXIMUM_HOSTS: usize = 8;
 
 #[cfg(target_os = "linux")]
@@ -244,7 +246,7 @@ pub(super) fn enter(
     // The program registers packet-device hosts it starts, so retirement
     // leaves them alive and reaps them when they exit.
     #[cfg(target_os = "linux")]
-    let [host_pids, host_pids_out] = match sys::pipe() {
+    let [host_pids, host_pids_out] = match sys::socketpair() {
         Ok(ends) => ends,
         Err(error) => {
             sys::close(admission);
@@ -253,6 +255,15 @@ pub(super) fn enter(
             return Err(error);
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Err(error) = sys::write(host_pids, &HOST_MAGIC) {
+        sys::close(host_pids);
+        sys::close(host_pids_out);
+        sys::close(admission);
+        sys::close(admit);
+        unlink();
+        return Err(error);
+    }
     let program = match sys::fork() {
         Ok(0) => {
             // Descriptors the program never uses.
