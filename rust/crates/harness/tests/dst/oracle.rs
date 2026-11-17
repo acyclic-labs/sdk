@@ -218,6 +218,49 @@ thread_local! {
     static WORLD_SLOTS: std::cell::RefCell<
         std::collections::BTreeMap<(String, u64), Vec<bool>>,
     > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// One digest per retired world directory, in creation order. The X1
+    /// determinism world compares the durable bytes of the actual class
+    /// generators, not a synthetic plan.
+    static WORLD_DIGESTS: std::cell::RefCell<Vec<[u8; 32]>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Clears the retired-world digests before one generator replay.
+pub(super) fn reset_world_digests() {
+    WORLD_DIGESTS.with(|digests| digests.borrow_mut().clear());
+}
+
+/// The durable bytes of every world the last replay retired, in order.
+pub(super) fn take_world_digests() -> Vec<[u8; 32]> {
+    WORLD_DIGESTS.with(|digests| std::mem::take(&mut *digests.borrow_mut()))
+}
+
+/// Hashes a world directory's tree: relative paths, kinds and file bytes.
+fn directory_digest(root: &Path) -> std::io::Result<[u8; 32]> {
+    fn walk(root: &Path, path: &Path, hasher: &mut blake3::Hasher) -> std::io::Result<()> {
+        let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<_>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let name = entry.file_name();
+            let child = entry.path();
+            let relative = child.strip_prefix(root).unwrap_or(&child);
+            hasher.update(relative.to_string_lossy().as_bytes());
+            let metadata = std::fs::symlink_metadata(&child)?;
+            if metadata.is_dir() {
+                hasher.update(b"d");
+                walk(root, &child, hasher)?;
+            } else if metadata.is_file() {
+                hasher.update(b"f");
+                hasher.update(&std::fs::read(&child)?);
+            } else {
+                hasher.update(b"o");
+            }
+        }
+        Ok(())
+    }
+    let mut hasher = blake3::Hasher::new();
+    walk(root, root, &mut hasher)?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 /// A world directory whose absolute path is a function of its case, seed and
@@ -227,12 +270,18 @@ struct WorldDirectory {
     path: std::path::PathBuf,
     key: (String, u64),
     slot: usize,
+    /// Held for the world's lifetime so a concurrent suite using the same
+    /// deterministic path waits instead of deleting this run's files.
+    _lock: std::fs::File,
 }
 
 impl WorldDirectory {
     fn new(seed: u64) -> std::io::Result<Self> {
+        // A cross-process child replays the parent's exact world path.
         let key = (
-            std::thread::current().name().unwrap_or("dst").to_owned(),
+            std::env::var("DST_WORLD_KEY")
+                .ok()
+                .unwrap_or_else(|| std::thread::current().name().unwrap_or("dst").to_owned()),
             seed,
         );
         let slot = WORLD_SLOTS.with(|slots| {
@@ -256,11 +305,22 @@ impl WorldDirectory {
             std::env::temp_dir()
         };
         let path = root.join(format!("acyclic-dst-{}", &digest.to_hex()[..16]));
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(root.join(format!("acyclic-dst-{}.lock", &digest.to_hex()[..16])))?;
+        lock.lock()?;
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
         }
         std::fs::create_dir(&path)?;
-        Ok(Self { path, key, slot })
+        Ok(Self {
+            path,
+            key,
+            slot,
+            _lock: lock,
+        })
     }
 
     fn path(&self) -> &Path {
@@ -270,6 +330,9 @@ impl WorldDirectory {
 
 impl Drop for WorldDirectory {
     fn drop(&mut self) {
+        if let Ok(digest) = directory_digest(&self.path) {
+            WORLD_DIGESTS.with(|digests| digests.borrow_mut().push(digest));
+        }
         WORLD_SLOTS.with(|slots| {
             if let Some(used) = slots.borrow_mut().get_mut(&self.key) {
                 if let Some(used) = used.get_mut(self.slot) {

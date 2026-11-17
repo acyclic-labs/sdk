@@ -73,12 +73,7 @@ fn run(seed: u64) -> std::result::Result<(), String> {
 }
 
 fn variants(seed: u64) -> Vec<Variant> {
-    let class = usize::try_from(seed)
-        .ok()
-        .and_then(|index| WORLDS.get(index).copied());
-    let Some(class) = class else {
-        return Vec::new();
-    };
+    let class = WORLDS[usize::try_from(seed % WORLDS.len() as u64).unwrap_or(0)];
     ["same_process", "cross_process", "entropy_erased"]
         .into_iter()
         .map(|run| Variant::from([("run", run), ("world", class)]))
@@ -111,16 +106,11 @@ fn plans(class: &'static str) -> Vec<Plan> {
     }]
 }
 
-struct Replay {
-    digest: blake3::Hash,
-    trace: serde_json::Value,
-}
-
 async fn trace(
     seed: u64,
     class: &'static str,
     erase_entropy: bool,
-) -> std::result::Result<Replay, String> {
+) -> std::result::Result<blake3::Hash, String> {
     let mut world = if erase_entropy {
         World::without_entropy(seed, &FILES, service(plans(class)))
     } else {
@@ -139,83 +129,111 @@ async fn trace(
         "dispatched_at": incarnation.dispatched_at,
         "crashed": format!("{:?}", incarnation.crashed),
     });
-    let digest = blake3::hash(&serde_json::to_vec(&trace).map_err(failed)?);
-    Ok(Replay { digest, trace })
+    Ok(blake3::hash(&serde_json::to_vec(&trace).map_err(failed)?))
 }
 
-fn short(value: &serde_json::Value) -> String {
-    let text = value.to_string();
-    let mut shown: String = text.chars().take(240).collect();
-    if shown.len() < text.len() {
-        shown.push('…');
+/// Replays the class's own generator world and hashes every durable byte it
+/// retired. The generator owns its runtime, so this is not nested in one.
+fn replay_generator(seed: u64, class: &'static str) -> std::result::Result<[u8; 32], String> {
+    let generator = family::GENERATORS
+        .iter()
+        .find(|generator| generator.class == class)
+        .ok_or_else(|| format!("X1 class {class} has no generator"))?;
+    oracle::reset_world_digests();
+    (generator.world)(seed)?;
+    let digests = oracle::take_world_digests();
+    if digests.is_empty() {
+        return Err(format!("X1 {class} seed {seed} retired no world"));
     }
-    shown
+    let mut hasher = blake3::Hasher::new();
+    for digest in digests {
+        hasher.update(&digest);
+    }
+    Ok(*hasher.finalize().as_bytes())
 }
 
-fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> String {
-    fn walk(path: &str, left: &serde_json::Value, right: &serde_json::Value) -> String {
-        match (left, right) {
-            (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
-                let keys = left
-                    .keys()
-                    .chain(right.keys())
-                    .collect::<std::collections::BTreeSet<_>>();
-                for key in keys {
-                    let path = format!("{path}.{key}");
-                    match (left.get(key), right.get(key)) {
-                        (Some(left), Some(right)) if left != right => {
-                            return walk(&path, left, right);
-                        }
-                        (Some(left), None) => {
-                            return format!("{path}: {} != <missing>", short(left));
-                        }
-                        (None, Some(right)) => {
-                            return format!("{path}: <missing> != {}", short(right));
-                        }
-                        _ => {}
-                    }
-                }
-                format!("{path}: objects differ")
-            }
-            (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
-                for (index, (left, right)) in left.iter().zip(right).enumerate() {
-                    if left != right {
-                        return walk(&format!("{path}[{index}]"), left, right);
-                    }
-                }
-                format!("{path}.len: {} != {}", left.len(), right.len())
-            }
-            _ => format!("{path}: {} != {}", short(left), short(right)),
-        }
+/// Replays the same class world in a separate process and returns its digest.
+fn cross_process_digest(seed: u64, class: &'static str) -> std::result::Result<[u8; 32], String> {
+    let executable = std::env::current_exe().map_err(failed)?;
+    let key = std::thread::current().name().unwrap_or("dst").to_owned();
+    let output = std::process::Command::new(executable)
+        .args([
+            "--exact",
+            "dst::determinism::x1_cross_process_child",
+            "--nocapture",
+        ])
+        .env("DST_X1_CHILD_SEED", seed.to_string())
+        .env("DST_X1_CHILD_CLASS", class)
+        .env("DST_WORLD_KEY", key)
+        .output()
+        .map_err(failed)?;
+    if !output.status.success() {
+        return Err(format!(
+            "X1 {class} seed {seed} child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
-    walk("trace", left, right)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("DST_X1_CHILD_DIGEST="))
+        .ok_or_else(|| format!("X1 {class} seed {seed} child printed no digest"))?;
+    let digest = blake3::Hash::from_hex(line.trim()).map_err(failed)?;
+    Ok(*digest.as_bytes())
+}
+
+/// The child half of the cross-process variant. The isolated runner also runs
+/// it as a case; without the parent's environment it has nothing to replay.
+#[test]
+fn x1_cross_process_child() {
+    let Some(seed) = std::env::var("DST_X1_CHILD_SEED")
+        .ok()
+        .and_then(|seed| seed.parse::<u64>().ok())
+    else {
+        return;
+    };
+    let class = std::env::var("DST_X1_CHILD_CLASS").expect("child class");
+    let class = WORLDS
+        .iter()
+        .find(|world| **world == class)
+        .copied()
+        .expect("child class is a world");
+    let digest = replay_generator(seed, class).expect("child replay");
+    println!("DST_X1_CHILD_DIGEST={digest}");
 }
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
-    let class = usize::try_from(seed)
-        .ok()
-        .and_then(|index| WORLDS.get(index).copied())
-        .ok_or_else(|| format!("X1 seed {seed} names no world"))?;
+    // The world is the seed's class slot; the scheduler seed stays the full
+    // requested seed so a deeper sweep can walk past the class count.
+    let class = WORLDS[usize::try_from(seed % WORLDS.len() as u64).unwrap_or(0)];
+    let first = replay_generator(seed, class)?;
+    let second = replay_generator(seed, class)?;
+    if first != second {
+        return Err(format!(
+            "X1 {class} seed {seed} diverged in-process: {first} != {second}"
+        ));
+    }
+    let child = cross_process_digest(seed, class)?;
+    if first != child {
+        return Err(format!(
+            "X1 {class} seed {seed} diverged across processes: {first} != {child}"
+        ));
+    }
+    // The entropy-erased control replays the same production turn with the
+    // scheduler's source erased; a trace that still matches proves the seed
+    // never reached it.
     oracle::simulate(seed, || {
         entry(async move {
-            let first = trace(seed, class, false).await?;
-            let second = trace(seed, class, false).await?;
-            if first.digest != second.digest {
-                return Err(format!(
-                    "X1 {class} seed {seed} diverged in-process at {}: {} != {}",
-                    first_difference(&first.trace, &second.trace),
-                    first.digest,
-                    second.digest,
-                ));
-            }
-            let erased = trace(seed, class, true).await?;
-            if first.digest == erased.digest {
+            let on = trace(seed, class, false).await?;
+            let off = trace(seed, class, true).await?;
+            if on == off {
                 return Err(format!(
                     "X1 {class} seed {seed} entropy erasure did not change the trace"
                 ));
             }
-            println!("DST_X1_DIGEST={class} {}", first.digest);
-            Ok(true)
+            Ok(())
         })
-    })
+    })?;
+    println!("DST_X1_DIGEST={class} {first}");
+    Ok(true)
 }

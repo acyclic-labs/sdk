@@ -1,10 +1,20 @@
+/// The logical path a fixture identity and version hash. Production reads
+/// physical metadata, so they never build or retain this buffer.
 pub(crate) fn path_key(path: &NamespacePath) -> Vec<u8> {
-    let mut key = Vec::new();
-    for name in path.components() {
-        key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
-        key.extend_from_slice(name.as_bytes());
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = path;
+        Vec::new()
     }
-    key
+    #[cfg(feature = "test-support")]
+    {
+        let mut key = Vec::new();
+        for name in path.components() {
+            key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
+            key.extend_from_slice(name.as_bytes());
+        }
+        key
+    }
 }
 
 fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> Vec<u8> {
