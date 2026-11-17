@@ -12,6 +12,7 @@ def _isolated_test_impl(ctx):
     runfiles = runfiles.merge(ctx.attr.binary[DefaultInfo].default_runfiles)
     environment = {
         "ACYCLIC_TEST_BINARY": ctx.executable.binary.short_path,
+        "ACYCLIC_TEST_CPUS": str(ctx.attr.cpus),
         "ACYCLIC_TEST_ID": ctx.attr.id,
         "ACYCLIC_TEST_LIMIT_SECONDS": str(ctx.attr.limit_seconds),
         "ACYCLIC_TEST_PACKAGE": ctx.label.package,
@@ -52,10 +53,14 @@ def _isolated_test_impl(ctx):
         RunEnvironmentInfo(environment = environment, inherited_environment = ctx.attr.env_inherit),
     ]
 
-isolated_test = rule(
+_isolated_test = rule(
     implementation = _isolated_test_impl,
     test = True,
     attrs = {
+        # The CPUs the test reserves from Bazel's local resources, as its `cpu:N` tag: the runner
+        # runs this many cases at once and never more, so tests Bazel runs together never
+        # oversubscribe the host. Set only through `isolated_test`, which writes the tag.
+        "cpus": attr.int(mandatory = True),
         "binary": attr.label(executable = True, cfg = "target", mandatory = True),
         "binaries": attr.label_keyed_string_dict(cfg = "target"),
         # The executable's nextest binary id, which names each of its cases in the report.
@@ -66,7 +71,7 @@ isolated_test = rule(
         # The profile's nextest run wrapper, which runs each case as `<wrapper> <binary> <arguments>`,
         # and the files it runs beside it.
         "wrapper": attr.label(allow_single_file = True),
-        # Cases to run at once; zero uses the host's parallelism. A suite whose cases each start
+        # Cases to run at once, capped by the CPU reservation; zero uses the reservation. A suite whose cases each start
         # Cargo sets this so they do not contend for the same cores.
         "workers": attr.int(default = 0),
         "wrapper_data": attr.label_list(allow_files = True),
@@ -81,3 +86,21 @@ isolated_test = rule(
         ),
     },
 )
+
+def isolated_test(name, cpus = 2, tags = [], **kwargs):
+    """Runs each case of `binary` in its own process, at most `cpus` cases at once.
+
+    The test reserves `cpus` of Bazel's local CPU resources through its `cpu:N` tag, and the
+    runner's worker count cannot exceed that reservation; workers may reduce it.
+
+    Args:
+      name: The test's name.
+      cpus: The CPUs the test reserves, and so the cases it runs at once.
+      tags: The test's other tags; a `cpu:` tag of its own is refused.
+      **kwargs: The rule's other attributes.
+    """
+    if cpus < 1:
+        fail("isolated_test %s: cpus must be at least 1, not %d" % (name, cpus))
+    if [tag for tag in tags if tag.startswith("cpu:")]:
+        fail("isolated_test %s: the reservation is `cpus`, not a cpu: tag" % name)
+    _isolated_test(name = name, cpus = cpus, tags = tags + ["cpu:%d" % cpus], **kwargs)
