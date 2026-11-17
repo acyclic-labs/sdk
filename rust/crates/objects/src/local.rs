@@ -723,7 +723,6 @@ fn open_root(
             let mut created = std::fs::File::create(&format)?;
             created.write_all(FORMAT)?;
             file(&created)?;
-            directory(&root)?;
         }
         Err(error) => return Err(error.into()),
     }
@@ -784,6 +783,8 @@ fn open_root(
     } else {
         file(&std::fs::File::create(&marker)?)?;
     }
+    // Publish FORMAT, LOCK, LOG and the recovery marker together. No caller
+    // observes this root until their one namespace barrier completes.
     directory(&root)?;
     Ok(Shared {
         source: ObservationSource::new(),
