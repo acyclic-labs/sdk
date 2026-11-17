@@ -563,7 +563,12 @@ where
                 "a timestamped claim requires its tool start",
             ));
         };
-        *started_at_micros = started_at;
+        // A repeated claim keeps the timestamp its first accepted publication
+        // persisted, so the retry bytes stay identical and the journal can
+        // return the documented `None` instead of a conflict.
+        if started_at_micros.is_none() {
+            *started_at_micros = started_at;
+        }
         self.append_projected(
             operation,
             Some(expected_tail),

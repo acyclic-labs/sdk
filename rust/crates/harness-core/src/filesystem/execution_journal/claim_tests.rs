@@ -316,3 +316,83 @@ async fn a_refused_claim_returns_no_timestamp() -> Result<()> {
     );
     Ok(())
 }
+
+struct AdvancingClock(AtomicU64);
+impl acyclic_stream::UnixMillisClock for AdvancingClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+impl acyclic_actors::local::Clock for AdvancingClock {
+    fn sleep_until(
+        &self,
+        _: u64,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'static,
+        std::result::Result<(), acyclic_actors::local::ClockError>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A repeated claim after the clock advances keeps its original timestamp, so
+/// the retry is the same publication and returns no new timestamp.
+#[tokio::test]
+async fn a_repeated_claim_keeps_its_original_timestamp() -> Result<()> {
+    let storage = Arc::new(Storage {
+        inner: acyclic_stream::MemoryStream::new_with_clock(
+            Default::default(),
+            Arc::new(ProviderClock),
+        ),
+        armed: AtomicBool::new(false),
+        stalled: AtomicBool::new(false),
+        observed: Mutex::new(None),
+    });
+    let (mut journal, _issuer) =
+        test_support::journal_with_backends(storage, acyclic_fs::Fs::memory()).await?;
+    let clock = Arc::new(AdvancingClock(AtomicU64::new(100)));
+    journal.clock = Some(clock.clone());
+    let operation = OperationId::new();
+    journal
+        .append(
+            operation,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let invocation = journal
+        .stage_with_io(operation, "invocation", b"{}", "application/json", None)
+        .await?;
+    let mut event = ExecutionEvent::ToolStarted {
+        step: 0,
+        call_id: "call".into(),
+        invocation,
+        publication: None,
+        started_at_micros: None,
+    };
+    assert_eq!(
+        journal
+            .claim_if_tail(operation, 1, "claim", &mut event, None)?
+            .await?,
+        Some(100_000)
+    );
+    clock.0.store(200, Ordering::SeqCst);
+    assert_eq!(
+        journal
+            .claim_if_tail(operation, 1, "claim", &mut event, None)?
+            .await?,
+        None,
+        "a repeated claim returns no timestamp"
+    );
+    let ExecutionEvent::ToolStarted {
+        started_at_micros, ..
+    } = event
+    else {
+        unreachable!("the event is a tool start")
+    };
+    assert_eq!(started_at_micros, Some(100_000));
+    Ok(())
+}
