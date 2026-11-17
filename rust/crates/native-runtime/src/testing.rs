@@ -212,8 +212,6 @@ struct Inner {
     entropy: Option<Arc<entropy::Source>>,
     executor: Option<Arc<executor::Executor>>,
     progress: Arc<host::Progress>,
-    /// A seeded world's own one-worker host handoff.
-    host_pool: std::sync::OnceLock<Arc<host::Pool>>,
     // Its own lock: a call records when its last holder drops, which can be
     // anywhere, including while `state` is held.
     ledger: Arc<Mutex<ledger::Ledger>>,
@@ -332,19 +330,9 @@ impl Schedule {
                 .map(|seed| Arc::new(entropy::Source::new(seed))),
             executor,
             progress: host::Progress::new(),
-            host_pool: std::sync::OnceLock::new(),
         });
         let controller = Arc::new(Controller(inner.clone()));
         (Self(inner, Some(controller)), receiver)
-    }
-
-    /// The host handoff owned by this seeded world. It is sized like the
-    /// shared physical pool so queued callbacks can all start.
-    pub(crate) fn host_pool(&self) -> Arc<host::Pool> {
-        self.0
-            .host_pool
-            .get_or_init(|| host::Pool::new(crate::workers::parallelism()))
-            .clone()
     }
 
     /// Instruments only this explicitly scoped future and its owned descendants.
@@ -660,8 +648,8 @@ where
         CURRENT.scope(Some(owned.clone()), async move {
             owned.pause("blocking:submitted").await;
             let host = if owned.schedule.0.executor.is_some() {
-                Some(host::Host::for_pool(
-                    owned.schedule.host_pool(),
+                Some(host::Host::for_workers(
+                    crate::workers(&crate::BLOCKING_WORKERS, false)?,
                     owned.schedule.0.progress.clone(),
                 ))
             } else {
@@ -736,10 +724,7 @@ pub(crate) fn submit(
             let result = match crate::workers(pool, job.meter().is_some()) {
                 Ok(workers) => {
                     let host = owned.schedule.0.executor.as_ref().map(|_| {
-                        host::Host::for_pool(
-                            owned.schedule.host_pool(),
-                            owned.schedule.0.progress.clone(),
-                        )
+                        host::Host::for_workers(workers, owned.schedule.0.progress.clone())
                     });
                     host::Work::bind(&mut job, Some(owned.clone()), host.clone());
                     match host {
