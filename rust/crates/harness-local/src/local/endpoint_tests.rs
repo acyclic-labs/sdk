@@ -773,9 +773,9 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     // original refusal must preserve the cause even when it wins that race.
     let hosted = harness.agents.get().unwrap();
     let paths = ["layout.json".to_owned()];
-    let host_files = hosted.server().bound().client_files(
+    let host_files = hosted.server().bound().files(
         &connection.root,
-        session,
+        crate::client_files::FileRoot::ClientSession { session },
         &paths,
         Some(&snapshot.cut),
     );

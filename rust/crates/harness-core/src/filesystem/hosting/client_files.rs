@@ -499,35 +499,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         Ok(crate::client_files::FilePreviews { generation, files })
     }
 
-    /// Client-session files use the shared root query and original source cuts.
-    pub async fn client_files(
-        &self,
-        agent: &AgentPath,
-        session: OperationId,
-        paths: &[String],
-        after: Option<&crate::client_files::FileCut>,
-    ) -> Result<ClientFiles, Error> {
-        self.files(agent, FileRoot::ClientSession { session }, paths, after)
-            .await
-    }
-
-    /// Publish an explicitly selected client session's files.
-    pub async fn publish_client_files(
-        &self,
-        agent: &AgentPath,
-        session: OperationId,
-        operation: OperationId,
-        changes: &[ClientFileChange],
-    ) -> Result<GenerationRef, Error> {
-        self.publish_files(
-            agent,
-            FileRoot::ClientSession { session },
-            operation,
-            changes,
-        )
-        .await
-    }
-
     /// Publishes one atomic conditional batch. Stable operation identity and
     /// original source descriptors retain the filesystem's recovery semantics.
     pub async fn publish_files(
