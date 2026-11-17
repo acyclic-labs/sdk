@@ -158,6 +158,7 @@ node_test(
     srcs = [
         "core.test.mjs",
         "//:scripts/check-cargo-callers.mjs",
+        "//:scripts/check-incremental.mjs",
         "//:scripts/fixtures/cargo-callers/recorded-log.txt",
         "//:scripts/policy-core.mjs",
         "//:scripts/workspace-manifests.mjs",

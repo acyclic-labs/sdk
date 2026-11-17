@@ -54,7 +54,7 @@ test('policy entrypoints reject violations through symlinks and stay inert on im
   const root = mkdtempSync(join(tmpdir(), 'policy-entry-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   mkdirSync(join(root, 'scripts'));
-  for (const name of ['check-cargo-callers.mjs', 'policy-core.mjs']) copyFileSync(new URL(`../${name}`, import.meta.url), join(root, 'scripts', name));
+  for (const name of ['check-cargo-callers.mjs', 'check-incremental.mjs', 'policy-core.mjs']) copyFileSync(new URL(`../${name}`, import.meta.url), join(root, 'scripts', name));
   writeFileSync(join(root, 'scripts/cargo-callers.json'), '[]');
   copyFileSync(new URL('../fixtures/cargo-callers/recorded-log.txt', import.meta.url), join(root, 'scripts/violation.sh'));
   execFileSync('git', ['init', '-q', root]);
@@ -65,6 +65,11 @@ test('policy entrypoints reject violations through symlinks and stay inert on im
   assert.match(result.stderr, /scripts\/violation.sh invokes Cargo/);
   const imported = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import("./scripts/check-cargo-callers.mjs")'], {cwd: root, encoding: 'utf8'});
   assert.equal(imported.status, 0, imported.stderr);
+  writeFileSync(join(root, 'scripts/incremental-disabled.sh'), 'CARGO_INCREMENTAL=0\n');
+  execFileSync('git', ['add', 'scripts/incremental-disabled.sh'], {cwd: root});
+  const incremental = spawnSync(process.execPath, ['scripts/check-incremental.mjs'], {cwd: root, encoding: 'utf8'});
+  assert.equal(incremental.status, 1, incremental.stderr);
+  assert.match(incremental.stderr, /incremental-disabled\.sh:1: sets CARGO_INCREMENTAL to 0/);
 });
 
 test('source pages retain every input under a configured descriptor budget', t => {
