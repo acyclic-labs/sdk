@@ -570,8 +570,8 @@ fn unmeasured_sites_confined(
     const HOST: &str = "filesystem/host/reads.rs";
     const ENTRY_POINTS: [(&str, &str); 2] = [
         (
-            "pub async fn read_private_path<'io>",
             "pub async fn read_private_path_indexed<'io>",
+            "async fn read_private_path_indexed_measured<'io>",
         ),
         (
             "pub(in crate::filesystem) async fn read_private_range<'io>",
