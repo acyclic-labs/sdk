@@ -51,7 +51,7 @@ mod tests;
 
 pub use acyclic_stream::SealedBytes as Sealed;
 pub use availability::{Availability, AvailabilityCursor, AvailabilitySource};
-pub use blob::{ByteRange, Digest, Kind, Manifest, Part};
+pub use blob::{ByteRange, ContentDigests, ContentHasher, Digest, Kind, Manifest, Part};
 pub use error::Error;
 pub use manifest_builder::ManifestBuilder;
 #[cfg(any(test, feature = "test-support"))]

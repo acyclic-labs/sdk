@@ -1,5 +1,93 @@
 //! Content addresses, logical ranges, manifests and the v2 envelope encoding.
 use crate::{Error, wire::ErrorCode};
+use sha2::{Digest as _, Sha256};
+
+/// Hashes the logical body in input order, independent of transport framing.
+/// Both digests consume each bounded input segment before the next is read.
+#[derive(Default)]
+pub struct ContentHasher {
+    blake3: blake3::Hasher,
+    sha256: Sha256,
+    length: u64,
+}
+
+/// Digests computed from one complete logical body. BLAKE3 is its content
+/// identity; SHA-256 is a checksum for contracts that require that algorithm.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContentDigests {
+    blake3: Digest,
+    sha256: [u8; 32],
+    length: u64,
+}
+
+impl ContentHasher {
+    /// Adds bytes to both digests. Overflow leaves the hasher unchanged.
+    pub fn update(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let length = self
+            .length
+            .checked_add(bytes.len() as u64)
+            .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+        for chunk in bytes.chunks(64 * 1024) {
+            self.blake3.update(chunk);
+            self.sha256.update(chunk);
+        }
+        self.length = length;
+        Ok(())
+    }
+
+    /// Finishes both digests over the same accepted input.
+    #[must_use]
+    pub fn finish(self) -> ContentDigests {
+        ContentDigests {
+            blake3: Digest::from_bytes(*self.blake3.finalize().as_bytes()),
+            sha256: self.sha256.finalize().into(),
+            length: self.length,
+        }
+    }
+}
+
+impl ContentDigests {
+    /// The BLAKE3 digest of the logical bytes.
+    #[must_use]
+    pub const fn blake3(&self) -> Digest {
+        self.blake3
+    }
+    /// The SHA-256 checksum of those same bytes.
+    #[must_use]
+    pub const fn sha256(&self) -> &[u8; 32] {
+        &self.sha256
+    }
+    /// The number of logical bytes hashed.
+    #[must_use]
+    pub const fn length(&self) -> u64 {
+        self.length
+    }
+}
+
+#[cfg(test)]
+mod content_digest_tests {
+    use super::{ContentHasher, Digest};
+
+    #[test]
+    fn logical_checksums_are_independent_of_input_frames() {
+        let expected_sha256 =
+            hex::decode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                .unwrap();
+        for frames in [
+            &[b"abc".as_slice()][..],
+            &[b"a".as_slice(), b"bc".as_slice()][..],
+        ] {
+            let mut hasher = ContentHasher::default();
+            for frame in frames {
+                hasher.update(frame).unwrap();
+            }
+            let result = hasher.finish();
+            assert_eq!(result.blake3(), Digest::of(b"abc"));
+            assert_eq!(result.sha256().as_slice(), expected_sha256);
+            assert_eq!(result.length(), 3);
+        }
+    }
+}
 
 /// BLAKE3-256 of a blob's stored bytes.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
