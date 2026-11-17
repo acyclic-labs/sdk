@@ -13,10 +13,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const mode = process.argv[2];
-if (process.argv.length !== 3 || (mode !== "write" && mode !== "check")) {
-  throw new Error("STEP_FAILED bazel-build-files: expected write or check; recovery: node scripts/bazel-build-files.mjs write");
+// The workspace this generator describes. It defaults to the repository that holds this
+// script, and --root points the same generator at another Cargo workspace (Cloud).
+const args = process.argv.slice(2);
+const rootAt = args.indexOf("--root");
+const root = rootAt < 0 ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..") : path.resolve(args[rootAt + 1]);
+if (rootAt >= 0) args.splice(rootAt, 2);
+const runnerAt = args.indexOf("--test-runner");
+const testRunner = runnerAt < 0 ? "//rust/crates/test-runner:isolated_test.bzl" : args[runnerAt + 1];
+if (runnerAt >= 0) args.splice(runnerAt, 2);
+const mode = args[0];
+if (args.length !== 1 || (mode !== "write" && mode !== "check")) {
+  throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR] [--test-runner LABEL] write|check; recovery: node scripts/bazel-build-files.mjs write");
 }
 
 // Bazel builds each crate for these targets. A dependency or feature that differs between
@@ -36,7 +44,7 @@ const CASE_LIMIT_SECONDS = 10;
 const LOADS = {
   cargo_build_script: "@rules_rust//cargo:defs.bzl",
   extract_cargo_lints: "@rules_rust//cargo:defs.bzl",
-  isolated_test: "//rust/crates/test-runner:isolated_test.bzl",
+  isolated_test: testRunner,
   rust_binary: "@rules_rust//rust:defs.bzl",
   rust_library: "@rules_rust//rust:defs.bzl",
   rust_proc_macro: "@rules_rust//rust:defs.bzl",
@@ -1016,7 +1024,10 @@ function moduleFile() {
     `xwin = use_repo_rule("//:xwin_repo.bzl", "xwin_repository")\n`,
     `xwin(name = "xwin")\n\n`,
     // The musl toolchain is registered before the hub so it wins over the gnu toolchain, which
-    // rules_rust also considers compatible with the musl platform.
+    // rules_rust also considers compatible with the musl platform. Every registration is the root
+    // module's own: rules_rust keeps only the root module's toolchains and repository sets, and the
+    // Windows C toolchain runs from the LLVM repository only the root creates. A module that depends
+    // on this one registers its own toolchains.
     `register_toolchains("//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all", dev_dependency = True)\n\n`,
     `crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")\n\n`,
     // Third-party packages and features only the all-features resolution reaches, pinned for
