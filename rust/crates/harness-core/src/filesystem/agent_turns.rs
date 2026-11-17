@@ -2298,19 +2298,25 @@ impl<'a> TurnContext<'a> {
     /// their ordered exact references for both grant derivation and the
     /// eventual model selection.
     async fn expand_inputs(&mut self, reader: &dyn ContentResidencyVerifier) -> Result<()> {
-        for SettledTurn {
-            input,
-            output,
-            transcript,
-            steered,
-            replay_text,
-            ..
-        } in &mut self.settled
-        {
-            let original = std::mem::replace(input, ModelContent::Text(String::new()));
-            *input = crate::agent::expand_attachments(original, reader).await?;
-            *transcript =
-                staged_transcript(reader, output, std::mem::take(steered), *replay_text).await?;
+        let mut index = 0;
+        while let Some(settled) = self.settled.get_mut(index) {
+            let original = std::mem::replace(&mut settled.input, ModelContent::Text(String::new()));
+            settled.input = crate::agent::expand_attachments(original, reader).await?;
+            settled.transcript = staged_transcript(
+                reader,
+                &settled.output,
+                std::mem::take(&mut settled.steered),
+                settled.replay_text,
+            )
+            .await?;
+            // A failed or cancelled turn with no completed step has no model
+            // item to replay. It is not history: the next request starts from
+            // the same prefix the failed one did.
+            if !settled.replay_text && settled.transcript.is_empty() {
+                self.settled.remove(index);
+            } else {
+                index += 1;
+            }
         }
         let original = std::mem::replace(&mut self.input, ModelContent::Text(String::new()));
         self.input = crate::agent::expand_attachments(original, reader).await?;
@@ -2478,7 +2484,6 @@ impl<'a> TurnContext<'a> {
                 announcements: announced,
                 input: content,
                 transcript,
-                replay_text,
                 notices,
                 ..
             },
@@ -2522,11 +2527,7 @@ impl<'a> TurnContext<'a> {
                 message_ids.push(message_id(settled, ModelRole::User));
             }
             if transcript.is_empty() {
-                // A failed or cancelled turn contributes its input and the
-                // steps that completed, never a partial reply.
-                if replay_text {
-                    return Err(Error::Invalid("settled transcript is not decoded".into()));
-                }
+                return Err(Error::Invalid("settled transcript is not decoded".into()));
             }
             for (part, message) in transcript.into_iter().enumerate() {
                 messages.push(message);
