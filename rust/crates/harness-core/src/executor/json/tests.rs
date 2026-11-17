@@ -126,7 +126,7 @@ mod borrowed_records {
                     &source,
                     BOUNDS,
                     None,
-                    Some(JsonValueSchema::None),
+                    Some(JsonValueSchema::NONE),
                     &mut |charge| {
                         match charge {
                             JsonCodecCharge::Retain { bytes } => live += bytes,

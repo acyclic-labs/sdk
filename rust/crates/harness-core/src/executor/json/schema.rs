@@ -14,67 +14,66 @@ macro_rules! schema {
         };
         $(impl JsonValueSchema {
             #[doc = concat!("Value fields for ", stringify!($public), ".")]
-            #[allow(non_upper_case_globals, reason = "Schema constants mirror SDK record type names.")]
             pub const $public: &'static Self = &$name;
         })?
     };
 }
-schema!(NONE => None, "", [], [], []);
-schema!(ROOT => Root, "", [], [], []);
+schema!(NONE => NONE, "", [], [], []);
+schema!(ROOT => ROOT, "", [], [], []);
 schema!(UNKNOWN, "", [], [], []);
-schema!(SCHEDULE => Schedule, "", [], ["body" => ROOT : 0], []);
+schema!(SCHEDULE => SCHEDULE, "", [], ["body" => ROOT : 0], []);
 // ApprovalSubject::Tool arguments use deserialize_json_value: serde's private
 // marker keys stay literal. Their derived HeapLayout accounts their tree;
 // unlike question/form Values, they have no RawValue expansion to inspect.
-schema!(INTERACTION => Interaction, "type", ["question" => 1, "form" => 2], ["response_schema" => ROOT : 1, "schema" => ROOT : 2], []);
-schema!(CONTROL_RESPONSE => ControlResponse, "", [], ["result" => ROOT : 0], []);
-schema!(CONTEXT => Context, "", [], ["messages" => MESSAGES : 0], []);
-schema!(SUMMARY_SOURCE => SummarySource, "", [], ["context" => CONTEXT : 0], []);
-schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0, "steering" => CONTEXT : 0], []);
-schema!(MESSAGE_SEGMENT => MessageSegment, "", [], ["suffix" => MESSAGES : 0], []);
-schema!(MODEL_EVENT => ModelEvent, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 3], []);
-schema!(MODEL_REQUEST => ModelRequest, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);
-schema!(MODEL_CONTENT_PART => ModelContentPart, "kind", ["tool_call" => 1, "tool_result" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 1, "content" => TOOL_RESULT_CONTENT : 2], []);
-schema!(TOOL_RESULT_CONTENT => ToolResultContent, "kind", ["json" => 1], ["value" => ROOT : 1], []);
-schema!(WORKFLOW_RECORD => WorkflowRecord, "", [], ["input" => ROOT : 0, "prior" => STATE_RECORD : 0, "transition" => TRANSITION : 0], []);
-schema!(WORKFLOW_ADMISSION => WorkflowAdmission, "", [], ["initial" => STATE_RECORD : 0], []);
-schema!(MACHINE_CHECKPOINT => MachineCheckpoint, "", [], ["state" => ROOT : 0], []);
-schema!(RESOURCE_PREPARATION_REQUEST => ResourcePreparationRequest, "", [], ["payload" => ROOT : 0, "child" => TASK_ADMISSION_RECORD : 0, "read_authorization" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
-schema!(SCHEDULER_EVENT => SchedulerEvent, "kind", ["declared" => 1, "orchestrated" => 2], ["spec" => OPERATION_SPEC : 1, "reducer" => ENTRYPOINT_REF : 2], []);
-schema!(INTERACTION_RESPONSE => InteractionResponse, "type", ["question" => 1, "form" => 1], ["value" => ROOT : 1], []);
-schema!(TASK_ADMISSION_RECORD => TaskAdmissionRecord, "", [], ["input" => ROOT : 0, "input_schema" => ROOT : 0, "output_schema" => ROOT : 0], []);
-schema!(RECURSIVE_FORK_TOOL_PLAN => RecursiveForkToolPlan, "", [], ["request" => RESOURCE_PREPARATION_REQUEST : 0, "preparation" => TASK_ADMISSION_RECORD : 0], []);
-schema!(RECURSIVE_PLAN => RecursivePlan, "kind", ["fork" => 1, "merge" => 2], ["plan" => RECURSIVE_PLAN_PAYLOAD : 0], []);
-schema!(RECURSIVE_STATE => RecursiveState, "phase", ["ready" => 1, "source_pinned" => 1, "waiting" => 3, "complete" => 4], ["arguments" => ROOT : 1, "intent" => RECURSIVE_FORK_SOURCE_INTENT : 1, "report" => FORK_REPORT : 2, "plan" => RECURSIVE_PLAN : 2, "receipt" => PROJECT_MERGE_RECEIPT : 2, "value" => ROOT : 4], []);
-schema!(RECURSIVE_INITIAL_PLAN => RecursiveInitialPlan, "", [], ["plan" => RECURSIVE_PLAN : 0], []);
-schema!(RECURSIVE_RECEIPT => RecursiveReceipt, "", [], ["value" => TASK_OUTCOME : 0], []);
-schema!(TASK_OUTCOME => TaskOutcome, "", [], ["Succeeded" => ROOT : 0], []);
-schema!(PROJECT_MERGE_RECEIPT => ProjectMergeReceipt, "", [], ["provider_proof" => PROVIDER_PROOF : 0], []);
-schema!(TOOL_TASK_COMMAND => ToolTaskCommand, "", [], ["arguments" => ROOT : 0], []);
-schema!(TOOL_INVOCATION => ToolInvocation, "", [], ["arguments" => ROOT : 0], []);
+schema!(INTERACTION => INTERACTION, "type", ["question" => 1, "form" => 2], ["response_schema" => ROOT : 1, "schema" => ROOT : 2], []);
+schema!(CONTROL_RESPONSE => CONTROL_RESPONSE, "", [], ["result" => ROOT : 0], []);
+schema!(CONTEXT => CONTEXT, "", [], ["messages" => MESSAGES : 0], []);
+schema!(SUMMARY_SOURCE => SUMMARY_SOURCE, "", [], ["context" => CONTEXT : 0], []);
+schema!(RESPONSE_PROJECTION => RESPONSE_PROJECTION, "", [], ["context" => CONTEXT : 0, "steering" => CONTEXT : 0], []);
+schema!(MESSAGE_SEGMENT => MESSAGE_SEGMENT, "", [], ["suffix" => MESSAGES : 0], []);
+schema!(MODEL_EVENT => MODEL_EVENT, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 3], []);
+schema!(MODEL_REQUEST => MODEL_REQUEST, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);
+schema!(MODEL_CONTENT_PART => MODEL_CONTENT_PART, "kind", ["tool_call" => 1, "tool_result" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 1, "content" => TOOL_RESULT_CONTENT : 2], []);
+schema!(TOOL_RESULT_CONTENT => TOOL_RESULT_CONTENT, "kind", ["json" => 1], ["value" => ROOT : 1], []);
+schema!(WORKFLOW_RECORD => WORKFLOW_RECORD, "", [], ["input" => ROOT : 0, "prior" => STATE_RECORD : 0, "transition" => TRANSITION : 0], []);
+schema!(WORKFLOW_ADMISSION => WORKFLOW_ADMISSION, "", [], ["initial" => STATE_RECORD : 0], []);
+schema!(MACHINE_CHECKPOINT => MACHINE_CHECKPOINT, "", [], ["state" => ROOT : 0], []);
+schema!(RESOURCE_PREPARATION_REQUEST => RESOURCE_PREPARATION_REQUEST, "", [], ["payload" => ROOT : 0, "child" => TASK_ADMISSION_RECORD : 0, "read_authorization" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
+schema!(SCHEDULER_EVENT => SCHEDULER_EVENT, "kind", ["declared" => 1, "orchestrated" => 2], ["spec" => OPERATION_SPEC : 1, "reducer" => ENTRYPOINT_REF : 2], []);
+schema!(INTERACTION_RESPONSE => INTERACTION_RESPONSE, "type", ["question" => 1, "form" => 1], ["value" => ROOT : 1], []);
+schema!(TASK_ADMISSION_RECORD => TASK_ADMISSION_RECORD, "", [], ["input" => ROOT : 0, "input_schema" => ROOT : 0, "output_schema" => ROOT : 0], []);
+schema!(RECURSIVE_FORK_TOOL_PLAN => RECURSIVE_FORK_TOOL_PLAN, "", [], ["request" => RESOURCE_PREPARATION_REQUEST : 0, "preparation" => TASK_ADMISSION_RECORD : 0], []);
+schema!(RECURSIVE_PLAN => RECURSIVE_PLAN, "kind", ["fork" => 1, "merge" => 2], ["plan" => RECURSIVE_PLAN_PAYLOAD : 0], []);
+schema!(RECURSIVE_STATE => RECURSIVE_STATE, "phase", ["ready" => 1, "source_pinned" => 1, "waiting" => 3, "complete" => 4], ["arguments" => ROOT : 1, "intent" => RECURSIVE_FORK_SOURCE_INTENT : 1, "report" => FORK_REPORT : 2, "plan" => RECURSIVE_PLAN : 2, "receipt" => PROJECT_MERGE_RECEIPT : 2, "value" => ROOT : 4], []);
+schema!(RECURSIVE_INITIAL_PLAN => RECURSIVE_INITIAL_PLAN, "", [], ["plan" => RECURSIVE_PLAN : 0], []);
+schema!(RECURSIVE_RECEIPT => RECURSIVE_RECEIPT, "", [], ["value" => TASK_OUTCOME : 0], []);
+schema!(TASK_OUTCOME => TASK_OUTCOME, "", [], ["Succeeded" => ROOT : 0], []);
+schema!(PROJECT_MERGE_RECEIPT => PROJECT_MERGE_RECEIPT, "", [], ["provider_proof" => PROVIDER_PROOF : 0], []);
+schema!(TOOL_TASK_COMMAND => TOOL_TASK_COMMAND, "", [], ["arguments" => ROOT : 0], []);
+schema!(TOOL_INVOCATION => TOOL_INVOCATION, "", [], ["arguments" => ROOT : 0], []);
 schema!(SELECTED_TOOL_CALL, "", [], ["invocation" => TOOL_INVOCATION : 0], []);
 schema!(TOOL_SELECTION_RESULT, "", [], ["Ok" => SELECTED_TOOL_CALL : 0], []);
-schema!(AUTHORED_TOOL_SELECTION => AuthoredToolSelection, "", [], ["call" => TOOL_SELECTION_RESULT : 0], []);
-schema!(TASK_ADMIT_COMMAND => TaskAdmitCommand, "", [], ["input" => ROOT : 0], []);
-schema!(PREPARED_TASK_ADMIT_COMMAND => PreparedTaskAdmitCommand, "", [], ["admission" => TASK_ADMISSION_RECORD : 0], []);
-schema!(CONTEXT_MANIFEST => ContextManifest, "", [], ["discovery" => DISCOVERED_CONTEXT : 0, "tools" => TOOLS : 0], []);
+schema!(AUTHORED_TOOL_SELECTION => AUTHORED_TOOL_SELECTION, "", [], ["call" => TOOL_SELECTION_RESULT : 0], []);
+schema!(TASK_ADMIT_COMMAND => TASK_ADMIT_COMMAND, "", [], ["input" => ROOT : 0], []);
+schema!(PREPARED_TASK_ADMIT_COMMAND => PREPARED_TASK_ADMIT_COMMAND, "", [], ["admission" => TASK_ADMISSION_RECORD : 0], []);
+schema!(CONTEXT_MANIFEST => CONTEXT_MANIFEST, "", [], ["discovery" => DISCOVERED_CONTEXT : 0, "tools" => TOOLS : 0], []);
 schema!(DISCOVERED_CONTEXT, "", [], ["skills" => SKILLS : 0], []);
 schema!(SKILLS, "", [], [], [SKILL]);
 schema!(SKILL, "", [], ["fields" => ROOT : 0], []);
-schema!(MODEL_TASK_COMMAND => ModelTaskCommand, "", [], ["input" => MODEL_CONTENT : 0, "selected_context" => CONTEXT : 0], []);
-schema!(NATIVE_PROCESS_REQUEST => NativeProcessRequest, "", [], ["mcp_stdio" => MCP_STDIO_REQUEST : 0], []);
-schema!(PROJECT_SOURCE_AUTHORIZATION => ProjectSourceAuthorization, "", [], ["native_snapshot" => ROOT : 0], []);
-schema!(FORK_REQUEST => ForkRequest, "", [], ["authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
-schema!(FORK_REPORT => ForkReport, "", [], ["request" => FORK_REQUEST : 0], []);
-schema!(FORK_SEED => ForkSeed, "", [], ["authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
-schema!(RECURSIVE_FORK_SOURCE_INTENT => RecursiveForkSourceIntent, "", [], ["request" => FORK_REQUEST : 0], []);
-schema!(RECURSIVE_SOURCE_PIN => RecursiveSourcePin, "", [], ["intent" => RECURSIVE_FORK_SOURCE_INTENT : 0], []);
-schema!(FORK_PREPARATION_COMMAND_RESULTS => ForkPreparationCommandResults, "", [], ["commands" => FORK_PREPARATION_COMMANDS : 0], []);
-schema!(RECURSIVE_MERGE_TOOL_PLAN => RecursiveMergeToolPlan, "", [], ["authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
+schema!(MODEL_TASK_COMMAND => MODEL_TASK_COMMAND, "", [], ["input" => MODEL_CONTENT : 0, "selected_context" => CONTEXT : 0], []);
+schema!(NATIVE_PROCESS_REQUEST => NATIVE_PROCESS_REQUEST, "", [], ["mcp_stdio" => MCP_STDIO_REQUEST : 0], []);
+schema!(PROJECT_SOURCE_AUTHORIZATION => PROJECT_SOURCE_AUTHORIZATION, "", [], ["native_snapshot" => ROOT : 0], []);
+schema!(FORK_REQUEST => FORK_REQUEST, "", [], ["authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
+schema!(FORK_REPORT => FORK_REPORT, "", [], ["request" => FORK_REQUEST : 0], []);
+schema!(FORK_SEED => FORK_SEED, "", [], ["authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
+schema!(RECURSIVE_FORK_SOURCE_INTENT => RECURSIVE_FORK_SOURCE_INTENT, "", [], ["request" => FORK_REQUEST : 0], []);
+schema!(RECURSIVE_SOURCE_PIN => RECURSIVE_SOURCE_PIN, "", [], ["intent" => RECURSIVE_FORK_SOURCE_INTENT : 0], []);
+schema!(FORK_PREPARATION_COMMAND_RESULTS => FORK_PREPARATION_COMMAND_RESULTS, "", [], ["commands" => FORK_PREPARATION_COMMANDS : 0], []);
+schema!(RECURSIVE_MERGE_TOOL_PLAN => RECURSIVE_MERGE_TOOL_PLAN, "", [], ["authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
 schema!(MESSAGES, "", [], [], [MESSAGE]);
 schema!(MESSAGE, "", [], ["content" => MODEL_CONTENT : 0], []);
 schema!(MODEL, "", [], ["options" => ROOT : 0], []);
-schema!(TOOLS => ToolDefinitions, "", [], [], [TOOL]);
+schema!(TOOLS => TOOLS, "", [], [], [TOOL]);
 schema!(TOOL, "", [], ["input_schema" => ROOT : 0, "output_schema" => ROOT : 0, "projection_schema" => ROOT : 0], []);
 schema!(STATE_RECORD, "", [], ["state" => ROOT : 0], []);
 schema!(TRANSITION, "", [], ["state" => ROOT : 0, "status" => STATUS : 0], []);
@@ -131,11 +130,7 @@ impl JsonValueSchema {
 
 impl JsonValueSchema {
     /// Value fields for a model content envelope.
-    #[allow(
-        non_upper_case_globals,
-        reason = "Schema constants mirror SDK record type names."
-    )]
-    pub const ModelContent: &'static Self = &MODEL_CONTENT;
+    pub const MODEL_CONTENT: &'static Self = &MODEL_CONTENT;
 }
 impl PartialEq for JsonValueSchema {
     fn eq(&self, other: &Self) -> bool {

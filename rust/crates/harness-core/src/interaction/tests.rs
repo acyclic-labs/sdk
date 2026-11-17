@@ -395,7 +395,7 @@ proptest::proptest! {
             std::marker::PhantomData::<Interaction>, &bytes,
             crate::executor::json::JsonBounds { maximum_bytes: Some(bytes.len() as u64), maximum_items: Some(bytes.len() as u64), maximum_depth: 256 },
             Some(crate::wire::ErrorCode::Invalid),
-            Some(crate::executor::json::JsonValueSchema::Interaction), &mut |_| Ok(()),
+            Some(crate::executor::json::JsonValueSchema::INTERACTION), &mut |_| Ok(()),
         ).unwrap();
         proptest::prop_assert_eq!(&native, &request);
         let mut substituted = serde_json::to_value(&request).unwrap();

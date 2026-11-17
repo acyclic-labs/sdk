@@ -11,7 +11,7 @@ struct Selection {
 
 impl PreparationRecord for Selection {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::AuthoredToolSelection
+        crate::executor::json::JsonValueSchema::AUTHORED_TOOL_SELECTION
     }
 }
 

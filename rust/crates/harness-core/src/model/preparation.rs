@@ -20,7 +20,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
         MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ToolResultContent
+        crate::executor::json::JsonValueSchema::TOOL_RESULT_CONTENT
     }
 }
 impl crate::filesystem::UploadRecord for ToolResultContent {
@@ -31,7 +31,7 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
         self.retained_payload_bytes()
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ToolResultContent
+        crate::executor::json::JsonValueSchema::TOOL_RESULT_CONTENT
     }
 }
 
@@ -117,7 +117,7 @@ fn inspect_value(
                 maximum_items: Some(maximum_items),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
-            crate::executor::json::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::NONE,
             &mut |next| observer.codec_charge(next),
         )?;
     }

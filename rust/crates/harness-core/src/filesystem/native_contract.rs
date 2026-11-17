@@ -255,7 +255,7 @@ pub struct NativeProcessRequest {
 #[cfg(not(target_arch = "wasm32"))]
 impl super::PreparationRecord for NativeProcessRequest {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::NativeProcessRequest
+        crate::executor::json::JsonValueSchema::NATIVE_PROCESS_REQUEST
     }
 }
 

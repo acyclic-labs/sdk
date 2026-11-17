@@ -35,7 +35,7 @@ impl crate::filesystem::UploadRecord for Value {
         0
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::Root
+        crate::executor::json::JsonValueSchema::ROOT
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         crate::executor::json::json_value_logical_owned_bytes(self)

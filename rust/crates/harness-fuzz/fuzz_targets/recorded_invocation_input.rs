@@ -196,7 +196,7 @@ pub fn assert_replay(record: Record, limits: Limits) {
             maximum_depth: 256,
         },
         None,
-        Some(JsonValueSchema::Root),
+        Some(JsonValueSchema::ROOT),
         &mut |_| Ok(()),
     )
     .unwrap();
@@ -215,7 +215,7 @@ pub fn assert_envelope(record: &Record) {
             maximum_depth: 256,
         },
         None,
-        Some(JsonValueSchema::Root),
+        Some(JsonValueSchema::ROOT),
         &mut |_| Ok(()),
     )
     .unwrap();
@@ -244,7 +244,7 @@ pub fn check(data: &[u8]) {
             maximum_depth: 256,
         },
         None,
-        Some(JsonValueSchema::Root),
+        Some(JsonValueSchema::ROOT),
         &mut |_| Ok(()),
     );
     if let Ok(record) = parsed {
