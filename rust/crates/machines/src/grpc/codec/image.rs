@@ -81,6 +81,20 @@ pub(in super::super) fn decode_capability(value: i32) -> Result<Capability, Prov
         }
     }
 }
+pub(in super::super) fn decode_capability_set(
+    values: &[i32],
+    duplicate: &str,
+) -> Result<BTreeSet<Capability>, ProviderError> {
+    let capabilities = values
+        .iter()
+        .copied()
+        .map(decode_capability)
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if capabilities.len() != values.len() {
+        return Err(ProviderError::Rejected(duplicate.into()));
+    }
+    Ok(capabilities)
+}
 pub(in super::super) fn encode_compatibility(
     value: &CompatibilityPolicy,
 ) -> Result<wire::CompatibilityPolicy, ProviderError> {
@@ -107,16 +121,7 @@ pub(in super::super) fn decode_compatibility(
 ) -> Result<CompatibilityPolicy, ProviderError> {
     let value =
         value.ok_or_else(|| ProviderError::Rejected("compatibility policy is missing".into()))?;
-    let required = value
-        .required
-        .iter()
-        .map(|item| decode_capability(*item))
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    if required.len() != value.required.len() {
-        return Err(ProviderError::Rejected(
-            "capability set contains duplicates".into(),
-        ));
-    }
+    let required = decode_capability_set(&value.required, "capability set contains duplicates")?;
     match wire::CompatibilityMode::try_from(value.mode)
         .map_err(|_| ProviderError::Rejected("compatibility mode is invalid".into()))?
     {
