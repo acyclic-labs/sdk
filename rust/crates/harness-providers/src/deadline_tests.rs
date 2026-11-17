@@ -286,6 +286,41 @@ fn first_byte_deadline_expires_a_large_request_at_its_scaled_instant() {
 }
 
 #[test]
+fn receiving_headers_does_not_restart_the_total_deadline() {
+    runtime().block_on(async {
+        let (script, headers) = script(Timer::Clock);
+        let transport = Bounded::new(
+            script,
+            TimeoutSpec {
+                total_ms: Some(40_000),
+                first_byte_ms: Some(30_000),
+            },
+        );
+        let (chunks, body) = mpsc::unbounded();
+        let mut send = pin!(transport.send(request()));
+        tokio::time::advance(Duration::from_millis(29_000)).await;
+        assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
+        let mut body = send.await.expect("headers before both deadlines").body;
+        tokio::time::advance(Duration::from_millis(10_000)).await;
+        chunks
+            .unbounded_send(Ok(Bytes::from_static(b"within")))
+            .unwrap();
+        assert_eq!(
+            body.next().await.unwrap().unwrap(),
+            Bytes::from_static(b"within")
+        );
+        tokio::time::advance(Duration::from_millis(1_000)).await;
+        let error = body
+            .next()
+            .await
+            .unwrap()
+            .expect_err("the total deadline stays anchored at send");
+        assert_eq!(cause(&error), "");
+        assert!(body.next().await.is_none());
+    });
+}
+
+#[test]
 fn unbounded_request_waits_only_on_its_producers() {
     runtime().block_on(async {
         let (script, headers) = script(Timer::Early);

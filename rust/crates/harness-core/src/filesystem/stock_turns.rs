@@ -446,6 +446,9 @@ impl TurnExecutors for StockExecutors {
                     .output_content(turn, None)?
                     .and_then(|content| content.writer)
                     .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
+                let binding_provider = Arc::clone(&binding.1);
+                let binding_model = binding.0.clone();
+                let models = self.models.clone();
                 crate::tools::bind_agent_tools(
                     &mut tools,
                     agent,
@@ -453,7 +456,24 @@ impl TurnExecutors for StockExecutors {
                     writer,
                     self.limits.file_bytes,
                     (&agent_tools, authority.templates.clone()),
-                    Some(Arc::clone(&binding.1)),
+                    Some(Arc::new(move |selection: Option<&str>| match selection {
+                        None => {
+                            Some(Arc::clone(&binding_provider)
+                                as Arc<dyn crate::model::ModelProvider>)
+                        }
+                        Some(selected)
+                            if selected
+                                == format!("{}/{}", binding_model.provider, binding_model.name) =>
+                        {
+                            Some(Arc::clone(&binding_provider)
+                                as Arc<dyn crate::model::ModelProvider>)
+                        }
+                        Some(selected) => models
+                            .as_ref()?
+                            .resolve_shared(selected)
+                            .ok()
+                            .map(|resolved| resolved as Arc<dyn crate::model::ModelProvider>),
+                    })),
                 )?;
             }
             let executor = StockExecutor::from_binding(binding, ContextPipeline::default(), tools)

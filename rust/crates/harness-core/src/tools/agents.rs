@@ -116,6 +116,10 @@ pub struct WaitAgentInput {
     pub input: bool,
 }
 
+/// Resolves a child's selected model to the provider that will serve it.
+pub type SpawnProviders =
+    dyn Fn(Option<&str>) -> Option<Arc<dyn crate::model::ModelProvider>> + Send + Sync;
+
 /// What one turn's agent tools act for.
 struct Turn {
     spawned_children: u64,
@@ -131,8 +135,8 @@ struct Turn {
     /// This agent's creation snapshot and the host's template reader; spawn refuses
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
-    /// The selected model's provider, consulted before a spawn multiplies load.
-    saturation: Option<Arc<dyn crate::model::ModelProvider>>,
+    /// Resolves the child's selected model to the provider it will use.
+    saturation: Option<Arc<SpawnProviders>>,
     volumes: Vec<crate::agent::WorkspaceEntry>,
     /// Only the original deferred invocation consumes its named release event.
     released: Option<crate::agent::WaitResume>,
@@ -378,18 +382,6 @@ impl AgentTool {
                         "name must be short printable ASCII without spaces",
                     ));
                 };
-                if let Some(wait) = turn
-                    .saturation
-                    .as_ref()
-                    .and_then(|provider| provider.provider_saturation())
-                {
-                    return Ok(ToolResult {
-                        value: json!({"error": format!(
-                            "provider admission is closed for {} ms; recovery: wait for the provider's cooldown before spawning more work",
-                            wait.as_millis()
-                        )}),
-                    });
-                }
                 let Some((parent, templates)) = &turn.templates else {
                     return Ok(super::rejected_input(Error::Unsupported(
                         "this agent has no creation template to spawn from".into(),
@@ -452,6 +444,19 @@ impl AgentTool {
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
                 profile.peers = peers;
+                if let Some(wait) = turn
+                    .saturation
+                    .as_ref()
+                    .and_then(|providers| providers(profile.model.as_deref()))
+                    .and_then(|provider| provider.provider_saturation())
+                {
+                    return Ok(ToolResult {
+                        value: json!({"error": format!(
+                            "provider admission is closed for {} ms; recovery: wait for the provider's cooldown before spawning more work",
+                            wait.as_millis()
+                        )}),
+                    });
+                }
                 let brief = turn
                     .writer
                     .stage_once(
@@ -1201,7 +1206,7 @@ pub fn bind_agent_tools(
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: Option<u64>,
     (names, templates): (&[String], Option<Arc<dyn SpawnTemplates>>),
-    saturation: Option<Arc<dyn crate::model::ModelProvider>>,
+    saturation: Option<Arc<SpawnProviders>>,
 ) -> Result<()> {
     let turn = Arc::new(Turn {
         spawned_children: agent.spawned_children.len() as u64,
@@ -1398,7 +1403,9 @@ mod tests {
                 )),
                 maximum_bytes: None,
                 templates: None,
-                saturation: Some(Arc::new(Saturated)),
+                saturation: Some(Arc::new(|_: Option<&str>| {
+                    Some(Arc::new(Saturated) as Arc<dyn crate::model::ModelProvider>)
+                })),
                 volumes: Vec::new(),
                 released: None,
             }),
@@ -1417,6 +1424,87 @@ mod tests {
         assert_eq!(
             result.value["error"],
             "provider admission is closed for 7000 ms; recovery: wait for the provider's cooldown before spawning more work"
+        );
+        Ok(())
+    }
+
+    struct ChildModel;
+
+    impl crate::agent::SpawnTemplates for ChildModel {
+        fn child<'a>(
+            &'a self,
+            parent: &'a CreationConfig,
+            _: &'a AgentPath,
+            _: &'a [crate::agent::WorkspaceEntry],
+            _: &'a str,
+            _: Option<&'a crate::Capabilities>,
+        ) -> acyclic_stream::BoxProviderFuture<'a, Result<CreationConfig>> {
+            Box::pin(async move {
+                let mut profile = parent.clone();
+                profile.model = Some("other/model".into());
+                Ok(profile)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_checks_the_selected_child_provider() -> Result<()> {
+        let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([76; 16]));
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let mut children = crate::agent::Children::new();
+        children.bind(stream);
+        let creation = CreationConfig {
+            question_plugin: false,
+            topology: None,
+            continuation: None,
+            context: crate::agent::SpawnContext::Fresh,
+            template: None,
+            peers: Default::default(),
+            model: None,
+        };
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let tool = AgentTool {
+            name: "spawn",
+            turn: Arc::new(Turn {
+                spawned_children: 0,
+                spawning: futures::lock::Mutex::new(()),
+                agent: parent.clone(),
+                parent: None,
+                children,
+                effects: Arc::new(Effects(std::sync::atomic::AtomicUsize::new(0), false)),
+                observer: None,
+                writer: Arc::new(crate::runtime::test_context::PrivateVolume(
+                    crate::runtime::test_context::private_volume(76)?,
+                )),
+                maximum_bytes: None,
+                templates: Some((creation, Arc::new(ChildModel))),
+                saturation: Some(Arc::new(move |selection: Option<&str>| {
+                    record.lock().unwrap().push(selection.map(str::to_owned));
+                    match selection {
+                        Some("other/model") => None,
+                        _ => Some(Arc::new(Saturated) as Arc<dyn crate::model::ModelProvider>),
+                    }
+                })),
+                volumes: Vec::new(),
+                released: None,
+            }),
+        };
+        let result = tool
+            .execute(
+                ToolInvocation {
+                    operation_id: crate::OperationId::from_bytes([77; 16]),
+                    call_id: "spawn".into(),
+                    name: "spawn".into(),
+                    arguments: json!({"name": "w", "task": "work", "role": "worker"}),
+                },
+                None,
+            )
+            .await?;
+        assert!(result.value.get("agent").is_some(), "{:?}", result.value);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("other/model".to_string())]
         );
         Ok(())
     }

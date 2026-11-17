@@ -149,6 +149,10 @@ impl State {
 
     fn remove(&mut self, ticket: u64) -> Option<Waiter> {
         let waiter = self.waiters.remove(self.position(ticket)?)?.1;
+        if self.waiters.is_empty() {
+            self.pace = None;
+            self.window = None;
+        }
         if self.waiters.len() * 4 <= self.waiters.capacity() {
             self.waiters.shrink_to(self.waiters.len() * 2);
         }
@@ -411,12 +415,8 @@ impl Permit {
 
     /// The refused caller has waited out the provider's delay.
     fn waited(self, now: Duration) {
-        if let Some(until) = self.opens {
-            let mut state = self.gate.lock();
-            if state.closed_until == Some(until) {
-                state.closed_until = None;
-                state.open(now);
-            }
+        if self.opens.is_some() {
+            self.gate.lock().open(now);
         }
     }
 
