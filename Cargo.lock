@@ -547,6 +547,7 @@ dependencies = [
  "acyclic-harness-hosting",
  "acyclic-harness-local",
  "acyclic-harness-search",
+ "acyclic-harness-suite",
  "acyclic-harness-tui",
  "acyclic-host-platform",
  "acyclic-machines",
@@ -1030,6 +1031,26 @@ name = "acyclic-harness-settings-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "acyclic-harness-suite"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-harness-hosting",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "base64 0.23.1",
+ "bytes",
+ "ed25519-dalek",
+ "futures",
+ "prost",
+ "serde_json",
 ]
 
 [[package]]

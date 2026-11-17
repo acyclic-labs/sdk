@@ -1,0 +1,31 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**"]
+name = "acyclic-harness-suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The in-process conformance suite behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-suite"
+
+[dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["conformance", "test-support"] }
+acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "conformance", "test-support"] }
+base64 = "=0.23.1"
+bytes.workspace = true
+ed25519-dalek = { version = "3.0.0" }
+futures.workspace = true
+prost.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+
+[lints]
+workspace = true
