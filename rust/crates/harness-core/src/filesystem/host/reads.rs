@@ -238,6 +238,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         read_generation(&cut.generation, path, maximum, io).await
     }
 
+    /// Reads the whole regular file at absolute `path` at the private cut
+    /// `cut`, bounded by `maximum`, and returns its bytes retained on `io`
+    /// as every other workspace read returns them.
+    pub(in crate::filesystem) async fn read_private_cut_retained(
+        &self,
+        cut: &SelectedCut<A, O>,
+        path: &str,
+        maximum: u64,
+        io: &PreparationIo,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        let bytes = self
+            .read_cut(cut, path, Some(maximum), io)
+            .await?
+            .into_unmeasured();
+        if io.original_native_work().is_none() {
+            io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+        }
+        Ok(bytes)
+    }
+
     /// Reads the file `reference` names at the private cut `expected` selects
     /// on `workspace`, and returns the authored generation under that cut.
     /// Pinned readers enter it only when `selects_private_cut` holds, and

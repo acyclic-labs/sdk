@@ -22,8 +22,9 @@ impl<T> Charged<T> {
         }
     }
 
-    /// The value of a read on a function-local, unbounded ledger that dies at
-    /// return. Only the two unmeasured private read entry points call this.
+    /// The value without its charge. Only the three private read entry points
+    /// of the host reader call this: two read on a function-local ledger that
+    /// dies at return, and one re-retains the bytes on the caller's ledger.
     pub(in crate::filesystem) fn into_unmeasured(self) -> T {
         self.value
     }
