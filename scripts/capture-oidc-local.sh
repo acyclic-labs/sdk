@@ -65,4 +65,4 @@ docker inspect --format '{{.Image}}' "$container" > "$root/captures/image.txt"
 python3 scripts/capture-oidc.py "$root/captures"
 mkdir -p rust/crates/harness/fixtures/conformance/identity/dex
 cp "$root/captures/"* rust/crates/harness/fixtures/conformance/identity/dex/
-cargo run -p acyclic-agent-host-conformance --features local --bin oidc-qualify -- "$root/captures"
+bazel run //rust/crates/conformance/agent-host:oidc-qualify -- "$root/captures"

@@ -71,9 +71,9 @@ python3 scripts/capture-inference.py "$endpoint" "$root/captures" "http://127.0.
 mkdir -p rust/crates/conformance/fixtures/inference/llamacpp
 cp "$root/captures/"* rust/crates/conformance/fixtures/inference/llamacpp/
 if [ "${INFERENCE_RUN_SUITE:-0}" = 1 ]; then
-    cargo run -p acyclic-conformance --features inference --bin inference-qualify -- \
+    bazel run //rust/crates/conformance:inference-qualify -- \
         "$root/captures/manifest.json"
     curl --silent --output /dev/null "http://127.0.0.1:$rateport/"
-    cargo run -p acyclic-conformance --features inference --bin inference-qualify -- \
+    bazel run //rust/crates/conformance:inference-qualify -- \
         --local-live "$root/captures/manifest.json" "$endpoint/v1" "http://127.0.0.1:$rateport/v1"
 fi
