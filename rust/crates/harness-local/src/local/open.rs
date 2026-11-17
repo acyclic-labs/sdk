@@ -60,20 +60,42 @@ pub struct PreparedLocalHarness {
 }
 
 impl PreparedLocalHarness {
+    /// Saves the next launch's base model in the settings admitted at preparation.
+    ///
+    /// # Errors
+    /// The composition has no user settings, or the selected settings cannot be written.
+    pub fn save_model_preference(&self, selection: &str) -> Result<()> {
+        self.opening
+            .settings
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Unsupported("this composition has no user model preferences".into())
+            })?
+            .set_model(selection)
+    }
+
+    /// The startup model before folding the pinned home configuration.
+    pub fn base_model_selection(&self) -> Result<std::borrow::Cow<'_, str>> {
+        let config = &self.opening.config;
+        if let Some(base) = &config.model_base {
+            return Ok(std::borrow::Cow::Borrowed(base));
+        }
+        config
+            .model
+            .as_ref()
+            .map(|(model, _)| std::borrow::Cow::Owned(format!("{}/{}", model.provider, model.name)))
+            .ok_or_else(|| Error::Invalid("model selection is absent".into()))
+    }
+
     /// Selects the model from the saved home, optionally replacing the startup
     /// fold's base. Initialization inputs are applied only by their receipt.
     pub async fn model_selection(&self, base: Option<&str>) -> Result<String> {
         let opening = &self.opening;
         let stored = &self.storage;
-        let bound = opening
-            .config
-            .model
-            .as_ref()
-            .map(|(model, _)| format!("{}/{}", model.provider, model.name));
-        let base = base
-            .or(opening.config.model_base.as_deref())
-            .or(bound.as_deref())
-            .ok_or_else(|| Error::Invalid("model selection is absent".into()))?;
+        let base = match base {
+            Some(base) => std::borrow::Cow::Borrowed(base),
+            None => self.base_model_selection()?,
+        };
         let verifier = stored.issuer.verifier(&mut None)?;
         let mut capabilities = vec![
             stored
@@ -106,7 +128,7 @@ impl PreparedLocalHarness {
             maximum_bytes: opening.config.limits.file_bytes,
         };
         agent_settings::Tree::pinned(&volumes, stored.home_generation.clone(), None)?
-            .model_selection(base)
+            .model_selection(&base)
             .await
     }
 
@@ -126,21 +148,37 @@ pub(crate) async fn prepare(config: LocalHarnessConfig) -> Result<PreparedLocalH
     Ok(PreparedLocalHarness { opening, storage })
 }
 
+/// Read-only startup selection and prerequisites from one configuration fold.
+#[derive(Debug)]
+pub struct Readiness {
+    /// Effective initial-home model, when configuration admitted a selection.
+    pub model: Option<String>,
+    /// Every independent native prerequisite and configuration refusal.
+    pub refusals: Vec<Error>,
+}
+
 /// Read-only local prerequisites. Never captures a checkout, opens storage,
 /// creates signing authority or starts configured MCP children.
-pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
-    let mut refusals = config.preflight();
+pub(crate) async fn doctor(config: LocalHarnessConfig) -> Readiness {
+    let mut readiness = Readiness {
+        model: None,
+        refusals: config.preflight(),
+    };
     let checked = async {
         let opening = Opening::configure(config).await?;
         let mut model = opening.config.model.clone();
         #[cfg(not(target_arch = "wasm32"))]
         if let (Some(models), Some(base)) = (&opening.models, &opening.config.model_base) {
             let selected = crate::config::agent_from_home(&opening.config.home_files, base).await?;
+            readiness.model = Some(selected.model.clone());
             let selected = models.resolve(&selected.model)?;
             selected.0.validate()?;
             model = Some(selected);
         }
         if let Some((model, provider)) = model {
+            readiness
+                .model
+                .get_or_insert_with(|| format!("{}/{}", model.provider, model.name));
             crate::context::CompactionPolicy::for_model(
                 opening.compaction_choice,
                 &model,
@@ -151,9 +189,9 @@ pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
     }
     .await;
     if let Err(error) = checked {
-        refusals.push(error);
+        readiness.refusals.push(error);
     }
-    refusals
+    readiness
 }
 
 impl Opening {
