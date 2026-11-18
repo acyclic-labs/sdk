@@ -150,7 +150,7 @@ catalog! {
     }
     Secrets SecretsAction "secrets" Metering::Unmetered, { Delete => "delete", List => "list", Put => "put" }
     Streams StreamsAction "streams" Metering::Billed("streams"), {
-        Append => "append", Commit => "commit", Create => "create", Follow => "follow", Fork => "fork", List => "list", Read => "read",
+        Append => "append", Commit => "commit", Create => "create", Follow => "follow", Fork => "fork", InspectIdempotency => "inspect-idempotency", List => "list", Read => "read", ReadCommit => "read-commit", Tail => "tail",
     }
     Workers WorkersAction "workers" Metering::Billed("workers"), { Deploy => "deploy", Delete => "delete", Invoke => "invoke" }
 }
