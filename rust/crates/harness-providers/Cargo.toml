@@ -91,6 +91,7 @@ workspace = true
 [package.metadata.bazel.test-dependencies]
 credential-fixture = ["acyclic_harness_providers"]
 live-cache = ["acyclic_harness_core", "acyclic_harness_providers", "acyclic_stream", "async_stream", "bytes", "futures", "serde_json", "tokio"]
+prefix-cache = ["acyclic_actors", "acyclic_fs", "acyclic_harness_core", "acyclic_harness_local", "acyclic_harness_providers", "acyclic_objects", "acyclic_stream", "bytes", "futures", "harness_mock_model", "serde_json", "tempfile", "tokio"]
 
 [[test]]
 name = "main"
