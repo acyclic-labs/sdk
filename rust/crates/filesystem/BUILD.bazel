@@ -2860,8 +2860,6 @@ rust_test(
     crate_root = "tests/export_codec.rs",
     srcs = [
         "tests/export_codec.rs",
-        "tests/export_codec/kernel/checkpoint/mod.rs",
-        "tests/export_codec/kernel/checkpoint/tests.rs",
         "tests/export_codec/kernel/export/mod.rs",
         "tests/export_codec/kernel/export/tests.rs",
         "tests/export_codec/kernel/generation/mod.rs",
@@ -2869,10 +2867,65 @@ rust_test(
         "tests/export_codec/kernel/mod.rs",
         "tests/export_codec/kernel/retention/mod.rs",
         "tests/export_codec/kernel/retention/tests.rs",
-        "tests/export_codec/kernel/transfer/mod.rs",
-        "tests/export_codec/kernel/transfer/tests.rs",
         "tests/export_codec/kernel/volume/mod.rs",
         "tests/export_codec/kernel/volume/tests.rs",
+        "tests/support/export_manifest.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "@sdk_crates//hex-0.4.3",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "export_codec",
+    binary = ":export_codec_cases",
+    id = "acyclic-fs::export_codec",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "export_codec_full-cloud",
+    binary = ":export_codec_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::export_codec",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "generation_transfer_cases",
+    crate_root = "tests/generation_transfer.rs",
+    srcs = [
+        "tests/generation_transfer.rs",
+        "tests/generation_transfer/kernel/checkpoint/mod.rs",
+        "tests/generation_transfer/kernel/checkpoint/tests.rs",
+        "tests/generation_transfer/kernel/export/mod.rs",
+        "tests/generation_transfer/kernel/export/tests.rs",
+        "tests/generation_transfer/kernel/mod.rs",
+        "tests/generation_transfer/kernel/transfer/mod.rs",
+        "tests/generation_transfer/kernel/transfer/tests.rs",
         "tests/support/export_manifest.rs",
         "tests/support/generation_objects.rs",
         "tests/support/put_object.rs",
@@ -2898,26 +2951,25 @@ rust_test(
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//hex-0.4.3",
         "@sdk_crates//tokio-1.54.1",
     ],
     tags = ["manual"],
 )
 
 isolated_test(
-    name = "export_codec",
-    binary = ":export_codec_cases",
-    id = "acyclic-fs::export_codec",
+    name = "generation_transfer",
+    binary = ":generation_transfer_cases",
+    id = "acyclic-fs::generation_transfer",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
 
 isolated_test(
-    name = "export_codec_full-cloud",
-    binary = ":export_codec_cases",
+    name = "generation_transfer_full-cloud",
+    binary = ":generation_transfer_cases",
     binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::export_codec",
+    id = "acyclic-fs::generation_transfer",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
