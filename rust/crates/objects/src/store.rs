@@ -477,8 +477,8 @@ impl<M: Medium> Pages<'_, M> {
         }
         let page = list_page(self.medium, &self.prefix, self.after.as_deref(), PAGE).await?;
         self.done = page.len() < PAGE;
-        if !self.done {
-            self.after = page.last().map(|(key, _)| key.clone());
+        if let Some((key, _)) = page.last().filter(|_| !self.done) {
+            self.after.get_or_insert_default().clone_from(key);
         }
         Ok((!page.is_empty()).then_some(page))
     }
