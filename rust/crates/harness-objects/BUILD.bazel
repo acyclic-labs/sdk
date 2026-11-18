@@ -116,6 +116,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/harness-core:acyclic_harness_core_wasm",

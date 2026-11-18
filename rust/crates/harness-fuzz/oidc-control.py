@@ -11,7 +11,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("control", nargs="?", choices=("signature", "weak-issuer", "rsa-key"), default="signature")
 control = parser.parse_args().control
 root = Path(__file__).resolve().parents[3]
-source = root / "rust/crates/harness-core/src/oidc" / ("claims.rs" if control == "signature" else "keys.rs")
+source = root / "rust/crates/harness-oidc/src" / ("claims.rs" if control == "signature" else "keys.rs")
 oracle = root / "rust/crates/harness-fuzz/fuzz_targets/oidc.rs"
 original = source.read_bytes()
 digest = hashlib.sha256(oracle.read_bytes()).digest()

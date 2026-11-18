@@ -1,7 +1,7 @@
-diff --git b/rust/crates/harness-core/src/oidc/keys.rs a/rust/crates/harness-core/src/oidc/keys.rs
+diff --git b/rust/crates/harness-oidc/src/keys.rs a/rust/crates/harness-oidc/src/keys.rs
 index a94b0e67ac..359caa90a3 100644
---- b/rust/crates/harness-core/src/oidc/keys.rs
-+++ a/rust/crates/harness-core/src/oidc/keys.rs
+--- b/rust/crates/harness-oidc/src/keys.rs
++++ a/rust/crates/harness-oidc/src/keys.rs
 @@ -158,8 +158,13 @@ impl Key {
                  key.verify(message, &signature)
                      .map_err(|_| refused("invalid OIDC ECDSA signature"))

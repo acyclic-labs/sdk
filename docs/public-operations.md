@@ -102,9 +102,9 @@ protocol. They do not add an Acyclic service endpoint:
 
 | Source | Symbols | Original protocol owner |
 | --- | --- | --- |
-| `rust/crates/harness-core/src/oidc/http.rs` | `HttpSource` implementation of `JwksSource::fetch` | The configured issuer's JWKS HTTP resource. |
-| `rust/crates/harness-core/src/mcp/protocol.rs` | `McpToolTransport::{call,reconcile}` | The admitted MCP server and its existing operation identity. |
-| `rust/crates/harness-core/src/mcp/install.rs` | `McpInstallation::install` | The configured MCP transport's initialization and discovery. |
+| `rust/crates/harness-oidc/src/http.rs` | `HttpSource` implementation of `JwksSource::fetch` | The configured issuer's JWKS HTTP resource. |
+| `rust/crates/harness-mcp/src/protocol.rs` | `McpToolTransport::{call,reconcile}` | The admitted MCP server and its existing operation identity. |
+| `rust/crates/harness-mcp/src/install.rs` | `McpInstallation::install` | The configured MCP transport's initialization and discovery. |
 | `rust/crates/harness-providers/src/http.rs` | `HttpTransport::{send,send_with_native_work}` | The caller's explicit HTTP request; a transport port, not another product service. |
 
 Keep their provider and protocol checks with those owners. A product RPC
