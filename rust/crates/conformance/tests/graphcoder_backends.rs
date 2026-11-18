@@ -87,6 +87,18 @@ fn cargo_workflow_finds_the_plugin_binary_in_the_shared_target_directory() {
     );
 }
 
+/// A server may open a root agent before the test's scenario turn. That turn is
+/// not the scenario, so the model answers it without running the scenario.
+#[test]
+fn a_server_opened_root_turn_does_not_run_the_scenario() {
+    let steps = Mutex::new(BTreeSet::new());
+    let outputs = Mutex::new(Outputs::new());
+    let request = json!({"input": [{"role": "user", "content": "hello"}]});
+    let body = answer(&request, &steps, &outputs);
+    assert!(body.contains("idle"), "{body}");
+    assert!(steps.lock().unwrap().is_empty());
+}
+
 /// A Server-Sent Events body of one Responses generation.
 fn events(items: &[Value]) -> String {
     let mut body = String::new();
