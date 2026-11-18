@@ -4,6 +4,36 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
+    fn owner_draw_uses_the_full_equal_jitter_interval(
+        base in any::<u32>(),
+        maximum in any::<u32>(),
+        sample in any::<u32>(),
+    ) {
+        let mut backoff = Backoff::new(base, maximum, 0);
+        let mut ceilings = Backoff::new(base, maximum, 0);
+        let initial = u64::from(base.min(maximum));
+        for attempt in 0..=33 {
+            let ceiling = ((u128::from(initial) << attempt).min(u128::from(maximum))) as u64;
+            let lower = ceiling.div_ceil(2);
+            let delay = backoff.delay_with(|choices| {
+                assert_eq!(u64::from(choices), ceiling - lower + 1);
+                sample
+            });
+            let expected = lower + u64::from(sample) % (ceiling - lower + 1);
+            prop_assert_eq!(delay.as_millis(), u128::from(expected));
+            prop_assert_eq!(
+                ceilings.delay_with(|choices| choices - 1).as_millis(),
+                u128::from(ceiling),
+            );
+        }
+        backoff.reset();
+        prop_assert_eq!(
+            backoff.delay_with(|_| 0).as_millis(),
+            u128::from(initial.div_ceil(2)),
+        );
+    }
+
+    #[test]
     fn recovery_spacing_stays_bounded_uncapped_and_reproducible(
         base in 1_u32..=1_000_000,
         maximum in 1_u32..=u32::MAX,
