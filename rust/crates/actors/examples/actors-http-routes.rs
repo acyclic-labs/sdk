@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("service output requires a parent")?;
         fs::write(
             parent.join("Actors.service.bin"),
-            acyclic_actors::FILE_DESCRIPTOR_SET,
+            include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin")),
         )?;
         fs::write(
             parent.join("Actors.semantic-names.json"),
