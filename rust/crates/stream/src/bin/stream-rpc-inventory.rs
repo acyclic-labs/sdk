@@ -4,7 +4,7 @@ fn main() {
     let inventory = serde_json::json!({
         "grpc": acyclic_stream::grpc::Client::RPC_METHODS,
         "http": acyclic_stream::http::HttpStream::RPC_METHODS,
-        "routes": acyclic_stream::HTTP_RESPONSE_CONTRACT,
+        "routes": acyclic_stream_wire::HTTP_RESPONSE_CONTRACT,
     });
     if let Err(error) = serde_json::to_writer(std::io::stdout(), &inventory) {
         eprintln!(

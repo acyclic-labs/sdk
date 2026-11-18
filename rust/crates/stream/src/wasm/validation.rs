@@ -656,7 +656,7 @@ mod http {
         if let Some(followed) = followed {
             crate::StreamPath::validate(followed).map_err(|_| "invalid followed path")?;
         }
-        match crate::HTTP_RESPONSE_CONTRACT
+        match acyclic_stream_wire::HTTP_RESPONSE_CONTRACT
             .iter()
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {

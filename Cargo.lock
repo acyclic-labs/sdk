@@ -2044,6 +2044,7 @@ dependencies = [
  "acyclic-auth-action",
  "acyclic-proto-build",
  "prost",
+ "serde_json",
  "tonic",
  "tonic-prost",
 ]
