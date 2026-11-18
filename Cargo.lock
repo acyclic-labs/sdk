@@ -1679,6 +1679,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-harness-client",
  "acyclic-harness-providers",
+ "acyclic-native-lines",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-plugin-identity",
