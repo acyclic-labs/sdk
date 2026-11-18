@@ -57,13 +57,13 @@ pub(super) fn world(seed: u64) -> std::result::Result<bool, String> {
                         projection,
                         ..
                     } => {
-                        prepared = Some(*projection);
+                        prepared = Some(projection.clone());
                     }
                     ExecutionEvent::Prompt {
                         step: 0,
                         projection,
                     } => {
-                        prompt = Some(*projection);
+                        prompt = Some(projection.clone());
                     }
                     ExecutionEvent::ToolStarted { call_id, .. } if call_id == "tool" => {
                         start = record.committed_at_micros.is_some();
