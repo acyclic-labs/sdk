@@ -5,7 +5,7 @@
     reason = "example is also composed by the native boundary fixture"
 )]
 
-use acyclic_harness::{
+use acyclic_harness_core::{
     Error, Result,
     conversation::FileRef,
     model::{
@@ -123,16 +123,16 @@ impl ImageConversion {
 impl ToolExecutor for ImageConversion {
     fn authorize(
         &self,
-        scope: Option<&acyclic_harness::runtime::RuntimeScope>,
-        context: Option<&acyclic_harness::runtime::ToolContext>,
-        invocation: &acyclic_harness::tool::ToolInvocation,
+        scope: Option<&acyclic_harness_core::runtime::RuntimeScope>,
+        context: Option<&acyclic_harness_core::runtime::ToolContext>,
+        invocation: &acyclic_harness_core::tool::ToolInvocation,
         work: acyclic_fs::NativeWork<'_>,
-    ) -> acyclic_harness::Result<()> {
+    ) -> acyclic_harness_core::Result<()> {
         let _ = (scope, context, invocation, work);
         #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
-            return Err(acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unsupported,
+            return Err(acyclic_harness_core::Error::NativeBoundary {
+                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
                 reason: "tool executor has no native authorization producer",
             });
         }
