@@ -32,8 +32,9 @@ fn permit()
 
 use acyclic_fs as sdk;
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork, NativeTreeMaterializationBackend, WorkBudget,
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationBackend},
+    acyclic_fs_work::performance::WorkBudget,
 };
 #[path = "../src/materializer/memory.rs"]
 mod memory;

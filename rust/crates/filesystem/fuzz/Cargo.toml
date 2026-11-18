@@ -14,6 +14,7 @@ model-checking = ["dep:loom"]
 fuzz-targets = ["dep:libfuzzer-sys"]
 
 [dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../../filesystem-work" }
 acyclic-stream = { path = "../../stream" }
 acyclic-auth = { path = "../../auth" }
 prost.workspace = true

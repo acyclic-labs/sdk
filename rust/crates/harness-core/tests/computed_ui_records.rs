@@ -1,17 +1,20 @@
 //! Original-accounting UI record reads through real Streams.
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork, WorkBudget,
-    demand::{DemandError, DemandSource},
-    kernel::{KernelAccounting, MetadataDecodeError, NativeAccounting, RetainedAllocation},
-};
 use acyclic_harness_core::agent::{
     AgentRecord, Error as AgentError, Phase, RECORD_VERSION, StatusRecord,
 };
 use acyclic_stream::{
     AppendRequest, HeadProjection, HeadsRequest, IdempotencyKey, MemoryStream,
     NativeStreamProvider, RevisionCut, StreamPath, StreamProviderExt as _,
+};
+use {
+    acyclic_fs::{
+        CancellationToken, NativeMaterializationWork,
+        demand::{DemandError, DemandSource},
+        kernel::{KernelAccounting, MetadataDecodeError, NativeAccounting, RetainedAllocation},
+    },
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -867,7 +870,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     // native production. Independently retained credit never belongs to its
     // scratch scope, including after all returned values have retired.
     let ordinary = acyclic_harness_core::filesystem::PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024),
         &cancellation,
     )?;
     let (ordinary_selection, ordinary_bytes, ordinary_hold) = projected_reader

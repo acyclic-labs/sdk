@@ -159,7 +159,7 @@ async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
         .mode = crate::agent::WorkspaceMode::ReadOnly;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -255,7 +255,7 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
         .ok_or_else(|| Error::NotFound("fixture signing custody".into()))?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

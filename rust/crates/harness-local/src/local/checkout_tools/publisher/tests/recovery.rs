@@ -99,7 +99,11 @@ async fn replay_after_an_interrupted_capture_is_settled(skip: bool, recover: boo
         .workspace
         .view()
         .workspace()
-        .operation_generation(key, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .operation_generation(
+            key,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value;
@@ -146,11 +150,15 @@ async fn staged_reference(harness: &Fixture, file: &FileRef) -> Result<FileRef> 
         .ok_or_else(|| Error::Invalid("file version is not a canonical generation".into()))?;
     let stop = acyclic_fs::CancellationToken::new();
     let (parents, _allocation) = workspace
-        .generation(generation, acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .generation(
+            generation,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &stop,
+        )
         .await
         .map_err(storage)?
         .value
-        .parents(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .parents(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &stop)
         .await
         .map_err(storage)?
         .value;
@@ -295,7 +303,7 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
         .workspace()
         .operation_generation(
             key,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -337,7 +345,10 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
     let cancellation = acyclic_fs::CancellationToken::new();
     let staged = view
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value
@@ -368,7 +379,11 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
     );
     let settled = view
         .workspace()
-        .operation_generation(key, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .operation_generation(
+            key,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value;
@@ -378,7 +393,10 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
     );
     let before = view
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value
@@ -399,7 +417,10 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
     .await?;
     assert_eq!(
         view.workspace()
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await
             .map_err(storage)?
             .value
@@ -439,7 +460,11 @@ async fn a_clean_write_capture_cannot_capture_a_later_user_edit() -> Result<()> 
     );
     let settlement = view
         .workspace()
-        .operation_generation(key, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .operation_generation(
+            key,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value;
@@ -449,7 +474,10 @@ async fn a_clean_write_capture_cannot_capture_a_later_user_edit() -> Result<()> 
     );
     let before = view
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value
@@ -466,7 +494,10 @@ async fn a_clean_write_capture_cannot_capture_a_later_user_edit() -> Result<()> 
     );
     assert_eq!(
         view.workspace()
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await
             .map_err(storage)?
             .value
@@ -565,7 +596,7 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
         .workspace()
         .operation_generation(
             key,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

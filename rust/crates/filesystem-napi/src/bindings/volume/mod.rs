@@ -5,7 +5,7 @@ use super::*;
 pub struct NativeVolume {
     pub(in crate::bindings) inner: LocalVolume,
     pub(in crate::bindings) cancellation: CancellationToken,
-    pub(in crate::bindings) acquisition_work: acyclic_fs::WorkCounters,
+    pub(in crate::bindings) acquisition_work: acyclic_fs_work::performance::WorkCounters,
 }
 
 #[napi]
@@ -38,7 +38,7 @@ impl NativeVolume {
                 before,
                 after,
                 maximum_changes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -64,7 +64,7 @@ impl NativeVolume {
             .checkout(
                 GenerationSelector::Head,
                 mode,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await

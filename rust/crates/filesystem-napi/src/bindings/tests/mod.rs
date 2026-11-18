@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::WorkBudget;
+use acyclic_fs_work::performance::WorkBudget;
 
 #[test]
 fn generation_reference_codec_preserves_sealed_association() -> Result<()> {
@@ -55,14 +55,15 @@ async fn open(root: &tempfile::TempDir) -> Result<NativeFs> {
 
 #[test]
 fn native_work_json_preserves_full_u64_values() {
-    let work = acyclic_fs::WorkCounters {
+    let work = acyclic_fs_work::performance::WorkCounters {
         authority_records_read: 9_007_199_254_740_993,
         bytes_copied: u64::MAX,
         ..Default::default()
     };
     let value: serde_json::Value =
         serde_json::from_str(&work_json(&work).expect("work counters serialize")).expect("JSON");
-    let canonical = serde_json::to_value(acyclic_fs::WorkCounters::default()).expect("JSON");
+    let canonical =
+        serde_json::to_value(acyclic_fs_work::performance::WorkCounters::default()).expect("JSON");
     let keys = |value: &serde_json::Value| {
         let mut keys = value
             .as_object()
@@ -236,7 +237,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         inner: Arc::clone(&shared),
         config: test_config(),
         cancellation: CancellationToken::new(),
-        acquisition_work: acyclic_fs::WorkCounters::default(),
+        acquisition_work: acyclic_fs_work::performance::WorkCounters::default(),
     };
     let unresolved = OperationId::new();
     Box::pin(shared.lock())
@@ -288,7 +289,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
     assert!(
         matches!(
             polled,
-            Ok(acyclic_fs::OperationReceipt {
+            Ok(acyclic_fs_work::performance::OperationReceipt {
                 value: WatchBatch::RescanRequired { .. },
                 ..
             })

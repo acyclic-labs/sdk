@@ -164,9 +164,9 @@ async fn require_only_fork_negative_control() -> Result<(), Box<dyn Error>> {
             budget,
             &cancellation,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )

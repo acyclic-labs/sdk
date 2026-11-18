@@ -14,7 +14,7 @@ fn continuation_metadata_decodes_with_custody_on_the_original_native_ledger() ->
     let bytes = serde_json::to_vec(&event).expect("fixture event JSON");
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 1_048_576),
+        acyclic_fs_work::performance::work_budget(1_000_000, 1_048_576),
         &cancellation,
     )
     .expect("native fixture ledger");

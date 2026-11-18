@@ -122,7 +122,7 @@ fn encode_with_ledger(
 fn original_ledger_bytes() -> u64 {
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000),
         &cancellation,
     )
     .map_err(|(cause, _)| cause.to_string())
@@ -131,7 +131,7 @@ fn original_ledger_bytes() -> u64 {
 }
 
 fn check_ledger(index: usize, canonical: bool, native: bool, repeat: bool) -> TestCaseResult {
-    use acyclic_fs::WorkCounters;
+    use acyclic_fs_work::performance::WorkCounters;
     let value = values().into_iter().nth(index).unwrap();
     let [(old, _), (new, trace)] = differential::pair::<_, _, (&'static str, u64)>(
         || value.clone(),

@@ -33,7 +33,7 @@ mod tests {
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
                 OperationId::new(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 None,
             )
@@ -62,7 +62,7 @@ mod tests {
         let destination = tempfile::tempdir()?;
         let cancel = CancellationToken::new();
         let generation = workspace
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancel)
             .await
             .map_err(|failure| failure.error)?
             .value;
@@ -74,7 +74,7 @@ mod tests {
             .prepare_native_working_set(
                 &options,
                 &materialization,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancel,
             )
             .await?;

@@ -91,7 +91,7 @@ impl<'a> Node<'a> {
         .filter(|length| *length <= acyclic_stream::MAX_RECORD_BYTES)
         .ok_or_else(|| invalid(io, "execution index node exceeds its record bound"))?;
         if let Some(io) = io {
-            let charge = acyclic_fs::WorkCounters {
+            let charge = acyclic_fs_work::performance::WorkCounters {
                 bytes_encoded: length as u64,
                 bytes_copied: length as u64,
                 items_examined: 1,

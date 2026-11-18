@@ -171,7 +171,7 @@ impl NativeSpeculation {
             .execute_residency(
                 controller.residency(),
                 permit,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await

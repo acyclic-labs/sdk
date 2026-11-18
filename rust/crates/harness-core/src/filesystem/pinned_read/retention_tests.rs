@@ -60,7 +60,7 @@ impl Fixture {
                 .checkout(
                     acyclic_fs::model::GenerationSelector::Head,
                     acyclic_fs::model::CheckoutMode::tracking_transaction(),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
                 .await?
@@ -80,12 +80,12 @@ impl Fixture {
                         bytes: bytes::Bytes::copy_from_slice(bytes).into(),
                         metadata: acyclic_fs::kernel::FileMetadata::default(),
                     },
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
                 .await?;
             let generation = checkout
-                .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+                .checkpoint(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancel)
                 .await?
                 .value;
             host.generation_ref_id(generation, None)?
@@ -144,7 +144,7 @@ impl Fixture {
                 .head(
                     self.pin,
                     &mut acyclic_fs::AuthorityWork::new(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &cancellation
                     )
                 )
@@ -165,7 +165,7 @@ impl Fixture {
                     payload_bytes: 4096,
                 },
                 &mut acyclic_fs::AuthorityWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 ),
             )

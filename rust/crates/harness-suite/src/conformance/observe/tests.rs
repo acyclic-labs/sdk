@@ -179,7 +179,7 @@ fn native_calls() -> Vec<(&'static str, NativeCall)> {
 #[test]
 fn every_native_forward_counts_like_the_provider_negative_control() -> Result {
     let meter = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|_| "native work admission")?

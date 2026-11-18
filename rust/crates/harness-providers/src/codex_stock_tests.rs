@@ -85,7 +85,10 @@ async fn negative_control_inherited_public_counter_rejects_the_same_stock_task()
 #[tokio::test]
 async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_ledger() -> Result<()>
 {
-    use acyclic_fs::{CancellationToken, WorkCounters, WorkError};
+    use {
+        acyclic_fs::CancellationToken,
+        acyclic_fs_work::performance::{WorkCounters, WorkError},
+    };
     let (_root, login, _, _) = fixture(Vec::new())?;
     let backend = Arc::new(Backend {
         counts: AtomicUsize::new(0),
@@ -108,7 +111,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
     let completed_items = items + REGISTER + RETIRE;
     for total in [65_536, 65_537] {
         let work = NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(65_536, 4 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(65_536, 4 * 1024 * 1024),
             &CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

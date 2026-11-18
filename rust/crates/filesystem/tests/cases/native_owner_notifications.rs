@@ -5,11 +5,14 @@ use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
 use acyclic_fs::facade::FsWork;
 use acyclic_fs::kernel::NamespacePath;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use std::path::Path;
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-const BUDGET: WorkBudget = acyclic_fs::performance::BOUNDARY_BUDGET;
+const BUDGET: WorkBudget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
 
 async fn open(path: &Path, work: &NativeMaterializationWork) -> TestResult<NativeDemandSource> {
     Ok(NativeDemandSource::open(

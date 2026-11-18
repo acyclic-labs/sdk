@@ -118,7 +118,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             .0
             .workspace()
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()
             )
             .await
@@ -191,7 +191,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert_eq!(
         unbounded!(fs, open_workspace("epoch-attachment"))?
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()
             )
             .await

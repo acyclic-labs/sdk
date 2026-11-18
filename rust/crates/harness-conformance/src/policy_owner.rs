@@ -1,10 +1,13 @@
 //! Portable policy-owner fixture; verdicts remain in the substrate runner.
 use crate::TestResult;
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, WorkBudget, Workspace,
-    access::{Action, Effect, Policy},
-};
 use serde::{Deserialize, Serialize};
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, Workspace,
+        access::{Action, Effect, Policy},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,9 +73,9 @@ fn fork<'a, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
                         WorkBudget::UNBOUNDED,
                         &cancellation,
                         &mut |_| {
-                            std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                            std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                                 value: (),
-                                work: acyclic_fs::WorkCounters::UNCHARGED,
+                                work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                             }))
                         },
                     )
@@ -164,10 +167,10 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     },
                 )
             },

@@ -1,7 +1,10 @@
 //! The same StreamAuthorityStore/operation-window path used by LocalFs.
-use acyclic_fs::{AsyncAuthorityStore, AuthorityWork, CancellationToken, WorkBudget};
 use acyclic_stream::MemoryStream;
 use std::sync::Arc;
+use {
+    acyclic_fs::{AsyncAuthorityStore, AuthorityWork, CancellationToken},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 // This fails to compile if the model command forgets to instrument the dependency.
 const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
@@ -63,10 +66,13 @@ fn publication_after_revocation(broken: bool, fork: bool) {
                 ready.send(()).unwrap();
                 revoked.recv().unwrap();
             }
-            std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                acyclic_fs::OperationReceipt {
+            std::future::ready(Ok::<
+                _,
+                acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>,
+            >(
+                acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 },
             ))
         };

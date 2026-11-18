@@ -123,12 +123,12 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
             for cancelled in [false, true] {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let budget = if cancelled {
-                    acyclic_fs::performance::BOUNDARY_BUDGET
+                    acyclic_fs_work::performance::BOUNDARY_BUDGET
                 } else {
-                    acyclic_fs::WorkBudget {
+                    acyclic_fs_work::performance::WorkBudget {
                         peak_allocation_bytes:
                             acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-                        ..acyclic_fs::WorkBudget::UNBOUNDED
+                        ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
                     }
                 };
                 let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -200,7 +200,7 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
         let work = if matches!(decision, ToolPolicyDecision::Allow) {
             Some(
                 acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs_work::performance::BOUNDARY_BUDGET,
                     &cancellation,
                 )
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?,
@@ -543,7 +543,7 @@ async fn host_start_replay_releases_its_records() -> Result<()> {
         .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

@@ -849,7 +849,7 @@ mod tests {
         };
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024),
             &cancellation,
         )?;
         let mut execution = StockExecution::ordinary(&stock);

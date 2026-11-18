@@ -31,7 +31,7 @@ fn history(
     fault: Fault,
 ) -> TestCaseResult {
     let cancellation = CancellationToken::new();
-    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     for (index, limit) in limits.into_iter().enumerate() {
         *field(&mut budget, index) = limit;
     }
@@ -151,7 +151,7 @@ fn value_serialization_requires_encoding_credit() {
     let value = serde_json::json!({"value": ["complete", 1, true]});
     for credit in [0, 100_000] {
         let cancellation = CancellationToken::new();
-        let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+        let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
         budget.bytes_encoded = credit;
         let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
         let io = PreparationIo::from_native_work(&original).unwrap();

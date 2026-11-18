@@ -4,7 +4,7 @@ use super::*;
 #[wasm_bindgen]
 pub struct BrowserVolume {
     pub(in crate::bindings) engine: Volume<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
-    pub(in crate::bindings) acquisition_work: acyclic_fs::WorkCounters,
+    pub(in crate::bindings) acquisition_work: acyclic_fs_work::performance::WorkCounters,
 }
 
 #[wasm_bindgen]
@@ -38,7 +38,7 @@ impl BrowserVolume {
                 before,
                 after,
                 maximum_changes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -57,7 +57,7 @@ impl BrowserVolume {
                 .checkout(
                     GenerationSelector::Head,
                     mode,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await

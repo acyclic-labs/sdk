@@ -116,7 +116,10 @@ mod session_fs;
 // Included production regressions use these crate-root API imports.
 #[cfg(all(windows, not(target_arch = "wasm32")))]
 #[cfg(not(loom))]
-use acyclic_fs::{OperationReceipt, PublicationPermit, WorkCounters, WorkspaceError, kernel};
+use {
+    acyclic_fs::{PublicationPermit, WorkspaceError, kernel},
+    acyclic_fs_work::performance::{OperationReceipt, WorkCounters},
+};
 
 #[cfg(all(feature = "conformance", not(target_arch = "wasm32")))]
 #[path = "cases/conformance.rs"]

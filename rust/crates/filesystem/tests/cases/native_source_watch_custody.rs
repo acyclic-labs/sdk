@@ -32,15 +32,21 @@ async fn a_shared_source_registers_watches_from_different_original_ledgers()
     acyclic_native_runtime::initialize_native_io_services()?;
     let temp = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
-    let source_work =
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-            .expect("source ledger");
-    let first_work =
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-            .expect("first view ledger");
-    let second_work =
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-            .expect("second view ledger");
+    let source_work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .expect("source ledger");
+    let first_work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .expect("first view ledger");
+    let second_work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .expect("second view ledger");
     let source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(temp.path()),
         FilesystemProfile::Portable,

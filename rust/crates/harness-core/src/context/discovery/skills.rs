@@ -446,7 +446,7 @@ pub(super) fn skill_text_native(
     let diagnostic = work.claim(
         crate::executor::json::sdk_json_diagnostic_bytes(),
         0,
-        acyclic_fs::WorkCounters::UNCHARGED,
+        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     )?;
     let bytes = match crate::executor::json::json_bytes_bounded(
         listing,

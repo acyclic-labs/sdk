@@ -81,7 +81,7 @@ where
             .authorize_descendant(
                 workspace_id,
                 self.repository,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

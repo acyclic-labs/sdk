@@ -1,7 +1,10 @@
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters, WorkspaceName};
 use divan::Bencher;
 use std::alloc::Layout;
 use unicode_normalization::UnicodeNormalization;
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkspaceName},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
     eprintln!("workspace-name benchmark failed: {error:?}");
@@ -59,7 +62,7 @@ fn marker(work: &NativeMaterializationWork, case: u8, begin: bool) {
 #[divan::bench(args = [(0, false), (0, true), (1, false), (1, true), (2, false), (2, true), (3, false), (3, true), (4, false), (4, true), (5, false), (5, true)], threads = [1, 4])]
 fn workspace_name(bencher: Bencher, (case, native): (u8, bool)) {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let fixture = || {
         native.then(|| NativeMaterializationWork::new(budget, &cancellation).unwrap_or_else(fail))
     };
@@ -108,7 +111,7 @@ fn workspace_name(bencher: Bencher, (case, native): (u8, bool)) {
 fn workspace_name_shared(bencher: Bencher, case: u8) {
     let cancellation = CancellationToken::new();
     let fixture = || {
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+        NativeMaterializationWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancellation)
             .unwrap_or_else(fail)
     };
     let operation = |work: &NativeMaterializationWork| {

@@ -394,7 +394,7 @@ async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_
         );
         let context = crate::runtime::ToolContext::new(task, operation, "edit")?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 16_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = if native {

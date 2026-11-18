@@ -1,12 +1,15 @@
 //! Filesystem changes use the ordinary credential-bound record channel.
 use acyclic_auth::{contract::*, testing as signed};
-use acyclic_fs::{CancellationToken, Fs, WorkBudget, access};
 use acyclic_stream::{StreamError, session as engine, wire};
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt, channel::mpsc};
 use prost::Message;
 use std::sync::Arc;
 use wire::session_frame::Body;
+use {
+    acyclic_fs::{CancellationToken, Fs, access},
+    acyclic_fs_work::performance::WorkBudget,
+};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Space =
     acyclic_fs::Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
@@ -73,10 +76,10 @@ async fn policy(workspace: &Space) -> Result {
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     },
                 )
             },

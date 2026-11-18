@@ -158,7 +158,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
 
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_048_576, 1_048_576),
+        acyclic_fs_work::performance::work_budget(1_048_576, 1_048_576),
         &cancellation,
     )
     .unwrap();

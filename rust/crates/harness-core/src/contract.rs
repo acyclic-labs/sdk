@@ -290,7 +290,7 @@ impl Capabilities {
         );
         let mut copied = BTreeSet::new();
         for value in values {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 items_examined: 1,
                 ..Default::default()
             })?;
@@ -299,7 +299,9 @@ impl Capabilities {
             }
             let slot = std::mem::size_of::<String>() as u64;
             let bytes = slot.checked_add(value.len() as u64).ok_or({
-                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)
+                acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs_work::performance::WorkError::Overflow,
+                )
             })?;
             io.admit_owned(bytes)?;
             io.retain_owned(slot)?;
@@ -751,11 +753,11 @@ mod tests {
             grants: &Capabilities,
             items: u64,
             cancelled: bool,
-        ) -> Result<acyclic_fs::OperationReceipt<Option<&str>>> {
+        ) -> Result<acyclic_fs_work::performance::OperationReceipt<Option<&str>>> {
             let stop = acyclic_fs::CancellationToken::new();
             let mut io =
                 crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-                    acyclic_fs::performance::work_budget(items, 4096),
+                    acyclic_fs_work::performance::work_budget(items, 4096),
                     &stop,
                 )?);
             if cancelled {
@@ -798,7 +800,7 @@ mod tests {
             let stop = acyclic_fs::CancellationToken::new();
             let mut old =
                 crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
-                    acyclic_fs::performance::work_budget(2, 4096),
+                    acyclic_fs_work::performance::work_budget(2, 4096),
                     &stop,
                 )?);
             assert!(

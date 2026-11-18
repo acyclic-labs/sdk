@@ -1,10 +1,6 @@
 //! Public Bound admission and the standalone daemon, using real VMM frontends.
 #![cfg(target_os = "linux")]
 
-use acyclic_fs::{
-    CancellationToken, Fs, LocalOptions, NativeMaterializationWork, WorkspaceError,
-    performance::work_budget,
-};
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
@@ -17,6 +13,10 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
+};
+use {
+    acyclic_fs::{CancellationToken, Fs, LocalOptions, NativeMaterializationWork, WorkspaceError},
+    acyclic_fs_work::performance::work_budget,
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;

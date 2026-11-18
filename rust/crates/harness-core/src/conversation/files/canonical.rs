@@ -175,7 +175,7 @@ mod tests {
                 + crate::contract::canonical_json_bytes(&file)?.len())
                 as u64;
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(20_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(20_000, 1_048_576);
             budget.bytes_copied = expected.len() as u64;
             budget.bytes_hashed = bytes;
             let original = NativeMaterializationWork::new(budget, &cancellation)
@@ -209,7 +209,7 @@ mod tests {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         for file in files()? {
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(20_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(20_000, 1_048_576);
             budget.bytes_copied = file.read_capability(&mut None)?.len() as u64;
             let original = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

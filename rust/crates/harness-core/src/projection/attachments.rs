@@ -50,7 +50,7 @@ pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<
         let length =
             digits + "[ additional attachments omitted from this bounded model context]".len();
         allocate(length as u64, Some(io))?;
-        let charge = acyclic_fs::WorkCounters {
+        let charge = acyclic_fs_work::performance::WorkCounters {
             bytes_encoded: length as u64,
             ..Default::default()
         };

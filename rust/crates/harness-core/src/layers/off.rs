@@ -62,7 +62,7 @@ impl MarkerWork for Option<&crate::conversation::ContentIo> {
 
     fn charge(&self, items_examined: u64) -> crate::Result<()> {
         if let Some(io) = self {
-            io.charged(acyclic_fs::WorkCounters {
+            io.charged(acyclic_fs_work::performance::WorkCounters {
                 items_examined,
                 ..Default::default()
             })?;
@@ -80,7 +80,7 @@ impl MarkerWork for &acyclic_fs::NativeMaterializationWork {
     fn charge(&self, items_examined: u64) -> crate::Result<()> {
         acyclic_fs::NativeMaterializationWork::charge(
             self,
-            acyclic_fs::WorkCounters {
+            acyclic_fs_work::performance::WorkCounters {
                 items_examined,
                 ..Default::default()
             },
@@ -207,7 +207,7 @@ mod tests {
     -> crate::Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 items_examined: 3,
                 allocation_operations: 2,
                 peak_allocation_bytes: 4096,

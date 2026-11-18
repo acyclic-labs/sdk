@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt as _;
 
 fn work(cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
     NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        acyclic_fs_work::performance::work_budget(16_384, 16 * 1_024 * 1_024),
         cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
@@ -154,9 +154,9 @@ async fn search_native_decode_accounting_failures_are_not_provider_rejections() 
         for (items_examined, body) in [(0, br#"{"results":[]}"#.as_slice()), (260, deep.as_bytes())]
         {
             let work = NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget {
+                acyclic_fs_work::performance::WorkBudget {
                     items_examined,
-                    ..acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024)
+                    ..acyclic_fs_work::performance::work_budget(16_384, 16 * 1_024 * 1_024)
                 },
                 &CancellationToken::new(),
             )
@@ -195,9 +195,9 @@ async fn search_native_http_exhaustion_rejects_before_network() -> Result<()> {
             .local_addr()
             .map_err(|e| Error::Storage(e.to_string()))?;
         let work = NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 backend_read_operations: 0,
-                ..acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024)
+                ..acyclic_fs_work::performance::work_budget(16_384, 16 * 1_024 * 1_024)
             },
             &CancellationToken::new(),
         )
@@ -227,9 +227,9 @@ async fn search_native_http_exhaustion_rejects_before_network() -> Result<()> {
 async fn search_native_http_one_byte_allowance_cannot_read_a_whole_body() -> Result<()> {
     for exa in [true, false] {
         let work = NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 source_bytes_read: 1,
-                ..acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024)
+                ..acyclic_fs_work::performance::work_budget(16_384, 16 * 1_024 * 1_024)
             },
             &CancellationToken::new(),
         )

@@ -1,10 +1,12 @@
 //! Push watcher hints captured in one filesystem generation commit.
 use super::*;
-use acyclic_fs::{
-    CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
-    NativeWatchOptions, WatchBatch, WorkBudget, WorkCounters, capture_baseline,
-    capture_watch_batch,
-    model::{CheckoutMode, GenerationSelector},
+use {
+    acyclic_fs::{
+        CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
+        NativeWatchOptions, WatchBatch, capture_baseline, capture_watch_batch,
+        model::{CheckoutMode, GenerationSelector},
+    },
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 
 mod converge;
@@ -489,12 +491,17 @@ where
                 &cancellation,
                 |_| async {
                     before_effect().await.map_err(|error| {
-                        acyclic_fs::OperationFailure::new(error, WorkCounters::UNCHARGED)
+                        acyclic_fs_work::performance::OperationFailure::new(
+                            error,
+                            WorkCounters::UNCHARGED,
+                        )
                     })?;
-                    Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED,
-                    })
+                    Ok::<_, acyclic_fs_work::performance::OperationFailure<Error>>(
+                        acyclic_fs_work::performance::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    )
                 },
             )
             .await
@@ -644,12 +651,17 @@ where
             &cancellation,
             |_| async {
                 before_effect().await.map_err(|error| {
-                    acyclic_fs::OperationFailure::new(error, WorkCounters::UNCHARGED)
+                    acyclic_fs_work::performance::OperationFailure::new(
+                        error,
+                        WorkCounters::UNCHARGED,
+                    )
                 })?;
-                Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED,
-                })
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<Error>>(
+                    acyclic_fs_work::performance::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                )
             },
         )
         .await

@@ -149,6 +149,7 @@ rust_library(
     ] + [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/harness-provider-protocol:acyclic_harness_provider_protocol",
@@ -368,6 +369,7 @@ rust_test(
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-mock-model:harness_mock_model",
         "//rust/crates/harness:acyclic_harness",
@@ -455,6 +457,7 @@ rust_test(
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-mock-model:harness_mock_model",
         "//rust/crates/harness:acyclic_harness",
@@ -539,6 +542,7 @@ rust_binary(
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-mock-model:harness_mock_model",
         "//rust/crates/harness:acyclic_harness",
@@ -700,6 +704,7 @@ rust_shared_library(
     ] + [
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/harness-core:acyclic_harness_core_wasm",
         "//rust/crates/harness:acyclic_harness_wasm",
         "//rust/crates/harness-provider-protocol:acyclic_harness_provider_protocol_wasm",
@@ -827,6 +832,7 @@ rust_library(
     ] + [
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/harness-core:acyclic_harness_core_wasm",
         "//rust/crates/harness:acyclic_harness_wasm",
         "//rust/crates/harness-provider-protocol:acyclic_harness_provider_protocol_wasm",

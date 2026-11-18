@@ -196,7 +196,7 @@ pub(crate) fn deduplicate_reads(
 fn owned_read_identity_reserves_before_decoding_with_unfunded_negative_control() {
     let file = super::instruction_tests::file("AGENTS.md", "rules", "rules");
     let version = serde_json::to_vec(&file).unwrap();
-    let mut budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+    let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024);
     budget.items_examined = 0;
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = PreparationIo::from_budget(budget, &cancellation).unwrap();

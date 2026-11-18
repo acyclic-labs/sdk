@@ -10,12 +10,15 @@ use crate::{
     approvals::{ApprovalCreate, ApprovalFiles},
     conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
 };
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, CancellationToken, DirectoryPage,
-    WorkBudget,
-};
 use acyclic_stream::{BoxProviderFuture, OwnedBytes};
 use std::{borrow::Cow, sync::Arc};
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, CancellationToken,
+        DirectoryPage,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 mod ui;
 
 /// Directory entries read per listing page.

@@ -398,7 +398,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
     let executor = lookup_executor()?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

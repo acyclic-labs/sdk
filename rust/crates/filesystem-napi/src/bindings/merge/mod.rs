@@ -115,7 +115,7 @@ pub(in crate::bindings) fn native_merge_selection_conflict(
 
 pub(in crate::bindings) fn encode_generation_diff(
     diff: acyclic_fs::GenerationDiff,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeGenerationDiff> {
     Ok(NativeGenerationDiff {
         files: diff
@@ -144,7 +144,7 @@ pub(in crate::bindings) fn encode_generation_diff(
 
 pub(in crate::bindings) fn encode_merge_preparation(
     preparation: MergePreparation,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeMergePreparation> {
     let work_json = work_json(&work)?;
     let (status, generation, conflicts, truncated) = match preparation {

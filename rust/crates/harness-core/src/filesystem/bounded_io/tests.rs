@@ -25,7 +25,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         let bytes =
             serde_json::to_vec(&policy).map_err(|error| Error::Invalid(error.to_string()))?;
         let native = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
             &CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -72,7 +72,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         for length in 0..bytes.len() {
             let cancellation = CancellationToken::new();
             let native = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+                acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -130,7 +130,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
 
 #[test]
 fn denied_vector_growth_does_not_retain_storage() -> Result<()> {
-    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     budget.bytes_copied = 0;
     let io = PreparationIo::from_budget(budget, &CancellationToken::new())?;
     let mut values = vec![1_u8];
@@ -155,7 +155,7 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
                 _failure,
                 Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded {
+                        acyclic_fs_work::performance::WorkError::BudgetExceeded {
                             counter: "allocation_operations",
                             ..
                         }
@@ -167,7 +167,7 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
         observer.reserve_text(&mut text, 0)?;
         Ok(())
     }
-    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     budget.allocation_operations = 0;
     let io = PreparationIo::from_budget(budget, &CancellationToken::new())?;
     denied(&mut io.history_io())?;
@@ -190,7 +190,7 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
 #[tokio::test]
 async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
     let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
         &CancellationToken::new(),
     )?;
     let before = io.owned_bytes()?;
@@ -400,7 +400,7 @@ async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<(
     for native in [false, true] {
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -408,7 +408,7 @@ async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<(
             PreparationIo::from_native_work(&work)?
         } else {
             PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
                 &cancellation,
             )?
         };
@@ -469,7 +469,7 @@ async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
         .await?;
     let bindings = storage.content_bindings();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -606,7 +606,7 @@ fn unmeasured_constructor_is_confined_to_private_read_entry_points() -> Result<(
 fn fired_cancellation_stays_cancelled_through_preparation_and_history() -> Result<()> {
     use crate::store::history::HistoryIo as _;
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let history =
         crate::store::HistoryWork::new(PreparationIo::from_budget(budget, &cancellation)?);

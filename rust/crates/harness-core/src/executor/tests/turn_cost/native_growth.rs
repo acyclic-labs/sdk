@@ -155,7 +155,7 @@ async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Re
     let executor = lookup_executor()?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -165,7 +165,7 @@ async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Re
             PreparationIo::from_native_work(&work)?
         } else {
             PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024),
                 &cancellation,
             )?
         };
@@ -270,7 +270,7 @@ fn relocating_index_storage_requires_peak_capacity_before_allocation() -> Result
         let base = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
         // The final eight u64 slots fit; old plus new storage does not.
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(128, base + 64),
+            acyclic_fs_work::performance::work_budget(128, base + 64),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

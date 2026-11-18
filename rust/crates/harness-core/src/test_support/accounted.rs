@@ -1,6 +1,9 @@
 //! Native ledger and custody observations for differential runs.
 use crate::filesystem::PreparationIo;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 // Include the original native ledger and live custody on both sides of IO drop;
 // copying returned bytes in `run` releases their producer custody before sampling.
@@ -11,7 +14,7 @@ pub(crate) fn accounted<R>(
     run: impl FnOnce(&PreparationIo) -> R,
 ) -> Result<(R, WorkCounters, u64, WorkCounters, u64, u64), (String, WorkCounters)> {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, maximum);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, maximum);
     let work = if native {
         Some(
             NativeMaterializationWork::new(budget, &cancellation)

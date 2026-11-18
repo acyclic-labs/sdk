@@ -19,7 +19,7 @@ fn take_failure(
 }
 
 fn fuzz_work(deny_allocation: bool) -> Observation<acyclic_fs::NativeMaterializationWork> {
-    let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = if deny_allocation {
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     } else {
@@ -30,7 +30,7 @@ fn fuzz_work(deny_allocation: bool) -> Observation<acyclic_fs::NativeMaterializa
 }
 
 fn native_work(
-    budget: acyclic_fs::WorkBudget,
+    budget: acyclic_fs_work::performance::WorkBudget,
 ) -> Observation<acyclic_fs::NativeMaterializationWork> {
     Ok(
         acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
@@ -192,7 +192,7 @@ async fn check_bridge(text: &str) -> Observation<()> {
                 let reserved = work.claim(
                     work.budget().peak_allocation_bytes - baseline - available,
                     1,
-                    acyclic_fs::WorkCounters::UNCHARGED,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 )?;
                 let result = allocator.copy_text(&source);
                 assert!(result.is_err(), "unfunded bridge bytes must refuse");
@@ -202,7 +202,7 @@ async fn check_bridge(text: &str) -> Observation<()> {
                     take_failure(&allocator.failure())?,
                     Some(crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded {
+                            acyclic_fs_work::performance::WorkError::BudgetExceeded {
                                 counter: "peak_allocation_bytes",
                                 ..
                             }
@@ -408,8 +408,11 @@ async fn check_replies(
             // Arbitrary malformed frames retain their input credit through the
             // same OwnedBytes entrance as the encoder's valid frames.
             (|| {
-                let mut custody =
-                    Some(work.claim(input.len() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)?);
+                let mut custody = Some(work.claim(
+                    input.len() as u64,
+                    1,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )?);
                 let mut bytes = input.to_vec();
                 acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
                     &mut bytes,
@@ -701,7 +704,7 @@ fn check_logs(frame: &str) -> Observation<()> {
     let held = work.claim(
         work.budget().peak_allocation_bytes - work.live_allocation_bytes()?,
         1,
-        acyclic_fs::WorkCounters::UNCHARGED,
+        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     )?;
     assert!(
         ProgramLogs::default()
@@ -717,7 +720,7 @@ fn check_logs(frame: &str) -> Observation<()> {
 
 #[tokio::test]
 async fn repeated_console_logs_release_temporary_decode_credit() -> Observation<()> {
-    let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 32 * 1024;
     let work = native_work(budget)?;
     let baseline = work.live_allocation_bytes()?;

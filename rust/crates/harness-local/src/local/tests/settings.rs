@@ -119,7 +119,7 @@ fn decisions(
 async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<Admission> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -456,7 +456,7 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
     // under the original cut in the owner's admissions stream.
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -938,7 +938,7 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
     );
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

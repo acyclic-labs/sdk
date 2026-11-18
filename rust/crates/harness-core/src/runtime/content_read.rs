@@ -20,7 +20,7 @@ async fn temporary_output_reader_admission_preserves_owned_allocation_credit() -
         .with_execution_journal(storage.journal(), crate::OperationId::new())?;
     let output = task.journal_output.as_ref().expect("journal output");
     let io = ContentIo::from_budget(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
         &acyclic_fs::CancellationToken::new(),
     )?;
     let retained = io.owned_bytes()?;

@@ -53,7 +53,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
                 work: WorkCounters::default(),
                 budget: self
                     .remaining()
-                    .unwrap_or_else(|_| acyclic_fs::performance::work_budget(0, 0)),
+                    .unwrap_or_else(|_| acyclic_fs_work::performance::work_budget(0, 0)),
                 cancellation,
                 construction: Default::default(),
             },
@@ -135,7 +135,7 @@ impl PreparationIo {
     /// report cumulative receipts, so only their new work is added here.
     pub(crate) fn cursor_receipt<T, E: Into<Error>>(
         &self,
-        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, E>,
+        result: acyclic_fs_work::performance::MeasuredResult<OperationReceipt<T>, E>,
         previous: &mut WorkCounters,
     ) -> Result<T> {
         let cumulative = match &result {

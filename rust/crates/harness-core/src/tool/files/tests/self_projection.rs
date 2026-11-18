@@ -229,7 +229,7 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
         let tool = read()?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -483,7 +483,7 @@ async fn selected_private_pages_fit_credit_and_preserve_pinned_bytes() -> Result
         let tool = read()?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

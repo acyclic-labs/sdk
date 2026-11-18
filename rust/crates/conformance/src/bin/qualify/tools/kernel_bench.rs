@@ -128,8 +128,8 @@ pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
                 WorkCounters::UNBOUNDED,
                 &cancel,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                        acyclic_fs::OperationReceipt {
+                    Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                        acyclic_fs_work::performance::OperationReceipt {
                             value: (),
                             work: WorkCounters::default(),
                         },

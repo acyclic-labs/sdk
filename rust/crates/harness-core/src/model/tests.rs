@@ -572,7 +572,7 @@ fn short_request_cannot_hide_excess_string_capacity() -> Result<()> {
         let mut input = request()?;
         input.model.provider.reserve(spare);
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024),
             &cancellation,
         )?;
         assert_eq!(

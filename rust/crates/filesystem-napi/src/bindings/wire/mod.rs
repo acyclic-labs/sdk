@@ -58,7 +58,9 @@ mod napi_u32_codec {
 }
 
 /// Work counters as decimal strings: JSON numbers lose u64 precision.
-pub(in crate::bindings) fn work_json(work: &acyclic_fs::WorkCounters) -> Result<String> {
+pub(in crate::bindings) fn work_json(
+    work: &acyclic_fs_work::performance::WorkCounters,
+) -> Result<String> {
     acyclic_fs::binding_contract::work_counters_json(work).map_err(napi_error)
 }
 
@@ -94,7 +96,7 @@ pub(in crate::bindings) struct PendingReconcile {
     pub(in crate::bindings) operation_id: OperationId,
     pub(in crate::bindings) epoch: u64,
     pub(in crate::bindings) baseline: CaptureReceipt,
-    pub(in crate::bindings) work: acyclic_fs::WorkCounters,
+    pub(in crate::bindings) work: acyclic_fs_work::performance::WorkCounters,
 }
 
 /// Explicit immutable inheritance and stable retry identity.
@@ -225,7 +227,7 @@ pub(in crate::bindings) fn native_storage_tier(value: &str) -> Result<StorageTie
 }
 
 pub(in crate::bindings) fn encode_checkpoint_receipt(
-    receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs_work::performance::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<NativeCheckpointResult> {
     Ok(NativeCheckpointResult {
         generation_id: Buffer::from(receipt.value.to_bytes().to_vec()),

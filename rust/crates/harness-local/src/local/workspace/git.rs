@@ -415,7 +415,7 @@ impl Commands<'_> {
             .workspace()
             .parent_advance(
                 None,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -646,7 +646,7 @@ async fn head(
 ) -> Result<acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>> {
     view.workspace()
         .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

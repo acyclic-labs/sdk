@@ -71,8 +71,11 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
     )?);
     let root = &initial.tools.workspace;
     let stop = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let view = root
         .view()
         .open_related(
@@ -674,14 +677,18 @@ async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) 
     let primary_absent = async |path: &str| -> Result<bool> {
         let head = view
             .workspace()
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &stop)
             .await
             .map_err(storage)?
             .value;
         Ok(matches!(
-            head.stat(path, acyclic_fs::WorkBudget::UNBOUNDED, &stop)
-                .await,
-            Err(acyclic_fs::OperationFailure {
+            head.stat(
+                path,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &stop
+            )
+            .await,
+            Err(acyclic_fs_work::performance::OperationFailure {
                 error: acyclic_fs::WorkspaceError::NotFound,
                 ..
             })

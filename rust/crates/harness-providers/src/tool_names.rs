@@ -438,18 +438,18 @@ impl<'a> Names<'a> {
             let custody = work.claim(
                 claim.bytes,
                 claim.allocations,
-                acyclic_fs::WorkCounters {
+                acyclic_fs_work::performance::WorkCounters {
                     bytes_copied: claim.bytes,
                     items_examined: count
                         .checked_add(claim.probes)
                         .ok_or_else(|| crate::invalid("tool name binding size overflow"))?,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
+                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
                 },
             )?;
             let (table, built) = Self::build(request, count as usize, &mut |bytes_hashed| {
-                work.charge(acyclic_fs::WorkCounters {
+                work.charge(acyclic_fs_work::performance::WorkCounters {
                     bytes_hashed,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
+                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
                 })?;
                 Ok(())
             })?;

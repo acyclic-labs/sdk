@@ -1,7 +1,10 @@
 use super::*;
 use acyclic_fs::facade::FsWork;
-use acyclic_fs::{CancellationToken, Lifecycle, VolumeConfig, WorkBudget};
 use proptest::prelude::*;
+use {
+    acyclic_fs::{CancellationToken, Lifecycle, VolumeConfig},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -423,10 +426,10 @@ where
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     },
                 )
             },

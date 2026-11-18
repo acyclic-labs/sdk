@@ -2,7 +2,10 @@ use super::*;
 use acyclic_fs::native_mount::{
     NativeMountCallbackFuture, NativeMountCallbackGuard, NativeMountError,
 };
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
+use {
+    acyclic_fs::{NativeAllocation, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 struct Guard {
     owner: Arc<dyn ViewOwner>,

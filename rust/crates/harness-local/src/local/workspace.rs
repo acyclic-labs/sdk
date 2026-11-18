@@ -138,8 +138,11 @@ impl LocalWorkspace {
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let primary = self.mounts.named(None)?.1;
         authority
             .mount_options(
@@ -360,7 +363,7 @@ impl LocalWorkspace {
         self.view
             .open_related(
                 selected,
-                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                &mut acyclic_fs_work::performance::WorkBudget::UNBOUNDED
                     .accounting(&acyclic_fs::CancellationToken::new()),
             )
             .await
@@ -472,7 +475,7 @@ pub(super) async fn open(
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             view.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -590,8 +593,11 @@ async fn lazy_view(
         volume, operation, ..
     } = attach;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     crate::filesystem::CheckoutPublication::validate_state(
         root.path(),
         root.identity(),
@@ -719,12 +725,19 @@ pub(super) async fn open_volume(
         let cancellation = acyclic_fs::CancellationToken::new();
         let name = volume.storage_name(&mut None)?;
         let workspace = filesystem
-            .open_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .open_workspace(
+                &name,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;
         let generation = workspace
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;
@@ -734,7 +747,7 @@ pub(super) async fn open_volume(
                     .materialize(
                         ["/"].into_iter(),
                         &materialization,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &cancellation,
                     )
                     .await

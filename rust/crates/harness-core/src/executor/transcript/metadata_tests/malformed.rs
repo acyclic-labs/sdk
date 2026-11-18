@@ -3,7 +3,7 @@ use super::*;
 fn reject_with_funded_diagnostics<T: PreparationRecord>(bytes: &[u8]) -> Result<()> {
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
@@ -45,7 +45,7 @@ fn malformed_scalar_collections_cannot_escape_context_or_projection_funding() ->
         // Valid JSON with a different wire spelling cannot enter journal replay.
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1024 * 1024, 1024 * 1024);
+            let budget = acyclic_fs_work::performance::work_budget(1024 * 1024, 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();

@@ -14,7 +14,8 @@ fn producer_and_replayed_events_keep_the_same_resident_json_custody() -> Result<
         let bytes = crate::contract::canonical_json_bytes(&source)?;
         for replay in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();

@@ -13,8 +13,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::Zeroizing;
 #[path = "credential_io.rs"]
 mod credential_io;
-use acyclic_fs::{NativeAllocation, WorkCounters};
 use credential_io::CredentialIo;
+use {acyclic_fs::NativeAllocation, acyclic_fs_work::performance::WorkCounters};
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_AUTH_BYTES: u64 = 1024 * 1024;

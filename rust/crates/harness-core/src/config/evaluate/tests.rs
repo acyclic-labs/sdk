@@ -35,9 +35,9 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
     let cancel = acyclic_fs::CancellationToken::new();
     let make_work = |bytes| {
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: bytes,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &cancel,
         )
@@ -63,7 +63,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 }
@@ -113,7 +113,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
     assert_eq!(tight.live_allocation_bytes(), baseline);
     let stopped = acyclic_fs::CancellationToken::new();
     let stopped_work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024),
         &stopped,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -164,7 +164,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
 #[tokio::test]
 async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
@@ -193,7 +193,7 @@ async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
         work.claim(
             budget.peak_allocation_bytes - baseline - 65536 + 1,
             1,
-            acyclic_fs::WorkCounters::UNCHARGED
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED
         )
         .is_err()
     );
@@ -213,7 +213,7 @@ async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
 async fn invalid_native_result_retains_its_cached_decision() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024),
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -359,9 +359,9 @@ async fn native_result_reparenting_preserves_original_owners_on_refusal() -> Res
     let cancel = acyclic_fs::CancellationToken::new();
     let make_work = || {
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: 16 * 1024 * 1024,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &cancel,
         )

@@ -140,7 +140,7 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
         issuer.bootstrap_scope("denied", &Capabilities::new(["other"]), None, &mut None)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = crate::executor::PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
         &cancellation,
     )?;
     assert!(
@@ -191,7 +191,7 @@ fn compact_evidence_funds_every_allocation_before_conversion() -> Result<()> {
         &mut None,
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let io = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
     let before = io.remaining()?.allocation_operations;
     let expected_allocations = capability
@@ -229,7 +229,7 @@ fn authority_metadata_copies_release_every_partial_allocation() -> Result<()> {
         for operations in 0..=2 {
             for bytes in [0, first - 1, first, total - 1, total, 1_000_000] {
                 let cancellation = acyclic_fs::CancellationToken::new();
-                let mut budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+                let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
                 budget.allocation_operations = operations;
                 budget.peak_allocation_bytes = bytes;
                 let io = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
@@ -275,7 +275,7 @@ fn authority_metadata_copies_release_every_partial_allocation() -> Result<()> {
 #[test]
 fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<()> {
     let (issuer, verifier, scope, volume) = fixture()?;
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let cancellation = acyclic_fs::CancellationToken::new();
     let probe = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
     let grant = ContentGrant::verify(

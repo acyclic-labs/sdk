@@ -179,9 +179,9 @@ async fn rebuilt_executor_retains_selection_without_source_reads_and_refuses_cha
     assert_eq!(canonical.name, "shell");
     assert_eq!(pinned.as_ref().unwrap().definition.name, canonical.name);
     let tight = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &acyclic_fs::CancellationToken::new(),
     )
@@ -208,7 +208,7 @@ async fn rebuilt_executor_retains_selection_without_source_reads_and_refuses_cha
     let broken = executor(&task()?, scope, operation, Source::Broken)?;
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

@@ -288,7 +288,10 @@ mod tests {
             let head = workspace
                 .view()
                 .workspace()
-                .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .head(
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
                 .map_err(storage)?
                 .value;
@@ -391,7 +394,7 @@ mod tests {
                 .map_err(storage)?;
             let cut = child
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -409,7 +412,7 @@ mod tests {
                 .view()
                 .workspace()
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -464,7 +467,7 @@ mod tests {
                 .unwrap_or_else(|| workspace.view())
                 .workspace()
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -475,7 +478,7 @@ mod tests {
                     "/published",
                     0,
                     b"completed".len() as u64,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -552,7 +555,7 @@ mod tests {
             .map_err(storage)?;
         let cut = child
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -702,7 +705,7 @@ mod tests {
             .view()
             .workspace()
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -757,7 +760,7 @@ mod tests {
             .view()
             .workspace()
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

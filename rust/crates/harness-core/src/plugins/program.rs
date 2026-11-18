@@ -152,10 +152,12 @@ impl LoadedProgram {
             |bytes| {
                 if let Some(custody) = &mut custody {
                     custody.grow(bytes as u64)?;
-                    custody.work().spent(acyclic_fs::WorkCounters {
-                        bytes_copied: bytes as u64,
-                        ..acyclic_fs::WorkCounters::UNCHARGED
-                    })?;
+                    custody
+                        .work()
+                        .spent(acyclic_fs_work::performance::WorkCounters {
+                            bytes_copied: bytes as u64,
+                            ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
+                        })?;
                 }
                 Ok::<_, Error>(())
             },
@@ -319,7 +321,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
     }
     let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.program.v1");
     let mut update = |parts: &[&[u8]]| -> Result<()> {
-        let delta = acyclic_fs::WorkCounters {
+        let delta = acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: crate::core::owned_sum(parts.iter().map(|bytes| bytes.len() as u64))?,
             ..Default::default()
         };

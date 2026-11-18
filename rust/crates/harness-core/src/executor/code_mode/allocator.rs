@@ -8,7 +8,7 @@ mod tests {
         // The ledger owns its own Arc before the allocation under test starts.
         let maximum = acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + bytes;
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, maximum),
+            acyclic_fs_work::performance::work_budget(1_000_000, maximum),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })
@@ -43,7 +43,7 @@ mod tests {
     }
 
     fn work_with_budget(
-        budget: acyclic_fs::WorkBudget,
+        budget: acyclic_fs_work::performance::WorkBudget,
     ) -> crate::Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })
@@ -62,9 +62,9 @@ mod tests {
         assert_eq!(original.live_allocation_bytes(), baseline);
         assert!(startup_operations > 0);
         for admitted in 0..startup_operations {
-            let original = work_with_budget(acyclic_fs::WorkBudget {
+            let original = work_with_budget(acyclic_fs_work::performance::WorkBudget {
                 allocation_operations: ledger_operations + admitted,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             })?;
             let baseline = original.live_allocation_bytes();
             let allocator = EngineAllocator::new(Some(&original));
@@ -84,7 +84,7 @@ mod tests {
                     failure.lock().unwrap().as_ref(),
                     Some(crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded {
+                            acyclic_fs_work::performance::WorkError::BudgetExceeded {
                                 counter: "allocation_operations",
                                 ..
                             }
@@ -117,7 +117,7 @@ mod tests {
                     failure.lock().unwrap().as_ref(),
                     Some(crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded {
+                            acyclic_fs_work::performance::WorkError::BudgetExceeded {
                                 counter: "peak_allocation_bytes",
                                 maximum,
                                 ..
@@ -172,7 +172,7 @@ mod tests {
                     assert!(matches!(failure.as_ref(),
                         Some(crate::Error::NativeWork {
                             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                                acyclic_fs::WorkError::BudgetExceeded {
+                                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                                     counter: "peak_allocation_bytes", observed, maximum,
                                 }
                             ), ..

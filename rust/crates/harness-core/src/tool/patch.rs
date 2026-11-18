@@ -362,7 +362,7 @@ mod tests {
     fn repeated_file_planning_retains_only_live_outputs_on_the_original_ledger() -> Result<()> {
         for count in [1, 2, 33] {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(64 * 1024, 64 * 1024),
+                acyclic_fs_work::performance::work_budget(64 * 1024, 64 * 1024),
                 &acyclic_fs::CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

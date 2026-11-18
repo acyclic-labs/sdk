@@ -1689,7 +1689,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     // Conditional file updates retain a new operation annotation even for the
     // same text. A clean transaction exercises an actually unchanged candidate.
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     let mut transaction = workspace
         .begin_transaction(
             acyclic_fs::IdempotencyKey::from_bytes([72; 16]),
@@ -1705,10 +1705,10 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             budget,
             &cancellation,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     },
                 )
             },

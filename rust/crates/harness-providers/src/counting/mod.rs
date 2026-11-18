@@ -87,7 +87,7 @@ pub(crate) fn count<'a>(
     let spec = specification(&provider.config, work)?;
     #[cfg(not(target_arch = "wasm32"))]
     let mut auth_custody = work
-        .map(|work| work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED))
+        .map(|work| work.claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED))
         .transpose()?;
     let auth = dispatch::authenticate(
         provider,
@@ -214,10 +214,10 @@ fn local(
                 (std::mem::size_of::<ModelTokenCount>() + request.request().messages.len() * 4)
                     as u64,
                 1,
-                acyclic_fs::WorkCounters {
+                acyclic_fs_work::performance::WorkCounters {
                     bytes_encoded: request.bytes().len() as u64,
                     items_examined: request.request().messages.len() as u64,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
+                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
                 },
             )
         })
@@ -304,7 +304,7 @@ fn exchange_count<'a>(
                         std::mem::size_of::<(String, String)>() + key.capacity() + value.capacity()
                     })
                     .sum::<usize>();
-            work.claim(bytes as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)
+            work.claim(bytes as u64, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED)
         })
         .transpose()?;
     // Held while a count body is read, or as the opener of a provider delay.

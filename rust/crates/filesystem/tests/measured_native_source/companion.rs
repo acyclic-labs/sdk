@@ -191,7 +191,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         assert_eq!(
             lazy.workspace()
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new()
                 )
                 .await

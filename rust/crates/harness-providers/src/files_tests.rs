@@ -645,7 +645,7 @@ proptest! {
                     };
                     let cancellation = acyclic_fs::CancellationToken::new();
                     let work = acyclic_fs::NativeMaterializationWork::new(
-                        acyclic_fs::performance::work_budget(1_000_000, 1_000_000), &cancellation,
+                        acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000), &cancellation,
                     ).unwrap();
                     let baseline = work.live_allocation_bytes();
                     let error = {

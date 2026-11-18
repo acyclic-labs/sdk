@@ -367,7 +367,7 @@ impl<'a> IndexPath<'a> {
             .transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(name.len() as u64)?;
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_copied: name.len() as u64,
                 ..Default::default()
             })?;

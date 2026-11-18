@@ -107,7 +107,7 @@ impl Pending {
                 // Preserve the inline value on every failed promotion. New
                 // nodes retain the same original owner's funding throughout.
                 if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters {
+                    io.charge(acyclic_fs_work::performance::WorkCounters {
                         bytes_copied: std::mem::size_of::<Entry>() as u64,
                         ..Default::default()
                     })?;

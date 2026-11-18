@@ -129,7 +129,10 @@ async fn durable_stream_policy_owner_runs_through_substrate_runner()
 #[tokio::test]
 async fn stream_policy_revocation_survives_durable_provider_restart()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use acyclic_fs::{CancellationToken, Fs, WorkBudget};
+    use {
+        acyclic_fs::{CancellationToken, Fs},
+        acyclic_fs_work::performance::WorkBudget,
+    };
     let directory = tempfile::tempdir()?;
     let objects = object_store();
     {

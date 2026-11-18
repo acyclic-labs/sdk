@@ -35,7 +35,7 @@ impl TurnExecutors for Inspect {
             let tool = acyclic_harness_core::tool::files::read()?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .expect("test work");

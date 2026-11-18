@@ -6,14 +6,18 @@ impl LocalWorkspace {
         let cancellation = acyclic_fs::CancellationToken::new();
         let project_workspace = self
             .filesystem
-            .open_workspace(project, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .open_workspace(
+                project,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;
         self.view()
             .open_related(
                 project_workspace,
-                &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+                &mut acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation),
             )
             .await
             .map_err(storage)
@@ -34,7 +38,8 @@ impl LocalWorkspace {
     ) -> std::result::Result<Option<acyclic_fs::GenerationId>, crate::filesystem::ForkCutError>
     {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let mut accounting =
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation);
         let retained = self
             .store
             .load_lazy_workspace(
@@ -89,11 +94,16 @@ impl LocalWorkspace {
         let cancellation = acyclic_fs::CancellationToken::new();
         let child = self
             .filesystem
-            .open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .open_workspace(
+                name,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;
-        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let mut accounting =
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation);
         let state = self
             .store
             .load_lazy_workspace(child.id(), &mut accounting)
@@ -133,7 +143,7 @@ impl LocalWorkspace {
                 name,
                 child.volume_config(),
                 origin.operation_id,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -167,7 +177,7 @@ impl LocalWorkspace {
                 view.workspace(),
                 origin.snapshot.authored_generation,
                 original,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -276,7 +286,8 @@ impl LocalWorkspace {
             .filesystem
             .workspace_id(&volume.storage_name(&mut None)?)
             .map_err(storage)?;
-        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let mut accounting =
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation);
         let forked = self
             .store
             .load_lazy_workspace(id, &mut accounting)

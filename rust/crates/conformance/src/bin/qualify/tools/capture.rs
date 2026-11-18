@@ -119,8 +119,8 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
             WorkCounters::UNBOUNDED,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: WorkCounters::default(),
                     },
@@ -192,8 +192,8 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
                     WorkCounters::UNBOUNDED,
                     &cancel,
                     |_| async {
-                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                            acyclic_fs::OperationReceipt {
+                        Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                            acyclic_fs_work::performance::OperationReceipt {
                                 value: (),
                                 work: WorkCounters::default(),
                             },
@@ -393,8 +393,8 @@ pub(super) async fn capture_and_commit(
             WorkCounters::UNBOUNDED,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: WorkCounters::default(),
                     },
@@ -419,7 +419,10 @@ pub(super) async fn materialize(
     volume_id: VolumeId,
     generation: GenerationId,
     destination: &Path,
-) -> Result<acyclic_fs::OperationReceipt<acyclic_fs::MaterializationReceipt>, Failure> {
+) -> Result<
+    acyclic_fs_work::performance::OperationReceipt<acyclic_fs::MaterializationReceipt>,
+    Failure,
+> {
     let cancel = CancellationToken::new();
     let mut checkout = reopen_checkout(
         store_dir,

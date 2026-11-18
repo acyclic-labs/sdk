@@ -158,7 +158,7 @@ async fn caller_ceiling_and_its_storage_use_the_original_native_ledger()
     let reader = fixture.reader(&fixture.scope)?;
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;

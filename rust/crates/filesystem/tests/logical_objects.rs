@@ -7,10 +7,13 @@ mod provider_receipt;
 use acyclic_fs::storage::{
     ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest,
 };
-use acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore, WorkBudget};
 use acyclic_objects::{Blobs, Delete, MemoryObjects};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
+use {
+    acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "logical_objects/sealed.rs"]

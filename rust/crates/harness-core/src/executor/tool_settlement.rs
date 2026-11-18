@@ -55,7 +55,7 @@ impl ToolSettlementQuery<'_> {
                         "tool call hash length overflow",
                     )
                 })?;
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed,
                 items_examined: 4,
                 ..Default::default()

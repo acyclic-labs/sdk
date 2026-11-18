@@ -62,7 +62,7 @@ impl NativeCheckout {
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = Box::pin(checkout.apply_authored_transaction(
             authored,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await

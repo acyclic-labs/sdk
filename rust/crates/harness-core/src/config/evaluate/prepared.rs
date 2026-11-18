@@ -177,7 +177,7 @@ impl Loaded {
         cache: &Cache,
     ) -> Result<Evaluation> {
         if let Some(work) = &self.work {
-            work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+            work.admit(acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
         }
         let base = crate::contract::canonical_json_bytes(base)?;
         let mut key = blake3::Hasher::new_derive_key(VERSION);

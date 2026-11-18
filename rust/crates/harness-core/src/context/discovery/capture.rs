@@ -123,7 +123,7 @@ impl DiscoveredContext {
         {
             let mut messages = (
                 Vec::new(),
-                work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+                work.claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)
                     .map_err(Error::from)?,
             );
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;

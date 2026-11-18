@@ -64,6 +64,7 @@ rust_shared_library(
     ] + [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/vendor/napi-3.15.0:napi",
@@ -100,6 +101,7 @@ rust_library(
     ] + [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/vendor/napi-3.15.0:napi",

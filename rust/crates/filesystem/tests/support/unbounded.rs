@@ -3,7 +3,7 @@ macro_rules! unbounded {
         $receiver
             .$method(
                 $($arg,)*
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

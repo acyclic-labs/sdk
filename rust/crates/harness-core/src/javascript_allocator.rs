@@ -80,7 +80,11 @@ impl<T> EngineResult<T> {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "shared engine result layout underflows",
                 })?;
-            let mut metadata = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+            let mut metadata = work.claim(
+                bytes,
+                1,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+            )?;
             match &mut self.custody {
                 Some(custody) => custody.absorb(&mut metadata)?,
                 None => self.custody = Some(metadata),
@@ -141,7 +145,13 @@ impl EngineAllocator {
         let custody = self
             .work
             .as_ref()
-            .map(|work| work.claim(text.len() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED))
+            .map(|work| {
+                work.claim(
+                    text.len() as u64,
+                    1,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )
+            })
             .transpose()
             .map_err(|error| {
                 self.rejected(error);
@@ -194,7 +204,13 @@ impl EngineAllocator {
         let custody = match self
             .work
             .as_ref()
-            .map(|work| work.claim(layout.size() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED))
+            .map(|work| {
+                work.claim(
+                    layout.size() as u64,
+                    1,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )
+            })
             .transpose()
         {
             Ok(custody) => custody,

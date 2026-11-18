@@ -56,7 +56,7 @@ impl CheckoutPublisher {
     ) -> Result<bool> {
         use acyclic_fs::facade::FsWork as _;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
         let mut accounting = match &io {
             Some(io) => io.accounting(&cancellation),
             None => budget.accounting(&cancellation),

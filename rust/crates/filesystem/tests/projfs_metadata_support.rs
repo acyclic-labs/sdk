@@ -3,12 +3,15 @@ use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
 };
-use acyclic_fs::{
-    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountPath,
-    SharedCheckout, WorkBudget,
-};
 use bytes::Bytes;
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountPath,
+        SharedCheckout,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 pub type MemorySource =
     CheckoutMountSource<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;

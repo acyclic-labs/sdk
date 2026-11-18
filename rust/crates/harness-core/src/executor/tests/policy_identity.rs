@@ -72,7 +72,7 @@ async fn native_policy_identity_checks_use_original_work_before_and_after_evalua
             stock.policy_identity.as_mut().unwrap().digest[0] ^= 1;
         }
         policy.ordinary.store(0, Ordering::SeqCst);
-        let mut budget = acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024);
+        let mut budget = acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024);
         budget.bytes_copied = copies;
         let work = acyclic_fs::NativeMaterializationWork::new(
             budget,

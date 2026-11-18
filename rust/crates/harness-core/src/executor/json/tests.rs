@@ -10,7 +10,8 @@ fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
         kernel::{KernelAccounting, LogicalName, NameEncoding},
     };
     let cancel = acyclic_fs::CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(acyclic_fs::WorkBudget::UNBOUNDED, &cancel);
+    let mut accounting =
+        KernelAccounting::standalone(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancel);
     let routed = Routed::new(
         Empty,
         LogicalName::new(NameEncoding::Utf8, b"view".to_vec()).unwrap(),
@@ -278,7 +279,7 @@ mod digest_properties {
             let length = serde_json::to_vec(&value).unwrap().len() as u64;
             for native in [false, true] {
                 let cancellation = acyclic_fs::CancellationToken::new();
-                let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+                let budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
                 let work = native.then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
                 let baseline = work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes);
                 let io = match &work {
@@ -321,7 +322,7 @@ mod digest_properties {
                 prop_assert_eq!(work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes), baseline);
             }
             for exhausted_items in [false, true] {
-                let mut budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+                let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
                 if exhausted_items {
                     budget.items_examined = 0;
                 } else {
@@ -337,7 +338,7 @@ mod digest_properties {
         // final encoded buffer is absent and all temporary custody is released.
         #[test]
         fn observed_digest_preserves_identity_without_an_encoded_copy(value in values()) {
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+            let budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
             let baseline = native.live_allocation_bytes();
             let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native).unwrap());
@@ -408,7 +409,7 @@ mod digest_properties {
         slack: u64,
         encode: impl Fn(&mut crate::store::HistoryWork) -> Result<T>,
     ) {
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
         let reference = acyclic_fs::NativeMaterializationWork::new(
             budget,
             &acyclic_fs::CancellationToken::new(),
@@ -605,7 +606,7 @@ fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
     for maximum in [Some(length), None] {
         for allowance in [length, 0] {
             let io = crate::filesystem::PreparationIo::from_budget(
-                acyclic_fs::WorkBudget {
+                acyclic_fs_work::performance::WorkBudget {
                     allocation_operations: 1_000_000,
                     peak_allocation_bytes: 64 * 1024 * 1024,
                     bytes_copied: 64 * 1024 * 1024,
@@ -643,7 +644,7 @@ fn preparation_digest_batches_stream_canonical_output_on_original_work() -> Resu
         expected
     );
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024);
     let bounded =
         crate::executor::PreparationIo::from_budget(budget, &acyclic_fs::CancellationToken::new())?;
     for _ in 0..16 {

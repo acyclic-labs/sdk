@@ -5,11 +5,13 @@ use acyclic_stream::StreamProviderExt as _;
 mod unbounded;
 
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
-use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, OperationId, WorkBudget, WorkCounters, WorkspaceError,
+use {
+    acyclic_fs::{CancellationToken, Fs, IdempotencyKey, OperationId, WorkspaceError},
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 
-const FINITE_BUDGET: WorkBudget = acyclic_fs::performance::work_budget(100_000_000, 100_000_000);
+const FINITE_BUDGET: WorkBudget =
+    acyclic_fs_work::performance::work_budget(100_000_000, 100_000_000);
 
 #[tokio::test]
 async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
@@ -552,7 +554,7 @@ mod source_bound_lost_ack {
             assert_eq!(
                 lazy.workspace()
                     .head(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new()
                     )
                     .await

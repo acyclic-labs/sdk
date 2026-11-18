@@ -1,18 +1,21 @@
 //! Checkpoint-plus-tail reads use real immutable Objects and original credit.
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::{
-    CancellationToken, MemoryObjectBackend, NativeMaterializationWork, WorkBudget,
-    demand::{
-        DemandError, Fold, FoldCheckpoint, FoldCheckpointObject, FoldCursor, FoldObjectError,
-    },
-    kernel::{KernelAccounting, Retained},
-};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
+};
+use {
+    acyclic_fs::{
+        CancellationToken, MemoryObjectBackend, NativeMaterializationWork,
+        demand::{
+            DemandError, Fold, FoldCheckpoint, FoldCheckpointObject, FoldCursor, FoldObjectError,
+        },
+        kernel::{KernelAccounting, Retained},
+    },
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -38,7 +41,7 @@ impl Fold for Sum {
         state.value = state
             .value
             .checked_add(*record)
-            .ok_or(acyclic_fs::WorkError::Overflow)?;
+            .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
         Ok(())
     }
 }
@@ -163,7 +166,7 @@ impl Fold for CountedSum {
         );
         *state = state
             .checked_add(value)
-            .ok_or(acyclic_fs::WorkError::Overflow)?;
+            .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
         self.0.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

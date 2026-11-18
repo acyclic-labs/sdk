@@ -10,7 +10,10 @@ use acyclic_fs::native_mount::{
     GuestMappingAdmission, GuestMappingFence, GuestPosixPolicy, GuestSessionAdmission, GuestSource,
     MountFilesystem,
 };
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
+use {
+    acyclic_fs::{NativeAllocation, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 /// Trusted self-host enrollment loaded by the local owner, never a guest
 /// request. Cache behavior is chosen by the transport admission itself.
@@ -465,7 +468,7 @@ mod tests {
             let verified = verifier.authenticate_scope(&scope, &mut None)?;
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -479,7 +482,7 @@ mod tests {
             )?;
             let detached_cancellation = CancellationToken::new();
             let detached_work = NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &detached_cancellation,
             )
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -564,9 +567,11 @@ mod tests {
             issuer.bootstrap_scope("guest", &crate::Capabilities::default(), None, &mut None)?;
         let verifier = issuer.verifier(&mut None)?;
         let cancellation = CancellationToken::new();
-        let work =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
         let lifetime = GuestAuthorityLifetime::new(
             &issuer.clone().into(),
             &verifier,
@@ -590,9 +595,11 @@ mod tests {
             &mut None,
         )?;
         let cancellation = CancellationToken::new();
-        let replacement =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let replacement = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
         let lifetime = GuestAuthorityLifetime::new(
             &issuer.clone().into(),
             &verifier,
@@ -627,7 +634,7 @@ mod tests {
             let verifier = runtime.verifier(&mut None)?;
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;

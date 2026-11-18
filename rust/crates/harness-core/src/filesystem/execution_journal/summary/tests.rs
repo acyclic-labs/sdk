@@ -62,7 +62,7 @@ proptest! {
     #[test]
     fn refused_tools_fund_their_summary_entries(count in 1..24usize, step in any::<u32>()) {
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         let mut state = ExecutionSummary::default();

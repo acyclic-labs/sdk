@@ -1,13 +1,16 @@
 //! SDK merge planning and compatibility history for agent publication.
 use super::workspace_policy::{LocalLazyWorkspace, git_view_policy, ignore_for};
 use crate::{Error, Result};
-use acyclic_fs::{
-    CancellationToken, GitCompatRepository, GitPublicationRecord, GitTreeRef,
-    LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, MultiRootMergeRoot,
-    MultiRootPublication, OperationId, WorkBudget, Workspace, WorkspaceError, WorkspaceGraph,
-    WorkspaceId, WorkspaceRootId, capture_git_compatible_generation_at,
-};
 use std::collections::BTreeMap;
+use {
+    acyclic_fs::{
+        CancellationToken, GitCompatRepository, GitPublicationRecord, GitTreeRef,
+        LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
+        MultiRootMergeRoot, MultiRootPublication, OperationId, Workspace, WorkspaceError,
+        WorkspaceGraph, WorkspaceId, WorkspaceRootId, capture_git_compatible_generation_at,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 /// Plans one child root using its ignores and the destination's tracked paths.
 /// Returns the same retained join alongside its coordinator receipt: callers
@@ -117,7 +120,7 @@ pub async fn record_agent_publication(
         let published = workspace
             .generation(
                 published_generation,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -128,7 +131,7 @@ pub async fn record_agent_publication(
             .read(
                 "/.gitignore",
                 1024 * 1024,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -165,7 +168,7 @@ pub async fn record_agent_publication(
             .authenticated_proof(
                 OperationId::from_bytes(capture_id),
                 &WorkspaceGraph::new(state.clone()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

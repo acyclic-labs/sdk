@@ -41,7 +41,7 @@ impl OutputDigest {
     fn text(&mut self, value: &str, io: Option<&PreparationIo>) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: value.len() as u64,
                 ..Default::default()
             })?;

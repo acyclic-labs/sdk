@@ -508,7 +508,7 @@ impl CompletionTarget {
         let source = view
             .workspace()
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -1194,7 +1194,7 @@ mod completion_tests {
             .view()
             .workspace()
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

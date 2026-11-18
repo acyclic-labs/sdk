@@ -457,7 +457,7 @@ where
         let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(64)?;
-            let copying = acyclic_fs::WorkCounters {
+            let copying = acyclic_fs_work::performance::WorkCounters {
                 bytes_copied: 64,
                 ..Default::default()
             };
@@ -477,7 +477,7 @@ where
             Some(io) => io.guard_bytes(&bytes)?,
             None => None,
         };
-        let retry_hashing = acyclic_fs::WorkCounters {
+        let retry_hashing = acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: 64,
             ..Default::default()
         };

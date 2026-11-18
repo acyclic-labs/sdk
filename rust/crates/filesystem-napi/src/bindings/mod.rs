@@ -2,7 +2,7 @@ macro_rules! unbounded_future {
     ($owner:expr, $operation:ident($($argument:expr),* $(,)?)) => {
         ($owner).$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
     };
@@ -21,7 +21,7 @@ macro_rules! checkout_call {
     ($owner:ident, $checkout:ident, $operation:ident($($argument:expr),* $(,)?)) => {
         $checkout.$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &$owner.cancellation,
         ).await.map_err(napi_error)
     };
@@ -33,7 +33,7 @@ macro_rules! checkout_mutation {
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         checkout.$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &$owner.cancellation,
         ).await.map_err(napi_error)
     }};

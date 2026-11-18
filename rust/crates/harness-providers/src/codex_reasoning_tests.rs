@@ -36,7 +36,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 (200, RESPONSE.into()),
             ])?;
             let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

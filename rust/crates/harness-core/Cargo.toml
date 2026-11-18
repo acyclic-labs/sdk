@@ -47,6 +47,7 @@ browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
 acyclic-harness-control = { version = "=0.2.0", path = "../harness-control" }
 acyclic-harness-json = { version = "=0.2.0", path = "../harness-json" }

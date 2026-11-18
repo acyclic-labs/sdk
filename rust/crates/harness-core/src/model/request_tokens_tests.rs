@@ -170,7 +170,7 @@ proptest! {
             prop_assert!(buffered.bytes_total > physical.bytes_total);
 
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, _)| TestCaseError::fail(cause.to_string()))?;
             let baseline = work.live_allocation_bytes();

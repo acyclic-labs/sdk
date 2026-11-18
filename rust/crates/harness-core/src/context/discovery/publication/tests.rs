@@ -10,10 +10,13 @@ use crate::{
     resources::ProviderRef,
 };
 use acyclic_auth::{contract::*, testing as signed};
-use acyclic_fs::{CancellationToken, EmbeddedCapabilities, Fs, WorkBudget};
 use acyclic_stream::session::{ResourceFollowRequest, ResourceProvider as _};
 use acyclic_stream::{MemoryStream, StreamProviderExt as _};
 use futures::FutureExt as _;
+use {
+    acyclic_fs::{CancellationToken, EmbeddedCapabilities, Fs},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -191,7 +194,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         )
         .await?;
     let session = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(4_000_000, 4_000_000),
+        acyclic_fs_work::performance::work_budget(4_000_000, 4_000_000),
         &cancel,
     )?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -244,7 +247,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let blocked = PreparationIo::from_budget(
         WorkBudget {
             allocation_operations: 0,
-            ..acyclic_fs::performance::work_budget(4_000_000, 4_000_000)
+            ..acyclic_fs_work::performance::work_budget(4_000_000, 4_000_000)
         },
         &cancel,
     )?;

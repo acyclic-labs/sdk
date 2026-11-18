@@ -147,7 +147,7 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
         {
             let cancellation = acyclic_fs::CancellationToken::new();
             let original = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+                acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -181,7 +181,7 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
         // Absence is distinct from successful measured data, item-work denial
         // and cancellation. None may silently use the portable entrance.
         for (kind, cut, examine, cancelled, absent) in [
@@ -192,7 +192,7 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
         ] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let original = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget {
+                acyclic_fs_work::performance::WorkBudget {
                     items_examined: if examine { budget.items_examined } else { 0 },
                     ..budget
                 },

@@ -138,7 +138,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 &name,
                 initialization,
                 operation,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 None,
             )
@@ -147,7 +147,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {
@@ -281,7 +281,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {
@@ -434,7 +434,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {
@@ -502,7 +502,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
 async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()> {
     for native_adapter in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
         let workspace = Fs::memory()
             .create_workspace("typed-staging-error", budget, &cancellation)
             .await
@@ -860,7 +860,7 @@ async fn publication_recovers_original_evidence_without_receipt_paths_for_every_
             let (write, read) = publication_grants(&volume, agent)?;
             let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = match adapter {
@@ -892,7 +892,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
     use acyclic_fs::access::{Action, Capability};
     for adapter in 0..3 {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {

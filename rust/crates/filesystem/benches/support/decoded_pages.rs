@@ -87,7 +87,7 @@ fn lookup_store(bencher: Bencher, count: u8, cold: bool) {
     let encoded = encoded(&page);
     let maximum = encoded.len() as u64;
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     complete(store.put(
         id,
         OwnedBytes::from(encoded),

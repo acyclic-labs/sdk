@@ -277,7 +277,7 @@ mod accounting {
             calls in 1u64..=256, text in ".{0,32}", reasoning in any::<bool>(),
         ) {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(100_000, 4*1024*1024),
+                acyclic_fs_work::performance::work_budget(100_000, 4*1024*1024),
                 &acyclic_fs::CancellationToken::new(),
             ).unwrap();
             let mut state = State::native(1024*1024, &work);

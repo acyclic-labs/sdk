@@ -1,6 +1,8 @@
 use super::*;
 
-fn assert_denied(result: Result<(), acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>) {
+fn assert_denied(
+    result: Result<(), acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>>,
+) {
     assert!(
         matches!(result, Err(failure) if matches!(failure.error, acyclic_fs::WorkspaceError::AccessDenied)),
         "coarse disclosure returned revoked bytes"

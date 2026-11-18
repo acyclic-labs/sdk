@@ -258,7 +258,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .map_err(|(error, _)| Error::from(error))?;
@@ -517,7 +517,7 @@ impl acyclic_fs::demand::SourceChangeSink for PrivateSignal {
         _: &[acyclic_fs::demand::SourceChange],
         ctx: &mut KernelAccounting<'_>,
     ) -> std::result::Result<(), acyclic_fs::demand::DemandError> {
-        ctx.charge(acyclic_fs::WorkCounters::UNCHARGED)?;
+        ctx.charge(acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
         self.sender.send_replace(true);
         Ok(())
     }

@@ -21,9 +21,9 @@ fn text(value: &JsValue, name: &str) -> Result<Option<String>, JsValue> {
 }
 
 fn work() -> BrowserWorkCounters {
-    browser_work(acyclic_fs::WorkCounters {
+    browser_work(acyclic_fs_work::performance::WorkCounters {
         bytes_copied: 17,
-        ..acyclic_fs::WorkCounters::default()
+        ..acyclic_fs_work::performance::WorkCounters::default()
     })
 }
 

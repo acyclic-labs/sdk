@@ -16,7 +16,7 @@ async fn fixture() -> Result<(Arc<Host>, WorkspaceRef)> {
     filesystem
         .create_workspace(
             "shared-bytes",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -101,7 +101,7 @@ fn rejected_writes_do_not_allocate_or_copy_payload_storage() -> Result<()> {
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )?;
         rejected(
@@ -143,7 +143,7 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )?;
         let mutations = [WorkspaceMutation::PutFile {
@@ -184,7 +184,7 @@ fn publication_boundaries_retain_only_owned_polling_handles() {
                 transaction,
                 &[],
                 None,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 cancellation,
             )
         },
@@ -248,7 +248,11 @@ fn transaction_operations_retain_only_owned_polling_handles() {
     );
     let directory = retained_operation_bytes(|(transaction, cancellation): Input| {
         unmeasured_workspace_operation(|| {
-            transaction.create_dir_all("/dir", acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+            transaction.create_dir_all(
+                "/dir",
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
         })
     });
     let write = retained_operation_bytes(|(transaction, cancellation): Input| {
@@ -256,7 +260,7 @@ fn transaction_operations_retain_only_owned_polling_handles() {
             transaction.write(
                 "/file",
                 acyclic_stream::OwnedBytes::new(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 cancellation,
             )
         })
@@ -267,20 +271,29 @@ fn transaction_operations_retain_only_owned_polling_handles() {
                 "/file",
                 acyclic_stream::OwnedBytes::new(),
                 acyclic_fs::kernel::FileMetadata::default(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 cancellation,
             )
         })
     });
     let remove = retained_operation_bytes(|(transaction, cancellation): Input| {
         unmeasured_workspace_operation(|| {
-            transaction.remove("/file", acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+            transaction.remove(
+                "/file",
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
         })
     });
     #[cfg(not(target_arch = "wasm32"))]
     let batch = retained_operation_bytes(|(transaction, cancellation): Input| {
         unmeasured_workspace_operation(|| {
-            transaction.write_batch(&[], &[], acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+            transaction.write_batch(
+                &[],
+                &[],
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
         })
     });
     #[cfg(not(target_arch = "wasm32"))]
@@ -316,7 +329,11 @@ fn publication_children_retain_only_owned_polling_handles() {
             &'static acyclic_fs::CancellationToken,
         )| {
             unmeasured_workspace_operation(|| {
-                workspace.begin_transaction(key, acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+                workspace.begin_transaction(
+                    key,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
             })
         },
     );
@@ -331,7 +348,7 @@ fn publication_children_retain_only_owned_polling_handles() {
                 workspace.begin_transaction_at(
                     generation,
                     key,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     cancellation,
                 )
             })
@@ -343,7 +360,11 @@ fn publication_children_retain_only_owned_polling_handles() {
             &'static acyclic_fs::CancellationToken,
         )| {
             unmeasured_workspace_operation(|| {
-                transaction.rebase(1, acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+                transaction.rebase(
+                    1,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
             })
         },
     );
@@ -356,13 +377,15 @@ fn publication_children_retain_only_owned_polling_handles() {
                 transaction.commit(
                     None,
                     acyclic_fs::PublicationPermit::Unrestricted,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     cancellation,
                     |_| async {
-                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        })
+                        Ok::<_, acyclic_fs_work::performance::OperationFailure<Error>>(
+                            acyclic_fs_work::performance::OperationReceipt {
+                                value: (),
+                                work: acyclic_fs_work::performance::WorkCounters::default(),
+                            },
+                        )
                     },
                 )
             })

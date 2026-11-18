@@ -127,7 +127,11 @@ impl Decoder {
     /// Retains the supplied original work and admits capacity before allocation.
     pub fn native(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         Ok(Self {
-            custody: Some(work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?),
+            custody: Some(work.claim(
+                0,
+                0,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+            )?),
             ..Self::default()
         })
     }
@@ -149,7 +153,7 @@ impl Decoder {
                     owner.work().claim(
                         capacity as u64,
                         1,
-                        acyclic_fs::WorkCounters {
+                        acyclic_fs_work::performance::WorkCounters {
                             bytes_copied: (self.buffer.len() + if copy { bytes.len() } else { 0 })
                                 as u64,
                             ..Default::default()
@@ -169,10 +173,12 @@ impl Decoder {
         } else if copy && !bytes.is_empty() {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(owner) = &self.custody {
-                owner.work().charge(acyclic_fs::WorkCounters {
-                    bytes_copied: bytes.len() as u64,
-                    ..Default::default()
-                })?;
+                owner
+                    .work()
+                    .charge(acyclic_fs_work::performance::WorkCounters {
+                        bytes_copied: bytes.len() as u64,
+                        ..Default::default()
+                    })?;
             }
         }
         self.buffer.extend_from_slice(bytes);
@@ -407,7 +413,7 @@ mod tests {
             for width in [1, width, input.len()] {
                 let cancel = CancellationToken::new();
                 let work = NativeMaterializationWork::new(
-                    acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                    acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
                     &cancel,
                 ).map_err(|(cause, _)| cause).unwrap();
                 let baseline = work.live_allocation_bytes()
@@ -435,7 +441,7 @@ mod tests {
                 assert_eq!(work.live_allocation_bytes(), Ok(baseline));
             }
             let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
             ).map_err(|(cause, _)| cause).unwrap();
             let baseline = work.live_allocation_bytes()

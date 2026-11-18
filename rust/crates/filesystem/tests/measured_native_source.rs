@@ -13,17 +13,21 @@ use acyclic_fs::kernel::{
     KernelAccounting, KernelOwnedAllocation, LogicalName, NameEncoding, NamespacePath,
 };
 use acyclic_fs::model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
-use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId,
-    LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
-    MemoryLazyWorkspaceStore, OperationId, WorkBudget, WorkCounters, WorkspaceId,
-};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use {
+    acyclic_fs::{
+        CancellationToken, Fs, IdempotencyKey, LazyOverlay, LazyOverlayId, LazyShadow,
+        LazyShadowId, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
+        MemoryLazyWorkspaceStore, OperationId, WorkspaceId,
+    },
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-const FINITE_BUDGET: WorkBudget = acyclic_fs::performance::work_budget(100_000_000, 100_000_000);
+const FINITE_BUDGET: WorkBudget =
+    acyclic_fs_work::performance::work_budget(100_000_000, 100_000_000);
 
 async fn open_source(
     path: &std::path::Path,

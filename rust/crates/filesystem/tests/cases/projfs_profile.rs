@@ -3,9 +3,12 @@
 #![cfg(windows)]
 
 use acyclic_fs::kernel::FileMetadata;
-use acyclic_fs::{CancellationToken, Fs, IdempotencyKey, LocalOptions, WorkBudget};
 use bytes::Bytes;
 use std::time::Instant;
+use {
+    acyclic_fs::{CancellationToken, Fs, IdempotencyKey, LocalOptions},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[path = "../support/native_access.rs"]
 mod native_access;
@@ -72,9 +75,9 @@ async fn profile_workload() -> Result<(), Box<dyn std::error::Error>> {
             WorkBudget::UNBOUNDED,
             work.cancellation(),
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )

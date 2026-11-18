@@ -30,9 +30,9 @@ impl<'work> Budget<'work> {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bytes(&self) -> Result<usize> {
         if let Some(work) = self.work {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 items_examined: 1,
-                ..acyclic_fs::WorkCounters::UNCHARGED
+                ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
             })?;
         }
         Ok(self.used)
@@ -116,9 +116,9 @@ impl<'work> Budget<'work> {
             // decoding/copying the incoming fragment; it never recharges the prefix.
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = self.work {
-                work.charge(acyclic_fs::WorkCounters {
+                work.charge(acyclic_fs_work::performance::WorkCounters {
                     bytes_copied: target.len() as u64,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
+                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
                 })?;
             }
             self.add(capacity - old)?;

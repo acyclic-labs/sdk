@@ -5,7 +5,10 @@ use acyclic_fs::model::{
     VolumeConfig,
 };
 use acyclic_fs::path::PortablePath;
-use acyclic_fs::{CancellationToken, Fs, LocalOptions, MountedView, WorkBudget};
+use {
+    acyclic_fs::{CancellationToken, Fs, LocalOptions, MountedView},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

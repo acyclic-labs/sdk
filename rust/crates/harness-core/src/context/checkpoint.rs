@@ -105,7 +105,7 @@ impl CanonicalContextCheckpoint {
         let mut unique = std::collections::BTreeSet::new();
         for id in &self.selection.message_ids {
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters {
+                io.charge(acyclic_fs_work::performance::WorkCounters {
                     items_examined: 1,
                     ..Default::default()
                 })?;

@@ -94,8 +94,9 @@ pub(in crate::bindings) struct PendingWatchBatch {
     // Retrying capture shares the complete interval, including native custody.
     // It never clones hint paths or detaches their allocation owner.
     pub(in crate::bindings) batch: Arc<WatchBatch>,
-    pub(in crate::bindings) poll_work: acyclic_fs::WorkCounters,
-    pub(in crate::bindings) capture: Option<acyclic_fs::OperationReceipt<WatchCaptureReceipt>>,
+    pub(in crate::bindings) poll_work: acyclic_fs_work::performance::WorkCounters,
+    pub(in crate::bindings) capture:
+        Option<acyclic_fs_work::performance::OperationReceipt<WatchCaptureReceipt>>,
     pub(in crate::bindings) operation_id: OperationId,
 }
 
@@ -153,7 +154,7 @@ impl NativeCheckout {
                         maximum_extent_spans: options.maximum_extent_spans.map(NapiU32::into_inner),
                         transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
                     },
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 ))
                 .await
@@ -203,7 +204,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -236,7 +237,7 @@ impl NativeCheckout {
                 maximum_extent_spans,
             },
             &acyclic_fs::CapturePolicy::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -273,7 +274,7 @@ impl NativeWatcher {
     fn verify_capture_root(&self) -> Result<()> {
         let root_identity = capture_root_identity(&self.source_root).map_err(napi_error)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(error, _)| napi_error(error))?;
@@ -309,7 +310,7 @@ impl NativeWatcher {
                 maximum_extent_spans,
             },
             &acyclic_fs::CapturePolicy::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await;
@@ -373,7 +374,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -386,10 +387,13 @@ impl NativeWatcher {
         let batch = lock_state(&self.inner, "native watcher state")?
             .finish_rescan(completed.rescan)
             .map_err(napi_error)?;
-        let post_baseline = encode_watch_batch(&batch, acyclic_fs::WorkCounters::default())?;
+        let post_baseline = encode_watch_batch(
+            &batch,
+            acyclic_fs_work::performance::WorkCounters::default(),
+        )?;
         *lock_state(&self.pending, "native watcher state")? = Some(PendingWatchBatch {
             batch: Arc::new(batch),
-            poll_work: acyclic_fs::WorkCounters::default(),
+            poll_work: acyclic_fs_work::performance::WorkCounters::default(),
             capture: None,
             operation_id: OperationId::new(),
         });
@@ -423,7 +427,7 @@ impl NativeWatcher {
             let receipt = lock_state(&self.inner, "native watcher state")?
                 .poll(
                     maximum_changes,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &self.cancellation,
                 )
                 .map_err(napi_error)?;
@@ -460,7 +464,7 @@ impl NativeWatcher {
                     maximum_extent_spans,
                 },
                 &acyclic_fs::CapturePolicy::default(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             ))
             .await
@@ -478,7 +482,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -525,7 +529,7 @@ impl NativeMount {
             .ok_or_else(|| napi_error("mount is stopped"))?
             .revalidate(
                 &acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .map_err(|(error, _)| napi_error(error))?,
@@ -548,7 +552,7 @@ impl NativeMount {
 
 fn capture_result(
     capture: &CaptureReceipt,
-    work: &acyclic_fs::WorkCounters,
+    work: &acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeCaptureResult> {
     Ok(NativeCaptureResult {
         examined_paths: bigint(capture.examined_paths),
@@ -560,7 +564,7 @@ fn capture_result(
 
 pub(in crate::bindings) fn encode_watch_batch(
     batch: &WatchBatch,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeWatchBatch> {
     match batch {
         WatchBatch::Changes {

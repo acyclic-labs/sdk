@@ -4,7 +4,7 @@ use super::*;
 pub(super) type StandaloneLedger = Arc<
     SyncMutex<(
         WorkCounters,
-        std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
+        std::result::Result<AllocationLedger, acyclic_fs_work::performance::WorkError>,
     )>,
 >;
 
@@ -22,7 +22,7 @@ impl StandaloneCustody {
         target: &Self,
     ) -> std::result::Result<(), acyclic_fs::FsError> {
         if !Arc::ptr_eq(&self.work, &target.work) {
-            return Err(acyclic_fs::WorkError::Overflow.into());
+            return Err(acyclic_fs_work::performance::WorkError::Overflow.into());
         }
         let state = self
             .work
@@ -37,7 +37,7 @@ impl StandaloneCustody {
             .bytes
             .load(Ordering::Relaxed)
             .checked_add(bytes)
-            .ok_or(acyclic_fs::WorkError::Overflow)?;
+            .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
         target.bytes.store(retained, Ordering::Relaxed);
         self.bytes.store(0, Ordering::Relaxed);
         Ok(())
@@ -50,7 +50,10 @@ impl StandaloneCustody {
         }
     }
 
-    pub(super) fn split_off(&self, bytes: u64) -> std::result::Result<Self, acyclic_fs::WorkError> {
+    pub(super) fn split_off(
+        &self,
+        bytes: u64,
+    ) -> std::result::Result<Self, acyclic_fs_work::performance::WorkError> {
         // Moving custody changes owners, never the common live-byte count.
         // Use the same lock as record/drop so a concurrent charge cannot be lost.
         let state = self
@@ -62,7 +65,7 @@ impl StandaloneCustody {
             .bytes
             .load(Ordering::Relaxed)
             .checked_sub(bytes)
-            .ok_or(acyclic_fs::WorkError::Overflow)?;
+            .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
         self.bytes.store(remaining, Ordering::Relaxed);
         Ok(Self {
             work: Arc::clone(&self.work),
@@ -75,7 +78,7 @@ impl StandaloneCustody {
         &self,
         before: u64,
         after: u64,
-    ) -> std::result::Result<(), acyclic_fs::WorkError> {
+    ) -> std::result::Result<(), acyclic_fs_work::performance::WorkError> {
         if before == after {
             return Ok(());
         }
@@ -85,7 +88,7 @@ impl StandaloneCustody {
         } else {
             owned.checked_sub(before - after)
         }
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
         self.bytes.store(next, Ordering::Relaxed);
         Ok(())
     }
@@ -105,7 +108,7 @@ impl Drop for StandaloneCustody {
         if let Ok(ledger) = allocations
             && ledger.release_owned(bytes).is_err()
         {
-            *allocations = Err(acyclic_fs::WorkError::Overflow);
+            *allocations = Err(acyclic_fs_work::performance::WorkError::Overflow);
         }
     }
 }

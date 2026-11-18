@@ -8,13 +8,6 @@ mod unbounded;
 #[path = "support/provider_receipt.rs"]
 mod provider_receipt;
 
-use acyclic_fs::{
-    AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
-    CancellationToken, CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch, FenceOutcome,
-    ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head, IdempotencyKey,
-    ObjectId, ObjectKind, OperationFailure, OperationId, ProposedCommit, ReplayLimit, Sequence,
-    WorkBudget, WorkspaceDelete, object_digest,
-};
 use acyclic_fs::{LogicalObjectStore, StreamAuthorityStore};
 use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;
@@ -27,6 +20,16 @@ use futures::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
+use {
+    acyclic_fs::{
+        AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
+        CancellationToken, CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch,
+        FenceOutcome, ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head,
+        IdempotencyKey, ObjectId, ObjectKind, OperationId, ProposedCommit, ReplayLimit, Sequence,
+        WorkspaceDelete, object_digest,
+    },
+    acyclic_fs_work::performance::{OperationFailure, WorkBudget},
+};
 
 struct PausingStream {
     inner: MemoryStream,
@@ -527,12 +530,12 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
             "child",
             ForkOptions::from_generation(selected.clone(), IdempotencyKey::from_bytes([0x51; 16])),
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -587,12 +590,12 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
             "child",
             ForkOptions::from_generation(selected, IdempotencyKey::from_bytes([0x51; 16])),
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -625,7 +628,7 @@ async fn distributed_facade_leases_authorize_workspace_publication()
     let mut transaction = workspace
         .begin_transaction(
             IdempotencyKey::from_bytes([0x81; 16]),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -639,15 +642,16 @@ async fn distributed_facade_leases_authorize_workspace_publication()
             .commit(
                 None,
                 lease.publication_permit(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                        acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        },
-                    )
+                    Ok::<
+                        _,
+                        acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>,
+                    >(acyclic_fs_work::performance::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs_work::performance::WorkCounters::default(),
+                    })
                 }
             )
             .await

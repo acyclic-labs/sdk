@@ -1,10 +1,13 @@
 //! Focused public whole-file read behavior tests.
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, Transaction,
-    TransactionCommit, WorkBudget, WorkspaceError,
-};
 use bytes::Bytes;
 use std::error::Error;
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, Transaction,
+        TransactionCommit, WorkspaceError,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 macro_rules! value {
     ($result:expr) => {
@@ -20,10 +23,15 @@ mod unbounded;
 
 fn allow<E>(
     _: WorkBudget,
-) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
-    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+) -> std::future::Ready<
+    acyclic_fs_work::performance::MeasuredResult<
+        acyclic_fs_work::performance::OperationReceipt<()>,
+        E,
+    >,
+> {
+    std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
         value: (),
-        work: acyclic_fs::WorkCounters::UNCHARGED,
+        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     }))
 }
 
@@ -106,7 +114,7 @@ async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), B
         #[cfg(not(target_arch = "wasm32"))]
         {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;

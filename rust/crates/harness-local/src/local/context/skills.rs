@@ -75,7 +75,7 @@ impl LocalHarness {
             let view = selected.as_ref().unwrap_or_else(|| workspace.view());
             let cancellation = acyclic_fs::CancellationToken::new();
             let native_work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

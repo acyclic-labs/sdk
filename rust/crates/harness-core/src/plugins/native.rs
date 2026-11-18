@@ -302,7 +302,7 @@ async fn load_enabled(
                     work.claim(
                         std::mem::size_of::<EnabledData>() as u64,
                         1,
-                        acyclic_fs::WorkCounters::UNCHARGED,
+                        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     )
                 })
                 .transpose()
@@ -513,7 +513,11 @@ async fn load_enabled(
             std::mem::size_of::<std::sync::Arc<acyclic_fs::NativeAllocation>>() as u64,
         ])?;
         let mut shared = work
-            .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
+            .claim(
+                bytes,
+                1,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+            )
             .map_err(|cause| LoadFailure::Operational(cause.into()))?;
         custody
             .absorb(&mut shared)

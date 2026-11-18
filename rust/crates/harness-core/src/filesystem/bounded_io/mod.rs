@@ -6,7 +6,10 @@ use crate::sync::SyncMutex;
 use crate::sync::SyncMutex as Mutex;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
-use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
+use {
+    acyclic_fs::{CancellationToken, WorkspaceError},
+    acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters},
+};
 #[cfg(all(test, not(loom)))]
 mod charge_tests;
 mod codec;
@@ -65,7 +68,7 @@ pub enum PreparationIo {
         work: Arc<
             SyncMutex<(
                 WorkCounters,
-                std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
+                std::result::Result<AllocationLedger, acyclic_fs_work::performance::WorkError>,
             )>,
         >,
         /// This owner's share of the common live-byte ledger.
@@ -346,9 +349,9 @@ impl PreparationIo {
                         .bytes
                         .load(Ordering::Relaxed)
                         .checked_add(bytes)
-                        .ok_or(acyclic_fs::WorkError::Overflow)?;
+                        .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
                     if retained > ledger.scratch_bytes() {
-                        return Err(acyclic_fs::WorkError::Overflow.into());
+                        return Err(acyclic_fs_work::performance::WorkError::Overflow.into());
                     }
                     custody.record(0, bytes).map_err(Into::into)
                 })?;
@@ -394,11 +397,13 @@ impl PreparationIo {
         stock_boundary(Some(self), crate::wire::ErrorCode::Invalid, reason)
     }
     #[doc(hidden)]
-    pub fn receipt(&self) -> std::result::Result<WorkCounters, acyclic_fs::WorkObservationError> {
+    pub fn receipt(
+        &self,
+    ) -> std::result::Result<WorkCounters, acyclic_fs_work::performance::WorkObservationError> {
         match self {
             Self::Owned { work, .. } => Ok(work
                 .lock()
-                .map_err(|_| acyclic_fs::WorkObservationError::Poisoned)?
+                .map_err(|_| acyclic_fs_work::performance::WorkObservationError::Poisoned)?
                 .0),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => work.receipt(),
@@ -476,7 +481,7 @@ impl PreparationIo {
                 if let Some(before) = before
                     && let Err(error) = custody.record(before, allocations.scratch_bytes())
                 {
-                    state.1 = Err(acyclic_fs::WorkError::Overflow);
+                    state.1 = Err(acyclic_fs_work::performance::WorkError::Overflow);
                     return Err(error.into());
                 }
                 result
@@ -496,7 +501,7 @@ impl PreparationIo {
                 next.peak_allocation_bytes = next
                     .peak_allocation_bytes
                     .checked_add(allocations.live_bytes())
-                    .ok_or(acyclic_fs::WorkError::Overflow)?;
+                    .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
             }
             accounting.admit(next)
         })
@@ -510,7 +515,7 @@ impl PreparationIo {
                 next.peak_allocation_bytes = next
                     .peak_allocation_bytes
                     .checked_add(allocations.live_bytes())
-                    .ok_or(acyclic_fs::WorkError::Overflow)?;
+                    .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
                 *work = work.checked_add(next)?;
                 Ok(())
             } else {
@@ -543,7 +548,7 @@ impl PreparationIo {
                 next.peak_allocation_bytes = next
                     .peak_allocation_bytes
                     .checked_add(allocations.live_bytes())
-                    .ok_or(acyclic_fs::WorkError::Overflow)?;
+                    .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
                 // Keep the existing ledger locked and borrow its budget and
                 // counters. Encoding tiny JSON chunks needs no temporary
                 // KernelAccounting enum or copies of the complete budget.
@@ -580,7 +585,7 @@ impl PreparationIo {
         match self {
             Self::Owned { custody, .. } => self.account(|accounting| {
                 if bytes > custody.bytes.load(Ordering::Relaxed) {
-                    return Err(acyclic_fs::WorkError::Overflow.into());
+                    return Err(acyclic_fs_work::performance::WorkError::Overflow.into());
                 }
                 accounting.release_owned(&mut KernelOwnedAllocation::Standalone, bytes)
             }),
@@ -672,7 +677,7 @@ impl PreparationIo {
     }
     pub(crate) fn receive<T, E: Into<Error>>(
         &self,
-        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, E>,
+        result: acyclic_fs_work::performance::MeasuredResult<OperationReceipt<T>, E>,
     ) -> Result<T> {
         match result {
             Ok(receipt) => {

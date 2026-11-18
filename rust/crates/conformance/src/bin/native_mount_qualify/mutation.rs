@@ -94,13 +94,13 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         .commit(
             None,
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::default(),
+                        work: acyclic_fs_work::performance::WorkCounters::default(),
                     },
                 )
             },
@@ -252,7 +252,7 @@ async fn verify_published_mutations(
     if workspace
         .read_symbolic_link(
             "/nested/symbolic.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

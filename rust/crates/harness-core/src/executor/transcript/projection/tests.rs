@@ -77,7 +77,8 @@ async fn segmented_projection_recovers_accounting_and_checkpoint_with_original_c
         .await?;
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = if native {
@@ -249,7 +250,7 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
             ),
         };
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 16 * 1024 * 1024);
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         let log_length = || {
             std::fs::metadata(directory.path().join("log"))

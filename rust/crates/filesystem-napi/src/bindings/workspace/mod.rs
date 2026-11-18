@@ -294,7 +294,7 @@ impl NativeWorkspace {
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 &mut publication_ready,
             )
@@ -322,7 +322,7 @@ impl NativeWorkspace {
                 destination,
                 fork,
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 &mut publication_ready,
             )
@@ -408,7 +408,7 @@ impl NativeWorkspace {
                         .inner
                         .generation(
                             decode_generation_id(&id)?,
-                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                             &acyclic_fs::CancellationToken::new(),
                         )
                         .await
@@ -423,7 +423,7 @@ impl NativeWorkspace {
                     ))?,
                     None => sdk_value!(unbounded_future!(target.inner, head()))?,
                 },
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

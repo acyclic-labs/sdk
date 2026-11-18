@@ -544,7 +544,7 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
         ))?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 64 * 1024 * 1024),
             &cancellation,
         )
         .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
@@ -607,7 +607,7 @@ fn a_retained_read_is_charged_once_for_exactly_its_bytes() -> Result<()> {
             None,
         ))?;
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 64 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )?;
         let before = io.remaining()?.peak_allocation_bytes;

@@ -85,7 +85,7 @@ where
             .claim(
                 std::mem::size_of::<Self>() as u64,
                 0,
-                acyclic_fs::WorkCounters::UNCHARGED,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
             )
             .map_err(Error::from)?;
         self._native_metadata

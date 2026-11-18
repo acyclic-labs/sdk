@@ -38,7 +38,7 @@ pub async fn filesystem_smoke<A: AsyncAuthorityStore + 'static, O: AsyncObjectSt
     let workspace = provider
         .create_workspace(
             "conformance",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -53,7 +53,7 @@ pub async fn filesystem_smoke<A: AsyncAuthorityStore + 'static, O: AsyncObjectSt
         .read(
             "/answer",
             2,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

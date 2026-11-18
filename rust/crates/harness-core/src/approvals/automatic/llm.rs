@@ -229,7 +229,7 @@ mod tests {
                 let work = native
                     .then(|| {
                         acyclic_fs::NativeMaterializationWork::new(
-                            acyclic_fs::performance::work_budget(8_000_000, 8_000_000),
+                            acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000),
                             &cancellation,
                         )
                     })
@@ -239,7 +239,7 @@ mod tests {
                     Some(PreparationIo::from_native_work(work)?)
                 } else if mode == 1 {
                     Some(PreparationIo::from_budget(
-                        acyclic_fs::performance::work_budget(8_000_000, 8_000_000),
+                        acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000),
                         &cancellation,
                     )?)
                 } else {

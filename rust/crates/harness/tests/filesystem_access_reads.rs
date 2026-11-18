@@ -1,5 +1,4 @@
 use acyclic_fs::access::*;
-use acyclic_fs::{CancellationToken, Fs, WorkBudget};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey,
     conversation::{
@@ -12,6 +11,10 @@ use acyclic_harness::{
 };
 use proptest::prelude::*;
 use std::{error::Error, sync::Arc};
+use {
+    acyclic_fs::{CancellationToken, Fs},
+    acyclic_fs_work::performance::WorkBudget,
+};
 #[path = "support/access_policy.rs"]
 mod policy_support;
 
@@ -659,7 +662,7 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
         )?;
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;

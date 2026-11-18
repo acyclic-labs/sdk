@@ -5,8 +5,11 @@ use crate::{
     filesystem::{FilesystemContentVerifier, FilesystemHost},
     resources::ProviderRef,
 };
-use acyclic_fs::{CancellationToken, EmbeddedCapabilities, Fs, WorkBudget};
 use acyclic_stream::{MemoryStream, StreamProvider, StreamProviderExt};
+use {
+    acyclic_fs::{CancellationToken, EmbeddedCapabilities, Fs},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 // A real referenced publication with 128 discovered skills. An unchanged bad
 // replacement must not poison an unrelated valid update or removal, and the
@@ -142,12 +145,13 @@ async fn a_referenced_delta_skips_unchanged_invalid_skills_without_a_second_disc
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                        acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: Default::default(),
-                        },
-                    )
+                    Ok::<
+                        _,
+                        acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>,
+                    >(acyclic_fs_work::performance::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
                 },
             )
             .await

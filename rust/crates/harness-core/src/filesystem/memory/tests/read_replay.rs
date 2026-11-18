@@ -5,13 +5,18 @@ use crate::runtime::{Bindings, TaskContext, ToolContext};
 async fn read(task: &TaskContext, arguments: Value) -> Result<Value> {
     // Replay the unreserved call, retaining the actual file/render limits.
     // Finite range-work accounting is covered by the original grant replay.
-    read_with_budget(task, arguments, acyclic_fs::WorkBudget::UNBOUNDED).await
+    read_with_budget(
+        task,
+        arguments,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+    )
+    .await
 }
 
 async fn read_with_budget(
     task: &TaskContext,
     arguments: Value,
-    budget: acyclic_fs::WorkBudget,
+    budget: acyclic_fs_work::performance::WorkBudget,
 ) -> Result<Value> {
     let tool = crate::tool::files::read()?;
     let invocation = ToolInvocation {
@@ -118,9 +123,9 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
     let error = read_with_budget(
         &task,
         json!({"path":path,"selection":{"kind":"lines","offset":20000}}),
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             source_bytes_read: 0,
-            ..acyclic_fs::performance::work_budget(1_000_000, 64_000_000)
+            ..acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000)
         },
     )
     .await
@@ -129,7 +134,7 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "source_bytes_read",
                     ..
                 }

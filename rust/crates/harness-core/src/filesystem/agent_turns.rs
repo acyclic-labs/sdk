@@ -1608,7 +1608,7 @@ where
                 .filesystem
                 .open_workspace(
                     binding.volume()?.storage_name(&mut None)?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
                 .await
@@ -3479,7 +3479,7 @@ where
                         .ok_or_else(|| Error::Storage("diagnostic prefix is incomplete".into()))?;
                     let slice = range.take_record(&record).map_err(Error::from)?;
                     if let Some(io) = io {
-                        io.charged(acyclic_fs::WorkCounters {
+                        io.charged(acyclic_fs_work::performance::WorkCounters {
                             bytes_copied: slice.len() as u64,
                             ..Default::default()
                         })?;

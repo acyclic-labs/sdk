@@ -5,15 +5,19 @@ use acyclic_fs::kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath}
 use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode,
 };
-use acyclic_fs::{
-    AuthoredMutation, CancellationToken, CaptureOptions, CapturePolicy, Fs, HostPathReplacement,
-    Lifecycle, MaterializeOptions, NativeMaterializationWork, VolumeConfig, VolumeId, WorkBudget,
-    capture_baseline, capture_paths, capture_root_identity, capture_subtree, materialize_checkout,
-    materialize_checkout_paths, restore_checkout_host_path,
-};
 use std::path::Path;
+use {
+    acyclic_fs::{
+        AuthoredMutation, CancellationToken, CaptureOptions, CapturePolicy, Fs,
+        HostPathReplacement, Lifecycle, MaterializeOptions, NativeMaterializationWork,
+        VolumeConfig, VolumeId, capture_baseline, capture_paths, capture_root_identity,
+        capture_subtree, materialize_checkout, materialize_checkout_paths,
+        restore_checkout_host_path,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
-const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(100_000, 64 * 1024 * 1024);
+const BUDGET: WorkBudget = acyclic_fs_work::performance::work_budget(100_000, 64 * 1024 * 1024);
 const MODE: &str = "ACYCLIC_NATIVE_IO_BOOTSTRAP";
 
 #[test]

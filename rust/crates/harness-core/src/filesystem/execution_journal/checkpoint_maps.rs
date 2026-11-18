@@ -486,7 +486,7 @@ mod tests {
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let path = acyclic_stream::StreamPath::new("model-cell/pages")?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
         #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

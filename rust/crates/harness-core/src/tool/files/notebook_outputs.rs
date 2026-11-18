@@ -290,7 +290,7 @@ pub(super) async fn retain(
     let domain = b"file-projection/notebook-output/v1\0";
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters {
+        work.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: (domain.len() + version.len()) as u64,
             ..Default::default()
         })?;
@@ -324,7 +324,7 @@ pub(super) async fn retain(
             })?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: 16,
                 ..Default::default()
             })?;

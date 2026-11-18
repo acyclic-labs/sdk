@@ -163,7 +163,7 @@ async fn http_failure(
             work.claim(
                 4 * EXCERPT_BYTES as u64 + 64,
                 4,
-                acyclic_fs::WorkCounters::UNCHARGED,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
             )
         })
         .transpose()

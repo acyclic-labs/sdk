@@ -155,7 +155,7 @@ pub mod native_mount;
 mod native_name;
 pub mod operation_window;
 pub mod path;
-pub mod performance;
+use acyclic_fs_work::performance;
 mod record_store;
 pub mod s3;
 #[cfg(not(target_arch = "wasm32"))]
@@ -374,7 +374,7 @@ pub use operation_window::{
     WorkspaceOperationFinish,
 };
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
-pub use performance::{
+use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
     WorkObservationError,
 };

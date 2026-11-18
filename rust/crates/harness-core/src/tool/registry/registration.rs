@@ -9,7 +9,7 @@ impl ToolRegistry {
         let custody = work.claim(
             REGISTRY_BYTES as u64,
             1,
-            acyclic_fs::WorkCounters::UNCHARGED,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
         )?;
         Ok((Self::default(), custody))
     }
@@ -230,7 +230,7 @@ impl ToolRegistry {
     fn admit_version_slot(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if let Some(io) = io {
             io.retain_owned(VERSION_SLOT_BYTES as u64)?;
-            let counters = acyclic_fs::WorkCounters {
+            let counters = acyclic_fs_work::performance::WorkCounters {
                 items_examined: self.data.versions.len() as u64,
                 ..Default::default()
             };
@@ -252,7 +252,9 @@ fn reconcile_registry_custody(
         reason: "tool registry custody is missing",
     })?;
     custody.release(custody.bytes().checked_sub(retained).ok_or(
-        acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+        acyclic_fs::NativeTreeMaterializationError::Work(
+            acyclic_fs_work::performance::WorkError::Overflow,
+        ),
     )?)?;
     Ok(())
 }

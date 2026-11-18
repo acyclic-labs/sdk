@@ -9,11 +9,13 @@ use std::time::Instant;
 
 use acyclic_fs::kernel::KernelAccounting;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
-use acyclic_fs::{
-    CancellationToken, Fs, LocalOptions, MaterializeOptions, MountPath, PublicationPermit,
-    WorkBudget,
-};
 use serde_json::json;
+use {
+    acyclic_fs::{
+        CancellationToken, Fs, LocalOptions, MaterializeOptions, MountPath, PublicationPermit,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[path = "support/portable_source.rs"]
 mod portable_source;

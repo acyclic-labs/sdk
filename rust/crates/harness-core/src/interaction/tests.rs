@@ -69,8 +69,8 @@ fn file(path: &str, bytes: &[u8]) -> Result<FileRef> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_budget() -> acyclic_fs::WorkBudget {
-    acyclic_fs::WorkBudget {
+fn native_budget() -> acyclic_fs_work::performance::WorkBudget {
+    acyclic_fs_work::performance::WorkBudget {
         source_bytes_read: 1_048_576,
         bytes_hashed: 1_048_576,
         bytes_copied: 1_048_576,
@@ -78,7 +78,7 @@ fn native_budget() -> acyclic_fs::WorkBudget {
         items_examined: 1_048_576,
         allocation_operations: 1_048_576,
         peak_allocation_bytes: 1_048_576,
-        ..acyclic_fs::WorkBudget::default()
+        ..acyclic_fs_work::performance::WorkBudget::default()
     }
 }
 

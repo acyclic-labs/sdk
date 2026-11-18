@@ -1,8 +1,11 @@
 //! Task view bindings shared by `GraphCoder` and native-host coordination.
 use super::super::checkout_tools::{State, reconciliation};
 use super::*;
-use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
+use {
+    acyclic_fs::{CancellationToken, MountOptions},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[cfg(all(test, not(loom)))]
 mod concurrency_tests;

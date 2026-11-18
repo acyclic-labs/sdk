@@ -119,7 +119,7 @@ async fn default_child_checkout_recovers_parent_updates_and_terminal_conflicts()
                 &project.storage_name(&mut None)?,
                 acyclic_fs::IdempotencyKey::new(),
                 acyclic_fs::PublicationPermit::Unrestricted,
-                &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+                &mut acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation),
             )
             .await
             .map_err(storage)?;

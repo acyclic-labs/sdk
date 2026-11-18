@@ -36,6 +36,7 @@ rust_shared_library(
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//blake3-1.8.7",
@@ -70,6 +71,7 @@ rust_library(
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//blake3-1.8.7",
@@ -146,6 +148,7 @@ rust_shared_library(
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",
         "//rust/crates/stream:acyclic_stream_wasm",
         "@wasm_crates//blake3-1.8.7",
@@ -188,6 +191,7 @@ rust_library(
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",
         "//rust/crates/stream:acyclic_stream_wasm",
         "@wasm_crates//blake3-1.8.7",

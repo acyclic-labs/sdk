@@ -72,7 +72,10 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .checkpoint(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -83,7 +86,10 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .refresh_head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .refresh_head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -94,7 +100,10 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .refresh_live(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .refresh_live(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -117,12 +126,12 @@ impl BrowserCheckout {
                 None,
                 None,
                 permit,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
-                    acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
+                    acyclic_fs::FsResult::Ok(acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::default(),
+                        work: acyclic_fs_work::performance::WorkCounters::default(),
                     })
                 },
             )
@@ -145,7 +154,7 @@ impl BrowserCheckout {
             .apply_authored_live(
                 authored,
                 operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .await
@@ -164,7 +173,7 @@ impl BrowserCheckout {
             .engine
             .resume_live(
                 operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .await
@@ -184,7 +193,7 @@ impl BrowserCheckout {
             .engine
             .rebase_head(
                 maximum_conflicts,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -214,7 +223,7 @@ impl BrowserCheckout {
 }
 
 pub(in crate::bindings) fn mutation_value(
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<Ts<BrowserMutationResult>, JsValue> {
     ts(BrowserMutationResult {
         file_id: None,
@@ -223,7 +232,7 @@ pub(in crate::bindings) fn mutation_value(
 }
 
 pub(in crate::bindings) fn mutation_created(
-    receipt: &acyclic_fs::OperationReceipt<FileId>,
+    receipt: &acyclic_fs_work::performance::OperationReceipt<FileId>,
 ) -> Result<Ts<BrowserMutationResult>, JsValue> {
     ts(BrowserMutationResult {
         file_id: Some(receipt.value.into_bytes().to_vec().into()),
@@ -233,7 +242,7 @@ pub(in crate::bindings) fn mutation_created(
 
 pub(in crate::bindings) fn commit_value(
     outcome: LivePublicationObservation,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<Ts<BrowserCommitResult>, JsValue> {
     let (status, generation_id, epoch, sequence, fingerprint) = match outcome {
         LivePublicationObservation::Committed {
@@ -288,7 +297,7 @@ pub(in crate::bindings) fn commit_value(
 
 pub(in crate::bindings) fn live_mutation_value(
     outcome: LiveMutationOutcome,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<BrowserLiveMutationResult, JsValue> {
     let (status, generation_id, epoch, sequence, conflict_count, truncated, fingerprint) =
         match outcome {
@@ -360,10 +369,15 @@ pub(in crate::bindings) fn live_mutation_value(
 
 /// No-work callback for publication.
 pub(in crate::bindings) fn publication_ready<E>(
-    _: acyclic_fs::WorkBudget,
-) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
-    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+    _: acyclic_fs_work::performance::WorkBudget,
+) -> std::future::Ready<
+    acyclic_fs_work::performance::MeasuredResult<
+        acyclic_fs_work::performance::OperationReceipt<()>,
+        E,
+    >,
+> {
+    std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
         value: (),
-        work: acyclic_fs::WorkCounters::UNCHARGED,
+        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     }))
 }

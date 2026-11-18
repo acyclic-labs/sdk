@@ -6,7 +6,7 @@ pub struct NativeCheckout {
     pub(in crate::bindings) inner: Arc<SharedCheckout<LocalAuthorityBackend, LocalObjectBackend>>,
     pub(in crate::bindings) config: VolumeConfig,
     pub(in crate::bindings) cancellation: CancellationToken,
-    pub(in crate::bindings) acquisition_work: acyclic_fs::WorkCounters,
+    pub(in crate::bindings) acquisition_work: acyclic_fs_work::performance::WorkCounters,
 }
 
 #[napi]
@@ -21,7 +21,10 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .discard(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
+            .discard(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &self.cancellation,
+            )
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)

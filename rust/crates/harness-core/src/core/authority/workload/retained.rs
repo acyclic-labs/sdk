@@ -18,7 +18,7 @@ mod tests {
     fn exact_wire_custody_retires_and_cancellation_precedes_lookup() -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

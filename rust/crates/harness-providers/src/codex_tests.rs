@@ -313,7 +313,7 @@ proptest! {
             "restoring the temporary graph must fail the direct allocation count");
 
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         let baseline = work.live_allocation_bytes();
@@ -349,7 +349,7 @@ proptest! {
         let encoded = serde_json::to_vec(&document).unwrap();
         std::fs::write(&path, &encoded).unwrap();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         let baseline = work.live_allocation_bytes();

@@ -18,13 +18,16 @@ use acyclic_actors::{
     addressing::ActorReference,
     guest::{Checkpoint, Composer, Composition, GuestError, GuestFuture, Participant},
 };
-use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
-    StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
-};
 use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, Record, StreamError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec,
+        IdempotencyKey, StreamAuthorityStore, WorkspaceName, distributed::AuthorityProvider,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[cfg(test)]
 mod tests;

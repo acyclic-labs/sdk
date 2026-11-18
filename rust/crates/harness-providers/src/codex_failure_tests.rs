@@ -1,11 +1,14 @@
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{Error, ModelTransportFailure, wire::ErrorCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 fn work() -> NativeMaterializationWork {
     NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
         &CancellationToken::new(),
     )
     .unwrap_or_else(|_| panic!("fixture work"))

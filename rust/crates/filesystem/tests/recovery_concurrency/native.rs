@@ -44,7 +44,7 @@ async fn native_prepared_packet(
         .claim(
             std::mem::size_of::<MaterializationEdit>() as u64,
             u64::from((std::mem::size_of::<MaterializationEdit>() as u64) != 0),
-            acyclic_fs::WorkCounters::default(),
+            acyclic_fs_work::performance::WorkCounters::default(),
         )
         .expect("admit plan vector before allocation");
     let mut edits = Vec::with_capacity(1);

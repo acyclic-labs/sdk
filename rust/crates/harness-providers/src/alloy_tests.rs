@@ -173,7 +173,7 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
         #[cfg(not(target_arch = "wasm32"))]
         {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(100, 4096),
+                acyclic_fs_work::performance::work_budget(100, 4096),
                 &acyclic_fs::CancellationToken::new(),
             )
             .map_err(|(error, _)| error)?;

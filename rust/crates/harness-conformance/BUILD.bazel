@@ -43,6 +43,7 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
@@ -126,6 +127,7 @@ rust_binary(
         ":acyclic_harness_conformance",
     ] + [
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
@@ -167,6 +169,7 @@ rust_test(
         ":acyclic_harness_conformance",
     ] + [
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",
@@ -233,6 +236,7 @@ rust_binary(
         ":acyclic_harness_conformance",
     ] + [
         "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",

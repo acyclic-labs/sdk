@@ -69,7 +69,7 @@ impl SearchRequest {
     pub(crate) fn validate_with_work(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 items_examined: self.query.len() as u64,
                 ..Default::default()
             })?;

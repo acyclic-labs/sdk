@@ -31,7 +31,7 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
         assert!(compared.bytes_total < buffered.bytes_total);
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
             budget.bytes_encoded = bytes.len() as u64;
             let work = native
                 .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
@@ -70,7 +70,7 @@ fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Re
         assert!(decode_json::<Value>(bytes, None).is_err());
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
             let work = native
                 .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
                 .transpose()
@@ -357,12 +357,18 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
     let journal = Journal::default();
     let operation = OperationId::from_bytes([193; 16]);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
+    let io = PreparationIo::from_budget(
+        acyclic_fs_work::performance::WorkBudget::default(),
+        &cancellation,
+    )?;
     assert!(matches!(
         canonical_checkpoint_for_operation(&journal, operation, Limits::default(), Some(&io)).await,
         Err(Error::Unsupported(_))
     ));
-    assert_eq!(io.receipt(), acyclic_fs::WorkCounters::default());
+    assert_eq!(
+        io.receipt(),
+        acyclic_fs_work::performance::WorkCounters::default()
+    );
     assert_eq!(journal.3.load(Ordering::SeqCst), 0);
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     Ok(())

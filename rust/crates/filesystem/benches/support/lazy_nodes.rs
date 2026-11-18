@@ -4,10 +4,13 @@ use acyclic_fs::lazy_workspace::{
     LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow, LazyShadowId, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore,
 };
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use divan::Bencher;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+};
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
     eprintln!("lazy-node benchmark failed: {error:?}");
@@ -52,7 +55,7 @@ impl std::io::Write for Fragments {
     }
 }
 
-const BUDGET: WorkBudget = acyclic_fs::performance::BOUNDARY_BUDGET;
+const BUDGET: WorkBudget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
 
 fn complete<T>(future: impl Future<Output = T>) -> T {
     let mut future = std::pin::pin!(future);

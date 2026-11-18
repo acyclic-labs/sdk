@@ -133,7 +133,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let io = PreparationIo::from_budget(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs_work::performance::BOUNDARY_BUDGET,
                     &cancellation,
                 )?;
                 let now = seconds(clock);

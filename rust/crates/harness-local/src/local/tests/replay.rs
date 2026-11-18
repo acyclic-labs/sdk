@@ -249,7 +249,7 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
     {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(cause, _)| cause)?;

@@ -131,7 +131,7 @@ impl HashedSource<'_> {
             )
         })?;
         self.io
-            .charge(acyclic_fs::WorkCounters {
+            .charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: count as u64,
                 ..Default::default()
             })
@@ -145,7 +145,7 @@ impl acyclic_fs::kernel::AsyncBlobSource for HashedSource<'_> {
     async fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
-        budget: acyclic_fs::WorkBudget,
+        budget: acyclic_fs_work::performance::WorkBudget,
         cancellation: &'a acyclic_fs::CancellationToken,
     ) -> std::io::Result<usize> {
         self.read(destination, budget.source_bytes_read, cancellation)
@@ -162,7 +162,7 @@ mod tests {
     fn owned_content_staging_shares_only_original_custody() -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -185,7 +185,7 @@ mod tests {
         assert!(work.live_allocation_bytes()? > baseline);
 
         let foreign = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

@@ -49,7 +49,7 @@ async fn filesystem_binding_replay(
     let root = filesystem
         .open_workspace(
             first.storage_name(&mut None)?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -61,7 +61,7 @@ async fn filesystem_binding_replay(
     graph
         .register_root(
             &root,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -71,7 +71,7 @@ async fn filesystem_binding_replay(
             &root,
             "saved-source",
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -83,7 +83,7 @@ async fn filesystem_binding_replay(
     let mut transaction = root
         .begin_transaction(
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -92,7 +92,7 @@ async fn filesystem_binding_replay(
         .write(
             "/secret",
             bytes::Bytes::from_static(b"saved original contents"),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?;
@@ -100,12 +100,12 @@ async fn filesystem_binding_replay(
         .commit::<acyclic_fs::WorkspaceError, _, _>(
             None,
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                Ok(acyclic_fs::OperationReceipt {
+                Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 })
             },
         )

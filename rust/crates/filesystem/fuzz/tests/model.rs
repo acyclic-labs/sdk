@@ -1,8 +1,11 @@
 //! Exhaustive schedules through the production native directory cache.
 #![cfg(loom)]
 use acyclic_fs::kernel;
-use acyclic_fs::{
-    CancellationToken, Digest, FsError, ObjectId, ObjectKind, OperationClaims, VolumeId, WorkError,
+use {
+    acyclic_fs::{
+        CancellationToken, Digest, FsError, ObjectId, ObjectKind, OperationClaims, VolumeId,
+    },
+    acyclic_fs_work::performance::WorkError,
 };
 
 // The included sources name the filesystem's loom facade, including its InlineMutex.

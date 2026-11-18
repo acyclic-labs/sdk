@@ -25,7 +25,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
         limits,
         None,
         None,
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .await
@@ -94,7 +94,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
         limits,
         Some(source.reference()),
         None,
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .await

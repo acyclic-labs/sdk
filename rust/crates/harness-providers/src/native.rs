@@ -1,12 +1,15 @@
 //! Original-ledger admission for the shared wire projections and parsers.
 use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{
     Error, Result,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
 };
 use futures::StreamExt as _;
+use {
+    acyclic_fs::{NativeAllocation, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 #[cfg(test)]
 #[path = "native_accounting_tests.rs"]

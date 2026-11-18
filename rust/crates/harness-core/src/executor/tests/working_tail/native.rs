@@ -102,7 +102,7 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
         .await?
         .0;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let mut budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+    let mut budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
     let decode_io = PreparationIo::from_budget(budget, &cancellation)?;
     {
         // Inventory the required reads/decodes, signature payload, retained
@@ -163,7 +163,7 @@ async fn private_working_cut_retains_only_original_custody_through_value_drop() 
         true,
     ] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -222,7 +222,7 @@ async fn cancelled_private_working_cut_load_releases_all_original_custody() -> R
         true,
     ] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

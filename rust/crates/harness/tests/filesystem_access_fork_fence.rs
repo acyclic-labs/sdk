@@ -3,7 +3,7 @@ use super::*;
 fn assert_fenced(revocation: &Result<(), Box<dyn Error>>) {
     assert!(
         revocation.as_ref().err().is_some_and(|error| matches!(
-            error.downcast_ref::<acyclic_fs::OperationFailure<acyclic_fs::FsError>>(),
+            error.downcast_ref::<acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(),
             Some(failure) if matches!(failure.error, acyclic_fs::FsError::Publication(
                 acyclic_fs::kernel::PublicationError::ActiveProjection
             ))
@@ -223,9 +223,9 @@ async fn unchecked_fork(
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )
