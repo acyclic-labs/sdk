@@ -16,7 +16,7 @@ async fn check(mode: u8) -> Result<()> {
     let budget = acyclic_fs_work::performance::work_budget(1_000_000, 4 * 1024 * 1024);
     let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes()?;
     let provider = Arc::new(acyclic_stream::MemoryStream::default());
     let path = StreamPath::new("retained/publication")?;
     let (pending, producer) = {
@@ -24,11 +24,11 @@ async fn check(mode: u8) -> Result<()> {
         let mut history = Some(io.history_io());
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         let (key, held) = crate::distributed::digest_key(&[mode; 32], &mut work)?;
-        let before_request = original.live_allocation_bytes();
+        let before_request = original.live_allocation_bytes()?;
         let before_operations = original.receipt().allocation_operations;
         let mut request = commit_request(key, held, &mut work)?;
         assert_eq!(
-            original.live_allocation_bytes() - before_request,
+            original.live_allocation_bytes()? - before_request,
             (request.0.effects.capacity() * std::mem::size_of::<acyclic_stream::CommitEffect>())
                 as u64,
             "request storage must remain funded before native admission"
@@ -62,7 +62,7 @@ async fn check(mode: u8) -> Result<()> {
         drop(quota);
         (pending, producer)
     };
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes()? > baseline);
     if mode == 1 {
         drop(producer);
     } else {
@@ -70,7 +70,7 @@ async fn check(mode: u8) -> Result<()> {
     }
     let foreign = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let foreign_baseline = foreign.live_allocation_bytes();
+    let foreign_baseline = foreign.live_allocation_bytes()?;
     let io = PreparationIo::from_native_work(if mode == 2 { &foreign } else { &original })?;
     let mut history = Some(io.history_io());
     let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
@@ -113,7 +113,7 @@ async fn check(mode: u8) -> Result<()> {
     drop(quota);
     drop(io);
     drop(provider);
-    assert_eq!(original.live_allocation_bytes(), baseline, "mode {mode}");
-    assert_eq!(foreign.live_allocation_bytes(), foreign_baseline);
+    assert_eq!(original.live_allocation_bytes()?, baseline, "mode {mode}");
+    assert_eq!(foreign.live_allocation_bytes()?, foreign_baseline);
     Ok(())
 }
