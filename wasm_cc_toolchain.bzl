@@ -6,10 +6,9 @@ load("@rules_cc//cc/private/toolchain:unix_cc_toolchain_config.bzl", "cc_toolcha
 def wasm_cc_toolchain():
     """Declare the browser C toolchain for Linux execution."""
     root = Label("@wasm_llvm_distribution//:bin/clang").workspace_root
-    # rules_cc otherwise resolves tool paths relative to this package. The
-    # Linux execution root is the current directory, with these files declared
-    # in all_files, so /proc/self/cwd names the same input from any package.
-    tool_root = "/proc/self/cwd/" + root
+    package = Label("//toolchains/browser:wasm_cc")
+    package_path = [part for part in [package.workspace_root, package.package] if part]
+    tool_root = "../" * len("/".join(package_path).split("/")) + root
     binaries = {
         "gcc": "clang", "cpp": "clang-cpp", "ar": "llvm-ar", "ld": "wasm-ld",
         "nm": "llvm-nm", "objdump": "llvm-objdump", "strip": "llvm-strip", "gcov": "llvm-cov",
