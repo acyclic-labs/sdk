@@ -3,8 +3,6 @@ use crate::Digest;
 use crate::ObjectStoreError;
 use crate::async_storage::AsyncObjectStore;
 use crate::memory::MemoryObjectStore;
-use crate::speculation::{ResidencyHint, ResidencyReason};
-use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};

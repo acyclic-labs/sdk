@@ -3,7 +3,10 @@ use acyclic_fs::kernel::{
     BlobReadFailure, CanonicalDecodeError, DecodeLimits, build_blob, decode_blob_page,
     read_blob_range,
 };
-use acyclic_fs::{AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken};
+use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
+use acyclic_fs::{
+    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, ObjectReadRequest,
+};
 use acyclic_fs_format::object_reference::ObjectKind;
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters};
 use acyclic_stream::OwnedBytes;
@@ -169,5 +172,65 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
             ..
         })
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let first = put_object(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"abcd"),
+    )
+    .await?;
+    let second = put_object(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"efgh"),
+    )
+    .await?;
+    let page = BlobPage {
+        first_offset: 0,
+        end_offset: 8,
+        node: BlobNode::Leaf(vec![
+            BlobChunkRef {
+                first_offset: 0,
+                end_offset: 4,
+                chunk: first,
+            },
+            BlobChunkRef {
+                first_offset: 4,
+                end_offset: 8,
+                chunk: second,
+            },
+        ]),
+    };
+    let root = put_blob_page(&store, &page, 8).await?;
+    let read = read_blob_range(
+        &store,
+        root,
+        ByteRange {
+            offset: 0,
+            length: 4,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(read.bytes.as_ref(), b"abcd");
+    assert_eq!(read.work.object_probes, 2);
+    assert_eq!(
+        read.next_residency,
+        Some(ResidencyHint {
+            request: ObjectReadRequest {
+                object_id: second,
+                maximum_bytes: 4,
+            },
+            reason: ResidencyReason::SequentialRange,
+        })
+    );
     Ok(())
 }
