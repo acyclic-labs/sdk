@@ -29,6 +29,7 @@ model-checking = ["dep:loom"]
 test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "tokio/io-util"]
 
 [dependencies]
+acyclic-process-host-arguments = { version = "=0.2.0", path = "../process-host-arguments" }
 acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 loom = { version = "=0.7.3", optional = true }
@@ -101,7 +102,6 @@ tempfile = "3.27.0"
 loom = "=0.7.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-process-host-arguments = { version = "=0.2.0", path = "../process-host-arguments" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 futures-core = "0.3.31"

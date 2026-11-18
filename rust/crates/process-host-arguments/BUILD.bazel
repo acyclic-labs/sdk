@@ -16,7 +16,10 @@ extract_cargo_lints(
 rust_library(
     name = "acyclic_process_host_arguments",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/windows.rs"], allow_empty = True) + select({
+        "@platforms//os:windows": glob(["src/windows.rs"], allow_empty = True),
+        "//conditions:default": [],
+    }),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",

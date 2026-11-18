@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Argument admission for the Acyclic process host"
 
+[package.metadata.bazel.platform-sources]
+"@platforms//os:windows" = ["src/windows.rs"]
+
 [dev-dependencies]
 proptest.workspace = true
 serde_json.workspace = true

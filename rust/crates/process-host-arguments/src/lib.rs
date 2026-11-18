@@ -1,8 +1,34 @@
-//! Admission shared by the executable and its byte-input fuzz target.
+//! Process arguments shared by host admission, launch adapters and test targets.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
+
+#[cfg(windows)]
+pub mod windows;
+
+/// One argument: quoted for the child's parser, or (on Windows) appended to
+/// the command line as given.
+#[derive(Debug)]
+pub enum Arg {
+    /// An argument encoded for the child parser.
+    Regular(OsString),
+    /// An argument appended verbatim on Windows.
+    #[cfg(windows)]
+    Raw(OsString),
+}
+
+impl Arg {
+    /// Returns the original OS string.
+    #[inline]
+    pub fn as_os_str(&self) -> &OsStr {
+        match self {
+            Self::Regular(argument) => argument,
+            #[cfg(windows)]
+            Self::Raw(argument) => argument,
+        }
+    }
+}
 
 /// The process host command and its admission options.
 #[derive(Debug, Eq, PartialEq)]

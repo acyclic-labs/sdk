@@ -4,6 +4,7 @@
 //! platform starts the same description: Unix turns it into a standard
 //! command at its spawn boundary, and Windows creates the process itself
 //! (see `windows_create.rs`) with exactly the attributes a tree needs.
+use acyclic_process_host_arguments::Arg;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -39,25 +40,6 @@ pub(super) struct UnixIdentity {
     pub(super) gid: Option<u32>,
     /// `argv[0]`, when it differs from the program.
     pub(super) arg0: Option<OsString>,
-}
-
-/// One argument: quoted for the child's parser, or (on Windows) appended to
-/// the command line as given.
-#[derive(Debug)]
-pub(super) enum Arg {
-    Regular(OsString),
-    #[cfg(windows)]
-    Raw(OsString),
-}
-
-impl Arg {
-    pub(super) fn as_os_str(&self) -> &OsStr {
-        match self {
-            Self::Regular(argument) => argument,
-            #[cfg(windows)]
-            Self::Raw(argument) => argument,
-        }
-    }
 }
 
 /// Changes to the inherited environment.
