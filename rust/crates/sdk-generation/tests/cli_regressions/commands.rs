@@ -402,9 +402,13 @@ impl Queries {
                 };
                 if let Some((output, artifacts)) = state.outputs.borrow().get(&key) {
                     for (path, bytes) in artifacts {
-                        if !fs::read(path).is_ok_and(|existing| &existing == bytes) {
-                            fs::write(path, bytes)?;
+                        match fs::read(path) {
+                            Ok(existing) if &existing == bytes => continue,
+                            Ok(_) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error),
                         }
+                        fs::write(path, bytes)?;
                     }
                     if !artifacts.is_empty() {
                         state
