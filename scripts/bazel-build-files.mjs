@@ -738,7 +738,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", opt === undefined && !checkCfg.length ? undefined : list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg])],
     ["lint_config", q(":lints")],
-    ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : undefined],
+    ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : q(bazel?.["target-compatible-with"])],
   ];
   // Rendered dependencies of one target.
   const deps = (kinds, extra = [], extraMacros = [], variants = {}, names) => {

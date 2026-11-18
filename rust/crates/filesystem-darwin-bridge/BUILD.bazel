@@ -54,6 +54,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:macos"],
     build_script_env = PACKAGE_ENV,
     deps = [
         "@sdk_crates//cc-1.10.0",
@@ -78,6 +79,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:macos"],
     deps = [
         ":build_script",
     ],

@@ -9,6 +9,7 @@ publish = true
 description = "Vendored C transport for the macOS filesystem adapter"
 
 [package.metadata.bazel]
+target-compatible-with = ["@platforms//os:macos"]
 build-script-inputs = [
     "src/native_mount/darwin_mount_bridge.c",
     "src/native_mount/darwin_mount_retirement.c",
