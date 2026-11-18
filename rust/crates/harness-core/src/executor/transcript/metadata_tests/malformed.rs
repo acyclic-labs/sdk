@@ -23,7 +23,7 @@ fn reject_with_funded_diagnostics<T: PreparationRecord>(bytes: &[u8]) -> Result<
         assert!(result.ok_or_else(|| invalid(None))?.is_err());
         assert!(physical.count_total > 0);
         assert!(
-            physical.bytes_max <= io.receipt().peak_allocation_bytes,
+            physical.bytes_max <= io.receipt()?.peak_allocation_bytes,
             "unfunded malformed scalar collection: {physical:?}"
         );
         assert_eq!(io.owned_bytes()?, 0);

@@ -62,7 +62,7 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
                     "accepted malformed {pointer}"
                 );
                 assert!(
-                    physical.bytes_max <= io.receipt().peak_allocation_bytes,
+                    physical.bytes_max <= io.receipt()?.peak_allocation_bytes,
                     "unfunded diagnostic at {pointer}: {physical:?}"
                 );
                 assert_eq!(io.owned_bytes()?, 0);
@@ -169,7 +169,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
             });
             let result = result.ok_or_else(|| invalid(None))?;
             assert_eq!(result.is_ok(), !malformed);
-            let peak = io.receipt().peak_allocation_bytes;
+            let peak = io.receipt()?.peak_allocation_bytes;
             assert!(physical.count_total > 0);
             assert!(
                 physical.bytes_max <= peak,
@@ -222,7 +222,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
                     );
                 });
                 let (decoded, hold) = result.ok_or_else(|| invalid(None))??;
-                assert!(physical.bytes_max <= work.receipt().peak_allocation_bytes - baseline);
+                assert!(physical.bytes_max <= work.receipt()?.peak_allocation_bytes - baseline);
                 let funded = i64::try_from(hold.bytes())
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 assert!(physical.bytes_current <= funded);
