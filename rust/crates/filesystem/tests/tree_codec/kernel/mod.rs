@@ -1,3 +1,4 @@
+mod codec;
 mod tree;
 mod tree_mutation;
 mod types;
