@@ -53,6 +53,7 @@ native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
 wire_error_contracts = ["acyclic_fs", "acyclic_auth", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "tokio", "tonic"]
 wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
+source_lifecycle = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tempfile", "tokio"]
 s3_contracts = ["acyclic_fs", "acyclic_fs_work", "bytes", "tokio"]
 workspace_append = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "futures", "proptest", "tokio"]
 workspace_context_contracts = ["acyclic_fs", "tokio"]
@@ -96,6 +97,10 @@ path = "tests/git_marker_contracts.rs"
 [[test]]
 name = "merge_driver_contracts"
 path = "tests/merge_driver_contracts.rs"
+
+[[test]]
+name = "source_lifecycle"
+path = "tests/source_lifecycle.rs"
 
 [[test]]
 name = "s3_contracts"
