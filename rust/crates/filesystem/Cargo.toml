@@ -147,11 +147,19 @@ test-narrow-runfiles = [
 ]
 
 [package.metadata.bazel.platform-sources]
-"@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs", "src/source_watch/inotify/**/*.rs"]
+"@platforms//os:linux" = [
+    "src/native_mount/fuse/**/*.rs",
+    "src/source_watch/inotify/**/*.rs",
+    "src/native_mount/guest.rs",
+    "src/native_mount/disconnected.rs",
+    "src/native_mount/disconnected/**/*.rs",
+]
 "@platforms//os:macos" = ["src/fsevents/**/*.rs", "src/native_mount/darwin_mount/**/*.rs", "src/source_watch/fsevents/**/*.rs"]
 "@platforms//os:windows" = [
     "src/native_mount/projfs/**/*.rs",
     "src/source_watch/directory_changes/**/*.rs",
+    "src/native_mount/provider_stack.rs",
+    "src/native_mount/provider_stack/**/*.rs",
     "src/windows_usn.rs",
     "tests/cases/projfs_metadata/metadata/client.rs",
     "tests/projfs_metadata_support.rs",
