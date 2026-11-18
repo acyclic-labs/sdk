@@ -262,7 +262,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let config = if selected_lock.is_empty() {
             None
         } else {
-            let Ok(lock) = root.join(selected_lock).canonicalize() else {
+            let Some(lock) = optional_io(root.join(selected_lock).canonicalize())? else {
                 continue;
             };
             Some(format!(
