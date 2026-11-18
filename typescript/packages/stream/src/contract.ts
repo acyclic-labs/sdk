@@ -222,11 +222,9 @@ type UnaryRoute = {
   inspect_idempotency: "idempotency/inspect";
   read_commit: "commits/read";
   children_page: "children/page";
-};
-export type UnaryOperation = keyof UnaryRoute | "head" | "heads" | "append" | "fork" | "commit";
-export type UnaryResponse<Operation extends UnaryOperation> = HttpResponseFor<
-  Operation extends keyof UnaryRoute ? UnaryRoute[Operation] : Exclude<Operation, keyof UnaryRoute>
->;
+} & { [Route in "head" | "heads" | "append" | "fork" | "commit"]: Route };
+export type UnaryOperation = keyof UnaryRoute;
+export type UnaryResponse<Operation extends UnaryOperation> = HttpResponseFor<UnaryRoute[Operation]>;
 
 export function decodeUnaryResponse<Operation extends UnaryOperation>(operation: Operation, input: Uint8Array): UnaryResponse<Operation> {
   try { return projectMemoryResponse(operation, input) as UnaryResponse<Operation>; }
