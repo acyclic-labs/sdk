@@ -38,8 +38,5 @@ time.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
 
-[features]
-test-support = ["acyclic-fs/test-support"]
-
 [lints]
 workspace = true
