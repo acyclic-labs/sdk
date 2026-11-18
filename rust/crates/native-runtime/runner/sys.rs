@@ -300,14 +300,7 @@ pub fn socketpair() -> Result<[Fd; 2], Errno> {
     unsafe {
         call(
             number::SOCKETPAIR,
-            [
-                1,
-                5 | 0o2_000_000,
-                0,
-                ends.as_mut_ptr().addr(),
-                0,
-                0,
-            ],
+            [1, 5 | 0o2_000_000, 0, ends.as_mut_ptr().addr(), 0, 0],
         )
     }?;
     Ok(ends)
