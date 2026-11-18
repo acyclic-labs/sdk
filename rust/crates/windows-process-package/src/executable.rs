@@ -1,20 +1,20 @@
 //! Process identity checked before Windows execution.
 use std::io;
-use windows_sys::Win32::Foundation::{
-    APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, HANDLE,
-};
+use std::os::windows::io::{AsRawHandle as _, BorrowedHandle};
+use windows_sys::Win32::Foundation::{APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER};
 
+/// Admits a held process only when Windows confirms it has no package identity.
 #[allow(
     unsafe_code,
     reason = "query the suspended process's OS package identity"
 )]
-pub(crate) fn require_unpackaged(process: HANDLE) -> io::Result<()> {
+pub fn require_unpackaged(process: BorrowedHandle<'_>) -> io::Result<()> {
     let mut length = 0;
     // SAFETY: the caller owns the suspended child handle, which grants query
     // access. A null buffer with zero length queries only its identity class.
     let status = unsafe {
         windows_sys::Win32::Storage::Packaging::Appx::GetPackageFullName(
-            process,
+            process.as_raw_handle(),
             &raw mut length,
             std::ptr::null_mut(),
         )

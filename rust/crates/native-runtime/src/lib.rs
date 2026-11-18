@@ -138,8 +138,6 @@ mod directory;
 pub use directory::remove_child_directory;
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
-#[cfg(windows)]
-mod executable;
 /// Host-authorized native execution capabilities and their OS enforcement.
 pub mod execution;
 mod service;

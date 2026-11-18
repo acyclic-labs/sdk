@@ -1,7 +1,7 @@
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
-use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsHandle as _, FromRawHandle as _, OwnedHandle};
 #[cfg(test)]
 use std::os::windows::process::CommandExt as _;
 #[cfg(test)]
@@ -339,7 +339,7 @@ fn start_in_job(
     // assigned Job disallows ordinary breakaway. Check the actual suspended
     // process, so aliases and a replaced executable cannot bypass admission.
     super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-        crate::executable::require_unpackaged(child.as_raw_handle().cast())
+        acyclic_windows_process_package::executable::require_unpackaged(child.as_handle())
     })?;
     // A named tree's custodian holds its Job until every member has exited.
     if let Some(record) = tree.custody.as_mut() {

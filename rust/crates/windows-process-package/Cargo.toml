@@ -1,0 +1,17 @@
+[package]
+name = "acyclic-windows-process-package"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Windows process package identity admission"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1677,6 +1677,7 @@ dependencies = [
  "acyclic-process-identity",
  "acyclic-process-resources",
  "acyclic-test-support",
+ "acyclic-windows-process-package",
  "base64 0.23.1",
  "blake3",
  "bytes",
@@ -2183,6 +2184,14 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.7.0",
  "web-sys",
+]
+
+[[package]]
+name = "acyclic-windows-process-package"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
