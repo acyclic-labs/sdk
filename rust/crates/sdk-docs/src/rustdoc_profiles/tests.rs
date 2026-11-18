@@ -171,9 +171,9 @@ fn profile_ids_distinguish_defaults_for_the_same_features() {
         default_features: false,
         features: BTreeSet::from(["a".into(), "b".into()]),
     };
-    let without_defaults = profile.id();
+    assert_eq!(profile.id().0, "p70;t74;d0;f61,62");
     profile.default_features = true;
-    assert_ne!(without_defaults, profile.id());
+    assert_eq!(profile.id().0, "p70;t74;d1;f61,62");
 }
 
 #[test]
