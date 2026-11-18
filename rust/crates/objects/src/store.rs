@@ -885,6 +885,24 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         format!("{namespace}{root_hash}.{batch}")
     }
 
+    fn retention_batch(
+        &self,
+        references: &[Digest],
+        prefix: impl std::fmt::Display,
+    ) -> Result<(Vec<u8>, String), Error> {
+        self.medium
+            .allocate(references.len() as u64 * 32)
+            .map_err(medium)?;
+        let batch = encode_batch(references);
+        // A unique version keeps concurrent retains of equal batches distinct.
+        let name = format!(
+            "{prefix}{}.{:032x}",
+            Digest::of(&batch),
+            u128::from_be_bytes(version()?)
+        );
+        Ok((batch, name))
+    }
+
     /// Marks `tag` as holding each of `children`, then admits them: refused
     /// when one is absent or marked by a deleter. Whether it created any key;
     /// an unknown index write keeps its original failure, so the holder must
@@ -1622,17 +1640,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 }
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                self.medium
-                    .allocate(references.len() as u64 * 32)
-                    .map_err(medium)?;
-                let batch = encode_batch(&references);
-                // Each retain owns its batch and keys, so a concurrent release of an
-                // equal batch never removes them.
-                let name = format!(
-                    "{}.{:032x}",
-                    Digest::of(&batch),
-                    u128::from_be_bytes(version()?)
-                );
+                let (batch, name) = self.retention_batch(&references, "")?;
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
                 let tag = Self::batch_tag("r", root_hash, &name);
