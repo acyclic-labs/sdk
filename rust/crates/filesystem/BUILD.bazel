@@ -552,7 +552,6 @@ rust_test(
         "tests/support/checkout_tracking.rs",
         "tests/support/creation_budget.rs",
         "tests/support/git_history.rs",
-        "tests/support/join_plan.rs",
         "tests/support/memory_checkout.rs",
         "tests/support/mount_checkout.rs",
         "tests/support/native_access.rs",
@@ -1408,6 +1407,9 @@ rust_test(
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
+    ],
+    data = [
+        "src/lib.rs",
     ],
     tags = ["manual"],
 )
@@ -3333,6 +3335,9 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "@sdk_crates//tokio-1.54.1",
+    ],
+    data = [
+        "src/lib.rs",
     ],
     tags = ["manual"],
 )

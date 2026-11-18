@@ -1,5 +1,5 @@
 //! Public client qualification against a disposable managed or self-hosted tree.
-use acyclic_conformance::client::endpoint::{Scenario, connect, verify};
+use acyclic_conformance_client::endpoint::{Scenario, connect, verify};
 use acyclic_harness_client::ConnectionOptions;
 
 #[tokio::main(flavor = "current_thread")]

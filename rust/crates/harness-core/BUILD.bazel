@@ -312,7 +312,6 @@ rust_test(
     deps = [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/decimal-u64:acyclic_decimal_u64",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-control-checks:acyclic_harness_control_checks",

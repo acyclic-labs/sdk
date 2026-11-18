@@ -17,8 +17,8 @@ acyclic = "//plugin:acyclic"
 [features]
 local-hotpath = []
 local-hotpath-proofs = ["local-hotpath", "acyclic-stream/test-support"]
-inference = ["dep:acyclic-harness-providers"]
-client-session = ["dep:acyclic-harness-client"]
+inference = ["dep:acyclic-conformance-inference", "dep:acyclic-harness-providers"]
+client-session = ["dep:acyclic-conformance-client", "dep:acyclic-harness-client"]
 actors-hosting = ["client-session", "acyclic-harness/conformance", "dep:acyclic-auth"]
 storage-backends = ["acyclic-fs/conformance", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
 harness-accounting = []
@@ -35,6 +35,10 @@ acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-agent-host-conformance = { path = "agent-host" }
+acyclic-conformance-client = { path = "client", optional = true }
+acyclic-conformance-filesystem = { path = "filesystem" }
+acyclic-conformance-inference = { path = "inference", optional = true }
+acyclic-conformance-runner = { path = "runner" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false, features = ["conformance"] }
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }

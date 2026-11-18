@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-conformance-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Endpoint-independent client conformance cases over the shipping AgentClient"
+
+[dependencies]
+acyclic-harness = { version = "=0.2.0", path = "../../harness" }
+acyclic-harness-client = { version = "=0.2.0", path = "../../harness-client" }
+acyclic-harness-core = { version = "=0.2.0", path = "../../harness-core", default-features = false, features = ["conformance"] }
+acyclic-stream = { version = "=0.2.0", path = "../../stream", features = ["conformance"] }
+bytes.workspace = true
+futures.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

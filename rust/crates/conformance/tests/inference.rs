@@ -11,7 +11,7 @@ fn captured_manifest_requires_original_provenance_and_rejects_unknown_fields() {
 async fn captured_backend()
 -> acyclic_harness_core::Result<impl acyclic_harness_core::model::conformance::Backend> {
     let path = acyclic_test_support::crate_path!("fixtures/inference/llamacpp/manifest.json");
-    acyclic_conformance::inference::replay::captured(&path)
+    acyclic_conformance_inference::replay::captured(&path)
 }
 
 acyclic_harness_core::model::conformance::suite!(
