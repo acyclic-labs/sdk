@@ -1035,6 +1035,7 @@ rust_test(
     ] + [
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/stream:acyclic_stream",
@@ -1099,6 +1100,7 @@ rust_test(
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
@@ -2110,6 +2112,7 @@ rust_test(
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
