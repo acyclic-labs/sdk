@@ -123,16 +123,17 @@ fn archive_locks_override_foreign_cargo_authority() {
                     executed > 0 && replayed > 0,
                     "both real recording and policy replay must run"
                 );
-                let mut pairs = cargo_home_frontier.iter().zip(&working_directory_frontier);
+                let home = cargo_home_frontier.iter();
+                let cwd = working_directory_frontier.iter();
                 assert!(
-                    cargo_home_frontier.len() == working_directory_frontier.len()
-                        && pairs
-                            .clone()
-                            .all(|(home, cwd)| home.revision == cwd.revision),
+                    home.clone()
+                        .map(|owner| &owner.revision)
+                        .eq(cwd.clone().map(|owner| &owner.revision)),
                     "both authorities must discover the same fixture revisions"
                 );
                 assert!(
-                    pairs.any(|(home, cwd)| home.discovery != cwd.discovery),
+                    home.zip(cwd)
+                        .any(|(home, cwd)| home.discovery != cwd.discovery),
                     "Cargo discovery evidence must distinguish the two authorities"
                 );
             });
