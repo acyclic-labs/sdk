@@ -43,7 +43,7 @@ impl ExecutionJournal for ReplayOnly<'_> {
         let prior = self.copied_after_page.lock().unwrap().take();
         if let (Some(prior), Some(io)) = (prior, io) {
             assert_eq!(
-                io.receipt().bytes_copied,
+                io.receipt()?.bytes_copied,
                 prior,
                 "record insertion copied prior backing"
             );
@@ -53,7 +53,9 @@ impl ExecutionJournal for ReplayOnly<'_> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let page = replay.await?;
             if !page.is_empty() {
-                *self.copied_after_page.lock().unwrap() = io.map(|io| io.receipt().bytes_copied);
+                *self.copied_after_page.lock().unwrap() = io
+                    .map(|io| io.receipt()?.map(|receipt| receipt.bytes_copied))
+                    .transpose()?;
             }
             Ok(page)
         })
@@ -159,7 +161,7 @@ async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Re
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     for native in [false, true] {
         let io = if native {
             PreparationIo::from_native_work(&work)?
@@ -183,7 +185,7 @@ async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Re
             );
         }
     }
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     assert_eq!(replay_only.indexed_pages.load(Ordering::SeqCst), 32);
     Ok(())
 }
@@ -199,7 +201,7 @@ async fn check_index_storage(
     let live = || -> Result<u64> {
         work.map_or_else(
             || Ok(allocation_budget - io.remaining()?.peak_allocation_bytes),
-            |work| Ok(work.live_allocation_bytes()),
+            |work| Ok(work.live_allocation_bytes()?),
         )
     };
     let baseline = live()?;
@@ -301,17 +303,17 @@ fn relocating_index_storage_requires_peak_capacity_before_allocation() -> Result
             drop(output);
             drop(retained);
         }
-        assert_eq!(work.live_allocation_bytes(), base);
+        assert_eq!(work.live_allocation_bytes()?, base);
     }
     for native in [false, true] {
         for count in [16_u64, 1_024] {
             let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
                 let mut values = Vec::new();
-                let before = io.receipt();
+                let before = io.receipt()?;
                 for value in 0..count {
                     stock_vec_push(&mut values, value, Some(io))?;
                 }
-                let after = io.receipt();
+                let after = io.receipt()?;
                 let allocations = after.allocation_operations - before.allocation_operations;
                 let copied = after.bytes_copied - before.bytes_copied;
                 assert!(allocations <= u64::from(count.ilog2()) + 1);
@@ -319,9 +321,9 @@ fn relocating_index_storage_requires_peak_capacity_before_allocation() -> Result
                 assert!(copied < count * 2 * std::mem::size_of::<u64>() as u64);
                 stock_vec_push(&mut values, count, Some(io))?;
                 assert!(values.len() < values.capacity());
-                let spare = io.receipt();
+                let spare = io.receipt()?;
                 stock_vec_push(&mut values, count + 1, Some(io))?;
-                assert_eq!(io.receipt(), spare, "spare storage charged new work");
+                assert_eq!(io.receipt()?, spare, "spare storage charged new work");
                 assert_eq!(
                     io.owned_bytes()?,
                     (values.capacity() * std::mem::size_of::<u64>()) as u64
