@@ -402,7 +402,27 @@ fn declared_method_credentials_match_session_admission() {
             );
         }
     }
-    for operation in [crate::TokenOperation::Read, crate::TokenOperation::Follow] {
+    let read_actions: Vec<_> = crate::TokenOperation::Read.actions().collect();
+    assert_eq!(
+        read_actions,
+        [
+            acyclic_auth::action::StreamsAction::Read.into(),
+            acyclic_auth::action::StreamsAction::Tail.into()
+        ]
+    );
+    let mut slots = Slots::default();
+    auth.register(
+        &mut slots,
+        0,
+        &credential("streams:/allowed", &read_actions, None),
+        1,
+    )
+    .unwrap();
+    assert!(admit(&auth, &slots, StreamMethod::Follow, "allowed").is_err());
+    assert!(admit(&auth, &slots, StreamMethod::Tail, "allowed").is_ok());
+
+    {
+        let operation = crate::TokenOperation::Follow;
         let actions: Vec<_> = operation.actions().collect();
         for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
             let credential = credential("streams:/allowed", &actions, removed);

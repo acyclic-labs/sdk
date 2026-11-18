@@ -22,6 +22,15 @@ const FOLLOW: MethodAuth<()> = MethodAuth {
     }],
 };
 
+/// Route used by hosts that open a Follow with a single request envelope.
+pub const HOSTED_FOLLOW_ROUTE: &str = "/acyclic.stream.v1.StreamService/Follow";
+
+/// The hosted transport uses the same Follow admission and delivery scope.
+pub const HOSTED_FOLLOW: MethodAuth<StreamMethod> = MethodAuth {
+    route: HOSTED_FOLLOW_ROUTE,
+    ..FOLLOW.for_method(StreamMethod::Follow, Scope::Follow)
+};
+
 pub(crate) const FOLLOW_ACTION: Action = Action::Streams(StreamsAction::Follow);
 pub(crate) const RESOURCE_FOLLOW_ACTION: Action = Action::Fs(FsAction::List);
 
@@ -31,14 +40,14 @@ pub(crate) const HEAD_ACTION: Action = observation_action(StreamMethod::Head);
 pub(crate) const CHILDREN_ACTION: Action = observation_action(StreamMethod::ChildrenPage);
 
 const fn observation_action(method: StreamMethod) -> Action {
-    let admitted = method.authorization().admitted;
+    let action = method.authorization().single_action();
     assert!(
-        admitted.len() == 1,
+        action.is_some(),
         "Session observations require exactly one declared action"
     );
-    match admitted {
-        [action] => *action,
-        _ => unreachable!(),
+    match action {
+        Some(action) => action,
+        None => unreachable!(),
     }
 }
 
@@ -122,4 +131,40 @@ methods! {
     ReadCommit => rpc::StreamRpc::ReadCommit.authorization(), Exact;
     /// Inspect a retained request's selected resources.
     InspectIdempotency => rpc::StreamRpc::InspectIdempotency.authorization(), Exact;
+}
+
+#[cfg(test)]
+mod rpc_admission_tests {
+    use super::{Action, StreamsAction, rpc::StreamRpc};
+
+    #[test]
+    fn every_stream_rpc_resolves_to_its_declared_actions() {
+        for &method in StreamRpc::ALL {
+            let row = method.authorization();
+            let actions: Vec<_> = row.actions().collect();
+            assert_eq!(StreamRpc::from_route(row.route), Some(method));
+            assert!(
+                !actions.is_empty()
+                    && actions
+                        .iter()
+                        .all(|action| matches!(action, Action::Streams(_))),
+                "{method:?}: {actions:?}"
+            );
+            match method {
+                StreamRpc::Tail => assert_eq!(actions, [StreamsAction::Tail.into()]),
+                StreamRpc::ReadCommit => assert_eq!(actions, [StreamsAction::ReadCommit.into()]),
+                StreamRpc::InspectIdempotency => {
+                    assert_eq!(actions, [StreamsAction::InspectIdempotency.into()]);
+                }
+                StreamRpc::Heads | StreamRpc::Fork | StreamRpc::Commit => {
+                    assert!(actions.len() > 1, "{method:?}: {actions:?}");
+                }
+                _ => assert_eq!(actions.len(), 1, "{method:?}: {actions:?}"),
+            }
+        }
+        assert_eq!(
+            StreamRpc::from_route("/acyclic.stream.v1.StreamService/Unmapped"),
+            None
+        );
+    }
 }

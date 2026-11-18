@@ -557,7 +557,7 @@ message CreateTokenRequest {
 service StreamService {
   rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse) {
     option (acyclic.validation.v1.auth) = {
-      action: "streams/read"
+      action: "streams/inspect-idempotency"
       extractor: "streams.idempotency-resources"
     };
   }
@@ -578,7 +578,7 @@ service StreamService {
   }
   rpc Tail(TailRequest) returns (TailResponse) {
     option (acyclic.validation.v1.auth) = {
-      action: "streams/read"
+      action: "streams/tail"
       resource: "streams:/{path}"
     };
   }
@@ -609,7 +609,7 @@ service StreamService {
   }
   rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) {
     option (acyclic.validation.v1.auth) = {
-      action: "streams/read"
+      action: "streams/read-commit"
       extractor: "streams.commit-resources"
     };
   }

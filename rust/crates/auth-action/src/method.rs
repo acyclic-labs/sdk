@@ -34,6 +34,28 @@ pub struct MethodAuth<M: 'static> {
 }
 
 impl<M: 'static> MethodAuth<M> {
+    /// The method's single unconditional action, if it declares exactly one.
+    /// Dynamic rules still require request-dependent authorization.
+    #[must_use]
+    pub const fn single_action(&self) -> Option<Action> {
+        match self.admitted {
+            [action] => Some(*action),
+            _ => None,
+        }
+    }
+
+    /// Enumerate the action ceiling of the method's rules for account-wide
+    /// grant selection. Fixed actions take precedence over an extractor's
+    /// vocabulary when the extractor only selects resources.
+    ///
+    /// An action may occur in multiple rules. Request admission still needs
+    /// to extract and authorize each concrete action and resource.
+    pub fn actions(&self) -> impl Iterator<Item = Action> + use<M> {
+        self.rules
+            .iter()
+            .flat_map(|rule| rule.actions().iter().copied())
+    }
+
     /// Project the same admission onto a public client method. A client that
     /// delegates to another operation retains that operation's original rules.
     #[must_use]
@@ -71,4 +93,17 @@ pub enum Resources {
         /// Every action its output may contain; no other action is admissible.
         possible_actions: &'static [Action],
     },
+}
+
+impl Rule {
+    /// Fixed rule actions, or the registered vocabulary for dynamic rules.
+    #[must_use]
+    pub const fn actions(&self) -> &'static [Action] {
+        match self.resources {
+            Resources::Extractor {
+                possible_actions, ..
+            } if self.admitted.is_empty() => possible_actions,
+            _ => self.admitted,
+        }
+    }
 }
