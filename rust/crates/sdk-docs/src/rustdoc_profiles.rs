@@ -388,7 +388,7 @@ pub fn historical_profiles_for_package(
             #[serde(default)]
             features: Vec<String>,
         }
-        let policy: DocsRsFeatures = serde_json::from_value(policy.clone()).map_err(|error| {
+        let policy = DocsRsFeatures::deserialize(policy).map_err(|error| {
             ProfileError::InvalidRustdoc(format!("invalid historical docs.rs policy: {error}"))
         })?;
         let mut features = BTreeSet::new();
