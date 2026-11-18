@@ -58,7 +58,7 @@ test('closed project consumers use the original parser and production graph orac
 
 test('an unrelated declaration does not reopen a polling helper consumer', () => {
  const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
- const helper = 'export function settle() { return Bun.sleep(1); }';
+ const helper = 'export function settle() { const ticks = 1; return Bun.sleep(ticks); }';
  const before = new Map([
   [producer, helper + '\nexport function unrelated() { return true; }'],
   [consumer, "import {settle} from '../lib/helper.js'; export const out = settle();"],
@@ -66,7 +66,7 @@ test('an unrelated declaration does not reopen a polling helper consumer', () =>
  const edit = source => newProjectPollingSites(before, new Map(before).set(producer, source));
  assert.ok(!edit(helper + '\nexport function unrelated() { return false; }').some(site => site.file === consumer));
  assert.ok(!edit('export function unrelated() { return false; }\n' + helper).some(site => site.file === consumer));
- assert.ok(edit(before.get(producer).replace('sleep(1)', 'sleep(2)')).some(site => site.file === consumer));
+ assert.ok(edit(before.get(producer).replace('ticks = 1', 'ticks = 2')).some(site => site.file === consumer));
 });
 
 test('a dormant function body does not change a module initialization dependency', () => {
