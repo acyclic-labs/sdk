@@ -1,7 +1,7 @@
 /// One checksummed append-only log frame layout, shared by every local log:
 /// `length | body | sha256(domain | length | body)`, the length little-endian.
 /// A frame is whole or invalid, so replay stops at a torn append and
-/// [`crate::recover_log_tail`] tells it from damage to a committed frame.
+/// Recovery can tell it from damage to a committed frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LogFrame {
     /// Separates this log's checksums from every other log's.

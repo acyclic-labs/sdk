@@ -103,6 +103,7 @@ h2 = { version = "0.4.19" }
 hyper = { version = "1.11.0", default-features = false }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
 tokio-postgres = { version = "0.7.18" }
+acyclic-log-frame = { version = "=0.2.0", path = "../log-frame" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }

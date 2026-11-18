@@ -457,7 +457,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "stream_persistence",
             &name,
             &bytes,
-            "acyclic_native_runtime::LogFrame::encode with narrow/wide test domains and empty/split bodies; first 16 bytes retain caller minimum/maximum bounds",
+            "acyclic_log_frame::LogFrame::encode with narrow/wide test domains and empty/split bodies; first 16 bytes retain caller minimum/maximum bounds",
             &mut manifest,
         )?;
     }
