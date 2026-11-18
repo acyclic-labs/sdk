@@ -12,10 +12,17 @@ if choice == "operation-admission":
     oracle = repository / "rust/crates/stream/src/session/authority_tests.rs"
     oracles = [oracle, repository / "rust/crates/stream/src/codec_fuzz.rs"]
     digests = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
-    command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-stream", "--lib",
-               "--features", "test-support,local",
-               "-E", "test(=session::authority::tests::declared_method_credentials_match_session_admission) | test(=codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle)",
-               "--profile", "ci", "--no-fail-fast", "--retries", "0"]
+    command = ["bazel", "run", "//rust/crates/stream:acyclic_stream_test_cases", "--",
+               "--exact", "--nocapture",
+               "session::authority::tests::declared_method_credentials_match_session_admission",
+               "codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle"]
+
+    def run_original():
+        result = subprocess.run(command, cwd=repository, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        print(result.stdout, end="")
+        if result.returncode or "2 passed; 0 failed;" not in result.stdout:
+            raise RuntimeError("expected both original stream cases to pass")
     mutations = [
         ("authorization.rs", b"Read => FOLLOW, Follow;",
          b"Read => rpc::StreamRpc::Read.authorization(), Exact;", "Read, removed None", False),
@@ -32,7 +39,7 @@ if choice == "operation-admission":
     ]
     step = "admit the original signed method and token credentials"
     try:
-        subprocess.run(command, cwd=repository, check=True)
+        run_original()
         for name, check, replacement, assertion, compile_refusal in mutations:
             source = repository / "rust/crates/stream/src" / name
             original = source.read_bytes()
@@ -53,7 +60,7 @@ if choice == "operation-admission":
         step = "preserve the signed credential oracle and pass after restoring production admission"
         if any(hashlib.sha256(path.read_bytes()).digest() != digest for path, digest in digests.items()):
             raise RuntimeError("signed credential oracle changed during the negative control")
-        subprocess.run(command, cwd=repository, check=True)
+        run_original()
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"STEP {step} failed: {error}; recovery from the repository root: "
               "python3 rust/crates/auth/fuzz/negative-control.py operation-admission", file=sys.stderr)
