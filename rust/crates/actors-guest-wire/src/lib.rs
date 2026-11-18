@@ -9,6 +9,8 @@ mod events;
 pub use events::{GuestEvent, GuestRequest, GuestResponse};
 mod codec;
 pub use codec::{Checkpoint, CodecIdentity, GuestError};
+/// Portable live-update selection contract.
+pub mod live_selection;
 mod sockets;
 use serde::{Deserialize, Serialize};
 pub use sockets::{
