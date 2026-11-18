@@ -13,7 +13,6 @@
   "rust/crates/auth/fuzz/negative-control.py",
   "rust/crates/auth/tests/negative-controls/authorization_guards.py",
   "rust/crates/collections/tests/prefix-control.py",
-  "rust/crates/filesystem/benches/workspace_name_pair.py",
   "rust/crates/filesystem/fuzz/qualify_git_markers.py",
   "rust/crates/filesystem/proofs/lease-path/check.sh",
   "rust/crates/filesystem/proofs/rescued-fixes/check.sh",
