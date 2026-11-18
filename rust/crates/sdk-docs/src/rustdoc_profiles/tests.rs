@@ -14,6 +14,14 @@ fn local_item_names(path: impl AsRef<std::path::Path>) -> Result<BTreeSet<String
         .collect())
 }
 
+fn cargo_metadata_fixture() -> Option<&'static Metadata> {
+    static METADATA: std::sync::OnceLock<Metadata> = std::sync::OnceLock::new();
+    let path = std::env::var_os("CARGO_METADATA_PROFILE_FIXTURE")?;
+    Some(METADATA.get_or_init(|| {
+        serde_json::from_slice(&fs::read(path).unwrap()).expect("Cargo metadata fixture")
+    }))
+}
+
 fn metadata() -> Metadata {
     let json = serde_json::json!({
         "packages": [{
@@ -380,11 +388,9 @@ fn projection_sidecar_preserves_binding_identity_versions_and_capabilities() {
     let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
         return;
     };
-    let Some(metadata_path) = std::env::var_os("CARGO_METADATA_PROFILE_FIXTURE") else {
+    let Some(metadata) = cargo_metadata_fixture() else {
         return;
     };
-    let metadata: Metadata =
-        serde_json::from_slice(&fs::read(metadata_path).unwrap()).expect("Cargo metadata");
     let owner = ApiOwner {
         published_package: "acyclic-fs".into(),
         rustdoc_package: "acyclic-fs-napi".into(),
@@ -454,7 +460,7 @@ fn projection_sidecar_preserves_binding_identity_versions_and_capabilities() {
         }],
     };
     let profiles = BTreeMap::from([(profile_id, profile)]);
-    let sidecar = project_into_docs(&data, &metadata, items, &profiles).unwrap();
+    let sidecar = project_into_docs(&data, metadata, items, &profiles).unwrap();
     assert_eq!(sidecar.schema, PROFILE_AVAILABILITY_SCHEMA);
     let native_binding = sidecar
         .entries
@@ -473,19 +479,17 @@ fn projection_sidecar_preserves_binding_identity_versions_and_capabilities() {
 
 #[test]
 fn real_cargo_metadata_drives_binding_owner_profiles_when_requested() {
-    let Some(path) = std::env::var_os("CARGO_METADATA_PROFILE_FIXTURE") else {
+    let Some(metadata) = cargo_metadata_fixture() else {
         return;
     };
-    let metadata: Metadata =
-        serde_json::from_slice(&fs::read(path).unwrap()).expect("Cargo metadata fixture");
-    let napi = api_owner_for_package(&metadata, "acyclic-fs-napi").unwrap();
+    let napi = api_owner_for_package(metadata, "acyclic-fs-napi").unwrap();
     assert_eq!(napi.published_package, "acyclic-fs");
     assert_eq!(napi.rustdoc_package, "acyclic-fs-napi");
     assert_eq!(napi.kind, ApiOwnerKind::NapiBinding);
-    let wasm = api_owner_for_package(&metadata, "acyclic-fs-wasm").unwrap();
+    let wasm = api_owner_for_package(metadata, "acyclic-fs-wasm").unwrap();
     assert_eq!(wasm.published_package, "acyclic-fs");
     assert_eq!(wasm.kind, ApiOwnerKind::WasmBinding);
-    let plugin = api_owner_for_package(&metadata, "acyclic-plugin").unwrap();
+    let plugin = api_owner_for_package(metadata, "acyclic-plugin").unwrap();
     assert_eq!(plugin.published_package, "acyclic-plugin");
     assert_eq!(plugin.rustdoc_package, "acyclic-plugin");
     assert_eq!(plugin.kind, ApiOwnerKind::PublishedRoot);
@@ -496,18 +500,16 @@ fn real_cargo_profiles_have_distinct_public_items_when_requested() {
     let Some(manifest) = std::env::var_os("RUSTDOC_PROFILE_MANIFEST") else {
         return;
     };
-    let Some(metadata_path) = std::env::var_os("CARGO_METADATA_PROFILE_FIXTURE") else {
-        return;
-    };
     let Some(target_dir) = std::env::var_os("RUSTDOC_PROFILE_TARGET_DIR") else {
         return;
     };
-    let metadata: Metadata =
-        serde_json::from_slice(&fs::read(metadata_path).unwrap()).expect("Cargo metadata fixture");
+    let Some(metadata) = cargo_metadata_fixture() else {
+        return;
+    };
     let target = "x86_64-pc-windows-msvc";
     let available_targets = BTreeSet::from([target.to_owned()]);
     let profiles =
-        profiles_for_package(&metadata, "acyclic-objects", target, &available_targets).unwrap();
+        profiles_for_package(metadata, "acyclic-objects", target, &available_targets).unwrap();
     let json = profiles
         .iter()
         .find(|profile| profile.features == BTreeSet::from(["json".into()]))
@@ -526,7 +528,7 @@ fn real_cargo_profiles_have_distinct_public_items_when_requested() {
     let second = out_dir.join("objects-all-features.json");
     let first_observation = execute_profile(
         &manifest,
-        &metadata,
+        metadata,
         json,
         &available_targets,
         &target_dir,
@@ -537,7 +539,7 @@ fn real_cargo_profiles_have_distinct_public_items_when_requested() {
     .unwrap();
     let second_observation = execute_profile(
         &manifest,
-        &metadata,
+        metadata,
         all_features,
         &available_targets,
         &target_dir,
