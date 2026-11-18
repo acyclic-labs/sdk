@@ -143,7 +143,7 @@ fn save(
         }
         if !equivalent(target, bytes, &golden)? {
             if !accept {
-                return Err(format!("encoder changed golden {frame}; recovery after reviewing the format change: ACYCLIC_TEST_SOURCE_ROOT=\"$PWD\" bazel run //rust/codec-fuzz:capture_example -- --accept-goldens").into());
+                return Err(format!("encoder changed golden {frame}; recovery after reviewing the format change: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example -- --accept-goldens").into());
             }
             None
         } else {
@@ -389,7 +389,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             return finish(&manifest, "object_schedule/");
         }
         #[cfg(not(feature = "storage-schedules"))]
-        return Err("storage capture requires storage-schedules; recovery: ACYCLIC_TEST_SOURCE_ROOT=\"$PWD\" bazel run //rust/codec-fuzz:capture_example -- --only-storage --extend-goldens".into());
+        return Err("storage capture requires storage-schedules; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example -- --only-storage --extend-goldens".into());
     }
     golden_controls()?;
     capture_identity_vectors()?;
@@ -477,7 +477,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         let previous = match std::fs::read_to_string("corpus/SOURCES.tsv") {
             Ok(previous) => previous,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => return Err(format!("load retained physical corpus provenance failed: {error}; recovery: ACYCLIC_TEST_SOURCE_ROOT=\"$PWD\" bazel run //rust/codec-fuzz:capture_example").into()),
+            Err(error) => return Err(format!("load retained physical corpus provenance failed: {error}; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example").into()),
         };
         // A syntax-only capture cannot replace physical schedule evidence.
         for line in previous
@@ -547,7 +547,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
                 acyclic_stream::StreamError::Unsupported
             ))
         ) {
-            return Err(format!("old state record {name} was not refused before fields; recovery: ACYCLIC_TEST_SOURCE_ROOT=\"$PWD\" bazel run //rust/codec-fuzz:capture_example").into());
+            return Err(format!("old state record {name} was not refused before fields; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example").into());
         }
         save(
             "filesystem_codecs",
