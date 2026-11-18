@@ -246,8 +246,8 @@ impl HttpObjects {
             if let Some(context) = &self.context {
                 context.check()?;
             }
-            let decoded = json::decode_binary(output_name, &bytes, self.maximum)
-                .map_err(|_| unavailable())?;
+            let decoded =
+                json::decode_binary(output_name, &bytes, None).map_err(|_| unavailable())?;
             if let Some(lease) = &lease {
                 lease
                     .check()
@@ -286,13 +286,10 @@ impl HttpObjects {
             Ok(bytes) => bytes,
             Err(error) => return error,
         };
-        if let Some(error) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, self.maximum)
+        json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, None)
             .ok()
             .and_then(Error::from_detail)
-        {
-            return error;
-        }
-        Error::from_http_status(status)
+            .unwrap_or_else(|| Error::from_http_status(status))
     }
 }
 
