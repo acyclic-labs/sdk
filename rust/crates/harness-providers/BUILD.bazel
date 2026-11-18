@@ -520,7 +520,6 @@ rust_test(
     lint_config = ":lints",
     deps = [
         ":acyclic_harness_providers",
-        ":build_script",
     ] + [
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/stream:acyclic_stream",
@@ -530,7 +529,6 @@ rust_test(
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//tokio-1.54.1",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )
 

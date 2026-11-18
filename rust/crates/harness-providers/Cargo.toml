@@ -90,6 +90,10 @@ proptest.workspace = true
 [lints]
 workspace = true
 
+[package.metadata.bazel]
+test-narrow-runfiles = ["live-cache"]
+test-without-build-script = ["live-cache"]
+
 [package.metadata.bazel.test-dependencies]
 credential-fixture = ["acyclic_harness_providers"]
 live-cache = ["acyclic_harness_core", "acyclic_harness_providers", "acyclic_stream", "async_stream", "bytes", "futures", "serde_json", "tokio"]
