@@ -9,7 +9,7 @@ import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateHeadsRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -88,7 +88,7 @@ class RustStreamProvider implements StreamProvider {
   #records(operation: "read" | "follow", path: string, options: ReadOptions | FollowOptions, signal?: AbortSignal): Opened {
     return wasmRecords(async signal => {
       const input = operation === "read"
-        ? await validateWireRequest({ kind: "read", path, ...(options as ReadOptions) })
+        ? await validateReadRequest(path, options as ReadOptions)
         : (await validateWireRequest({ kind: "follow", path, from: options.from }),
           toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: options.from,
             whenAbsent: wireWhenAbsent((options as FollowOptions).whenAbsent),

@@ -1,4 +1,4 @@
-import { validateHeadsRequest, validateWireRequest, wireRequest, wireWhenAbsent } from "./contract.js";
+import { validateHeadsRequest, validateReadRequest, wireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { projectMemoryResponse, WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -95,7 +95,7 @@ export class StreamSessions {
   read(path: string, options: ReadOptions, maximumResponseBytes?: number): Opened {
     const authored = structuredClone(options);
     return wasmRecords(async signal => {
-      const input = await validateWireRequest({ kind: "read", path, ...authored });
+      const input = await validateReadRequest(path, authored);
       signal.throwIfAborted();
       return this.#inner.read(input);
     }, path, "session", authored, undefined, maximumResponseBytes);

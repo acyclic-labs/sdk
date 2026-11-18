@@ -214,6 +214,10 @@ export function validateForkRequest(source: string, destination: string, options
   return validateWireRequest({ kind: "fork", source, destination, options });
 }
 
+export function validateReadRequest(path: string, options: import("./types.js").ReadOptions): Promise<Uint8Array> {
+  return validateWireRequest({ ...options, kind: "read", path });
+}
+
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
