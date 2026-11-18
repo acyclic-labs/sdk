@@ -462,26 +462,20 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
     )
     .unwrap();
+    let entries = availability["entries"].as_array().unwrap();
     for (path, expected) in [
         ("demo::FeatureOnly", 2),
         ("demo::base_only", 3),
         ("demo::default_only", 2),
     ] {
-        let entry = availability["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["path"] == path)
-            .unwrap();
+        let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(
             entry["profiles"].as_array().unwrap().len(),
             expected,
             "the compilation reuse key must preserve every cfg feature: {path}"
         );
     }
-    let feature_entry = availability["entries"]
-        .as_array()
-        .unwrap()
+    let feature_entry = entries
         .iter()
         .find(|entry| entry["path"] == "demo::FeatureOnly")
         .expect("feature-only item must retain a sidecar entry");
@@ -496,16 +490,10 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         })
         .expect("FeatureOnly must be attributed to the extra profile");
 
-    let variant_entries = availability["entries"]
-        .as_array()
-        .unwrap()
+    let variant_entries = entries
         .iter()
         .filter(|entry| entry["path"] == "demo::overloaded")
         .collect::<Vec<_>>();
-    assert!(
-        variant_entries.len() >= 2,
-        "profile merge must retain same-path items with distinct signatures"
-    );
     let signatures = variant_entries
         .iter()
         .filter_map(|entry| entry["signature"].as_str())
@@ -524,14 +512,8 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         })
     }));
 
-    let receipts: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
-    assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
+    let receipts = assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
     let effective = receipts
-        .as_array()
-        .unwrap()
         .iter()
         .map(|receipt| {
             (
@@ -555,8 +537,6 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         "both API branches remain qualified with and without Cargo defaults"
     );
     let receipt = receipts
-        .as_array()
-        .unwrap()
         .iter()
         .find(|receipt| receipt["profile"] == feature_profile["profile"])
         .expect("sidecar profile must have an executed receipt row");
@@ -618,12 +598,10 @@ fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims
         include_str!("../fixtures/feature-profile/rust/crates/demo/binary.rs"),
     );
     init_git(&fixture.root, "binary-only fixture");
-    let hits = commands::DECLARED_RUSTDOC_HITS.get();
-    let result = run_generate_execute_profiles(&fixture);
-    assert!(result.status.success(), "{}", output_message(&result));
-    if std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
-        assert_eq!(commands::DECLARED_RUSTDOC_HITS.get() - hits, 1);
-    }
+    commands::expect_declared_profiles(1, || {
+        let result = run_generate_execute_profiles(&fixture);
+        assert!(result.status.success(), "{}", output_message(&result));
+    });
     let receipt = fixture.rustdoc.join("demo_cli.json");
     let native = sdk_docs::rustdoc_profiles::observe_binary_rustdoc(&receipt).unwrap();
     assert_eq!(native.format_version, 60);
@@ -720,7 +698,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     assert!(!relocated.output.exists());
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
-    assert_executed_profiles(
+    let _ = assert_executed_profiles(
         &fixture.output,
         &fixture.rustdoc,
         &[("demo", 5), ("relocation-helper", 1)],

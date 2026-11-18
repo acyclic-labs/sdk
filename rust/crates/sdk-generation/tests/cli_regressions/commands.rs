@@ -113,7 +113,15 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
 
 thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
-    pub(super) static DECLARED_RUSTDOC_HITS: Cell<usize> = const { Cell::new(0) };
+    static DECLARED_RUSTDOC_HITS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn expect_declared_profiles(expected: usize, run: impl FnOnce()) {
+    let hits = DECLARED_RUSTDOC_HITS.get();
+    run();
+    if std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
+        assert_eq!(DECLARED_RUSTDOC_HITS.get() - hits, expected);
+    }
 }
 
 pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {

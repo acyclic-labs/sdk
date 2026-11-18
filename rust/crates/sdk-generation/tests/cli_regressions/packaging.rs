@@ -9,11 +9,6 @@ fn shared_package() -> cache::Arc<Package> {
         let (fixture, support) = historical_source_fixture(None);
         let source = fixture.root.join("rust/crates/demo");
         include_sources(&source);
-        fs::write(
-            fixture.root.join("release/cargo-crates.json"),
-            b"[\"demo\"]",
-        )
-        .unwrap();
         init_git(&fixture.root, "original registry owner authority");
         let result = Command::new(&*cargo)
             .env("CARGO_HOME", fixture_cargo_home(&fixture))
@@ -92,14 +87,10 @@ pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) ->
     source
 }
 
-pub(super) fn write_publisher_vcs(root: &Path, archive: &Path, dirty: bool) {
-    let vcs = json!({
+pub(super) fn publisher_vcs(root: &Path, dirty: bool) -> Vec<u8> {
+    serde_json::to_vec(&json!({
         "git": {"sha1": git_revision(root), "dirty": dirty},
         "path_in_vcs": "rust/crates/demo",
-    });
-    fs::write(
-        archive.join(".cargo_vcs_info.json"),
-        serde_json::to_vec(&vcs).unwrap(),
-    )
-    .unwrap();
+    }))
+    .unwrap()
 }

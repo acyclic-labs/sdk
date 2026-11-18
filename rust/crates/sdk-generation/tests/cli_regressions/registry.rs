@@ -161,7 +161,7 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
     std::thread::scope(|scope| {
         for during_profile in [false, true] {
             scope.spawn(move || {
-                let (fixture, support) = registry_archive_fixture_configured(
+                let (fixture, support) = build_registry_archive_fixture(
                     false,
                     true,
                     None,
@@ -174,6 +174,7 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
                     },
                     None,
                 );
+                write_registry_transport(&support);
                 if !during_profile {
                     let unknown = fixture
                         .output
@@ -229,7 +230,7 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
     std::thread::scope(|scope| {
         for required_failure in [false, true] {
             scope.spawn(move || {
-                let (fixture, support) = registry_archive_fixture_configured(
+                let (fixture, support) = build_registry_archive_fixture(
                     false,
                     true,
                     None,
@@ -242,6 +243,7 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     }),
                     None,
                 );
+                write_registry_transport(&support);
                 let result =
                     run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
                 if required_failure {
@@ -334,7 +336,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         let template = &template;
         let jobs = ["demo-a", "demo-b", "demo-c"].map(|name| {
             scope.spawn(move || {
-                registry_archive_fixture_configured(
+                build_registry_archive_fixture(
                     false,
                     true,
                     None,
@@ -684,8 +686,10 @@ fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
 fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() {
     runtime::time_control();
     let (fixture, support) = historical_fixture(None);
-    let result = run_historical_generation(&fixture, &support, None, None, &["demo"]);
-    assert!(result.status.success(), "{}", output_message(&result));
+    commands::expect_declared_profiles(2, || {
+        let result = run_historical_generation(&fixture, &support, None, None, &["demo"]);
+        assert!(result.status.success(), "{}", output_message(&result));
+    });
     let version = fixture.output.join("releases/1.0.0");
     let data: Value =
         serde_json::from_slice(&fs::read(version.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
@@ -883,7 +887,7 @@ fn excluded_published_path_owners_have_executed_api_and_drift() {
     let generated = queries.run(|| run_generate_execute_profiles(&fixture));
     assert!(generated.status.success(), "{}", output_message(&generated));
     assert!(fixture.rustdoc.join("renamed_macro_target.json").is_file());
-    assert_executed_profiles(
+    let _ = assert_executed_profiles(
         &fixture.output,
         &fixture.rustdoc,
         &[("demo", 5), ("demo-macros", 5), ("demo-helper", 1)],

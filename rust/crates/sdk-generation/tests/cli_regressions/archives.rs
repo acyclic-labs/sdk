@@ -1,7 +1,6 @@
 #[path = "../support/archive.rs"]
 mod fixture_archive;
-use fixture_archive::encode;
-pub(super) use fixture_archive::pack;
+pub(super) use fixture_archive::{encode, pack};
 
 proptest::proptest! {
     #[test]
