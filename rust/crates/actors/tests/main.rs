@@ -1,6 +1,6 @@
 //! Contract scenarios and opt-in models share one test entrypoint.
 // Ordinary async tests retain std synchronization; the model runner selects the
-// guest Loom module with the explicit ACYCLIC_LOOM opt-in and model-checking feature.
+// guest Loom module with the explicit loom cfg and model-checking feature.
 
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
@@ -35,5 +35,5 @@ mod guest_loom;
 
 #[cfg(all(loom, not(feature = "model-checking")))]
 compile_error!(
-    "STEP_FAILED actors-model-routing: enable model-checking; recovery: ACYCLIC_LOOM=1 cargo test --locked -p acyclic-actors --features model-checking --test main"
+    "STEP_FAILED actors-model-routing: enable model-checking; recovery: bazel test --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/actors:@--cfg=loom //rust/crates/actors:main --test_filter=guest_loom::"
 );
