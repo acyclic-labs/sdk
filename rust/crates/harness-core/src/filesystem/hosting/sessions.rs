@@ -360,18 +360,22 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         }
         let source = self.agents.state(source).await?;
         self.admit_agent(&source.path, &source.volumes)?;
-        let saved = match at {
-            Some(at) => Some(
+        let saved = if let Some(at) = at {
+            Some((
+                at,
                 super::super::history::read(self.agents.provider().as_ref(), &source.path, at)
                     .await
                     .map_err(turn)?,
-            ),
-            None => None,
+            ))
+        } else {
+            None
         };
-        let history = saved.as_ref().map(|saved| crate::agent::HistorySelection {
-            conversation: saved.conversation,
-            checkpoint: saved.checkpoint,
-        });
+        let history = saved
+            .as_ref()
+            .map(|(_, saved)| crate::agent::HistorySelection {
+                conversation: saved.conversation,
+                checkpoint: saved.checkpoint,
+            });
         let child = AgentPath::root(&root.agent);
         root.fresh =
             super::super::spawn_volumes::fork_bindings(&child, &source.volumes, history.as_ref())?;
@@ -387,11 +391,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             brief: root.brief,
             policy: None,
         };
-        let Spawn { child, mut request } = match (at, saved.as_ref()) {
-            (Some(at), Some(saved)) => self
+        let Spawn { child, mut request } = match saved.as_ref() {
+            Some((at, saved)) => self
                 .agents
-                .prepare_root_history(intent, &source, adopted, at, saved, root.peer)?,
-            _ => self.agents.prepare_root_with_peer(
+                .prepare_root_history(intent, &source, adopted, *at, saved, root.peer)?,
+            None => self.agents.prepare_root_with_peer(
                 intent,
                 adopted,
                 questions.unwrap_or(self.turns.question_plugin()),
