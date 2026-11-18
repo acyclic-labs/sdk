@@ -1,6 +1,6 @@
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, Child, DecodeLimits, FileKind, TreeEntry, TreeMutation,
-    TreeMutationError, TreePage, apply_tree_mutations, decode_tree_page,
+    CanonicalDecodeError, DecodeLimits, FileKind, TreeEntry, TreeMutation, TreeMutationError,
+    TreePage, apply_tree_mutations, decode_tree_page,
 };
 use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectStore};
 use acyclic_fs_format::{identity::FileId, object_reference::ObjectId};
@@ -14,6 +14,10 @@ use super::super::tree_objects::put_tree_page;
 #[path = "../../../support/two_leaf_tree.rs"]
 mod pair;
 use pair::{pair_limits, two_leaf_tree};
+
+#[path = "../../../support/packed_tree.rs"]
+mod packed;
+use packed::packed_tree;
 
 #[tokio::test]
 async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn std::error::Error>>
@@ -210,54 +214,6 @@ fn numbered_entry(value: u8, kind: FileKind) -> Result<TreeEntry, Box<dyn std::e
     entry(&format!("n{value:03}"), value.saturating_add(1), kind)
 }
 
-async fn build_tree(
-    store: &MemoryObjectStore,
-    entries: &[TreeEntry],
-    width: usize,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    if entries.is_empty() {
-        return put_tree_page(store, &TreePage::Leaf(Vec::new()), u32::try_from(width)?).await;
-    }
-    let mut level = Vec::new();
-    for chunk in entries.chunks(width) {
-        level.push((
-            chunk
-                .first()
-                .ok_or("missing leaf fixture entry")?
-                .name
-                .clone(),
-            put_tree_page(
-                store,
-                &TreePage::Leaf(chunk.to_vec()),
-                u32::try_from(width)?,
-            )
-            .await?,
-        ));
-    }
-    while level.len() > 1 {
-        let mut parent = Vec::new();
-        for chunk in level.chunks(width) {
-            let children = chunk
-                .iter()
-                .map(|(first, page)| Child {
-                    first: first.clone(),
-                    page: *page,
-                })
-                .collect();
-            parent.push((
-                chunk
-                    .first()
-                    .ok_or("missing internal fixture entry")?
-                    .0
-                    .clone(),
-                put_tree_page(store, &TreePage::Internal(children), u32::try_from(width)?).await?,
-            ));
-        }
-        level = parent;
-    }
-    Ok(level.first().ok_or("missing fixture root")?.1)
-}
-
 async fn flatten_tree(
     store: &MemoryObjectStore,
     root: ObjectId,
@@ -304,8 +260,11 @@ async fn generated_directory_histories_match_independent_ordered_map()
                 expected.insert(value, numbered_entry(value, FileKind::Regular)?);
             }
         }
-        let initial: Vec<_> = expected.values().cloned().collect();
-        let root = build_tree(&store, &initial, 4).await?;
+        let initial = expected.values().cloned().map(Ok);
+        let root = match packed_tree(&store, initial, 4).await? {
+            Some(child) => child.page,
+            None => put_tree_page(&store, &TreePage::Leaf(Vec::new()), 4).await?,
+        };
         let count = usize::try_from(next(&mut seed) % 16 + 1)?;
         let mut mutations = Vec::with_capacity(count);
         for _ in 0..count {

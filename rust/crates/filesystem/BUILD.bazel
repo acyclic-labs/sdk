@@ -525,6 +525,7 @@ rust_test(
         "tests/support/native_authority_publication.rs",
         "tests/support/provider_receipt.rs",
         "tests/support/listing_tree.rs",
+        "tests/support/packed_tree.rs",
         "tests/support/put_object.rs",
         "tests/support/selected_budget.rs",
         "tests/support/simulation_image.rs",
@@ -3201,6 +3202,7 @@ rust_test(
     crate_root = "tests/directory_tree.rs",
     srcs = [
         "tests/support/listing_tree.rs",
+        "tests/support/packed_tree.rs",
         "tests/support/put_object.rs",
         "tests/support/tree_entries.rs",
         "tests/support/tree_objects.rs",
