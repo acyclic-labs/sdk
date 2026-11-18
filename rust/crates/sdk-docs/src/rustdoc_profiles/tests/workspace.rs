@@ -45,7 +45,7 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             }
             assert!(profiles.len() <= declared_count + 3, "{package_name}");
             assert_eq!(*count.get_or_insert(profiles.len()), profiles.len());
-            let mut covered = BTreeSet::new();
+            let mut covered = BTreeSet::<&str>::new();
             let mut has_all_features = false;
             for profile in &profiles {
                 assert_eq!(&profile.target, target);
@@ -57,7 +57,7 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
                 if profile.default_features {
                     has_all_features |= profile.features.len() == declared_count;
                 } else {
-                    covered.extend(&profile.features);
+                    covered.extend(profile.features.iter().map(String::as_str));
                 }
             }
             assert_eq!(covered.len(), declared_count, "{package_name}: {target}");
