@@ -783,7 +783,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .filter(|(kind, _)| matches!(*kind, "r" | "f"))
             .ok_or_else(corrupt)?;
         let (root, name) = rest.split_once('/').ok_or_else(corrupt)?;
-        let tag = format!("{kind}{root}.{name}");
+        let tag = Self::batch_tag(kind, root, name);
         for member in &members {
             if !blobs.contains_key(member)
                 || self
@@ -871,8 +871,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     /// The `i/` holder tag of the root batch named `batch`.
-    fn batch_tag(root_hash: &str, batch: &str) -> String {
-        format!("r{root_hash}.{batch}")
+    fn batch_tag(namespace: &str, root_hash: &str, batch: &str) -> String {
+        format!("{namespace}{root_hash}.{batch}")
     }
 
     /// Marks `tag` as holding each of `children`, then admits them: refused
@@ -1626,7 +1626,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let name = format!("{}.{}", Digest::of(&batch), nonce()?);
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
-                let tag = Self::batch_tag(root_hash, &name);
+                let tag = Self::batch_tag("r", root_hash, &name);
                 let key = self.retention_key('r', root_hash, &name);
                 self.commit_retention(&references, &tag, &key, batch, 0)
                     .await?;
@@ -1943,8 +1943,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 self.medium.flush(&batch_keys).await.map_err(medium)?;
                 let mut index_keys = Vec::new();
                 for (key, references) in &removed {
-                    let tag =
-                        Self::batch_tag(root_hash, key.rsplit('/').next().ok_or_else(corrupt)?);
+                    let name = key.rsplit('/').next().ok_or_else(corrupt)?;
+                    let tag = Self::batch_tag("r", root_hash, name);
                     self.unreference(references, &tag, Some(&mut index_keys))
                         .await?;
                 }
