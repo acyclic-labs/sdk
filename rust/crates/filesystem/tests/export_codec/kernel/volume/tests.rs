@@ -2,7 +2,7 @@ use acyclic_fs::kernel::{
     CanonicalDecodeError, VolumeCreated, VolumeCreatedError, decode_volume_created,
     encode_volume_created, volume_authority_id,
 };
-use acyclic_fs::model::{
+use acyclic_fs_format::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeConfig,
     VolumeConfigError, VolumeLimits,
 };

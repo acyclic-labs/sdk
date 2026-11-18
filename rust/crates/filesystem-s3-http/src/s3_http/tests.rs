@@ -134,7 +134,9 @@ async fn adapter_with_limits(
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "s3-http",
             acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                config: acyclic_fs_format::model::VolumeConfig::portable(
+                    acyclic_fs_format::model::Lifecycle::Ephemeral,
+                ),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
             acyclic_fs_format::identity::OperationId::new(),
