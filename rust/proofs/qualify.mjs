@@ -154,12 +154,12 @@ const claims = {
     ] },
   ],
   "recovered-metadata-custody": [
-    "rust/crates/filesystem/src/kernel/serde_decode/original.rs", "acyclic-fs",
+    "rust/crates/filesystem/src/kernel/serde_decode.rs", "acyclic-fs",
     "core_state::codec_fuzz::production_metadata_corpus_preserves_original_decode_custody",
     "metadata decoder replaced original accounting ledger", ["--no-default-features", "--features", "test-support"],
     { oracle: "rust/crates/filesystem/src/core_state/codec_fuzz.rs", mutations: [
       { patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_detached_frame.patch", label: "detached-decoder", diagnostic: "metadata decoder replaced original accounting ledger" },
-      { source: "rust/crates/filesystem/src/kernel/serde_decode.rs", patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_unfunded_bytes.patch", label: "unfunded-bytes", diagnostic: "metadata decoder omitted owned byte payload funding" },
+      { source: "rust/crates/filesystem-work/src/serde_decode.rs", patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_unfunded_bytes.patch", label: "unfunded-bytes", diagnostic: "metadata decoder omitted owned byte payload funding" },
     ] },
   ],
   "recovered-record-retirement": [
