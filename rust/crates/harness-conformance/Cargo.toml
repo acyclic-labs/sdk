@@ -22,6 +22,7 @@ test = false
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-test-support = { path = "../test-support" }
 acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support"] }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 futures.workspace = true
