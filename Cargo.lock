@@ -935,6 +935,7 @@ dependencies = [
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-daytona",
+ "acyclic-native-lines",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -1505,11 +1506,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-native-lines"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
  "acyclic-collections",
  "acyclic-host-platform",
+ "acyclic-native-lines",
  "acyclic-observability",
  "acyclic-process-identity",
  "acyclic-test-support",
@@ -1539,7 +1551,6 @@ dependencies = [
  "subtle",
  "tempfile",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-core",
  "tracing-subscriber",

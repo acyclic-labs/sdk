@@ -1,6 +1,6 @@
 //! Semantic properties of the deployed native reply reducer, without an alternate model.
 use crate::Outcome;
-use acyclic_native_runtime::lines::LineBuffer;
+use acyclic_native_lines::lines::LineBuffer;
 use serde_json::Value;
 
 use super::NativeAnswer;
