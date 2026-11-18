@@ -1,0 +1,40 @@
+[package]
+name = "acyclic-conformance-filesystem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Filesystem workload taxonomy, selectors, and portable conformance vectors"
+
+[dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../../filesystem", features = ["conformance"] }
+acyclic-fs-work = { version = "=0.2.0", path = "../../filesystem-work" }
+blake3.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "dependency_vectors"
+test = false
+
+[[bin]]
+name = "targeted_interaction_corpus"
+test = false
+
+[[bin]]
+name = "workload_corpus"
+test = false
+
+[[bin]]
+name = "workload_manifest"
+test = false
+
+[[bin]]
+name = "workload_select"
+test = false
+
+[lints]
+workspace = true

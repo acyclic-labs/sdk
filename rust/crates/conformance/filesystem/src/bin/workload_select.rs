@@ -1,6 +1,6 @@
 //! Emits one canonical subset of the deterministic workload corpus.
 
-use acyclic_conformance::filesystem::{
+use acyclic_conformance_filesystem::{
     SelectionLimits, parse_workload_selector_arguments, selected_workload_corpus_json,
 };
 use std::env;
