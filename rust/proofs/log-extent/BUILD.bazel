@@ -4,7 +4,7 @@ kani_test(
     name = "extent",
     src = "proof.rs",
     srcs = [
-        "//rust/crates/native-runtime:src/recovery/frame_layout.rs",
+        "//rust/crates/log-frame:src/recovery/frame_layout.rs",
         "//rust/proofs/id-codecs:src/frame_extent.rs",
     ],
     harness = "full_frame_extents_refuse_overflow_without_clamping",

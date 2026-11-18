@@ -80,14 +80,14 @@ mod resource_component {
 
 #[cfg(kani)]
 mod journal_prefix {
-    use acyclic_native_runtime::LogFrame;
+    use acyclic_log_frame::LogFrame;
 
     include!("frame_extent.rs");
 
     #[kani::proof]
     #[kani::unwind(9)]
     fn impossible_declared_frames_refuse_before_body_io() {
-        use acyclic_native_runtime::LogFrame;
+        use acyclic_log_frame::LogFrame;
         use std::io::{self, Read};
 
         struct PrefixOnly<'a> {
@@ -133,7 +133,7 @@ mod journal_prefix {
     #[kani::proof]
     #[kani::unwind(9)]
     fn log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds() {
-        use acyclic_native_runtime::LogFrame;
+        use acyclic_log_frame::LogFrame;
         let wide: bool = kani::any();
         let format = LogFrame {
             domain: b"prefix-proof\0",

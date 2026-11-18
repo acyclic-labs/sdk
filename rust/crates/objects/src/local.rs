@@ -26,7 +26,8 @@
 use crate::{
     Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
 };
-use acyclic_native_runtime::{LogFrame, PersistenceKey, spawn_persistence};
+use acyclic_log_frame::LogFrame;
+use acyclic_native_runtime::{PersistenceKey, spawn_persistence};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;

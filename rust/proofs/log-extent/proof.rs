@@ -1,4 +1,4 @@
-#[path = "../../crates/native-runtime/src/recovery/frame_layout.rs"]
+#[path = "../../crates/log-frame/src/recovery/frame_layout.rs"]
 mod production;
 
 use production::LogFrame;

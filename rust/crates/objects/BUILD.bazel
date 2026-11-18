@@ -72,6 +72,7 @@ rust_library(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -100,6 +101,7 @@ rust_library(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -129,6 +131,7 @@ rust_library(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -248,6 +251,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -276,6 +280,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -305,6 +310,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -366,6 +372,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -402,6 +409,7 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -439,6 +447,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -539,6 +548,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -575,6 +585,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -612,6 +623,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -679,6 +691,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -715,6 +728,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",
@@ -752,6 +766,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/protobuf-json:acyclic_protobuf_json",

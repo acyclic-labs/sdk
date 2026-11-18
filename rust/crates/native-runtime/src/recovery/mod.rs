@@ -1,8 +1,5 @@
 use crate::*;
 
-mod frame;
-pub use frame::LogFrame;
-
 /// What recovery found after the last valid frame of an append-only log.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogTail {

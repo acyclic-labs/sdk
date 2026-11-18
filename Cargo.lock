@@ -230,6 +230,7 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-inference",
+ "acyclic-log-frame",
  "acyclic-machines",
  "acyclic-mcp",
  "acyclic-model-render",
@@ -1271,7 +1272,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs",
- "acyclic-native-runtime",
+ "acyclic-log-frame",
  "acyclic-objects",
  "acyclic-stream",
 ]
@@ -1312,6 +1313,13 @@ dependencies = [
  "prost-reflect",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "acyclic-log-frame"
+version = "0.2.0"
+dependencies = [
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1567,6 +1575,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-contract-derive",
+ "acyclic-log-frame",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
@@ -1763,6 +1772,7 @@ dependencies = [
  "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-log-frame",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",

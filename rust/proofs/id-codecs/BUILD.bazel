@@ -29,7 +29,7 @@ rust_library(
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem:acyclic_fs",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
     ],
