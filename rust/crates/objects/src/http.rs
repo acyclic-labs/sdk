@@ -322,41 +322,42 @@ impl Blobs for HttpObjects {
         // alone, exactly as its single put would. Chunks go in request order,
         // so a member's references in an earlier chunk have settled before
         // it is sent.
-        let bounds = self.maximum.map(|maximum| {
-            let per_call = put_batch_acknowledgement().map_or(1, |(single, step)| {
-                1 + maximum.saturating_sub(single) / step.max(1)
-            });
-            (maximum, per_call, put_batch_request())
+        if requests.is_empty() {
+            return Vec::new();
+        }
+        let publish = |chunk: Vec<_>| async move {
+            let members = chunk.len();
+            crate::operation::admit(self.context.as_ref(), async {
+                Ok(BinaryObjects::new(self).put_batch_sealed(chunk).await)
+            })
+            .await
+            .unwrap_or_else(|error| vec![Err(error); members])
+        };
+        let Some(maximum) = self.maximum else {
+            return publish(requests).await;
+        };
+        let per_call = put_batch_acknowledgement().map_or(1, |(single, step)| {
+            1 + maximum.saturating_sub(single) / step.max(1)
         });
+        let bound = put_batch_request();
         let mut results = Vec::with_capacity(requests.len());
         let mut requests = requests.into_iter().peekable();
         while requests.peek().is_some() {
             let mut chunk = Vec::new();
-            let mut used = bounds
-                .and_then(|(_, _, request)| request)
-                .map_or(0, |(frame, ..)| frame);
+            let mut used = bound.map_or(0, |(frame, ..)| frame);
             while let Some((body, references)) = requests.peek() {
-                if let Some((maximum, per_call, request)) = bounds {
-                    let cost = request.map_or(usize::MAX, |bound| {
-                        request_member(bound, body.bytes().len(), references.len())
-                    });
-                    if !chunk.is_empty()
-                        && (chunk.len() == per_call || used.saturating_add(cost) > maximum)
-                    {
-                        break;
-                    }
-                    used = used.saturating_add(cost);
+                let cost = bound.map_or(usize::MAX, |parts| {
+                    request_member(parts, body.bytes().len(), references.len())
+                });
+                if !chunk.is_empty()
+                    && (chunk.len() == per_call || used.saturating_add(cost) > maximum)
+                {
+                    break;
                 }
+                used = used.saturating_add(cost);
                 chunk.extend(requests.next());
             }
-            let members = chunk.len();
-            results.extend(
-                crate::operation::admit(self.context.as_ref(), async {
-                    Ok(BinaryObjects::new(self).put_batch_sealed(chunk).await)
-                })
-                .await
-                .unwrap_or_else(|error| vec![Err(error); members]),
-            );
+            results.extend(publish(chunk).await);
         }
         results
     }
