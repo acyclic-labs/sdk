@@ -2490,10 +2490,13 @@ rust_test(
     srcs = [
         "tests/checkout_read.rs",
         "tests/checkout_read/facade/mod.rs",
+        "tests/checkout_read/facade/tests/generation_position.rs",
         "tests/checkout_read/facade/tests/mod.rs",
         "tests/checkout_read/facade/tests/paths.rs",
         "tests/checkout_read/facade/tests/read.rs",
+        "tests/support/allow_publication.rs",
         "tests/support/checkout_fixture.rs",
+        "tests/support/volume_commit.rs",
         "tests/support/volume_fixture.rs",
     ],
     edition = "2024",

@@ -563,7 +563,6 @@ mod fault_creation;
 mod fault_mutations;
 mod fault_publication;
 mod fork_proof;
-mod generation_position;
 #[cfg(not(target_arch = "wasm32"))]
 mod heterogeneous_mount;
 mod identity;
