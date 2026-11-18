@@ -51,8 +51,7 @@ def dependencies(target):
 
 # Public ModelSpec consumers include harness integration fixtures. Compile every
 # native test entry point, not only the provider library that defines the API.
-subprocess.run(["cargo", f"+{toolchain}", "check", "--locked", "-p",
-                "acyclic-harness", "--all-features", "--tests"],
+subprocess.run(["bazel", "build", "//rust/crates/harness/..."],
                cwd=repository, check=True)
 # Build time is measured separately from the compiler proof.
 native_dependencies = dependencies(None)
