@@ -226,6 +226,17 @@ fn validate_profile_target(
         })
 }
 
+fn validate_local_feature(package: &Package, feature: &str) -> Result<(), ProfileError> {
+    package
+        .features
+        .contains_key(feature)
+        .then_some(())
+        .ok_or_else(|| ProfileError::InvalidFeature {
+            package: package.name.to_string(),
+            feature: feature.to_owned(),
+        })
+}
+
 fn declared_features(package: &Package) -> impl Iterator<Item = &String> {
     package
         .features
@@ -316,12 +327,7 @@ pub fn browser_profile_for_package(
                 let feature = value.as_str().ok_or_else(|| {
                     ProfileError::InvalidRustdoc("wasm-features must contain strings".into())
                 })?;
-                if !package.features.contains_key(feature) {
-                    return Err(ProfileError::InvalidFeature {
-                        package: package.name.to_string(),
-                        feature: feature.into(),
-                    });
-                }
+                validate_local_feature(package, feature)?;
                 extend_feature_closure(&package.features, feature, &mut features);
             }
         }
@@ -406,12 +412,7 @@ pub fn historical_profiles_for_package(
                 features.insert(feature.to_owned());
                 continue;
             }
-            if !owner.features.contains_key(feature) {
-                return Err(ProfileError::InvalidFeature {
-                    package: package.to_owned(),
-                    feature: feature.to_owned(),
-                });
-            }
+            validate_local_feature(owner, feature)?;
             extend_feature_closure(&owner.features, feature, &mut features);
         }
         if policy.all_features {
