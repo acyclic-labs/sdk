@@ -11,7 +11,5 @@ use std::sync::Arc;
 mod provider_receipt;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod native_objects;
-#[cfg(not(target_arch = "wasm32"))]
 mod native_publication;
 mod objects;
