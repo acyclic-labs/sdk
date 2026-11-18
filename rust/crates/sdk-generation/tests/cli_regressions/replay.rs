@@ -87,33 +87,19 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
             }
         });
     }
-    fn receipts(directory: &Path, files: &mut Vec<PathBuf>) {
-        for entry in fs::read_dir(directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                receipts(&path, files);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "json")
-            {
-                files.push(path);
-            }
-        }
-    }
+    let manifest_path = relocated.output.join("generation-manifest.v1.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
-        let mut files = Vec::new();
-        receipts(&original.rustdoc, &mut files);
         let mut changed = BTreeMap::new();
-        for original_file in files {
+        for (key, digest) in manifest["rustdocFiles"].as_object().unwrap() {
+            let original_file = original.rustdoc.join(key.strip_prefix("rustdoc/").unwrap());
             let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
             let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
-            if value.get("format_version").is_none() {
-                continue;
-            }
             let relative = original_file.strip_prefix(&original.output).unwrap();
             let file = relocated.output.join(relative);
             let logical = rustdoc_digest(&original_file, &original.root).unwrap();
             let mut value = (*value).clone();
+            assert_eq!(digest.as_str().unwrap(), logical);
             rebase(&mut value, original, relocated);
             let rebased_bytes = serde_json::to_vec(&value).unwrap();
             fs::write(&file, &rebased_bytes).unwrap();
@@ -132,8 +118,6 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
     });
     // Relocation changes physical receipt bytes. Re-attest only those verified
     // rewrites; preserve all source identities and logical Rustdoc digests.
-    let manifest_path = relocated.output.join("generation-manifest.v1.json");
-    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     let release_path = relocated
         .output
         .join(manifest["releaseManifest"].as_str().unwrap());
