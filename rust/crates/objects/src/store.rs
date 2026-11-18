@@ -474,35 +474,36 @@ impl<M: Medium> Pages<'_, M> {
         Ok(keys)
     }
 
-    async fn read(&self, limit: usize) -> Result<Vec<(String, u64)>, Error> {
-        let page = self
-            .medium
-            .list(&self.prefix, self.after.as_deref(), limit)
-            .await
-            .map_err(medium)?;
-        let overlaps = self.after.as_ref().is_some_and(|after| {
-            [page.first(), page.last()]
-                .into_iter()
-                .flatten()
-                .any(|(key, _)| key <= after)
-        });
-        if page.len() > limit || overlaps {
-            return Err(corrupt());
-        }
-        Ok(page)
-    }
-
     async fn next(&mut self) -> Result<Option<Vec<(String, u64)>>, Error> {
         if self.done {
             return Ok(None);
         }
-        let page = self.read(PAGE).await?;
+        let page = list_page(self.medium, &self.prefix, self.after.as_deref(), PAGE).await?;
         self.done = page.len() < PAGE;
         if !self.done {
             self.after = page.last().map(|(key, _)| key.clone());
         }
         Ok((!page.is_empty()).then_some(page))
     }
+}
+
+async fn list_page(
+    source: &impl Medium,
+    prefix: &str,
+    after: Option<&str>,
+    limit: usize,
+) -> Result<Vec<(String, u64)>, Error> {
+    let page = source.list(prefix, after, limit).await.map_err(medium)?;
+    let overlaps = after.is_some_and(|after| {
+        [page.first(), page.last()]
+            .into_iter()
+            .flatten()
+            .any(|(key, _)| key.as_str() <= after)
+    });
+    if page.len() > limit || overlaps {
+        return Err(corrupt());
+    }
+    Ok(page)
 }
 
 impl<M, P: Clone> Clone for Account<M, P> {
@@ -697,11 +698,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     /// every key, once per crash.
     async fn scrub_medium(&self) -> Result<(), Error> {
         let mut after: Option<String> = None;
-        while let Some((key, _)) = self
-            .medium
-            .list("", after.as_deref(), 1)
-            .await
-            .map_err(medium)?
+        while let Some((key, _)) = list_page(&*self.medium, "", after.as_deref(), 1)
+            .await?
             .pop()
         {
             let Some((account, _)) = key.split_once('/') else {
@@ -900,8 +898,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     /// Whether any key exists under `prefix`.
-    async fn any(&self, prefix: String) -> Result<bool, Error> {
-        Ok(!self.pages(prefix).read(1).await?.is_empty())
+    async fn any(&self, prefix: &str) -> Result<bool, Error> {
+        Ok(!list_page(&*self.medium, prefix, None, 1).await?.is_empty())
     }
 
     /// The `i/` holder tag of an envelope.
@@ -1231,7 +1229,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             }
             None | Some(_) => {}
         }
-        if self.any(self.index_key(&digest, "")).await? {
+        if self.any(&self.index_key(&digest, "")).await? {
             // A kept blob outlives a mark its deleter left behind.
             if envelope.dying.is_some() && fence.is_some() {
                 self.revive(observed, envelope).await?;
@@ -1251,7 +1249,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         else {
             return Err(changed());
         };
-        if self.any(self.index_key(&digest, "")).await? {
+        if self.any(&self.index_key(&digest, "")).await? {
             self.revive(marked, envelope).await?;
             return Ok((Delete::Referenced, Vec::new()));
         }
@@ -1895,9 +1893,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 // is still pending. A sparse page retains the last inspected
                 // cursor so the caller can continue without an account scan.
                 let mut digests = Vec::new();
-                let mut pages = self.pages(self.namespace_prefix('e'));
-                pages.after = after;
-                let keys = pages.read(limit).await?;
+                let keys = list_page(
+                    &*self.medium,
+                    &self.namespace_prefix('e'),
+                    after.as_deref(),
+                    limit,
+                )
+                .await?;
                 let full = keys.len() == limit;
                 let mut last = None;
                 for (key, _) in keys {
