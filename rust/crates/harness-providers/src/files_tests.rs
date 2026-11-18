@@ -66,7 +66,7 @@ proptest! {
             assert_expansion(&text, extra);
             // Planning starts with the complete canonical request, including the
             // file reference and framing; an omitted-file wire body is not a baseline.
-            prop_assert!(crate::projection::encoded_len(&after).unwrap()
+            prop_assert!(crate::encoded_json_len(&after).unwrap()
                 <= request.bytes().len() + extra);
         }
     }

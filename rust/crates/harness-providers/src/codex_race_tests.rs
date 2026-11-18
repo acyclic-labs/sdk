@@ -471,7 +471,7 @@ fn oversized_merge_preserves_original(
         // omit only the encoded-size guard. The same oracle must reject it.
         let mut merged = crate::json(&original).unwrap();
         merged["tokens"]["access_token"] = transport.response["access_token"].clone();
-        let encoded = crate::projection::encoded_len(&merged).unwrap() as u64 + 1;
+        let encoded = crate::encoded_json_len(&merged).unwrap() as u64 + 1;
         let mut staged = crate::credential_file::create(root.path()).unwrap();
         write_staged(
             &mut staged,

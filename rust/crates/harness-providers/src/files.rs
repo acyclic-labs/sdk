@@ -140,7 +140,7 @@ pub(crate) async fn resolve(
 }
 
 fn reference(file: &FileRef) -> Result<String> {
-    let capacity = crate::projection::encoded_len(file)?
+    let capacity = crate::encoded_json_len(file)?
         .checked_add(8)
         .ok_or_else(|| invalid("file marker size overflows"))?;
     let mut bytes = Vec::with_capacity(capacity);
