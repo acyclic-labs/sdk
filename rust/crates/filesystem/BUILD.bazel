@@ -2915,6 +2915,8 @@ rust_test(
         "tests/extent_clone.rs",
         "tests/extent_clone/kernel/extent_clone/mod.rs",
         "tests/extent_clone/kernel/extent_clone/tests.rs",
+        "tests/extent_clone/kernel/file_read/mod.rs",
+        "tests/extent_clone/kernel/file_read/tests.rs",
         "tests/extent_clone/kernel/mod.rs",
         "tests/extent_clone/kernel/range/mod.rs",
         "tests/extent_clone/kernel/range/tests.rs",
