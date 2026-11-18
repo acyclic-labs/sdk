@@ -10,8 +10,8 @@ extract_cargo_lints(
 
 rust_library(
     name = "acyclic_fs_native_contract",
-    crate_root = "src/native_identity.rs",
-    srcs = ["src/native_identity.rs"],
+    crate_root = "src/lib.rs",
+    srcs = ["src/lib.rs", "src/mount_path.rs", "src/native_identity.rs"],
     edition = "2024",
     version = "0.2.0",
     lint_config = ":lints",

@@ -1,10 +1,20 @@
 /// Exact platform-native absolute path used only at the kernel callback edge.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MountPath {
-    pub(super) components: Vec<Vec<u8>>,
+    components: Vec<Vec<u8>>,
 }
 
 impl MountPath {
+    /// Takes ownership of exact root-to-leaf native components.
+    #[must_use]
+    pub const fn from_components(components: Vec<Vec<u8>>) -> Self {
+        Self { components }
+    }
+
+    /// Appends one exact native component using the path's existing storage.
+    pub fn push_component(&mut self, component: Vec<u8>) {
+        self.components.push(component);
+    }
     /// Returns the volume root.
     #[must_use]
     pub const fn root() -> Self {

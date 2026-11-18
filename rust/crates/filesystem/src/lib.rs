@@ -270,7 +270,9 @@ pub use git_compat::{
 pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_fs_native_contract::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
+use acyclic_fs_native_contract::{
+    MountPath, NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation,
+};
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
     GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,
@@ -344,12 +346,12 @@ pub use native_mount::{
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
     MountContentPin, MountDirectoryCursor, MountDirectoryEntry, MountDirectoryPage,
     MountFilesystem, MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountOptions, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountSourceRetirement, MountSparseRange, MountSparseSpan,
-    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountCleanupState,
-    NativeMountControlPaths, NativeMountDrainProof, NativeMountError, NativeMountKind,
-    NativeMountProbe, NativeMountRecoveryCleanupState, NativeMountRecoveryOwner,
-    NativeMountRequest, NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
+    MountOptions, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountSourceRetirement, MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
+    NativeMountCapabilities, NativeMountCleanupState, NativeMountControlPaths,
+    NativeMountDrainProof, NativeMountError, NativeMountKind, NativeMountProbe,
+    NativeMountRecoveryCleanupState, NativeMountRecoveryOwner, NativeMountRequest,
+    NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState, SharedViewInstance,

@@ -8,9 +8,6 @@ repository.workspace = true
 publish = true
 description = "Held-root identity contracts for native filesystem adapters"
 
-[lib]
-path = "src/native_identity.rs"
-
 [target.'cfg(windows)'.dependencies]
 cap-primitives = "4.0.3"
 cap-std = "4.0.3"

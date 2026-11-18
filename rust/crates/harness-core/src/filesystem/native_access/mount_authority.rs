@@ -389,7 +389,7 @@ mod tests {
             .collect();
         #[cfg(not(windows))]
         let name = b"observed".to_vec();
-        let path = acyclic_fs::native_mount::MountPath::root().child(name);
+        let path = acyclic_fs_native_contract::MountPath::root().child(name);
         assert_eq!(observer.read_range(&path, 0, 32)?.as_ref(), b"before");
         workspace.write_text("/observed", "after").await?;
         observer

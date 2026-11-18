@@ -11,9 +11,8 @@ use acyclic_fs::kernel::KernelAccounting;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use serde_json::json;
 use {
-    acyclic_fs::{
-        CancellationToken, Fs, LocalOptions, MaterializeOptions, MountPath, PublicationPermit,
-    },
+    acyclic_fs::{CancellationToken, Fs, LocalOptions, MaterializeOptions, PublicationPermit},
+    acyclic_fs_native_contract::MountPath,
     acyclic_fs_work::performance::WorkBudget,
 };
 

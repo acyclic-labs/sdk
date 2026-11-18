@@ -83,7 +83,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
                 .check(work.cancellation(), Some(&self.cancellation))?;
             let bytes = inputs.bytes;
             inputs.retain();
-            Ok(Some((MountPath { components }, bytes)))
+            Ok(Some((MountPath::from_components(components), bytes)))
         })
     }
 }

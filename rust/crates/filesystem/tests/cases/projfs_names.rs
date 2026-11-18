@@ -1,6 +1,6 @@
 //! Scoped reuse of native names and their existing buffers.
 
-use acyclic_fs::MountPath;
+use acyclic_fs_native_contract::MountPath;
 use std::sync::{RwLock, TryLockError};
 
 #[path = "../../src/native_mount/projfs/creating_name.rs"]

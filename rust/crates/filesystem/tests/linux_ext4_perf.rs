@@ -10,9 +10,9 @@ use std::path::Path;
 use acyclic_fs::kernel::KernelAccounting;
 use {
     acyclic_fs::{
-        CancellationToken, Fs, LocalOptions, MaterializeOptions, MountOptions, MountPath,
-        PublicationPermit,
+        CancellationToken, Fs, LocalOptions, MaterializeOptions, MountOptions, PublicationPermit,
     },
+    acyclic_fs_native_contract::MountPath,
     acyclic_fs_work::performance::WorkBudget,
 };
 

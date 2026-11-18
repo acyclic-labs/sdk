@@ -274,6 +274,7 @@ dependencies = [
  "acyclic-agent-host-conformance",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-harness-client",
