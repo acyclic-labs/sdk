@@ -4,11 +4,12 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { bazelCommand } from "../../scripts/bazel-executables.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const nativeHarness = ["--features", "test-support"];
-const bindingFeatures = ["--features", "test-support"];
-const bindingNextest = ["--profile", "ci", "--retries", "0", "--no-tests=fail", "--no-fail-fast", "--failure-output", "final"];
+const settingsCase = "config::evaluate::model::tests::generated_settings_match_fresh_evaluation";
+const bindingCheckoutCase = "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner";
 const cleanupTests = [
   "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
   "local::tests::agents::a_shell_call_stages_its_output_on_the_private_volume",
@@ -22,6 +23,7 @@ const claims = {
     "lineage::tests::persisted_lineage_names_require_exact_canonical_bytes",
     "noncanonical lineage registration was accepted", ["--features", "test-support"],
     { oracle: "rust/crates/filesystem/src/lineage/tests.rs",
+      bazelTest: "//rust/crates/filesystem:acyclic_fs_test_cases",
       mutations: [{ patch: "rust/crates/filesystem/fuzz/mutations/lineage_noncanonical_name.patch",
         label: "noncanonical-lineage-name", diagnostic: "noncanonical lineage registration was accepted" }] },
   ],
@@ -29,8 +31,9 @@ const claims = {
     "rust/crates/actors/src/live_update.rs", "acyclic-codec-fuzz", "",
     "live-update document admission differs from canonical writer", [],
     { oracle: "rust/codec-fuzz/src/lib.rs",
-      command: ["run", "--locked", "-p", "acyclic-codec-fuzz", "--example", "replay", "--", "actor_codecs"],
-      invoked: "Running ", negativeExit: 1, failed: "corpus replay failed:",
+      runner: [bazelCommand(), "run", "//rust/codec-fuzz:replay_example", "--", "actor_codecs"],
+      env: { ACYCLIC_TEST_SOURCE_ROOT: root },
+      invoked: "Running command line:", negativeExit: 1, failed: "corpus replay failed:",
       completed: ["replayed ", " captured inputs"],
       mutations: [{ patch: "rust/proofs/actors-live-update-canonical/mutation.patch",
         priorOraclePatch: "rust/proofs/actors-live-update-canonical/prior-oracle.patch",
@@ -38,10 +41,10 @@ const claims = {
   ],
   "settings-read-producer": [
     "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
-    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "plugin composition cached an operational read failure", ["--features", "test-support"],
+    settingsCase,
+    "plugin composition cached an operational read failure", [],
     { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
-      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
+      bazelTest: "//rust/crates/harness-core:acyclic_harness_core_test_cases",
       mutations: [
         { patch: "rust/proofs/settings-read-producer/composition.patch", label: "plain-composition-read-became-semantic", diagnostic: "plugin composition cached an operational read failure" },
         { patch: "rust/proofs/settings-read-producer/plugin.patch", source: "rust/crates/harness-core/src/plugins.rs", label: "plain-plugin-read-became-semantic", diagnostic: "plugin decision cached an operational read failure" },
@@ -50,15 +53,15 @@ const claims = {
   "settings-admission-producer": [
     "rust/crates/harness-local/src/local/agent_settings.rs", "acyclic-harness-local",
     "local::agent_settings::tests::imported_settings_keep_the_original_directory_read_refusal",
-    "settings admission lost its original read producer", ["--features", "test-support"],
-    { nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
+    "settings admission lost its original read producer", [],
+    { bazelTest: "//rust/crates/harness-local:acyclic_harness_local_test_cases" },
   ],
   "plugin-input-cut": [
     "rust/crates/harness-core/src/plugins.rs", "acyclic-harness-core",
-    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "plugin decision lost an original manifest or hook observation", ["--features", "test-support"],
+    settingsCase,
+    "plugin decision lost an original manifest or hook observation", [],
     { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
-      nextest: ["--profile", "ci", "--no-fail-fast", "--failure-output", "immediate-final", "--retries", "0", "--no-tests=fail"],
+      bazelTest: "//rust/crates/harness-core:acyclic_harness_core_test_cases",
       mutations: [
         { patch: "rust/proofs/plugin-input-cut/identity.patch", label: "discarded-original-hook-bytes", diagnostic: "plugin decision lost an original manifest or hook observation" },
         { patch: "rust/proofs/plugin-input-cut/operation.patch", label: "operational-plugin-read-became-semantic", diagnostic: "plugin decision cached an operational read failure" },
@@ -261,50 +264,57 @@ const claims = {
     "rust/crates/test-support/src/lib.rs", "acyclic-test-support",
     "tests::accounting_matches_complete_allocation_lifetimes",
     "first allocation event differs from physical trace", [],
+    { bazelTest: "//rust/crates/test-support:acyclic_test_support_test_cases" },
   ],
   "native-line-eof": [
-    "rust/crates/native-runtime/src/lines.rs", "acyclic-native-runtime",
+    "rust/crates/native-lines/src/lines.rs", "acyclic-native-lines",
     "lines::tests::incremental_eof_matches_async_lines_at_every_split",
-    "incremental EOF lost the original final frame", ["--features", "test-support"],
+    "incremental EOF lost the original final frame", [],
     { additionalTests: ["lines::tests::oversize_and_invalid_frames_cannot_hide_the_next_complete_line"],
+      bazelTest: "//rust/crates/native-lines:acyclic_native_lines_test_cases",
       additionalDiagnostics: ["EOF discarded the recovered final frame"] },
   ],
   "terminal-drain-stop": [
     "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
     "terminal_frames::terminal_drain_cancellation_does_not_require_slave_closure",
     "a retained PTY slave must not keep a cancelled drainer waiting", [],
-    { target: ["--test", "main"] },
+    { bazelTest: "//rust/crates/harness-tui:main_cases" },
   ],
   "native-usage-counters": [
     "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
     "executor::model_usage::tests::usage_dialects_preserve_units_absence_and_malformed_controls",
-    "Test failed:", ["--features", "test-support"],
+    "Test failed:", [],
+    { bazelTest: "//rust/crates/harness-core:acyclic_harness_core_test_cases" },
   ],
   "native-event-cut": [
     "rust/crates/harness-local/src/local/host_process/children.rs", "acyclic-harness-local",
     "local::host_process::children::tests::an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof",
-    "exited native terminal without LF was discarded", nativeHarness,
+    "exited native terminal without LF was discarded", [],
+    { bazelTest: "//rust/crates/harness-local:acyclic_harness_local_test_cases" },
   ],
   "native-event-retention": [
     "rust/crates/harness-local/src/local/host_process.rs", "acyclic-harness-local",
     "local::host_owner::tests::native_event_log_keeps_late_usage_and_resume_after_recovery",
-    "native event publication lost records after the old cutoff", nativeHarness,
+    "native event publication lost records after the old cutoff", [],
+    { bazelTest: "//rust/crates/harness-local:acyclic_harness_local_test_cases" },
   ],
   "capture-marker-retirement": [
     "rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs", "acyclic-harness-core",
     "filesystem::native_process::capture::tests::interactive_completion_retains_input_producer_and_cleanup",
-    "retired capture retained its unused marker producer", ["--features", "test-support"],
+    "retired capture retained its unused marker producer", [],
+    { bazelTest: "//rust/crates/harness-core:acyclic_harness_core_test_cases" },
   ],
   "append-invocation": [
     "rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs", "acyclic-harness-core",
     "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history",
-    "append inherited prior invocation work", ["--features", "test-support"],
+    "append inherited prior invocation work", [],
+    { bazelTest: "//rust/crates/harness-core:acyclic_harness_core_test_cases" },
   ],
   "task-binding-selection": [
     "rust/crates/harness-local/src/local/workspace/bindings.rs", "acyclic-harness-local",
     "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
-    "lost original producer did not finish its observer", bindingFeatures,
-    { nextest: bindingNextest, mutations: [
+    "lost original producer did not finish its observer", [],
+    { bazelTest: "//rust/crates/harness-local:acyclic_harness_local_test_cases", mutations: [
       { patch: "fuzz/mutations/task_binding_lost_producer.patch", label: "producer-loss", diagnostic: "lost original producer did not finish its observer" },
       { patch: "fuzz/mutations/task_binding_late_retirement.patch", label: "late-retirement", diagnostic: "late retirement removed the replacement owner" },
       { patch: "fuzz/mutations/task_binding_retained_credit.patch", label: "retained-credit", diagnostic: "retired binding generations retained original allocation credit" },
@@ -313,25 +323,26 @@ const claims = {
   ],
   "task-binding-observer": [
     "rust/crates/harness-local/src/local/workspace/bindings.rs", "acyclic-harness-local",
-    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
-    "registered binding observer lost its successful preparation", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
+    bindingCheckoutCase,
+    "registered binding observer lost its successful preparation", [],
+    { bazelTest: "//rust/crates/harness-local:acyclic_harness_local_test_cases", oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_observer_result.patch", label: "result-loss", diagnostic: "registered binding observer lost its successful preparation" },
     ] },
   ],
   "task-binding-checkout": [
     "rust/crates/harness-local/src/local/workspace/task_views.rs", "acyclic-harness-local",
-    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
-    "binding preparation retains the unrelated checkout owner", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
+    bindingCheckoutCase,
+    "binding preparation retains the unrelated checkout owner", [],
+    { bazelTest: "//rust/crates/harness-local:acyclic_harness_local_test_cases", oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_checkout_owner.patch", label: "checkout-owner", diagnostic: "binding preparation retains the unrelated checkout owner" },
     ] },
   ],
   "task-binding-physical": [
     "rust/crates/harness-local/src/local/workspace/projection.rs", "acyclic-harness-local",
     "local::workspace::task_views::tests::native_guard_retains_the_original_binding_until_physical_retirement",
-    "physical native guard lost the original binding owner", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
+    "physical native guard lost the original binding owner", [],
+    { bazelTest: "//rust/crates/harness-local:acyclic_harness_local_test_cases",
+      oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_physical_owner.patch", label: "physical-owner", diagnostic: "physical native guard lost the original binding owner" },
     ] },
   ],
@@ -1868,7 +1879,9 @@ if (claim === "--help" && extra.length === 0) {
   function check(label, selected = command, checkedSource = source, expectedOracle = oracle) {
     if (oracle) require(readFileSync(oraclePath).equals(expectedOracle));
     mkdirSync(directory, { recursive: true });
-    const invocation = options.runner ?? ["cargo", ...selected];
+    const invocation = options.bazelTest
+      ? [bazelCommand(), "run", options.bazelTest, "--", "--exact", "--nocapture", ...tests]
+      : options.runner ?? ["cargo", ...selected];
     const result = run(invocation[0], invocation.slice(1), new URL(`${label}.log`, directory));
     console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
     const lines = result.output.trimEnd().split(/\r?\n/);

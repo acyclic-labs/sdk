@@ -1,7 +1,7 @@
-diff --git a/rust/crates/native-runtime/src/lines.rs b/rust/crates/native-runtime/src/lines.rs
+diff --git a/rust/crates/native-lines/src/lines.rs b/rust/crates/native-lines/src/lines.rs
 index c64f68ee3af..84238687242 100644
---- a/rust/crates/native-runtime/src/lines.rs
-+++ b/rust/crates/native-runtime/src/lines.rs
+--- a/rust/crates/native-lines/src/lines.rs
++++ b/rust/crates/native-lines/src/lines.rs
 @@ -84,10 +84,7 @@ impl LineBuffer {
      /// Uses the same trailing-line, CRLF and error semantics as [`AsyncLines`].
      /// Consumed bytes cannot produce a second frame on a later call.
