@@ -5,8 +5,8 @@ use acyclic_fs::kernel::{
 };
 use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
 use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectStore,
-    ObjectReadRequest, ObjectStoreError,
+    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, LogicalObjectStore,
+    MemoryObjectStore, ObjectReadRequest, ObjectStoreError,
 };
 use acyclic_fs_format::{
     identity::Digest,
@@ -732,5 +732,47 @@ async fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
     assert_eq!(read.bytes.as_ref(), b"bcdefgh");
     assert_eq!(read.work.backend_read_operations, 2);
     assert_eq!(read.work.object_probes, 4);
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_index_memory_is_logarithmic_in_chunk_count()
+-> Result<(), Box<dyn std::error::Error>> {
+    let objects = acyclic_objects::MemoryObjects::memory();
+    let store = LogicalObjectStore::new(std::sync::Arc::new(objects));
+    let content = vec![3_u8; 4_096];
+    let mut source = std::io::Cursor::new(&content);
+    let built = build_blob(
+        &store,
+        &mut source,
+        BlobBuildOptions {
+            chunk_bytes: 1,
+            page_items: 1_024,
+            page_bytes: 129,
+            maximum_blob_bytes: Some(4_096),
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let linear_reference_bytes = u64::try_from(4_096 * size_of::<BlobChunkRef>())?;
+    assert!(built.work.peak_allocation_bytes < linear_reference_bytes / 8);
+    let read = read_blob_range(
+        &store,
+        built.root,
+        ByteRange {
+            offset: 2_047,
+            length: 3,
+        },
+        DecodeLimits {
+            maximum_page_items: 1_024,
+            maximum_page_bytes: 129,
+            ..DecodeLimits::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(read.bytes, OwnedBytes::from_static(&[3, 3, 3]));
     Ok(())
 }
