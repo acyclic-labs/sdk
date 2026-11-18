@@ -18,16 +18,16 @@ proptest! {
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs_work::performance::work_budget(4096, 1 << 20), &cancellation,
         ).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?;
         let paid = copy_approval_subject(&invocation, Some(&work), crate::interaction::ApprovalRoute::Policy, None).unwrap();
-        prop_assert_eq!((work.receipt().bytes_copied, paid.1.is_some()), (expected, true));
+        prop_assert_eq!((work.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?.bytes_copied, paid.1.is_some()), (expected, true));
         prop_assert_eq!(&paid.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
             tool: invocation.name.clone(), call_id: invocation.call_id.clone(), arguments: invocation.arguments.clone(), target: None,
         });
         prop_assert!(paid.1.as_ref().unwrap().work().shares_ledger(&work));
         prop_assert!(paid.1.as_ref().unwrap().bytes() > 0);
         drop(paid);
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, baseline);
         // Negative control: forgetting the original work still copies the same
         // value, but cannot satisfy the exact copy charge or custody assertion.
         let control = acyclic_fs::NativeMaterializationWork::new(
@@ -37,24 +37,25 @@ proptest! {
         prop_assert_eq!(&unmetered.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
             tool: invocation.name, call_id: invocation.call_id, arguments: invocation.arguments, target: None,
         });
-        prop_assert_ne!((control.receipt().bytes_copied, unmetered.1.is_some()), (expected, true));
+        prop_assert_ne!((control.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?.bytes_copied, unmetered.1.is_some()), (expected, true));
     }
 }
 
 #[test]
-fn subject_copy_denies_exhausted_copy_work_before_allocating() {
+fn subject_copy_denies_exhausted_copy_work_before_allocating() -> crate::Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut budget = acyclic_fs_work::performance::work_budget(4096, 1 << 20);
     budget.bytes_copied = 0;
-    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
     let invocation = ToolInvocation {
         operation_id: OperationId::from_bytes([1; 16]),
         call_id: "call".into(),
         name: "tool".into(),
         arguments: serde_json::json!({"payload":"copy"}),
     };
-    let baseline = work.live_allocation_bytes();
-    let allocations = work.receipt().allocation_operations;
+    let baseline = work.live_allocation_bytes()?;
+    let allocations = work.receipt()?.allocation_operations;
     assert!(
         copy_approval_subject(
             &invocation,
@@ -64,6 +65,7 @@ fn subject_copy_denies_exhausted_copy_work_before_allocating() {
         )
         .is_err()
     );
-    assert_eq!(work.receipt().allocation_operations, allocations);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.receipt()?.allocation_operations, allocations);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
