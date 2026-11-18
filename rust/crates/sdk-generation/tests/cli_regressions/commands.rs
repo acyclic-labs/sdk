@@ -304,7 +304,8 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let mut source_paths = Vec::new();
         for source in sources {
             let relative = source.relative.as_path();
-            let Some(actual) = optional_io(fs::read(root.join(relative)))? else {
+            let checkout_source = root.join(relative);
+            let Some(actual) = optional_io(fs::read(&checkout_source))? else {
                 continue 'fixture;
             };
             if actual != fs::read(acyclic_test_support::source_path(&source.file))? {
@@ -322,7 +323,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 }
             }
             if relative.extension() == Some(OsStr::new("rs")) {
-                source_paths.push((relative, root.join(relative).to_string_lossy().into_owned()));
+                source_paths.push((relative, checkout_source.to_string_lossy().into_owned()));
             }
         }
         let output_path = &metadata.output;
