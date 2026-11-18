@@ -62,13 +62,14 @@ proptest! {
     }
 
     #[test]
-    fn owner_draw_uses_the_full_equal_jitter_interval(
-        base in any::<u32>(),
-        maximum in any::<u32>(),
+    fn both_draw_sources_stay_in_the_equal_jitter_interval(
+        base in prop_oneof![Just(0_u32), Just(1_u32), Just(u32::MAX), any::<u32>()],
+        maximum in prop_oneof![Just(0_u32), Just(1_u32), Just(u32::MAX), any::<u32>()],
         sample in any::<u32>(),
     ) {
         let mut backoff = Backoff::new(base, maximum, 0);
         let mut ceilings = Backoff::new(base, maximum, 0);
+        let mut seeded = Backoff::new(base, maximum, sample);
         let initial = u128::from(base.min(maximum));
         for attempt in 0..=33 {
             let ceiling = (initial << attempt).min(u128::from(maximum));
@@ -79,6 +80,7 @@ proptest! {
             });
             let expected = lower + u128::from(sample) % (ceiling - lower + 1);
             prop_assert_eq!(delay.as_millis(), expected);
+            prop_assert!((lower..=ceiling).contains(&u128::from(seeded.delay_ms())));
             prop_assert_eq!(
                 ceilings.delay_with(|choices| choices - 1).as_millis(),
                 ceiling,
