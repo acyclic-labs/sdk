@@ -134,7 +134,7 @@ pub struct FileCut {
     pub revision: acyclic_stream::RevisionCut,
     /// Exclusive committed cuts for the requested query sources. JSON values
     /// are canonical decimal strings, preserving all 64 bits in JavaScript.
-    #[serde(with = "acyclic_stream::serde_u64::map")]
+    #[serde(with = "acyclic_decimal_u64::map")]
     pub queries: BTreeMap<acyclic_stream::StreamPath, u64>,
 }
 

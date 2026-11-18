@@ -116,6 +116,7 @@ rust_test(
         "//rust/crates/conformance/hosted-actors:tree",
         "//rust/crates/conformance:tree",
         "//rust/crates/contract-derive:tree",
+        "//rust/crates/decimal-u64:tree",
         "//rust/crates/differential:tree",
         "//rust/crates/filesystem-base:tree",
         "//rust/crates/filesystem-lock-order-tests:tree",

@@ -53,13 +53,14 @@ conformance = []
 model-checking = ["conformance", "dep:loom", "dep:tempfile"]
 test-support = ["conformance", "acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:acyclic-decimal-u64"]
 # Admitted JavaScript byte ownership without a provider or transport.
 js-bytes = ["dep:wasm-bindgen"]
 wasm-journal = ["dep:wasm-bindgen"]
 wasm = ["js-bytes", "serde", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
+acyclic-decimal-u64 = { version = "=0.2.0", path = "../decimal-u64", optional = true }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
