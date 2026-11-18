@@ -231,14 +231,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         if !manifest_path.ends_with(declared_manifest) {
             continue;
         }
-        let mut root = manifest_path;
-        for _ in declared_manifest.components() {
-            let Some(parent) = root.parent() else {
-                return Ok(None);
-            };
-            root = parent;
-        }
-
         let mut expected_args = vec![
             "rustdoc",
             "--locked",
@@ -285,6 +277,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
+        let Some(root) = manifest_path
+            .ancestors()
+            .nth(declared_manifest.components().count())
+        else {
+            return Ok(None);
+        };
         for ancestor in root.ancestors() {
             if ancestor.join(".cargo").try_exists()? {
                 continue 'fixture;
