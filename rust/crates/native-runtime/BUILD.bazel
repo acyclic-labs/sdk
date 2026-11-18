@@ -348,6 +348,8 @@ rust_test(
         "tests/owner_codec/oracle.rs",
         "tests/positional/mod.rs",
         "tests/positional/positional.rs",
+        "tests/private_file/mod.rs",
+        "tests/private_file/tests.rs",
         "tests/report_port/oracle.rs",
         "tests/seeded_runtime.rs",
         "tests/signing_custody.rs",
