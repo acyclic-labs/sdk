@@ -413,58 +413,45 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     assert_eq!(discovered.len(), 1);
     assert_eq!(discovered[0].target, "old-example");
     assert_eq!(discovered[0].required_features, vec!["old-feature"]);
-    let execution = execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &discovered,
-        None,
-        None,
-    )
-    .unwrap();
-    assert_eq!(execution[0].stdout_sha256, crate::sha256_bytes(b"7\n"));
+    let target_dir = fixture.path().join("target");
+    fs::create_dir(&target_dir).unwrap();
+    let mode = target_dir.join("example-mode");
     fs::write(
         fixture.path().join("examples/old-example.rs"),
-        "fn main() { panic!(\"failure\"); }\n",
+        r#"fn main() {
+            match std::fs::read_to_string("target/example-mode").unwrap().as_str() {
+                "success" => println!("{}", historical_fixture::value()),
+                "failure" => panic!("example deliberately failed"),
+                "mutate" => std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(),
+                mode => panic!("unexpected example mode: {mode}"),
+            }
+        }"#,
     )
     .unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &discovered,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed before execution"));
-    let failing = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &failing,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("failed"));
-    fs::write(
-        fixture.path().join("examples/old-example.rs"),
-        r#"fn main() { std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(); }"#,
-    )
-    .unwrap();
-    let mutating = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &mutating,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed during execution"));
+    let cargo = cargo();
+    let run = |examples: &[_]| {
+        execute_examples(fixture.path(), &cargo, &target_dir, examples, None, None)
+    };
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("changed before execution"));
+
+    // Cargo's output directory is outside the source closure. Changing the
+    // mode exercises all outcomes without rebuilding the example.
+    let discovered = examples(&metadata, fixture.path(), &owners).unwrap();
+    fs::write(&mode, "success").unwrap();
+    assert_eq!(
+        run(&discovered).unwrap()[0].stdout_sha256,
+        crate::sha256_bytes(b"7\n")
+    );
+    fs::write(&mode, "failure").unwrap();
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("example deliberately failed"));
+    fs::write(&mode, "mutate").unwrap();
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("changed during execution"));
     assert!(examples(
         &metadata,
         fixture.path(),
@@ -586,6 +573,42 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
 
 #[test]
 fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutations() {
+    let fixture = Fixture::new();
+    let root = fixture.path();
+    let package = root.join("rust/crates/owned");
+    fs::create_dir_all(package.join("src")).unwrap();
+    fs::copy(root.join("src/lib.rs"), package.join("src/lib.rs")).unwrap();
+    fs::write(package.join("build.rs"), "fn main() {}\n").unwrap();
+    fs::write(package.join("README.md"), "# Source README\n").unwrap();
+    let manifest = root.join("Cargo.toml");
+    let contents = fs::read_to_string(&manifest).unwrap().replace(
+        "edition='2021'",
+        "edition='2021'\nbuild='rust/crates/owned/build.rs'\nreadme='rust/crates/owned/README.md'",
+    );
+    fs::write(
+        manifest,
+        format!("{contents}\n[lib]\npath='rust/crates/owned/src/lib.rs'\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("examples/old-example.rs"),
+        r#"fn main() {
+            let input = std::fs::read_to_string("target/mutation-input").unwrap();
+            std::fs::write(input, "mutated documentation input").unwrap();
+        }"#,
+    )
+    .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let selector = target.join("mutation-input");
+    let metadata = fixture.metadata();
+    let examples = examples(
+        &metadata,
+        root,
+        &BTreeSet::from(["historical-fixture".into()]),
+    )
+    .unwrap();
+    let cargo = cargo();
     for changed in [
         "rust/crates/owned/src/lib.rs",
         "rust/crates/owned/build.rs",
@@ -593,49 +616,14 @@ fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutati
         "Cargo.toml",
         "Cargo.lock",
     ] {
-        let fixture = Fixture::new();
-        fs::create_dir_all(fixture.path().join("rust/crates/owned/src")).unwrap();
-        fs::copy(
-            fixture.path().join("src/lib.rs"),
-            fixture.path().join("rust/crates/owned/src/lib.rs"),
-        )
-        .unwrap();
-        fs::write(
-            fixture.path().join("rust/crates/owned/build.rs"),
-            "fn main() {}\n",
-        )
-        .unwrap();
-        fs::write(
-            fixture.path().join("rust/crates/owned/README.md"),
-            "# Source README\n",
-        )
-        .unwrap();
-        let manifest = fs::read_to_string(fixture.path().join("Cargo.toml")).unwrap().replace("edition='2021'", "edition='2021'\nbuild='rust/crates/owned/build.rs'\nreadme='rust/crates/owned/README.md'");
-        fs::write(
-            fixture.path().join("Cargo.toml"),
-            format!("{manifest}\n[lib]\npath='rust/crates/owned/src/lib.rs'\n"),
-        )
-        .unwrap();
-        fs::write(fixture.path().join("examples/old-example.rs"), format!("fn main() {{ std::fs::write({changed:?}, \"mutated documentation input\").unwrap(); }}\n")).unwrap();
-        let metadata = fixture.metadata();
-        let examples = examples(
-            &metadata,
-            fixture.path(),
-            &BTreeSet::from(["historical-fixture".into()]),
-        )
-        .unwrap();
-        let error = execute_examples(
-            fixture.path(),
-            &cargo(),
-            &fixture.path().join("target"),
-            &examples,
-            None,
-            None,
-        )
-        .unwrap_err();
+        let input = root.join(changed);
+        let original = fs::read(&input).unwrap();
+        fs::write(&selector, changed).unwrap();
+        let error = execute_examples(root, &cargo, &target, &examples, None, None).unwrap_err();
         assert!(
             error.contains("source closure changed"),
             "{changed}: {error}"
         );
+        fs::write(input, original).unwrap();
     }
 }

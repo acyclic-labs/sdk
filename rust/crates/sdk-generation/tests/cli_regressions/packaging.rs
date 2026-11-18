@@ -51,8 +51,11 @@ pub(super) fn include_sources(package: &Path) {
 }
 
 pub(super) fn source_fixture() -> (Fixture, PathBuf) {
-    let template = shared_package();
-    let fixture = copy_fixture(&template.0);
+    copy_source_fixture(&shared_package().0)
+}
+
+pub(super) fn copy_source_fixture(template: &Fixture) -> (Fixture, PathBuf) {
+    let fixture = copy_fixture(template);
     let support = fixture.output.join("test-support");
     fs::create_dir_all(support.join("registry")).unwrap();
     (fixture, support)
