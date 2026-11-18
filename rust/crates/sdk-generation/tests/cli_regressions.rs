@@ -1,4 +1,3 @@
-use sdk_docs::rustdoc_digest;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -380,61 +379,64 @@ fn invoke(command: &mut Command) -> std::process::Output {
     }
 }
 
-fn drift_command(fixture: &Fixture) -> Command {
+fn sdk_command(subcommand: &str, root: &Path, rustdoc: Option<&Path>, output: &Path) -> Command {
     let mut command = Command::new(runtime::binary("sdk-generation"));
-    command.args([
-        "drift",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--rustdoc-dir",
-        fixture.rustdoc.to_str().unwrap(),
-    ]);
     command
+        .args([subcommand, "--root"])
+        .arg(root)
+        .arg("--output")
+        .arg(output);
+    if let Some(rustdoc) = rustdoc {
+        command.arg("--rustdoc-dir").arg(rustdoc);
+    }
+    command
+}
+
+fn drift_command(fixture: &Fixture) -> Command {
+    sdk_command(
+        "drift",
+        &fixture.root,
+        Some(&fixture.rustdoc),
+        &fixture.output,
+    )
 }
 
 fn run_drift(fixture: &Fixture) -> std::process::Output {
     invoke(&mut drift_command(fixture))
 }
 
-fn fixture_path(support: &Path) -> std::ffi::OsString {
-    std::env::join_paths(
+fn configure_historical<'a>(
+    command: &'a mut Command,
+    fixture: &Fixture,
+    support: &Path,
+) -> &'a mut Command {
+    let path = std::env::join_paths(
         std::iter::once(support.to_owned()).chain(std::env::split_paths(&runtime::path())),
     )
-    .unwrap()
+    .unwrap();
+    command
+        .env("PATH", path)
+        .env("CARGO_HOME", fixture_cargo_home(fixture))
 }
 
 fn run_historical_drift(fixture: &Fixture, support: &Path) -> std::process::Output {
-    invoke(
-        drift_command(fixture)
-            .env("PATH", fixture_path(support))
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
-    )
+    invoke(configure_historical(
+        &mut drift_command(fixture),
+        fixture,
+        support,
+    ))
 }
 
 fn generate_command(
     root: &Path,
-    rustdoc: &Path,
+    rustdoc: Option<&Path>,
     output: &Path,
     version: &str,
     channel: &str,
     skip_scenarios: bool,
 ) -> Command {
-    let mut command = Command::new(runtime::binary("sdk-generation"));
-    command.args([
-        "generate",
-        "--root",
-        root.to_str().unwrap(),
-        "--output",
-        output.to_str().unwrap(),
-        "--rustdoc-dir",
-        rustdoc.to_str().unwrap(),
-        "--version",
-        version,
-        "--channel",
-        channel,
-    ]);
+    let mut command = sdk_command("generate", root, rustdoc, output);
+    command.args(["--version", version, "--channel", channel]);
     if skip_scenarios {
         command.arg("--skip-scenarios");
     }
@@ -451,7 +453,7 @@ fn run_generate(
 ) -> std::process::Output {
     invoke(&mut generate_command(
         root,
-        rustdoc,
+        Some(rustdoc),
         output,
         version,
         channel,
@@ -523,7 +525,7 @@ fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
     for fixture in [&first, &second] {
         let result = run_generate(
             &fixture.root,
-            &fixture.rustdoc,
+            Some(&fixture.rustdoc),
             &fixture.output,
             "relocation-invariant",
             "preview",
@@ -565,38 +567,21 @@ fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
-        Command::new(runtime::binary("sdk-generation"))
-            .args([
-                "generate",
-                "--root",
-                fixture.root.to_str().unwrap(),
-                "--output",
-                fixture.output.to_str().unwrap(),
-                "--version",
-                "feature-profile-catalog",
-                "--channel",
-                "preview",
-                "--execute-profiles",
-                "--skip-scenarios",
-            ])
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
+        generate_command(
+            &fixture.root,
+            None,
+            &fixture.output,
+            "feature-profile-catalog",
+            "preview",
+            true,
+        )
+        .arg("--execute-profiles")
+        .env("CARGO_HOME", fixture_cargo_home(fixture)),
     )
 }
 
 fn run_drift_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(
-        Command::new(runtime::binary("sdk-generation"))
-            .args([
-                "drift",
-                "--root",
-                fixture.root.to_str().unwrap(),
-                "--output",
-                fixture.output.to_str().unwrap(),
-                "--rustdoc-dir",
-                fixture.rustdoc.to_str().unwrap(),
-            ])
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
-    )
+    invoke(drift_command(fixture).env("CARGO_HOME", fixture_cargo_home(fixture)))
 }
 
 fn output_message(result: &std::process::Output) -> String {
@@ -617,15 +602,28 @@ fn receipt_path(rustdoc: &Path, row: &Value) -> PathBuf {
     )
 }
 
+const PROFILE_TABLE: &str = "sdk-docs-rustdoc-profiles.v1.json";
+
+fn read_profile_rows(output: &Path) -> Vec<Value> {
+    serde_json::from_slice(&fs::read(output.join(PROFILE_TABLE)).unwrap()).unwrap()
+}
+
+fn assert_retained_receipt(rustdoc: &Path, row: &Value) -> PathBuf {
+    let receipt = receipt_path(rustdoc, row);
+    assert!(
+        receipt.is_file(),
+        "every execution must retain its Rustdoc output"
+    );
+    assert!(receipt.with_extension("source.sha256").is_file());
+    receipt
+}
+
 fn assert_executed_profiles(
     output: &Path,
     rustdoc: &Path,
     expected: &[(&str, usize)],
 ) -> Vec<Value> {
-    let rows: Vec<Value> = serde_json::from_slice(
-        &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let rows = read_profile_rows(output);
 
     let mut counts = BTreeMap::new();
     let mut identities = std::collections::BTreeSet::new();
@@ -636,12 +634,7 @@ fn assert_executed_profiles(
             identities.insert(row["profile"].as_str().unwrap()),
             "duplicate execution receipt"
         );
-        let receipt = receipt_path(rustdoc, row);
-        assert!(
-            receipt.is_file(),
-            "every execution must retain its Rustdoc output"
-        );
-        assert!(receipt.with_extension("source.sha256").is_file());
+        assert_retained_receipt(rustdoc, row);
     }
     let expected_counts = expected.iter().copied().collect::<BTreeMap<_, _>>();
     assert_eq!(
@@ -731,10 +724,13 @@ fn write_registry_transport(support: &Path) {
         ]
     }).collect::<Vec<_>>();
     responses.sort();
-    let records = responses
-        .iter()
-        .map(|(suffix, response)| format!("{suffix}\n{response}\n"))
-        .collect::<String>();
+    let mut records = String::new();
+    for (suffix, response) in responses {
+        records.push_str(&suffix);
+        records.push('\n');
+        records.push_str(&response);
+        records.push('\n');
+    }
     fs::write(support.join("registry-responses.txt"), records).unwrap();
     let destination = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
     let source = runtime::binary("registry-transport-fixture");
@@ -752,7 +748,7 @@ fn run_historical_generate_mode(
     support: &Path,
     mode: Option<&str>,
 ) -> std::process::Output {
-    run_historical_generation(fixture, support, mode, None, &[])
+    run_historical_generation(fixture, support, mode, None, &[]).0
 }
 
 enum HistoricalAuthority<'a> {
@@ -777,24 +773,17 @@ fn run_historical_generation(
     mode: Option<&str>,
     authority: Option<HistoricalAuthority<'_>>,
     expected_owners: &[&str],
-) -> std::process::Output {
-    let path = fixture_path(support);
-    let mut command = Command::new(runtime::binary("sdk-generation"));
-    command
-        .env("PATH", path)
-        .env("CARGO_HOME", fixture_cargo_home(fixture))
-        .args(["generate", "--root"])
-        .arg(&fixture.root)
-        .arg("--output")
-        .arg(&fixture.output)
-        .args([
-            "--version",
-            "1.0.0",
-            "--channel",
-            "release",
-            "--execute-profiles",
-            "--historical-archives",
-        ])
+) -> (std::process::Output, Vec<Value>) {
+    let mut command = generate_command(
+        &fixture.root,
+        None,
+        &fixture.output,
+        "1.0.0",
+        "release",
+        false,
+    );
+    configure_historical(&mut command, fixture, support)
+        .args(["--execute-profiles", "--historical-archives"])
         .arg(support.join("registry"));
     if let Some(mode) = mode {
         command.args(["--historical-source", mode]);
@@ -817,14 +806,12 @@ fn run_historical_generation(
     }
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");
-    if result.status.success() || version.join("sdk-docs-rustdoc-profiles.v1.json").is_file() {
-        let releases: Value = serde_json::from_slice(
+    let profiles = if result.status.success() || version.join(PROFILE_TABLE).is_file() {
+        let releases: Vec<Value> = serde_json::from_slice(
             &fs::read(version.join("sdk-docs-registry-releases.v1.json")).unwrap(),
         )
         .unwrap();
         let expected = releases
-            .as_array()
-            .unwrap()
             .iter()
             .map(|release| (release["crate"].as_str().unwrap(), 4))
             .collect::<Vec<_>>();
@@ -837,9 +824,11 @@ fn run_historical_generation(
                 expected_owners.iter().copied().collect::<BTreeSet<_>>(),
             );
         }
-        let _ = assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
-    }
-    result
+        assert_executed_profiles(&version, &version.join(".rustdoc"), &expected)
+    } else {
+        Vec::new()
+    };
+    (result, profiles)
 }
 
 fn registry_archive_fixture(

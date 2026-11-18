@@ -11,10 +11,11 @@ fn main() {
             .join("registry-responses.txt"),
     )
     .unwrap();
-    let lines = records.lines().collect::<Vec<_>>();
-    for pair in lines.chunks_exact(2) {
-        if args.last().unwrap().ends_with(pair[0]) {
-            print!("{}\n200", pair[1]);
+    let mut lines = records.lines();
+    let url = args.last().unwrap();
+    while let (Some(suffix), Some(response)) = (lines.next(), lines.next()) {
+        if url.ends_with(suffix) {
+            print!("{response}\n200");
             return;
         }
     }

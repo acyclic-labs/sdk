@@ -41,20 +41,17 @@ fn copy_tree_inner(
 }
 
 pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
-    fn rebase(value: &mut Value, original: &Fixture, relocated: &Fixture) {
-        let scratch = relocated.output.join(".profile-build");
-        let cargo_target = relocated.root.join("target");
+    let scratch = relocated.output.join(".profile-build");
+    let cargo_target = relocated.root.join("target");
+    let roots = [
+        (&original.root, &relocated.root),
+        (&original.output, &relocated.output),
+    ]
+    .map(|(old, new)| (old.to_str().unwrap(), new.to_str().unwrap()));
+    let rebase = |value: &mut Value| {
         rustdoc_paths::visit(value, |_, text| {
-            for (old, new) in [
-                (&original.root, &relocated.root),
-                (&original.output, &relocated.output),
-            ] {
-                if let Some(rebased) = super::paths::rebase(
-                    text,
-                    old.to_str().unwrap(),
-                    new.to_str().unwrap(),
-                    cfg!(windows),
-                ) {
+            for (old, new) in roots {
+                if let Some(rebased) = super::paths::rebase(text, old, new, cfg!(windows)) {
                     let destination = Path::new(&rebased);
                     if (destination.starts_with(&scratch) || destination.starts_with(&cargo_target))
                         && !destination.exists()
@@ -68,7 +65,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
                 }
             }
         });
-    }
+    };
     let manifest_path = original.output.join("generation-manifest.v1.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     let release_path = PathBuf::from(manifest["releaseManifest"].as_str().unwrap());
@@ -76,14 +73,9 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     let inventory = manifest["rustdocFiles"]
         .as_object()
         .unwrap()
-        .iter()
-        .map(|(key, digest)| {
-            (
-                original.rustdoc.join(key.strip_prefix("rustdoc/").unwrap()),
-                digest,
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+        .keys()
+        .map(|key| original.rustdoc.join(key.strip_prefix("rustdoc/").unwrap()))
+        .collect::<std::collections::BTreeSet<_>>();
     let replaced = [
         manifest_path.with_extension("sha256"),
         manifest_path,
@@ -92,27 +84,19 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         original.output.join(&digest_path),
     ];
     copy_tree_inner(&original.output, &relocated.output, false, &|path| {
-        replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains_key(path)
+        replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains(path)
     });
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
         let mut changed = BTreeMap::new();
-        for (original_file, digest) in inventory {
+        for original_file in inventory {
             let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
             let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
             let relative = original_file.strip_prefix(&original.output).unwrap();
             let file = relocated.output.join(relative);
-            let logical = rustdoc_digest(&original_file, &original.root).unwrap();
             let mut value = (*value).clone();
-            assert_eq!(digest.as_str().unwrap(), logical);
-            rebase(&mut value, original, relocated);
+            rebase(&mut value);
             let rebased_bytes = serde_json::to_vec(&value).unwrap();
             fs::write(&file, &rebased_bytes).unwrap();
-            assert_eq!(
-                rustdoc_digest(&file, &relocated.root).unwrap(),
-                logical,
-                "rebasing every physical receipt must preserve its logical digest: {}",
-                file.display()
-            );
             changed.insert(
                 relative.to_str().unwrap().replace('\\', "/"),
                 (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
@@ -121,7 +105,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         changed
     });
     // Relocation changes physical receipt bytes. Re-attest only those verified
-    // rewrites; preserve all source identities and logical Rustdoc digests.
+    // rewrites. Drift checks both checkouts against the unchanged logical digests.
     let original_release = fs::read(original.output.join(&release_path)).unwrap();
     let mut release: Value = serde_json::from_slice(&original_release).unwrap();
     for row in release["artifacts"].as_array_mut().unwrap() {
@@ -130,25 +114,29 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             row["sha256"] = json!(new);
         }
     }
+    let original_digest = hash_bytes(&original_release);
+    assert_eq!(
+        fs::read(original.output.join(&digest_path)).unwrap(),
+        original_digest.as_bytes(),
+        "the original release sidecar must attest the original manifest"
+    );
     let rebased_release = serde_json::to_vec_pretty(&release).unwrap();
     let rebased_digest = hash_bytes(&rebased_release);
-    for (path, old, new) in [
-        (
-            release_path,
-            hash_bytes(&original_release),
-            rebased_release.as_slice(),
-        ),
-        (
-            digest_path.clone(),
-            hash_file(&original.output.join(&digest_path)),
-            rebased_digest.as_bytes(),
-        ),
+    fs::write(relocated.output.join(&release_path), rebased_release).unwrap();
+    fs::write(
+        relocated.output.join(&digest_path),
+        rebased_digest.as_bytes(),
+    )
+    .unwrap();
+    let sidecar_hashes = (
+        hash_bytes(original_digest.as_bytes()),
+        hash_bytes(rebased_digest.as_bytes()),
+    );
+    for (path, hashes) in [
+        (release_path, (original_digest, rebased_digest)),
+        (digest_path, sidecar_hashes),
     ] {
-        fs::write(relocated.output.join(&path), new).unwrap();
-        changed.insert(
-            path.to_str().unwrap().replace('\\', "/"),
-            (old, hash_bytes(new)),
-        );
+        changed.insert(path.to_str().unwrap().replace('\\', "/"), hashes);
     }
     for (path, (old, new)) in changed {
         assert_eq!(manifest["artifacts"][&path].as_str().unwrap(), old);
@@ -178,31 +166,27 @@ pub(super) fn project(
     fixture: &Fixture,
     metadata: &cargo_metadata::Metadata,
     rows: &[Value],
-    catalog: &[u8],
+    template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    sdk_docs::with_rustdoc_cache(|| project_inner(fixture, metadata, rows, catalog))
+    sdk_docs::with_rustdoc_cache(|| project_inner(fixture, metadata, rows, template))
 }
 
 fn project_inner(
     fixture: &Fixture,
     metadata: &cargo_metadata::Metadata,
     rows: &[Value],
-    catalog: &[u8],
+    template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    let template: sdk_docs::DocsData = serde_json::from_slice(catalog).unwrap();
-    let manifest: Value = serde_json::from_slice(
+    let mut manifest: Value = serde_json::from_slice(
         &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
     )
     .unwrap();
-    for (file, digest) in manifest["sourceFiles"].as_object().unwrap() {
-        assert_eq!(
-            hash_file(&fixture.root.join(file)),
-            digest.as_str().unwrap()
-        );
-    }
+    // The CLI drift checks recompute the logical digests in this inventory.
+    let digests = manifest["rustdocFiles"].as_object_mut().unwrap();
     let mut specs = BTreeMap::new();
     let mut items = Vec::new();
-    let mut prepared = Vec::new();
+    let mut base = Vec::new();
+    let mut variants = Vec::new();
     for row in rows {
         let spec = ProfileSpec {
             package: row["package"].as_str().unwrap().to_owned(),
@@ -219,8 +203,12 @@ fn project_inner(
         assert_eq!(id.0, row["profile"].as_str().unwrap());
         let receipt = receipt_path(&fixture.rustdoc, row);
         assert_eq!(
-            rustdoc_digest(&receipt, &fixture.root).unwrap(),
-            row["rustdocSha256"]
+            digests
+                .remove(row["rustdocFile"].as_str().unwrap())
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            row["rustdocSha256"].as_str().unwrap()
         );
         assert_eq!(
             fs::read_to_string(receipt.with_extension("source.sha256"))
@@ -247,14 +235,22 @@ fn project_inner(
             crate_name: observation.crate_name,
             version: package.version.to_string(),
         };
-        let base = spec.default_features && spec.features.is_empty();
+        let group = if spec.default_features && spec.features.is_empty() {
+            &mut base
+        } else {
+            &mut variants
+        };
+        group.push(package_metadata);
         assert!(specs.insert(id, spec).is_none());
-        prepared.push((base, package_metadata));
     }
-    let build = |selected: Vec<&(bool, sdk_docs::PackageMetadata)>| {
-        let receipts = selected
+    assert!(
+        digests.is_empty(),
+        "every declared Rustdoc receipt must have a profile row"
+    );
+    let build = |package_metadata: Vec<sdk_docs::PackageMetadata>| {
+        let receipts = package_metadata
             .iter()
-            .map(|(_, metadata)| metadata.rustdoc_file.clone())
+            .map(|metadata| metadata.rustdoc_file.clone())
             .collect::<Vec<_>>();
         sdk_docs::build_data(
             &sdk_docs::BuildInput {
@@ -270,18 +266,15 @@ fn project_inner(
                 )
                 .unwrap(),
                 rustdoc_files: receipts,
-                package_metadata: selected
-                    .iter()
-                    .map(|(_, metadata)| metadata.clone())
-                    .collect(),
+                package_metadata,
                 mark_latest: false,
             },
             &[],
         )
         .unwrap()
     };
-    let mut data = build(prepared.iter().filter(|(base, _)| *base).collect());
-    for variant in prepared.iter().filter(|(base, _)| !*base) {
+    let mut data = build(base);
+    for variant in variants {
         sdk_docs::merge_profile_catalog(&mut data, build(vec![variant])).unwrap();
     }
     let availability = profiles::project_into_docs(&data, metadata, items, &specs).unwrap();
