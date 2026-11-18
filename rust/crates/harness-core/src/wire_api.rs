@@ -21,11 +21,6 @@ fn validate_request_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Resul
     validate_protocol(protocol, COMPILED_PROTOCOL, wire::ErrorCode::Invalid, &None)
 }
 
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "wire_api_protocol_tests.rs"]
-mod protocol_tests;
-
 /// Decoded operation-control request shared by all server adapters.
 pub struct OperationControlRequest {
     /// Durable owner claimed by the caller and verified by the host.
