@@ -640,6 +640,7 @@ async fn terminal_reasons() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     super::codec_fuzz::seeds();

@@ -53,7 +53,8 @@ pub fn check(input: &[u8]) -> Result<(), Error> {
     )
 }
 
-pub(crate) fn check_record(original: &Record, before: &Journal) -> Result<(), Error> {
+/// Check one provider-committed record against the codec and the current fold.
+pub fn check_record(original: &Record, before: &Journal) -> Result<(), Error> {
     if let Ok(entry) = Entry::decode(original) {
         let (kind, value, fence) = match &entry {
             Entry::Request(value) => (b"request".as_slice(), value.clone(), None),

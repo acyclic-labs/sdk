@@ -239,7 +239,7 @@ def reservation_book():
 
 
 def call_records():
-    production = ROOT.parent / "crates/actors/src/call.rs"
+    production = ROOT.parent / "crates/actors-call/src/call.rs"
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
     cancellation = b"Outcome::Cancelled(reason) if self.accepted.is_some() => {"
@@ -268,7 +268,7 @@ def call_records():
 
 
 def call_schedules():
-    production = ROOT.parent / "crates/actors/src/call.rs"
+    production = ROOT.parent / "crates/actors-call/src/call.rs"
     model = production.with_name("call") / "model.rs"
     original = {path: path.read_bytes() for path in (production, model, ORACLE)}
     source, driver, oracle = original[production], original[model], original[ORACLE]
@@ -307,7 +307,7 @@ def call_schedules():
 
 
 def replay_diagnostics():
-    model = ROOT.parent / "crates/actors/src/call/model.rs"
+    model = ROOT.parent / "crates/actors-call/src/call/model.rs"
     original = model.read_bytes()
     anchor = b"pub async fn check(bytes: &[u8]) -> Result<(), String> {"
     if original.count(anchor) != 1:

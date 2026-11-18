@@ -76,6 +76,7 @@ rust_library(
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -135,6 +136,7 @@ rust_test(
     lint_config = ":lints",
     deps = [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
@@ -216,6 +218,7 @@ rust_test(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/auth:acyclic_auth",
@@ -339,6 +342,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/auth:acyclic_auth",
@@ -411,6 +415,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/auth:acyclic_auth",
@@ -482,6 +487,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/auth:acyclic_auth",
@@ -553,6 +559,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-inventory:acyclic_actors_inventory",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/auth:acyclic_auth",
@@ -658,6 +665,7 @@ rust_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/actors-call:acyclic_actors_call_wasm",
         "//rust/crates/actors-inventory:acyclic_actors_inventory_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",
