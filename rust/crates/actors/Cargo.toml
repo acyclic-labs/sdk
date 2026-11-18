@@ -10,6 +10,12 @@ repository.workspace = true
 description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
+[package.metadata.bazel]
+test-build-script = ["actors-authorization"]
+
+[package.metadata.bazel.test-dependencies]
+actors-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
+
 [[bin]]
 name = "actors-rpc-inventory"
 path = "src/bin/actors-rpc-inventory.rs"
@@ -78,6 +84,7 @@ acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 wasm-bindgen-test = "=0.3.67"
 
 [dev-dependencies]
+acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 
