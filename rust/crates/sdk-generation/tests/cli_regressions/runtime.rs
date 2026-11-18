@@ -7,6 +7,13 @@ pub(super) use acyclic_test_support::fixture_compiler::binary;
 thread_local! {
     static GIT: PathBuf = resolve_git();
     static COMPILER: sync::Arc<PathBuf> = sync::Arc::new(binary("CARGO"));
+    static CLI_PATH: std::ffi::OsString = GIT.with(|git| {
+        std::env::join_paths(
+            std::iter::once(git.parent().unwrap().to_owned())
+                .chain(std::env::split_paths(&compiler::path())),
+        )
+        .unwrap()
+    });
     #[cfg(windows)]
     static LINKER: (String, PathBuf) = resolve_linker();
     #[cfg(windows)]
@@ -63,19 +70,11 @@ pub(super) fn git() -> PathBuf {
 }
 
 pub(super) fn path() -> std::ffi::OsString {
-    std::env::join_paths(
-        std::iter::once(git().parent().unwrap().to_owned())
-            .chain(std::env::split_paths(&compiler::path())),
-    )
-    .unwrap()
+    CLI_PATH.with(Clone::clone)
 }
 
 pub(super) fn cargo() -> sync::Arc<PathBuf> {
     COMPILER.with(sync::Arc::clone)
-}
-
-pub(super) fn rustc() -> PathBuf {
-    binary("rustc")
 }
 
 pub(super) fn configure(command: &mut Command) {
@@ -141,8 +140,6 @@ thread_local! {
 }
 pub(super) fn time_control() {
     TIMING.with(|_| ());
-    // Resolve this leaf before fixture initialization can acquire its own slot.
-    let _ = cargo();
 }
 pub(super) fn phase(name: &str) {
     TIMING.with(|timer| {
