@@ -189,8 +189,10 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
         )
         .await
     }
+}
 
-    /// Authenticates the immutable objects retained by active multipart uploads.
+impl<A: StreamBackedAuthority, O: AsyncObjectStore> crate::Fs<A, O> {
+    /// Authenticates the immutable objects retained by active multipart uploads in this filesystem.
     pub async fn active_multipart_objects(
         &self,
         protocol_limits: FilesystemS3Limits,
@@ -199,8 +201,8 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
         cancellation: &CancellationToken,
     ) -> MultipartStorageResult<crate::OperationReceipt<Vec<ObjectId>>> {
         active_s3_multipart_objects(
-            self.multipart_stream_provider().as_ref(),
-            self.volume.fs.objects(),
+            self.authority().stream_provider().as_ref(),
+            self.objects(),
             protocol_limits,
             retention_limits,
             budget,

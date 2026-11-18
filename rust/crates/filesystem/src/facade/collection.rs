@@ -131,20 +131,19 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             self.mark_sparse_shadows(&mut marker, cancellation).await?;
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let multipart = crate::s3_multipart::active_s3_multipart_objects(
-                    self.inner.authority.provider().as_ref(),
-                    &self.inner.objects,
-                    acyclic_fs_format::s3_limits::FilesystemS3Limits::default(),
-                    acyclic_fs_format::s3_limits::S3MultipartRetentionLimits::default(),
-                    WorkBudget::UNBOUNDED,
-                    cancellation,
-                )
-                .await
-                .map_err(|_| {
-                    FsError::Object(ObjectStoreError::Rejected(
-                        "active S3 multipart retention scan failed".to_owned(),
-                    ))
-                })?;
+                let multipart = self
+                    .active_multipart_objects(
+                        acyclic_fs_format::s3_limits::FilesystemS3Limits::default(),
+                        acyclic_fs_format::s3_limits::S3MultipartRetentionLimits::default(),
+                        WorkBudget::UNBOUNDED,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|_| {
+                        FsError::Object(ObjectStoreError::Rejected(
+                            "active S3 multipart retention scan failed".to_owned(),
+                        ))
+                    })?;
                 marker.keep(multipart.value);
             }
             if let Some(core_state) = core_state {

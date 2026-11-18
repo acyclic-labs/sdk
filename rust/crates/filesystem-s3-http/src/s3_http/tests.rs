@@ -63,6 +63,7 @@ use std::fmt::Write as _;
 use tower::ServiceExt;
 
 struct Resolver {
+    filesystem: acyclic_fs::MemoryFs,
     principal: FilesystemS3Principal<MemoryAuthorityBackend, MemoryObjectBackend>,
 }
 
@@ -146,6 +147,7 @@ async fn adapter_with_limits(
         .workspace();
     FilesystemS3Adapter::new(
         Arc::new(Resolver {
+            filesystem,
             principal: FilesystemS3Principal {
                 secret_key: SecretKey::from("secret"),
                 bucket: "bucket".to_owned(),
@@ -534,6 +536,7 @@ async fn generation_scoped_credentials_are_immutable_snapshots() -> S3Result {
 
     let pinned = FilesystemS3Adapter::new(
         Arc::new(Resolver {
+            filesystem: writable.resolver.filesystem.clone(),
             principal: FilesystemS3Principal {
                 secret_key: SecretKey::from("secret"),
                 bucket: "bucket".to_owned(),
@@ -652,8 +655,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
     assert!(
         restarted
             .resolver
-            .principal
-            .workspace
+            .filesystem
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits {
@@ -669,8 +671,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
     assert!(
         restarted
             .resolver
-            .principal
-            .workspace
+            .filesystem
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits {
@@ -685,8 +686,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
     );
     let active = restarted
         .resolver
-        .principal
-        .workspace
+        .filesystem
         .active_multipart_objects(
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits::default(),
@@ -742,8 +742,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
     assert!(
         restarted
             .resolver
-            .principal
-            .workspace
+            .filesystem
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits::default(),
@@ -809,8 +808,7 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
     assert!(
         !adapter
             .resolver
-            .principal
-            .workspace
+            .filesystem
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits::default(),
@@ -835,8 +833,7 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
     assert!(
         adapter
             .resolver
-            .principal
-            .workspace
+            .filesystem
             .active_multipart_objects(
                 FilesystemS3Limits::default(),
                 S3MultipartRetentionLimits::default(),
