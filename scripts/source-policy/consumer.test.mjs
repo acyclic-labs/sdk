@@ -68,3 +68,13 @@ test('an unrelated declaration does not reopen a polling helper consumer', () =>
  assert.ok(!edit('export function unrelated() { return false; }\n' + helper).some(site => site.file === consumer));
  assert.ok(edit(before.get(producer).replace('sleep(1)', 'sleep(2)')).some(site => site.file === consumer));
 });
+
+test('a dormant function body does not change a module initialization dependency', () => {
+ const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
+ const source = 'Bun.sleep(1); export function dormant() { return true; }';
+ const before = new Map([[producer, source], [consumer, "import '../lib/helper.js';"]]);
+ const changes = newSource => newProjectPollingSites(before, new Map(before).set(producer, newSource));
+ assert.ok(!changes(source.replace('true', 'false')).some(site => site.file === consumer));
+ assert.ok(changes(source.replace('sleep(1)', 'sleep(2)'))
+  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
+});
