@@ -1321,11 +1321,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         Ok(())
     }
 
-    /// One listing page at a time, so a pass over a prefix holds one page.
     fn namespace_prefix(&self, kind: char) -> String {
         format!("{}{kind}/", self.state.prefix)
     }
 
+    /// One listing page at a time, so a pass over a prefix holds one page.
     fn pages(&self, prefix: String) -> Pages<'_, M> {
         Pages {
             medium: &*self.medium,
@@ -1335,11 +1335,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
     }
 
-    async fn list_all(&self, prefix: String) -> Result<Vec<(String, u64)>, Error> {
+    async fn list_keys(&self, prefix: String) -> Result<Vec<String>, Error> {
         let mut keys = Vec::new();
         let mut pages = self.pages(prefix);
         while let Some(page) = pages.next().await? {
-            keys.extend(page);
+            keys.extend(page.into_iter().map(|(key, _)| key));
         }
         Ok(keys)
     }
@@ -1928,12 +1928,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
                 let batches = self
-                    .list_all(self.retention_key('r', root_hash, ""))
+                    .list_keys(self.retention_key('r', root_hash, ""))
                     .await?;
                 let existed = !batches.is_empty();
                 let mut batch_keys = Vec::new();
                 let mut batch_references = Vec::new();
-                for (key, _) in batches {
+                for key in batches {
                     let Some(references) = self.batch(&key).await? else {
                         continue;
                     };
