@@ -106,8 +106,8 @@ mod wasm;
 pub use wasm::js_error as wasm_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::{
-    InjectedStream, WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmStream,
-    serve_wasm_grpc_session, serve_wasm_session,
+    InjectedStream, WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmSessionService,
+    WasmStream, serve_wasm_session,
 };
 #[cfg(any(feature = "test-support", all(test, not(target_arch = "wasm32"))))]
 #[doc(hidden)]

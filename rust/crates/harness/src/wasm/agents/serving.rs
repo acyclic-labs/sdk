@@ -446,18 +446,17 @@ impl WasmAgentServer {
         grpc: bool,
     ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
         let server = self.served()?;
-        let serve = if grpc {
-            acyclic_stream::serve_wasm_grpc_session
-        } else {
-            acyclic_stream::serve_wasm_session
-        };
-        serve(
-            self.bound.agents().provider().clone(),
-            self.authority.clone(),
-            Some(Arc::new(self.bound.changes().map_err(agent_error)?)),
-            server,
-            "harness".into(),
-            acyclic_stream::session::Limits::default(),
+        acyclic_stream::serve_wasm_session(
+            acyclic_stream::WasmSessionService {
+                provider: self.bound.agents().provider().clone(),
+                authority: self.authority.clone(),
+                resources: Some(Arc::new(self.bound.changes().map_err(agent_error)?)),
+                calls: server,
+                spec: acyclic_stream::session::SessionSpec {
+                    node: "harness".into(),
+                    limits: acyclic_stream::session::Limits::default(),
+                },
+            },
             next,
             Some({
                 let mut lifetime = self.lifetime()?;
@@ -465,6 +464,7 @@ impl WasmAgentServer {
                     let _ = lifetime.changed().await;
                 })
             }),
+            grpc,
         )
     }
 

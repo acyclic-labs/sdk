@@ -69,9 +69,7 @@ struct CursorFrames {
 impl CursorFrames {
     async fn next(&mut self) -> Result<Option<wire::SessionFrame>, StreamError> {
         loop {
-            let mut remaining = &self.chunk[self.offset..];
-            let frame = self.decoder.read(&mut remaining)?;
-            self.offset = self.chunk.len() - remaining.len();
+            let frame = read_chunk_frame(&mut self.decoder, &self.chunk, &mut self.offset)?;
             if frame.is_some() {
                 return Ok(frame);
             }

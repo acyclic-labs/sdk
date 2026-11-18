@@ -46,7 +46,7 @@ extern "C" {
 }
 
 /// Retained command journal and shared core capacities for one consistency domain.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct JournalStreamLimits {
     /// Maximum retained accepted commands. Refusals consume no journal entry.
     pub commands: Option<u32>,
@@ -54,16 +54,6 @@ pub struct JournalStreamLimits {
     pub journal_bytes: Option<u64>,
     /// Capacity of the canonical Stream state machine.
     pub memory: MemoryLimits,
-}
-
-impl Default for JournalStreamLimits {
-    fn default() -> Self {
-        Self {
-            commands: None,
-            journal_bytes: None,
-            memory: MemoryLimits::default(),
-        }
-    }
 }
 
 impl JournalStreamLimits {
