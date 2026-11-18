@@ -185,7 +185,7 @@ struct WasmBrowserAgentOptions {
     principal: String,
     /// The same executor, spawn and approval defaults as every hosted agent.
     /// It has no default: the opener chooses its approval policy explicitly.
-    preset: crate::preset::Preset,
+    preset: acyclic_harness_core::preset::Preset,
     /// Optional delivery backstop for event-owned hosting.
     #[serde(default)]
     #[tsify(optional)]
