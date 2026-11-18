@@ -17,7 +17,6 @@
   "rust/crates/filesystem/fuzz/qualify_git_markers.py",
   "rust/crates/filesystem/proofs/lease-path/check.sh",
   "rust/crates/filesystem/proofs/rescued-fixes/check.sh",
-  "rust/crates/harness-core/tests/continuation-negative-control.py",
   "rust/crates/harness-fuzz/graphcoder-args-control.py",
   "rust/crates/harness-fuzz/oidc-control.py",
   "rust/crates/harness-fuzz/qualify_retained_skill_records.py",
