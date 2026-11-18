@@ -8,8 +8,9 @@
 
 use acyclic_stream::{CommitCondition, CommitId, StreamPath};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, num::NonZeroU64};
+use std::collections::BTreeMap;
 
 mod handler;
 pub use handler::{FencedHandler, VersionedHandler};
@@ -108,34 +109,18 @@ impl Publication {
     ) -> Result<Self, Error> {
         deployment.validate()?;
         validate_compatibility(&compatibility)?;
-        let schema = compatibility.schema_digest()?;
-        if artifacts.is_empty()
-            || artifacts.iter().any(|(name, artifact)| {
-                name.is_empty()
-                    || artifact.code == [0; 32]
-                    || artifact.configuration == [0; 32]
-                    || artifact.schema != schema
-            })
-        {
-            return Err(Error::Invalid("publication"));
-        }
-        let number = NonZeroU64::new(expected_version.checked_add(1).ok_or(Error::Exhausted)?)
-            .ok_or(Error::Exhausted)?;
-        let mut publication = Self {
-            upload: PublicationUpload {
-                deployment,
-                expected_version,
-                artifacts,
-                compatibility,
-            },
-            schema,
-            version: Version {
-                number,
-                digest: [0; 32],
-            },
+        let upload = PublicationUpload {
+            deployment,
+            expected_version,
+            artifacts,
+            compatibility,
         };
-        publication.version.digest = Sha256::digest(encode(&publication)?).into();
-        Ok(publication)
+        let (schema, version) = upload.identity()?;
+        Ok(Self {
+            upload,
+            schema,
+            version,
+        })
     }
 
     /// Content identity for this exact immutable publication.

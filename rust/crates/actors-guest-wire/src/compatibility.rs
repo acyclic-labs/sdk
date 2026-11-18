@@ -117,6 +117,35 @@ pub struct PublicationUpload {
     pub compatibility: CompatibilityManifest,
 }
 
+impl PublicationUpload {
+    /// Check the selected artifacts and derive the immutable number and digests.
+    /// The caller admits the deployment and descriptor schemas before using them.
+    pub fn identity(&self) -> Result<([u8; 32], Version), Error> {
+        let schema = self.compatibility.schema_digest()?;
+        if self.artifacts.is_empty()
+            || self.artifacts.iter().any(|(name, artifact)| {
+                name.is_empty()
+                    || artifact.code == [0; 32]
+                    || artifact.configuration == [0; 32]
+                    || artifact.schema != schema
+            })
+        {
+            return Err(Error::Invalid("publication"));
+        }
+        let number = NonZeroU64::new(
+            self.expected_version
+                .checked_add(1)
+                .ok_or(Error::Exhausted)?,
+        )
+        .ok_or(Error::Exhausted)?;
+        let version = Version {
+            number,
+            digest: Sha256::digest(encode(self)?).into(),
+        };
+        Ok((schema, version))
+    }
+}
+
 /// A reference into the existing journal, not a second journal or effect owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
