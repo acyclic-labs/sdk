@@ -59,7 +59,7 @@ proptest! {
             let ceiling = u64::from(base.min(maximum))
                 .saturating_mul(2_u64.saturating_pow(attempt))
                 .min(u64::from(maximum));
-            prop_assert_eq!(scenario.delay_with(|choices| choices - 1).as_millis(), ceiling);
+            prop_assert_eq!(scenario.delay_with(|choices| choices - 1).as_millis(), u128::from(ceiling));
             if attempt > 32 {
                 prop_assert!(wait >= maximum.div_ceil(2));
             }
