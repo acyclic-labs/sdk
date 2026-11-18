@@ -18,7 +18,7 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
     .map(str::to_owned)
     .into_iter()
     .collect::<BTreeSet<_>>();
-    let public_roots = metadata
+    let mut public_roots = metadata
         .workspace_packages()
         .into_iter()
         .filter(|package| {
@@ -27,14 +27,13 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
                 .as_ref()
                 .is_none_or(|registries| !registries.is_empty())
         })
-        .collect::<Vec<_>>();
-    assert!(!public_roots.is_empty());
+        .peekable();
+    assert!(public_roots.peek().is_some());
 
     for package in public_roots {
         let package_name = package.name.as_ref();
         let declared_count =
             package.features.len() - usize::from(package.features.contains_key("default"));
-        let mut ids = BTreeSet::new();
         let mut count = None;
         for target in &targets {
             let profiles = profiles_for_package(&metadata, package_name, target, &targets).unwrap();
@@ -49,7 +48,6 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             let mut has_all_features = false;
             for profile in &profiles {
                 assert_eq!(&profile.target, target);
-                assert!(ids.insert(profile.id()));
                 assert!(profile
                     .features
                     .iter()

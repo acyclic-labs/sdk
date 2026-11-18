@@ -128,25 +128,27 @@ fn historical_defaults_cover_features() {
 fn historical_docs_rs_policy_is_required_and_validated() {
     let mut metadata = (*metadata()).clone();
     let targets = BTreeSet::from(["host".into()]);
-    metadata.packages[0].metadata =
-        serde_json::json!({"docs":{"rs":{"all-features":true,"no-default-features":true}}});
+    let mut plan = |policy: serde_json::Value| {
+        metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":policy}});
+        historical_profiles_for_package(&metadata, "feature-rich", "host", &targets)
+    };
     let profiles =
-        historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).unwrap();
+        plan(serde_json::json!({"all-features":true,"no-default-features":true})).unwrap();
     assert!(profiles
         .iter()
         .any(|profile| profile.default_features && profile.features.is_empty()));
     assert!(profiles.iter().any(|profile| !profile.default_features
         && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
-    metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":{"features":["absent"]}}});
     assert!(matches!(
-        historical_profiles_for_package(&metadata, "feature-rich", "host", &targets),
+        plan(serde_json::json!({"features":["absent"]})),
         Err(ProfileError::InvalidFeature { .. })
     ));
-    metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":{"all-features":"true"}}});
-    assert!(historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).is_err());
-    metadata.packages[0].metadata =
-        serde_json::json!({"docs":{"rs":{"rustdoc-args":["--cfg","pretend"]}}});
-    assert!(historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).is_err());
+    for policy in [
+        serde_json::json!({"all-features":"true"}),
+        serde_json::json!({"rustdoc-args":["--cfg","pretend"]}),
+    ] {
+        assert!(matches!(plan(policy), Err(ProfileError::InvalidRustdoc(_))));
+    }
 }
 
 #[test]
@@ -160,17 +162,16 @@ fn feature_profiles_include_both_baselines_and_local_closure() {
     .unwrap();
     assert!(profiles
         .iter()
-        .any(|profile| !profile.default_features && profile.features.is_empty()));
-    assert!(profiles
-        .iter()
-        .any(|profile| profile.default_features && profile.features.is_empty()));
+        .filter(|profile| profile.features.is_empty())
+        .map(|profile| profile.default_features)
+        .eq([false, true]));
     assert!(profiles
         .iter()
         .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()])));
 }
 
 #[test]
-fn profile_ids_distinguish_defaults_for_the_same_features() {
+fn profile_ids_distinguish_defaults_and_targets_for_the_same_features() {
     let mut profile = ProfileSpec {
         package: "p".into(),
         target: "t".into(),
@@ -180,6 +181,8 @@ fn profile_ids_distinguish_defaults_for_the_same_features() {
     assert_eq!(profile.id().0, "p70;t74;d0;f61,62");
     profile.default_features = true;
     assert_eq!(profile.id().0, "p70;t74;d1;f61,62");
+    profile.target = "u".into();
+    assert_eq!(profile.id().0, "p70;t75;d1;f61,62");
 }
 
 #[test]

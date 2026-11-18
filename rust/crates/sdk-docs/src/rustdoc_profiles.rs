@@ -214,6 +214,29 @@ impl ProfileSpec {
     }
 }
 
+fn validate_profile_target(
+    target: &str,
+    available_targets: &BTreeSet<String>,
+) -> Result<(), ProfileError> {
+    available_targets
+        .contains(target)
+        .then_some(())
+        .ok_or_else(|| ProfileError::UnsupportedTarget {
+            target: target.to_owned(),
+        })
+}
+
+fn declared_features(package: &Package) -> impl Iterator<Item = &String> {
+    package
+        .features
+        .keys()
+        .filter(|name| name.as_str() != "default")
+}
+
+fn insert_profile(ordered: &mut BTreeMap<ProfileId, ProfileSpec>, profile: ProfileSpec) {
+    ordered.entry(profile.id()).or_insert(profile);
+}
+
 /// Derive the bounded profile matrix from the package's actual Cargo feature
 /// map. Every returned profile is intended to compile; a failed profile is a
 /// qualification failure rather than a reason to omit an API.
@@ -223,52 +246,46 @@ pub fn profiles_for_package(
     target: &str,
     available_targets: &BTreeSet<String>,
 ) -> Result<Vec<ProfileSpec>, ProfileError> {
-    if !available_targets.contains(target) {
-        return Err(ProfileError::UnsupportedTarget {
-            target: target.to_owned(),
-        });
-    }
+    current_package_profiles(metadata, package, target, available_targets)
+        .map(|(_, profiles)| profiles.into_values().collect())
+}
+
+fn current_package_profiles<'a>(
+    metadata: &'a Metadata,
+    package: &str,
+    target: &str,
+    available_targets: &BTreeSet<String>,
+) -> Result<(&'a Package, BTreeMap<ProfileId, ProfileSpec>), ProfileError> {
+    validate_profile_target(target, available_targets)?;
     let package_metadata = package_by_name(metadata, package)
         .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
-    let mut profiles = vec![ProfileSpec {
-        package: package.to_owned(),
-        target: target.to_owned(),
-        default_features: true,
-        features: BTreeSet::new(),
-    }];
+    let mut profiles = BTreeMap::new();
+    let mut add = |default_features, features| {
+        insert_profile(
+            &mut profiles,
+            ProfileSpec {
+                package: package.to_owned(),
+                target: target.to_owned(),
+                default_features,
+                features,
+            },
+        );
+    };
+    add(true, BTreeSet::new());
     if !package_metadata.features.is_empty() {
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: false,
-            features: BTreeSet::new(),
-        });
+        add(false, BTreeSet::new());
     }
-    let declared = package_metadata
-        .features
-        .keys()
-        .filter(|feature| feature.as_str() != "default")
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    for feature in &declared {
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: false,
-            features: feature_closure(&package_metadata.features, feature),
-        });
+    let mut declared = BTreeSet::new();
+    for feature in declared_features(package_metadata) {
+        let mut closure = BTreeSet::new();
+        extend_feature_closure(&package_metadata.features, feature, &mut closure);
+        add(false, closure);
+        declared.insert(feature.clone());
     }
     if !declared.is_empty() {
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: true,
-            features: declared,
-        });
+        add(true, declared);
     }
-    profiles.sort_by_key(ProfileSpec::id);
-    profiles.dedup_by_key(|profile| profile.id());
-    Ok(profiles)
+    Ok((package_metadata, profiles))
 }
 
 /// Select the browser profile from Cargo declarations without enabling native
@@ -285,15 +302,12 @@ pub fn browser_profile_for_package(
     {
         return Ok(None);
     }
-    let napi = package.metadata.get("napi");
-    let own_binding = napi
-        .and_then(|value| value.get("wasm-package"))
-        .and_then(serde_json::Value::as_str)
-        == Some(package.name.as_str());
+    let binding = package.metadata.get("napi").filter(|napi| {
+        napi.get("wasm-package").and_then(serde_json::Value::as_str) == Some(package.name.as_str())
+    });
     let mut features = BTreeSet::new();
     let mut default_features = false;
-    if own_binding {
-        let napi = napi.expect("binding policy was found");
+    if let Some(napi) = binding {
         if let Some(value) = napi.get("wasm-features") {
             let values = value.as_array().ok_or_else(|| {
                 ProfileError::InvalidRustdoc("wasm-features must be an array".into())
@@ -308,7 +322,7 @@ pub fn browser_profile_for_package(
                         feature: feature.into(),
                     });
                 }
-                features.extend(feature_closure(&package.features, feature));
+                extend_feature_closure(&package.features, feature, &mut features);
             }
         }
         default_features = !match napi.get("wasm-no-default-features") {
@@ -318,16 +332,12 @@ pub fn browser_profile_for_package(
             None => false,
         };
     } else if package.features.contains_key("wasm") {
-        features = feature_closure(&package.features, "wasm");
+        extend_feature_closure(&package.features, "wasm", &mut features);
     } else if !has_browser_target_dependencies {
         return Ok(None);
     }
     let target = "wasm32-unknown-unknown";
-    if !available_targets.contains(target) {
-        return Err(ProfileError::UnsupportedTarget {
-            target: target.into(),
-        });
-    }
+    validate_profile_target(target, available_targets)?;
     Ok(Some(ProfileSpec {
         package: package.name.to_string(),
         target: target.into(),
@@ -336,26 +346,28 @@ pub fn browser_profile_for_package(
     }))
 }
 
-fn feature_closure(features: &BTreeMap<String, Vec<String>>, root: &str) -> BTreeSet<String> {
-    let mut result = BTreeSet::new();
-    let mut pending = vec![root.to_owned()];
-    while let Some(feature) = pending.pop() {
-        if !result.insert(feature.clone()) {
+/// Extend a set whose existing local features already include their dependencies.
+fn extend_feature_closure(
+    features: &BTreeMap<String, Vec<String>>,
+    root: &str,
+    result: &mut BTreeSet<String>,
+) {
+    let mut pending = vec![(root, features.get(root))];
+    while let Some((feature, dependencies)) = pending.pop() {
+        if result.contains(feature) {
             continue;
         }
-        if let Some(dependencies) = features.get(&feature) {
-            for dependency in dependencies {
-                let local = dependency.strip_prefix("?").unwrap_or(dependency);
-                if !local.starts_with("dep:")
-                    && !local.contains('/')
-                    && features.contains_key(local)
-                {
-                    pending.push(local.to_owned());
-                }
+        result.insert(feature.to_owned());
+        for dependency in dependencies.into_iter().flatten() {
+            let local = dependency.strip_prefix("?").unwrap_or(dependency);
+            if local.starts_with("dep:") || local.contains('/') || result.contains(local) {
+                continue;
+            }
+            if let Some(children) = features.get(local) {
+                pending.push((local, Some(children)));
             }
         }
     }
-    result
 }
 
 /// Historical documentation keeps the original Cargo defaults while covering
@@ -367,60 +379,55 @@ pub fn historical_profiles_for_package(
     target: &str,
     available_targets: &BTreeSet<String>,
 ) -> Result<Vec<ProfileSpec>, ProfileError> {
-    let mut profiles = profiles_for_package(metadata, package, target, available_targets)?;
-    for profile in &mut profiles {
+    let (owner, current) = current_package_profiles(metadata, package, target, available_targets)?;
+    let mut profiles = BTreeMap::new();
+    for mut profile in current.into_values() {
         profile.default_features = true;
+        insert_profile(&mut profiles, profile);
     }
-    let owner = package_by_name(metadata, package)
-        .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
     if let Some(policy) = owner.metadata.get("docs").and_then(|docs| docs.get("rs")) {
         #[derive(Deserialize, Default)]
         #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-        struct DocsRsFeatures {
+        struct DocsRsFeatures<'a> {
             #[serde(default)]
             all_features: bool,
             #[serde(default)]
             no_default_features: bool,
-            #[serde(default)]
-            features: Vec<String>,
+            #[serde(default, borrow)]
+            features: Vec<&'a str>,
         }
-        let policy: DocsRsFeatures = serde_json::from_value(policy.clone()).map_err(|error| {
+        let policy = DocsRsFeatures::deserialize(policy).map_err(|error| {
             ProfileError::InvalidRustdoc(format!("invalid historical docs.rs policy: {error}"))
         })?;
         let mut features = BTreeSet::new();
         for feature in policy.features {
             if feature.contains('/') {
                 // The existing Cargo invocation validates qualified feature expressions.
-                features.insert(feature);
+                features.insert(feature.to_owned());
                 continue;
             }
-            if !owner.features.contains_key(&feature) {
+            if !owner.features.contains_key(feature) {
                 return Err(ProfileError::InvalidFeature {
                     package: package.to_owned(),
-                    feature,
+                    feature: feature.to_owned(),
                 });
             }
-            features.extend(feature_closure(&owner.features, &feature));
+            extend_feature_closure(&owner.features, feature, &mut features);
         }
         if policy.all_features {
-            features.extend(
-                owner
-                    .features
-                    .keys()
-                    .filter(|name| name.as_str() != "default")
-                    .cloned(),
-            );
+            features.extend(declared_features(owner).cloned());
         }
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: !policy.no_default_features,
-            features,
-        });
+        insert_profile(
+            &mut profiles,
+            ProfileSpec {
+                package: package.to_owned(),
+                target: target.to_owned(),
+                default_features: !policy.no_default_features,
+                features,
+            },
+        );
     }
-    profiles.sort_by_key(ProfileSpec::id);
-    profiles.dedup_by_key(|profile| profile.id());
-    Ok(profiles)
+    Ok(profiles.into_values().collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
