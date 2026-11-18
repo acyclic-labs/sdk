@@ -4,19 +4,22 @@ pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
     if let Ok(value) = codec::decode(bytes, None) {
         // This is metadata syntax only. Signature, volume, operation and
         // original-turn admission remain in verify_checkpoint.
-        let encoded = codec::encode(&value, None).expect("admitted checkpoint encodes");
-        assert_eq!(encoded.as_ref(), bytes);
+        let encoded = codec::encode(&value, None);
+        assert!(
+            matches!(&encoded, Ok(encoded) if encoded.as_ref() == bytes),
+            "checkpoint round trip failed: {encoded:?}"
+        );
         for version in [b'0', b'3', b'4', b'5', b'6', b'7', b'8', u8::MAX] {
             let mut header = bytes[..4].to_vec();
             header[3] = version;
-            assert_eq!(
-                codec::decode(&header, None).err().unwrap().code(),
-                crate::wire::ErrorCode::Unsupported
+            assert!(
+                codec::decode(&header, None)
+                    .is_err_and(|error| error.code() == crate::wire::ErrorCode::Unsupported)
             );
         }
-        assert_ne!(
-            codec::decode(&bytes[..4], None).err().unwrap().code(),
-            crate::wire::ErrorCode::Unsupported
+        assert!(
+            codec::decode(&bytes[..4], None)
+                .is_err_and(|error| error.code() != crate::wire::ErrorCode::Unsupported)
         );
         let mut trailing = bytes.to_vec();
         trailing.push(0);
