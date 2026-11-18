@@ -815,27 +815,14 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             "published availability must match the independent replay"
         );
     }
-    let data: Value = serde_json::to_value(data).unwrap();
-    let mut spans = BTreeSet::new();
-    fn source_paths(value: &Value, paths: &mut BTreeSet<String>) {
-        if let Some(object) = value.as_object() {
-            if let Some(path) = object
-                .get("path")
-                .and_then(Value::as_str)
-                .filter(|path| path.starts_with("generated/rustdoc/"))
-            {
-                paths.insert(path.to_string());
-            }
-            for child in object.values() {
-                source_paths(child, paths);
-            }
-        } else if let Some(array) = value.as_array() {
-            for child in array {
-                source_paths(child, paths);
-            }
-        }
-    }
-    source_paths(&data, &mut spans);
+    let spans = data
+        .families
+        .iter()
+        .flat_map(|family| &family.items)
+        .filter_map(|item| item.source.as_ref())
+        .map(|span| span.path.as_str())
+        .filter(|path| path.starts_with("generated/rustdoc/"))
+        .collect::<BTreeSet<_>>();
     assert!(
         !spans.is_empty(),
         "generated source spans must appear in the actual docs data"
@@ -843,7 +830,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     for path in spans {
         for checkout in [&fixture, &relocated] {
             assert_eq!(
-                fs::read(checkout.output.join(&path)).unwrap(),
+                fs::read(checkout.output.join(path)).unwrap(),
                 b"pub struct GeneratedWire;\n"
             );
         }
