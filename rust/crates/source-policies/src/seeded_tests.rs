@@ -21,7 +21,7 @@ const HOST_ENTROPY: &str = "// host entropy:";
 /// Unconverted tests, per file. This list only shrinks: converting a test
 /// lowers its count, and the last one removes the file. An unseeded test in a
 /// file that isn't listed, or beyond its count, fails the policy.
-const NOT_YET_SEEDED: [(&str, usize); 65] = [
+const NOT_YET_SEEDED: [(&str, usize); 64] = [
     ("rust/crates/harness-hosting/src/hosting_tests.rs", 3),
     (
         "rust/crates/harness-hosting/src/hosting_tests/editor_input.rs",
@@ -176,10 +176,6 @@ const NOT_YET_SEEDED: [(&str, usize); 65] = [
     (
         "rust/crates/harness-local/src/local/workspace/performance_tests.rs",
         3,
-    ),
-    (
-        "rust/crates/harness-local/src/local/workspace/publications.rs",
-        4,
     ),
     (
         "rust/crates/harness-local/src/local/workspace/source_tests.rs",

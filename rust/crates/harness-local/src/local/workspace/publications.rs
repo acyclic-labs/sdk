@@ -274,8 +274,12 @@ mod tests {
         Ok((directory, local))
     }
 
-    #[tokio::test]
-    async fn cancelled_enqueue_retains_its_durable_publication_signal() -> Result<()> {
+    #[test]
+    fn cancelled_enqueue_retains_its_durable_publication_signal() -> Result<()> {
+        crate::local::tests::seeded(cancelled_enqueue_retains_its_durable_publication_signal_world)
+    }
+
+    async fn cancelled_enqueue_retains_its_durable_publication_signal_world() -> Result<()> {
         use std::sync::atomic::Ordering::SeqCst;
         for checkpoint in ["task:submitted", "task:completed"] {
             let (_directory, local) = fixture().await?;
@@ -325,8 +329,15 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn publication_drain_recovers_uninspected_transitions_before_completion() -> Result<()> {
+    #[test]
+    fn publication_drain_recovers_uninspected_transitions_before_completion() -> Result<()> {
+        crate::local::tests::seeded(
+            publication_drain_recovers_uninspected_transitions_before_completion_world,
+        )
+    }
+
+    async fn publication_drain_recovers_uninspected_transitions_before_completion_world()
+    -> Result<()> {
         for recovery in ["merge", "branch", "checkout"] {
             let own = recovery == "merge";
             let (_directory, local) = fixture().await?;
@@ -485,8 +496,12 @@ mod tests {
 
     /// A child's handback completes while its parent holds the checkout,
     /// and lands before the parent's next command reads the checkout.
-    #[tokio::test]
-    async fn handback_completes_while_the_parent_is_busy() -> Result<()> {
+    #[test]
+    fn handback_completes_while_the_parent_is_busy() -> Result<()> {
+        crate::local::tests::seeded(handback_completes_while_the_parent_is_busy_world)
+    }
+
+    async fn handback_completes_while_the_parent_is_busy_world() -> Result<()> {
         let (_directory, local) = fixture().await?;
         let workspace = local
             .workspace
@@ -668,9 +683,15 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn durable_cursor_releases_only_acknowledged_publication_after_interruption() -> Result<()>
-    {
+    #[test]
+    fn durable_cursor_releases_only_acknowledged_publication_after_interruption() -> Result<()> {
+        crate::local::tests::seeded(
+            durable_cursor_releases_only_acknowledged_publication_after_interruption_world,
+        )
+    }
+
+    async fn durable_cursor_releases_only_acknowledged_publication_after_interruption_world()
+    -> Result<()> {
         let (_directory, local) = fixture().await?;
         let workspace = local
             .workspace

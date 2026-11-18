@@ -108,6 +108,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         child: Arc::new(catalog.resolve("workers/luna")?),
         misroute,
     });
+    let root_default = "recorded/model";
     let selected = ["code", "spawn"].map(String::from);
     let make_executors = |root: Arc<acyclic_harness_providers::ResolvedModel>| -> TestResult<Arc<dyn TurnExecutors>> {
         let tools = acyclic_harness::tools::registry(&selected, |_| false, Vec::new())?;
@@ -117,7 +118,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         let executors = acyclic_harness::filesystem::StockExecutors::new(
             (root.model().clone(), root), tools, (limits, compaction),
             Arc::new(acyclic_harness::filesystem::Grants(grants)),
-        ).with_models(Arc::new(ModelResolver::new("recorded/model", {
+        ).with_models(Arc::new(ModelResolver::new(root_default, {
             let routes = routes.clone();
             move |selection| routes.resolve(selection)
         }).with_binding(routes.resolve("workers/luna")?)?)).with_agent_tools(&selected).with_templates();
@@ -188,6 +189,9 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         return Err("uncertain root".into());
     };
     bound.agents().drain(&root).await?;
+    let role = acyclic_harness::templates::root()?.model;
+    let inherited = acyclic_harness::templates::resolve_model(role.as_deref(), Some(root_default))
+        .map(str::to_owned);
     assert_eq!(
         bound
             .agents()
@@ -196,7 +200,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
             .profile
             .ok_or("root profile")?
             .model,
-        acyclic_harness::templates::root()?.model
+        inherited
     );
     // A private role file, read by the original authorized template reader.
     let state = bound.agents().state(&root).await?;
@@ -303,7 +307,6 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 requests.2.iter().map(|request| String::from_utf8_lossy(&request.body)).collect::<Vec<_>>()
             )
         })?;
-    let inherited = acyclic_harness::templates::root()?.model;
     for (name, model) in [
         ("explicit", Some("recorded/model")),
         ("inherited", inherited.as_deref()),

@@ -350,7 +350,6 @@ rust_test(
         "//rust/crates/harness-local:src/local/workspace/bootstrap/tests.rs",
         "//rust/crates/harness-local:src/local/workspace/git/tests.rs",
         "//rust/crates/harness-local:src/local/workspace/performance_tests.rs",
-        "//rust/crates/harness-local:src/local/workspace/publications.rs",
         "//rust/crates/harness-local:src/local/workspace/source_tests.rs",
         "//rust/crates/harness-local:src/local/workspace/task_views/concurrency_tests.rs",
         "//rust/crates/harness-local:src/local/workspace/task_views/tests.rs",
