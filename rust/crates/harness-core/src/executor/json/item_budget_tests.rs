@@ -37,19 +37,22 @@ mod native {
                 ..WorkCounters::UNCHARGED
             })
             .unwrap();
-        let baseline = native.live_allocation_bytes();
+        let baseline = native
+            .live_allocation_bytes()
+            .map_err(|error| error.to_string())?;
         let value = serde_json::json!(["x".repeat(4096)]);
         let expected = serde_json::to_vec(&value).unwrap();
         let mut history = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
         );
         let result = canonical_json_digest(&value, Some(LIMIT), &mut Some(&mut history));
+        let receipt = native.receipt().map_err(|error| error.to_string())?;
         if prior + ITEMS <= LIMIT {
             let digest = result
                 .map_err(|error| format!("admitted total {} rejected: {error:?}", prior + ITEMS))?;
             if digest != *blake3::hash(&expected).as_bytes()
-                || native.receipt().items_examined != prior + ITEMS
-                || native.receipt().bytes_hashed != expected.len() as u64
+                || receipt.items_examined != prior + ITEMS
+                || receipt.bytes_hashed != expected.len() as u64
             {
                 return Err("canonical bytes or exact native work differ".into());
             }
@@ -71,15 +74,19 @@ mod native {
                 }
             }
             // Each admission is atomic: no rejected work is charged.
-            if native.receipt().items_examined > LIMIT {
+            if receipt.items_examined > LIMIT {
                 return Err("denied work changed the original ledger".into());
             }
-            if prior + ITEMS == LIMIT + 1 && native.receipt().items_examined != prior + 2 {
+            if prior + ITEMS == LIMIT + 1 && receipt.items_examined != prior + 2 {
                 return Err("denied index scan changed the admitted serialization prefix".into());
             }
         }
         drop(history);
-        if native.live_allocation_bytes() != baseline {
+        if native
+            .live_allocation_bytes()
+            .map_err(|error| error.to_string())?
+            != baseline
+        {
             return Err("canonical digest leaked native custody".into());
         }
         Ok(())

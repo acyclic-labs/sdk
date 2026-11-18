@@ -544,8 +544,9 @@ mod tests {
             private_released
                 .await
                 .expect("private memory owner completion");
-            assert_eq!(work.receipt().backend_read_operations, 0);
-            assert_eq!(work.receipt().backend_write_operations, 0);
+            let receipt = work.receipt()?;
+            assert_eq!(receipt.backend_read_operations, 0);
+            assert_eq!(receipt.backend_write_operations, 0);
             drop(producer);
         }
         Ok(())
@@ -584,8 +585,9 @@ mod tests {
         issuer.revoke_workload(&scope)?;
         cancelled.await;
         assert!(cancellation.check().is_err());
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
+        let receipt = work.receipt()?;
+        assert_eq!(receipt.backend_read_operations, 0);
+        assert_eq!(receipt.backend_write_operations, 0);
         drop(lifetime);
 
         let scope = issuer.bootstrap_scope(
@@ -658,8 +660,9 @@ mod tests {
             }
             cancelled.await;
             assert!(cancellation.check().is_err());
-            assert_eq!(work.receipt().backend_read_operations, 0);
-            assert_eq!(work.receipt().backend_write_operations, 0);
+            let receipt = work.receipt()?;
+            assert_eq!(receipt.backend_read_operations, 0);
+            assert_eq!(receipt.backend_write_operations, 0);
             drop(lifetime);
         }
         Ok(())

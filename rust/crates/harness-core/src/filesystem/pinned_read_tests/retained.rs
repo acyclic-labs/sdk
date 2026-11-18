@@ -8,15 +8,19 @@ thread_local! {
     static ITEMS: Cell<Option<(bool, [u64; 2])>> = const { Cell::new(None) };
 }
 
-pub(in crate::filesystem) fn sample_items(finished: bool, io: Option<&PreparationIo>) {
+pub(in crate::filesystem) fn sample_items(
+    finished: bool,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
     let Some(io) = io else {
         ITEMS.set(None);
-        return;
+        return Ok(());
     };
     let native = io.original_native_work().is_some();
     let (_, mut items) = ITEMS.get().unwrap_or((native, [0; 2]));
-    items[usize::from(finished)] = io.receipt().items_examined;
+    items[usize::from(finished)] = io.receipt()?.items_examined;
     ITEMS.set(Some((native, items)));
+    Ok(())
 }
 
 pub(in crate::filesystem) fn reopen() -> bool {

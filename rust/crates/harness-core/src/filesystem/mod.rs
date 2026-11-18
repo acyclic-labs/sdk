@@ -531,11 +531,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(all(test, not(target_arch = "wasm32")))]
-            pinned_read_tests::retained::sample_items(false, io);
+            pinned_read_tests::retained::sample_items(false, io)?;
             #[cfg(all(test, not(target_arch = "wasm32")))]
             if pinned_read_tests::retained::reopen() {
                 let result = self.read_pinned_io(reference, maximum_bytes, io).await;
-                pinned_read_tests::retained::sample_items(true, io);
+                pinned_read_tests::retained::sample_items(true, io)?;
                 return result.map(Charged::into_custody);
             }
             if let Some(io) = io {
@@ -582,7 +582,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 reference.descriptor().verify(&bytes, work)
             })?;
             #[cfg(all(test, not(target_arch = "wasm32")))]
-            pinned_read_tests::retained::sample_items(true, io);
+            pinned_read_tests::retained::sample_items(true, io)?;
             Ok(bytes.into_custody())
         })
     }
