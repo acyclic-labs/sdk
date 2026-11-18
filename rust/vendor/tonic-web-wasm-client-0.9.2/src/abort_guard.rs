@@ -33,8 +33,8 @@ impl Timeout {
     fn arm(&mut self) {
         // Round up so a sub-millisecond remainder cannot expire early. Long
         // deadlines use several host intervals instead of shortening the call.
-        let delay =
-            self.remaining.as_millis() + u128::from(self.remaining.subsec_nanos() % 1_000_000 != 0);
+        let delay = self.remaining.as_millis()
+            + u128::from(!self.remaining.subsec_nanos().is_multiple_of(1_000_000));
         let delay = i32::try_from(delay).unwrap_or(i32::MAX);
         self.started = now();
         self.handle = set_timeout(
