@@ -10,8 +10,8 @@ use tonic::Code;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Service = FilesystemWireService<
-    crate::StreamAuthorityStore<FaultStream>,
-    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
+    acyclic_fs::StreamAuthorityStore<FaultStream>,
+    acyclic_fs::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 
 #[derive(Default)]
@@ -95,9 +95,9 @@ fn service() -> Result<(Service, Arc<FaultStream>), Status> {
     let stream = Arc::new(FaultStream::default());
     let objects = acyclic_objects::MemoryObjects::memory();
     let fs = Fs::new(
-        crate::StreamAuthorityStore::new(stream.clone()),
-        crate::LogicalObjectStore::new(Arc::new(objects)),
-        crate::EmbeddedCapabilities::MEMORY,
+        acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+        acyclic_fs::LogicalObjectStore::new(Arc::new(objects)),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
     Ok((
         FilesystemWireService::new(fs, FilesystemWireLimits::default())?,

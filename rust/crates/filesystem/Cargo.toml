@@ -49,6 +49,7 @@ native_view_table = []
 native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
 wire_error_contracts = ["acyclic_fs", "acyclic_auth", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "tokio", "tonic"]
+wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
 workspace_context_contracts = ["acyclic_fs", "tokio"]
 workspace_contracts = ["acyclic_fs", "acyclic_stream", "sha2", "tokio"]
 workspace_merge = ["acyclic_fs", "acyclic_stream", "tokio"]
@@ -98,6 +99,10 @@ path = "tests/workspace_context_contracts.rs"
 [[test]]
 name = "wire_error_contracts"
 path = "tests/wire_error_contracts.rs"
+
+[[test]]
+name = "wire_rpc"
+path = "tests/wire_rpc.rs"
 
 [[test]]
 name = "native_checkpoint"
