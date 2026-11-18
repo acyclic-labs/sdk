@@ -1,7 +1,7 @@
 // Real Chrome HTTPS qualification. Trust is limited to this fixture's ephemeral
 // public key in a private browser profile; customer transport security is unchanged.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { actorsHttpRoutes, conformanceCertificate } from "../../../../scripts/rust-conformance-fixtures.mjs";
 import { createHash, X509Certificate } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:https";
@@ -20,16 +20,9 @@ import { StreamClient } from "../../stream/dist/client.js";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const require = createRequire(import.meta.url);
-function rustRoutes(packageName, example) {
-  const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", packageName, "--example", example], { cwd: root, encoding: "utf8" });
-  assert.equal(generated.status, 0, generated.stderr);
-  return Object.fromEntries(JSON.parse(generated.stdout));
-}
-const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
+const actorRoutes = actorsHttpRoutes(root);
 const protobufRoot = resolve(require.resolve("@bufbuild/protobuf"), "../../..");
-const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
-assert.equal(generated.status, 0, generated.stderr);
-const identity = JSON.parse(generated.stdout);
+const identity = conformanceCertificate(root);
 const spki = new X509Certificate(identity.certificate).publicKey.export({ type: "spki", format: "der" });
 const trust = createHash("sha256").update(spki).digest("base64");
 await MemoryObjectsV1.create();
