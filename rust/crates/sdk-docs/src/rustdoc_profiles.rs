@@ -235,6 +235,16 @@ pub fn profiles_for_package(
     target: &str,
     available_targets: &BTreeSet<String>,
 ) -> Result<Vec<ProfileSpec>, ProfileError> {
+    current_package_profiles(metadata, package, target, available_targets)
+        .map(|(_, profiles)| profiles)
+}
+
+fn current_package_profiles<'a>(
+    metadata: &'a Metadata,
+    package: &str,
+    target: &str,
+    available_targets: &BTreeSet<String>,
+) -> Result<(&'a Package, Vec<ProfileSpec>), ProfileError> {
     if !available_targets.contains(target) {
         return Err(ProfileError::UnsupportedTarget {
             target: target.to_owned(),
@@ -270,7 +280,7 @@ pub fn profiles_for_package(
     if !declared.is_empty() {
         add(true, declared);
     }
-    Ok(profiles.into_values().collect())
+    Ok((package_metadata, profiles.into_values().collect()))
 }
 
 /// Select the browser profile from Cargo declarations without enabling native
@@ -369,12 +379,11 @@ pub fn historical_profiles_for_package(
     target: &str,
     available_targets: &BTreeSet<String>,
 ) -> Result<Vec<ProfileSpec>, ProfileError> {
-    let mut profiles = profiles_for_package(metadata, package, target, available_targets)?;
+    let (owner, mut profiles) =
+        current_package_profiles(metadata, package, target, available_targets)?;
     for profile in &mut profiles {
         profile.default_features = true;
     }
-    let owner = package_by_name(metadata, package)
-        .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
     if let Some(policy) = owner.metadata.get("docs").and_then(|docs| docs.get("rs")) {
         #[derive(Deserialize, Default)]
         #[serde(rename_all = "kebab-case", deny_unknown_fields)]
