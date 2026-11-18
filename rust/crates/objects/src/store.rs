@@ -1620,8 +1620,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 // Each retain owns its batch and keys, so a concurrent release of an
                 // equal batch never removes them.
                 let name = format!("{}.{}", Digest::of(&batch), nonce()?);
-                let root_digest = Digest::of(root.as_bytes());
-                let encoded = root_digest.encoded_hex();
+                let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
                 let tag = Self::batch_tag(root_hash, &name);
                 let key = format!("{}{name}", self.root_prefix(root_hash));
@@ -1921,8 +1920,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             async {
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                let root_digest = Digest::of(root.as_bytes());
-                let encoded = root_digest.encoded_hex();
+                let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
                 let batches = self.list_all(&self.root_prefix(root_hash)).await?;
                 let mut removed = Vec::new();

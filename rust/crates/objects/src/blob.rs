@@ -153,7 +153,7 @@ impl Digest {
         self.encoded_hex().as_ref().to_owned()
     }
 
-    pub(crate) fn encoded_hex(&self) -> impl AsRef<str> {
+    pub(crate) fn encoded_hex(&self) -> impl AsRef<str> + use<> {
         blake3::Hash::from_bytes(self.0).to_hex()
     }
 
