@@ -523,21 +523,7 @@ macro_rules! operation_wrappers {
     };
 }
 
-operation_wrappers! {
-    (deploy_namespace, "DeployNamespace"),
-    (deploy_worker, "DeployWorker"),
-    (invoke_worker, "InvokeWorker"),
-    (delete_worker, "DeleteWorker"),
-    (update_namespace, "UpdateNamespace"),
-    (inspect_actor, "InspectActor"),
-    (add_subscription, "AddSubscription"),
-    (remove_subscription, "RemoveSubscription"),
-    (resume_subscription, "ResumeSubscription"),
-    (checkpoint_actor, "CheckpointActor"),
-    (fork_actor, "ForkActor"),
-    (invoke_actor, "InvokeActor"),
-    (delete_all, "DeleteAll"),
-}
+acyclic_actors_inventory::wasm_operations!(operation_wrappers);
 
 #[cfg(test)]
 mod tests {

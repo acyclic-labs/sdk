@@ -75,22 +75,7 @@ pub mod wire;
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 
-/// Rust-owned route names used by the TypeScript transport generator.
-pub const HTTP_ROUTES: &[(&str, &str)] = &[
-    ("deployNamespace", "v1/actors/namespaces/deploy"),
-    ("updateNamespace", "v1/actors/namespaces/update"),
-    ("inspectActor", "v1/actors/inspect"),
-    ("addSubscription", "v1/actors/subscriptions/add"),
-    ("removeSubscription", "v1/actors/subscriptions/remove"),
-    ("resumeSubscription", "v1/actors/subscriptions/resume"),
-    ("checkpointActor", "v1/actors/checkpoint"),
-    ("invokeActor", "v1/actors/invoke"),
-    ("deleteAll", "v1/actors/storage/delete-all"),
-    ("deployWorker", "v1/workers/deploy"),
-    ("invokeWorker", "v1/workers/invoke"),
-    ("deleteWorker", "v1/workers/delete"),
-    ("forkActor", "v1/actors/fork"),
-];
+pub use acyclic_actors_inventory::HTTP_ROUTES;
 
 #[cfg(test)]
 mod tests {

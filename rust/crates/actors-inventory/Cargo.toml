@@ -1,0 +1,26 @@
+[package]
+name = "acyclic-actors-inventory"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Canonical Actors client operation inventories"
+
+[[bin]]
+name = "actors-rpc-inventory"
+test = false
+required-features = ["codegen"]
+
+[[bin]]
+name = "actors-wasm-rpc-inventory"
+test = false
+
+[features]
+codegen = ["dep:serde_json"]
+
+[dependencies]
+serde_json = { workspace = true, optional = true }
+
+[lints]
+workspace = true

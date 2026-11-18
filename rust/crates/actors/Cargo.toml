@@ -16,11 +16,6 @@ test-build-script = ["actors-authorization"]
 [package.metadata.bazel.test-dependencies]
 actors-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
 
-[[bin]]
-name = "actors-rpc-inventory"
-path = "src/bin/actors-rpc-inventory.rs"
-test = false
-
 [features]
 conformance = ["acyclic-stream/conformance"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
@@ -32,6 +27,7 @@ test-support = [
     "acyclic-stream/test-support"]
 
 [dependencies]
+acyclic-actors-inventory = { version = "=0.2.0", path = "../actors-inventory" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }

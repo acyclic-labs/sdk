@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors-inventory",
  "acyclic-auth",
  "acyclic-auth-action",
  "acyclic-contract-derive",
@@ -65,6 +66,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-actors-inventory"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "acyclic-actors-napi"
 version = "0.2.0"
 dependencies = [
@@ -83,6 +91,7 @@ dependencies = [
 name = "acyclic-actors-wasm"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors-inventory",
  "acyclic-actors",
  "acyclic-contract-derive",
  "js-sys",
