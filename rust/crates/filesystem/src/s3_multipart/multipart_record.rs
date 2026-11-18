@@ -17,15 +17,16 @@ pub fn encode_multipart_created(
 
 pub fn encode_multipart_part(
     part_number: u32,
-    staged: StagedContent,
+    root: ObjectId,
+    logical_bytes: u64,
     operation: IdempotencyKey,
     etag_value: &str,
 ) -> Bytes {
-    let mut output = Vec::with_capacity(2 + 4 + staged.root().encoded_len() + 8 + 16 + 32);
+    let mut output = Vec::with_capacity(2 + 4 + root.encoded_len() + 8 + 16 + 32);
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 2]);
     output.extend_from_slice(&part_number.to_le_bytes());
-    output.extend_from_slice(&staged.root().to_bytes());
-    output.extend_from_slice(&staged.logical_bytes().to_le_bytes());
+    output.extend_from_slice(&root.to_bytes());
+    output.extend_from_slice(&logical_bytes.to_le_bytes());
     output.extend_from_slice(&operation.into_bytes());
     let mut etag_digest = [0_u8; 32];
     let unquoted = etag_value.trim_matches('"');

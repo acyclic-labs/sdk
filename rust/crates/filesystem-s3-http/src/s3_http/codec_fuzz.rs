@@ -39,7 +39,8 @@ fn check_inner(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                 assert_eq!(
                     encode_multipart_part(
                         *number,
-                        part.staged,
+                        part.staged.root(),
+                        part.staged.logical_bytes(),
                         IdempotencyKey::from_bytes(*operation),
                         etag
                     )
@@ -82,7 +83,8 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
             header.offset, 0,
             "unsupported version must not consume a payload field"
         );
-        let error: s3s::S3Error = MultipartStorageError::UnsupportedVersion(version).into();
+        let error: s3s::S3Error =
+            multipart_storage_error(MultipartStorageError::UnsupportedVersion(version));
         assert_eq!(error.code(), &s3s::S3ErrorCode::NotImplemented);
         let record = Bytes::copy_from_slice(&[version]).into();
         assert!(matches!(
@@ -118,7 +120,7 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
         ),
         Err(MultipartStorageError::Malformed)
     ));
-    let malformed: s3s::S3Error = MultipartStorageError::Malformed.into();
+    let malformed: s3s::S3Error = multipart_storage_error(MultipartStorageError::Malformed);
     assert_eq!(malformed.code(), &s3s::S3ErrorCode::InvalidRequest);
     Ok(())
 }
@@ -149,13 +151,8 @@ pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
             } else {
                 "multipart-part"
             },
-            encode_multipart_part(
-                1,
-                StagedContent::from_canonical_parts(root, 4),
-                IdempotencyKey::from_bytes([6; 16]),
-                &etag(),
-            )
-            .to_vec(),
+            encode_multipart_part(1, root, 4, IdempotencyKey::from_bytes([6; 16]), &etag())
+                .to_vec(),
         ));
         let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
             kind: crate::ObjectKind::GenerationRoot,

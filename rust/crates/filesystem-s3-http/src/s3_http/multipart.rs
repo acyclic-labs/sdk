@@ -73,7 +73,7 @@ where
         let provider = workspace.volume.fs.authority().stream_provider();
         read_multipart_snapshot(provider.as_ref(), path, self.limits)
             .await
-            .map_err(s3s::S3Error::from)
+            .map_err(multipart_storage_error)
     }
 
     async fn multipart_append(
@@ -128,7 +128,7 @@ where
                         workspace,
                         upload_id,
                         snapshot.tail,
-                        encode_multipart_completing(requested)?,
+                        encode_multipart_completing(requested).map_err(multipart_storage_error)?,
                         Self::multipart_cas_operation(
                             upload_id,
                             b"complete-intent\0",

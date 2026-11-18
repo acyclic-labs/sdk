@@ -113,7 +113,8 @@ where
             self.limits.maximum_multipart_parts,
             self.limits.maximum_multipart_part_bytes,
             self.limits.minimum_multipart_part_bytes,
-        )?;
+        )
+        .map_err(multipart_storage_error)?;
         let registry = Self::multipart_registry_path(&upload_id)?;
         let (registry_condition, registry_tail) = match provider.tail(registry.clone()).await {
             Ok(tail) => (
@@ -264,7 +265,13 @@ where
                 &workspace,
                 &request.input.upload_id,
                 snapshot.tail,
-                encode_multipart_part(part_number, staged, operation, &etag_value),
+                encode_multipart_part(
+                    part_number,
+                    staged.root(),
+                    staged.logical_bytes(),
+                    operation,
+                    &etag_value,
+                ),
                 Self::multipart_cas_operation(
                     &request.input.upload_id,
                     b"part\0",

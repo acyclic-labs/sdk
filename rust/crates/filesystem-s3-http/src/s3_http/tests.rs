@@ -692,7 +692,8 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
         crate::WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await?;
+    .await
+    .map_err(multipart_storage_error)?;
     assert!(active.value.len() >= 4);
     assert!(active.work.authority_records_read >= 4);
     assert!(active.work.authority_bytes_read > 0);
@@ -746,7 +747,8 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
             crate::WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await?
+        .await
+        .map_err(multipart_storage_error)?
         .value
         .is_empty()
     );
@@ -818,7 +820,8 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
             crate::WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await?
+        .await
+        .map_err(multipart_storage_error)?
         .value
         .is_empty()
     );
@@ -841,7 +844,8 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
             crate::WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await?
+        .await
+        .map_err(multipart_storage_error)?
         .value
         .is_empty()
     );
@@ -880,13 +884,7 @@ fn multipart_records_preserve_sealed_parts_and_completed_generations() -> S3Resu
     let etag = format!("\"{}\"", hex::encode([5; 32]));
     let records = vec![
         encode_multipart_created("key", Some(2), Some(8), 0)?.into(),
-        encode_multipart_part(
-            1,
-            StagedContent::from_canonical_parts(part, 4),
-            IdempotencyKey::from_bytes([6; 16]),
-            &etag,
-        )
-        .into(),
+        encode_multipart_part(1, part, 4, IdempotencyKey::from_bytes([6; 16]), &etag).into(),
         encode_multipart_completing(&[(1, etag)])?.into(),
         encode_multipart_completed(generation).into(),
     ];
@@ -912,14 +910,12 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
     let provider = acyclic_stream::MemoryStream::default();
     let path = acyclic_stream::StreamPath::new("multipart/long-history")?;
     let limits = FilesystemS3Limits::default();
-    let staged = StagedContent::from_canonical_parts(
-        ObjectId {
-            kind: ObjectKind::Blob,
-            digest: Digest::from_bytes([7; 32]),
-            storage: None,
-        },
-        6,
-    );
+    let root = ObjectId {
+        kind: ObjectKind::Blob,
+        digest: Digest::from_bytes([7; 32]),
+        storage: None,
+    };
+    let logical_bytes = 6;
     let etag = format!("\"{}\"", hex::encode([7; 32]));
     let updates = 20_004_u64;
     let mut tail = 0_u64;
@@ -931,7 +927,8 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
                 } else {
                     Ok(encode_multipart_part(
                         1,
-                        staged,
+                        root,
+                        logical_bytes,
                         IdempotencyKey::from_bytes(u128::from(index).to_le_bytes()),
                         &etag,
                     )
@@ -955,10 +952,9 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
     let snapshot = read_multipart_snapshot(&provider, path.clone(), limits).await?;
     assert_eq!(snapshot.tail, updates + 1);
     assert_eq!(snapshot.parts.len(), 1);
-    assert_eq!(
-        snapshot.parts.get(&1).ok_or("missing current part")?.staged,
-        staged
-    );
+    let staged = snapshot.parts.get(&1).ok_or("missing current part")?.staged;
+    assert_eq!(staged.root(), root);
+    assert_eq!(staged.logical_bytes(), logical_bytes);
     assert_eq!(snapshot.operations.len(), usize::try_from(updates)?);
     assert_eq!(snapshot.work.authority_records_read, tail);
     assert!(snapshot.work.backend_read_operations > 2);
@@ -972,7 +968,8 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
     // page, even though its old payload no longer lives in a replay vector.
     let conflict = encode_multipart_part(
         2,
-        staged,
+        root,
+        logical_bytes,
         IdempotencyKey::from_bytes(1_u128.to_le_bytes()),
         &etag,
     );
