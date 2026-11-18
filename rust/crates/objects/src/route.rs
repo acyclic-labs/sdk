@@ -2,6 +2,7 @@
 //! each route through these functions, each paired with the revision its
 //! result carries.
 use crate::convert;
+use crate::error::unavailable;
 use crate::{Blobs, Digest, Error, ObjectsMethod, RootId, wire};
 use acyclic_auth::action::{Action, ObjectsAction};
 use acyclic_stream::Revision;
@@ -468,7 +469,7 @@ pub async fn invoke_at(
 /// `Unavailable` for a reply that is malformed or does not answer it.
 pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
     fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
-        decode(bytes).map_err(|_| wire::ErrorCode::Unavailable.into())
+        decode(bytes).map_err(|_| unavailable())
     }
     let checked = match ObjectsMethod::from_http_route(route)
         .ok_or(wire::ErrorCode::InvalidArgument)?
@@ -525,7 +526,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         ObjectsMethod::Usage => reply::<wire::UsageResponse>(output).map(drop),
         ObjectsMethod::Availability => return Err(wire::ErrorCode::InvalidArgument.into()),
     };
-    checked.map_err(|_| wire::ErrorCode::Unavailable.into())
+    checked.map_err(|_| unavailable())
 }
 
 #[cfg(test)]
