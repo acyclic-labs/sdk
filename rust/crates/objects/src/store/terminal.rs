@@ -117,7 +117,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         &self,
         mut visit: impl FnMut(Vec<Digest>),
     ) -> Result<(), Error> {
-        let mut pages = self.pages(format!("{}f/", self.state.prefix));
+        let mut pages = self.pages(self.namespace_prefix('f'));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 let (root, name) = key

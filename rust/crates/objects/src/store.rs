@@ -694,7 +694,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let mut repaired = Vec::new();
         let mut blobs = HashMap::new();
         let mut parents: HashMap<Digest, Vec<Digest>> = HashMap::new();
-        let mut pages = self.pages(format!("{}e/", self.state.prefix));
+        let mut pages = self.pages(self.namespace_prefix('e'));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 let digest = self.digest_from_key(&key)?;
@@ -754,7 +754,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // A root batch is acknowledged only once its closure and index keys
         // are durable, so one missing any of them was never acknowledged.
         for kind in ["r", "f"] {
-            let mut pages = self.pages(format!("{}{kind}/", self.state.prefix));
+            let mut pages = self.pages(self.namespace_prefix(kind));
             while let Some(page) = pages.next().await? {
                 for (key, _) in page {
                     if !self.batch_survived(&key, &blobs).await? {
@@ -1322,6 +1322,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     /// One listing page at a time, so a pass over a prefix holds one page.
+    fn namespace_prefix(&self, kind: char) -> String {
+        format!("{}{kind}/", self.state.prefix)
+    }
+
     fn pages(&self, prefix: String) -> Pages<'_, M> {
         Pages {
             medium: &*self.medium,
@@ -1533,7 +1537,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             }
         };
         let mut references = Vec::new();
-        let mut pages = self.pages(format!("{}r/", self.state.prefix));
+        let mut pages = self.pages(self.namespace_prefix('r'));
         while let Some(page) = pages.next().await.map_err(suspended)? {
             for (key, _) in page {
                 let batch = self
@@ -1875,7 +1879,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let mut digests = Vec::new();
                 let keys = self
                     .medium
-                    .list(&format!("{}e/", self.state.prefix), after.as_deref(), limit)
+                    .list(&self.namespace_prefix('e'), after.as_deref(), limit)
                     .await
                     .map_err(medium)?;
                 let full = keys.len() == limit;
@@ -2034,7 +2038,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                     epoch,
                     ..Collection::default()
                 };
-                let mut pages = self.pages(format!("{}e/", self.state.prefix));
+                let mut pages = self.pages(self.namespace_prefix('e'));
                 while let Some(page) = pages.next().await? {
                     for (key, _) in page {
                         let digest = self.digest_from_key(&key)?;
@@ -2053,7 +2057,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                     }
                 }
                 // Payloads of no envelope or of a removed version: none can return.
-                let mut pages = self.pages(format!("{}p/", self.state.prefix));
+                let mut pages = self.pages(self.namespace_prefix('p'));
                 while let Some(page) = pages.next().await? {
                     for (key, size) in page {
                         let (digest, version) = self.payload_of(&key)?;
@@ -2158,7 +2162,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             async {
                 self.scrubbed().await?;
                 let mut usage = Usage::default();
-                let mut pages = self.pages(format!("{}e/", self.state.prefix));
+                let mut pages = self.pages(self.namespace_prefix('e'));
                 while let Some(page) = pages.next().await? {
                     for (key, _) in page {
                         let digest = self.digest_from_key(&key)?;
