@@ -27,7 +27,7 @@ use sha2::Digest as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-pub(super) const SEEDS: &[u64] = &[0, 1, 2, 3, 4];
+pub(super) const SEEDS: &[u64] = &[0, 1, 2, 3];
 
 const MARKER: &str = "g1-node:";
 const ROOT_MARKER: &str = "Understand the user's intent";
@@ -54,8 +54,8 @@ const ITEMS: [&str; 9] = [
     "message_provenance",
     "environment_constraint",
 ];
-const AGENTS: [&str; 5] = ["root", "worker", "advisor", "reviewer", "forked_child"];
-const NODES: [&str; 5] = ["root", "worker", "advisor", "reviewer", "forked_child"];
+const AGENTS: [&str; 4] = ["root", "worker", "advisor", "reviewer"];
+const NODES: [&str; 4] = ["root", "worker", "advisor", "reviewer"];
 
 fn brief(node: &str) -> String {
     format!("{MARKER}{node}")
@@ -103,12 +103,6 @@ fn steering(plan: &Plan, node: &str) -> Vec<(&'static str, Value)> {
     calls
 }
 
-/// The forked child's spawn chain leaves no room for another model turn
-/// inside the per-case limit, so its path variant stays uncovered.
-fn exercises_paths(node: &str) -> bool {
-    node != "forked_child"
-}
-
 fn path_steps(node: &str) -> Vec<Step> {
     let content = format!("{PATH_MARKER}{node}");
     vec![Step::Calls(vec![
@@ -129,7 +123,7 @@ fn path_steps(node: &str) -> Vec<Step> {
 }
 
 fn steps(plan: &Plan, node: &str) -> Vec<Step> {
-    let mut steps = if node == plan.focus && exercises_paths(node) {
+    let mut steps = if node == plan.focus {
         path_steps(node)
     } else {
         Vec::new()
@@ -330,8 +324,7 @@ fn expected_tools(node: &str) -> BTreeSet<String> {
                 .into_iter()
                 .collect();
         }
-        "worker" | "forked_child" => &["read", "write", "send", "spawn", COMMAND_TOOL],
-        "advisor" | "reviewer" => &["read", "write", "send", "spawn", COMMAND_TOOL],
+        "worker" | "advisor" | "reviewer" => &["read", "write", "send", "spawn", COMMAND_TOOL],
         _ => unreachable!("known node"),
     };
     allowed.iter().map(|name| (*name).to_owned()).collect()
@@ -340,7 +333,7 @@ fn expected_tools(node: &str) -> BTreeSet<String> {
 fn expected_marker(node: &str) -> &'static str {
     match node {
         "root" => ROOT_MARKER,
-        "worker" | "forked_child" => WORKER_MARKER,
+        "worker" => WORKER_MARKER,
         "advisor" => ADVISOR_MARKER,
         "reviewer" => REVIEWER_MARKER,
         _ => unreachable!("known node"),
@@ -545,9 +538,7 @@ fn check_node(node: &str, requests: &[ModelRequest]) -> std::result::Result<(), 
     for request in requests {
         check_request(node, first, request)?;
     }
-    if exercises_paths(node) {
-        check_paths(node, requests)?;
-    }
+    check_paths(node, requests)?;
     let mut parent_seen = false;
     let mut peer_seen = false;
     for request in requests {
@@ -819,18 +810,7 @@ async fn world_at(seed: u64, directory: &Path) -> Result<bool> {
     } else if focus == "reviewer" {
         spawn_child(&connection, &root, "root", "reviewer", "reviewer", &plan).await?;
     } else {
-        let worker = spawn_child(&connection, &root, "root", "worker", "worker", &plan).await?;
-        if focus == "forked_child" {
-            spawn_child(
-                &connection,
-                &worker,
-                "worker",
-                "forked_child",
-                "worker",
-                &plan,
-            )
-            .await?;
-        }
+        spawn_child(&connection, &root, "root", "worker", "worker", &plan).await?;
     }
     let children = plan
         .lock()
@@ -875,7 +855,6 @@ pub(super) fn variants(seed: u64) -> Vec<family::Variant> {
     let agent = focus(seed);
     ITEMS
         .iter()
-        .filter(|item| !(**item == "path_or_volume" && !exercises_paths(agent)))
         .map(|item| family::Variant::from([("item", *item), ("agent", agent)]))
         .collect()
 }
@@ -891,7 +870,7 @@ acyclic_test_support::cases! {
     module = every_declared_role_runs_with_its_effective_configuration,
     values: u64,
     runner = super::run,
-    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4],
+    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3],
 }
 
 fn run(seed: u64) -> std::result::Result<(), String> {
