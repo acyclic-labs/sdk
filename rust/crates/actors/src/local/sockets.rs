@@ -1804,10 +1804,10 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
         actor: &ActorReference,
         value: Option<WebSocketAutoResponse>,
     ) -> Result<(), GuestError> {
-        if value
-            .as_ref()
-            .is_some_and(|value| value.response_frame_len() > acyclic_stream::MAX_RECORD_BYTES)
-        {
+        if value.as_ref().is_some_and(|value| {
+            prost::encoding::string::encoded_len(1, &value.response)
+                > acyclic_stream::MAX_RECORD_BYTES
+        }) {
             return Err(host_error(
                 "WebSocket frame exceeds the channel record bound",
             ));

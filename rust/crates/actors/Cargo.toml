@@ -28,6 +28,7 @@ test-support = [
 
 [dependencies]
 acyclic-actors-diagnostics = { version = "=0.2.0", path = "../actors-diagnostics" }
+acyclic-actors-guest-wire = { version = "=0.2.0", path = "../actors-guest-wire" }
 acyclic-actors-inventory = { version = "=0.2.0", path = "../actors-inventory" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }

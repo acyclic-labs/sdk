@@ -1,24 +1,12 @@
 //! Host adapters for Durable Object state. Socket ownership stays with the host:
 //! Cloud's and the local runtime's (`local::Sockets`).
-use super::{GuestError, SocketPayload};
+use super::{GuestError, SocketPayload, WebSocketAutoResponse, WebSocketId};
 use crate::addressing::ActorReference;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, sync::Arc};
 use tokio::sync::Mutex;
-use ts_rs::TS;
 
-/// Runtime-owned hibernatable socket identity, unrelated to the actor's identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct WebSocketId(pub String);
-/// A request/response pair answered by the host without waking the object.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct WebSocketAutoResponse {
-    /// Exact incoming text frame.
-    pub request: String,
-    /// Exact outgoing text frame.
-    pub response: String,
-}
 /// Original socket failure retained across native executor threads.
 #[cfg(not(target_arch = "wasm32"))]
 pub type SocketTerminalError = dyn std::error::Error + Send + Sync;

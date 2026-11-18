@@ -19,6 +19,7 @@ name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors-diagnostics",
+ "acyclic-actors-guest-wire",
  "acyclic-actors-inventory",
  "acyclic-auth",
  "acyclic-auth-action",
@@ -73,6 +74,15 @@ dependencies = [
  "acyclic-auth",
  "serde",
  "serde_bytes",
+ "ts-rs",
+]
+
+[[package]]
+name = "acyclic-actors-guest-wire"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "serde",
  "ts-rs",
 ]
 

@@ -25,6 +25,7 @@
   "acyclic-stream-trust",
   "acyclic-objects",
   "acyclic-actors-diagnostics",
+  "acyclic-actors-guest-wire",
   "acyclic-actors-inventory",
   "acyclic-actors",
   "acyclic-machines-limits",
