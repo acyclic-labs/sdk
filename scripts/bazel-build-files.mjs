@@ -671,6 +671,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
         "//conditions:default": [],
     })`;
   const testOnlySources = bazel?.["unit-test-only-sources"] ?? [];
+  const testOnlyDataPrefixes = bazel?.["unit-test-only-compile-data-prefixes"] ?? [];
   const libraryTestFeatures = bazel?.["library-test-features"] ?? [];
   const libraryTestVariant = bazel?.["library-test-variant"];
   const unitTestVariants = bazel?.["unit-test-dependency-variants"] ?? {};
@@ -692,6 +693,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
   const libInputs = (target, unitTest = false) => {
     const extra = extras(target, libCovered);
+    const data = unitTest ? extra.data : extra.data.filter(file =>
+      !testOnlyDataPrefixes.some(prefix => file.startsWith(prefix)));
     const testOnly = file => !unitTest && testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
     return [
       ["srcs", plus(
@@ -699,7 +702,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
         list(extra.srcs.filter(file => !platformSourcePatterns.includes(file) && !testOnly(file))),
         configuredSources,
       )],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...data, ...(readsRepository(p) ? repositorySources : [])]))],
     ];
   };
   const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
