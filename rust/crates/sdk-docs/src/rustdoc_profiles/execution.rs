@@ -526,7 +526,7 @@ pub fn execute_profile(
         // Cargo owns qualified dependency/workspace feature syntax and resolution.
         // Keep the cheap early rejection for unknown owner-local names only.
         if !feature.contains('/') {
-            super::validate_local_feature(package, feature)?;
+            super::local_feature(package, feature)?;
         }
     }
     let target_dir = target_dir.as_ref();
