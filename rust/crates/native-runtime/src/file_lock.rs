@@ -8,7 +8,7 @@
 //! explicit unlock releases the description for every holder at once.
 //!
 //! [`FileLock`] is the only way the workspace takes such a lock. It unlocks
-//! explicitly when released or dropped, so close-to-release cannot be written.
+//! explicitly when released or dropped, unless the caller ties the lock to the open file description.
 //!
 //! The lock is advisory on every platform: it excludes other lock holders and
 //! nothing else. A Windows byte-range lock is mandatory for I/O on its range,
@@ -150,6 +150,20 @@ impl FileLock {
         Ok(())
     }
 
+    /// Acquires a lock without waiting and holds it until the last descriptor
+    /// for this open file description closes or the lock is explicitly released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::WouldBlock`] under contention, otherwise the OS error.
+    #[cfg(unix)]
+    pub fn try_lock_description(
+        file: std::os::fd::BorrowedFd<'_>,
+        mode: FileLockMode,
+    ) -> io::Result<()> {
+        sys::try_lock_description(file, mode)
+    }
+
     /// Takes the lock on `file` only if no conflicting holder exists, and
     /// keeps it, with `file` open, until this process exits. Only the exit
     /// releases it, so it suits a process that holds the lock for its whole
@@ -241,6 +255,25 @@ mod sys {
         }
     }
 
+    #[cfg(unix)]
+    pub(super) fn try_lock_description(
+        file: std::os::fd::BorrowedFd<'_>,
+        mode: FileLockMode,
+    ) -> io::Result<()> {
+        let operation = match mode {
+            FileLockMode::Shared => rustix::fs::FlockOperation::NonBlockingLockShared,
+            FileLockMode::Exclusive => rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        };
+        rustix::fs::flock(file, operation).map_err(io::Error::from)
+    }
+
+    #[cfg(unix)]
+    pub(super) fn try_lock(file: &File, mode: FileLockMode) -> io::Result<()> {
+        use std::os::fd::AsFd as _;
+        try_lock_description(file.as_fd(), mode)
+    }
+
+    #[cfg(not(unix))]
     pub(super) fn try_lock(file: &File, mode: FileLockMode) -> io::Result<()> {
         match mode {
             FileLockMode::Shared => file.try_lock_shared(),
