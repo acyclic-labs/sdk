@@ -750,7 +750,6 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             for record in raw["external_crates"].as_object().unwrap().values() {
                 if record["name"] == "relocation_helper" {
                     let physical = record["path"].as_str().unwrap();
-                    assert!(physical.contains(".profile-build"), "{physical}");
                     paths.push((profile.to_owned(), physical.to_owned()));
                 }
             }
@@ -769,6 +768,8 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
         paths
     };
+    let original_build = fixture.output.join(".profile-build");
+    let relocated_build = relocated.output.join(".profile-build");
     sdk_docs::with_rustdoc_cache(|| {
         let mut rebased_paths = BTreeMap::new();
         let mut expected_dependencies = Vec::new();
@@ -776,11 +777,11 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             let rebased = rebased_paths.entry(original.clone()).or_insert_with(|| {
                 let rebased = super::paths::rebase(
                     &original,
-                    fixture.output.to_str().unwrap(),
-                    relocated.output.to_str().unwrap(),
+                    original_build.to_str().unwrap(),
+                    relocated_build.to_str().unwrap(),
                     cfg!(windows),
                 )
-                .unwrap();
+                .expect("dependency must come from the profile build tree");
                 assert_eq!(
                     sdk_file_identity::stamp(Path::new(&original)).unwrap(),
                     sdk_file_identity::stamp(Path::new(&rebased)).unwrap(),
