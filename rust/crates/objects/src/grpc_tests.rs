@@ -18,6 +18,7 @@ mod revision_transport;
 /// what `catch_up` applied, at the replica's own applied revision.
 struct Replica {
     primary: MemoryObjects,
+    surplus_batch_receipt: bool,
     view: MemoryObjects,
     applied: AppliedRevisions,
     pending: Mutex<Vec<OwnedBytes>>,
@@ -36,6 +37,7 @@ impl Replica {
         );
         Ok(Arc::new(Self {
             primary,
+            surplus_batch_receipt: false,
             view: MemoryObjects::memory(),
             applied,
             pending: Mutex::default(),
@@ -75,6 +77,18 @@ impl Blobs for Replica {
     }
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         self.primary.put_manifest(manifest).await
+    }
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        let mut receipts = self.primary.put_batch_durable(requests).await;
+        if self.surplus_batch_receipt
+            && let Some(receipt) = receipts.first().cloned()
+        {
+            receipts.push(receipt);
+        }
+        receipts
     }
     async fn get(&self, digest: Digest, range: ByteRange, maximum: u64) -> Result<Object, Error> {
         let served = self.applied.current();
@@ -128,6 +142,24 @@ impl Blobs for Replica {
     async fn revisions(&self) -> Result<Option<&AppliedRevisions>, Error> {
         Ok(Some(&self.applied))
     }
+}
+
+#[tokio::test]
+async fn grpc_batch_rejects_a_surplus_provider_receipt() -> TestResult {
+    let mut replica = Replica::new().await?;
+    Arc::get_mut(&mut replica)
+        .ok_or("replica shared before fault admission")?
+        .surplus_batch_receipt = true;
+    let body = crate::Sealed::new(b"durable put with surplus receipt".as_slice().into());
+    let digest = Digest::sealed(&body);
+    let receipts = client(&replica)
+        .put_batch_sealed(vec![(body, Vec::new())])
+        .await;
+    assert!(
+        matches!(receipts.as_slice(), [Err(error)] if error.code == wire::ErrorCode::Unavailable)
+    );
+    replica.primary.head(digest).await?;
+    Ok(())
 }
 
 /// A client of `replica` over an in-process HTTP/2 transport.
