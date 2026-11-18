@@ -181,9 +181,7 @@ fn project_inner(
     rows: &[Value],
     template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    let mut manifest: Value =
-        serde_json::from_slice(&fs::read(fixture.output.join(GENERATION_MANIFEST)).unwrap())
-            .unwrap();
+    let mut manifest = read_generation_manifest(&fixture.output);
     // The CLI drift checks recompute the logical digests in this inventory.
     let digests = manifest["rustdocFiles"].as_object_mut().unwrap();
     let mut specs = BTreeMap::new();

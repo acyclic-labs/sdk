@@ -155,9 +155,7 @@ fn crate_workspace_and_plugin_source_edits_invalidate_output() {
         true,
     );
     assert!(refreshed.status.success(), "{}", output_message(&refreshed));
-    let manifest: Value =
-        serde_json::from_slice(&fs::read(refreshed_output.join(GENERATION_MANIFEST)).unwrap())
-            .unwrap();
+    let manifest = read_generation_manifest(&refreshed_output);
     for (path, hash) in restored {
         assert_eq!(manifest["sourceFiles"][path], hash);
     }
@@ -222,9 +220,7 @@ fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
         true,
     );
     assert!(result.status.success(), "{}", output_message(&result));
-    let generation: Value =
-        serde_json::from_slice(&fs::read(fixture.output.join(GENERATION_MANIFEST)).unwrap())
-            .unwrap();
+    let generation = read_generation_manifest(&fixture.output);
     let release_relative = generation["releaseManifest"].as_str().unwrap();
     let release_path = fixture.output.join(release_relative);
     let release_bytes = fs::read(&release_path).unwrap();

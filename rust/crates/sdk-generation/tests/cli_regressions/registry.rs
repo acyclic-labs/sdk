@@ -573,8 +573,7 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
     let generated = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
     assert!(generated.status.success(), "{}", output_message(&generated));
     let output = fixture.output.join("releases/1.0.0");
-    let manifest: Value =
-        serde_json::from_slice(&fs::read(output.join(GENERATION_MANIFEST)).unwrap()).unwrap();
+    let manifest = read_generation_manifest(&output);
     let corpus = &manifest["registryCorpus"];
     assert_eq!(corpus["declared_anchors"], json!([declared]));
     let anchors = corpus["anchors"].as_array().unwrap();
@@ -710,8 +709,7 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
     let data: Value =
         serde_json::from_slice(&fs::read(version.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
     assert_eq!(data["source"]["publicationStatus"], "registryReleased");
-    let mut manifest: Value =
-        serde_json::from_slice(&fs::read(version.join(GENERATION_MANIFEST)).unwrap()).unwrap();
+    let mut manifest = read_generation_manifest(&version);
     assert_eq!(manifest["scope"]["kind"], "historicalRelease");
     assert!(manifest["sourceFiles"]["rust/crates/demo/descriptor.bin"].is_string());
     assert!(manifest["declaredSourceToolchain"]
