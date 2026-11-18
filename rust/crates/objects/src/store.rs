@@ -974,13 +974,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Err(error @ MediumError::Ambiguous(_)) => return Err(Commit::Unknown(moved(error))),
             Err(error) => return Err(Commit::Failed(medium(error))),
         }
-        self.flush_blobs(Some(references), || {
-            let mut keys = keys.unwrap_or_default();
-            keys.push(key.to_owned());
-            keys
-        })
-        .await
-        .map_err(Commit::Unflushed)
+        let Some(mut keys) = keys else {
+            return Ok(());
+        };
+        keys.push(key.to_owned());
+        self.flush_blobs(Some(references), keys)
+            .await
+            .map_err(Commit::Unflushed)
     }
 
     /// Admit and publish one batch, retaining unknown outcomes for recovery.
@@ -1136,12 +1136,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     async fn flush_blobs(
         &self,
         only: Option<&[Digest]>,
-        keys: impl FnOnce() -> Vec<String>,
+        mut keys: Vec<String>,
     ) -> Result<(), Error> {
         if !self.medium.volatile() {
             return Ok(());
         }
-        let mut keys = keys();
         let mut covered = Vec::new();
         let mut seen = HashSet::new();
         let mut pending: Vec<Digest> = if let Some(only) = only {
@@ -1836,7 +1835,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 self.issued().await?;
-                self.flush_blobs(only, Vec::new).await?;
+                self.flush_blobs(only, Vec::new()).await?;
                 // A blob collected since its put is not durable however flushed.
                 for digest in only.into_iter().flatten() {
                     match self.blob(digest).await? {
