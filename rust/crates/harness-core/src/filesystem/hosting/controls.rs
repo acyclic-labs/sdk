@@ -693,7 +693,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         let mut changes = Vec::new();
         let mut stack = Vec::new();
         let mut children = children.clone();
-        children.bind(Arc::clone(self.store.provider()));
+        children.bind(self.store.provider().clone());
         stack.push((parent.clone(), children, true));
         while let Some((parent, children, watched)) = stack.pop() {
             let mut after = None;
@@ -788,7 +788,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     // children; its descendants are visited to close and
                     // resume paused actors and to find reported nodes.
                     let mut open = state.open_children.clone();
-                    open.bind(Arc::clone(self.store.provider()));
+                    open.bind(self.store.provider().clone());
                     stack.push((child, open, reported));
                 }
             }
@@ -818,7 +818,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             }
             None => crate::agent::Children::new(),
         };
-        open.bind(Arc::clone(self.store.provider()));
+        open.bind(self.store.provider().clone());
         Ok(open)
     }
 }
