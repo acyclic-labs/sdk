@@ -270,7 +270,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
             .metadata
             .append("acyclic-original-bin", "AwQ=".parse().unwrap());
         let error = Error::from_status_parts(parts.clone());
-        let port = refusal_port(js_error(error.clone()));
+        let port = refusal_port(js_error(&error));
         let client = BinaryObjects::new(JavaScriptTransport::new(port.clone()).unwrap());
         let actual = client.head(digest).await.unwrap_err();
         assert_eq!(
@@ -285,7 +285,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
         assert!(owners_balanced(&port));
     }
     for cut in 0..11 {
-        let port = refusal_port(corrupt_refusal(js_error(expected.clone()), cut));
+        let port = refusal_port(corrupt_refusal(js_error(&expected), cut));
         let client = BinaryObjects::new(JavaScriptTransport::new(port.clone()).unwrap());
         assert_eq!(
             client.head(digest).await.unwrap_err(),

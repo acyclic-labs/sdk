@@ -51,8 +51,8 @@ fn unavailable() -> Error {
     wire::ErrorCode::Unavailable.into()
 }
 
-fn original_error(value: JsValue) -> Error {
-    if let Ok(refusal) = Reflect::get(&value, &"refusal".into())
+fn original_error(value: &JsValue) -> Error {
+    if let Ok(refusal) = Reflect::get(value, &"refusal".into())
         && !refusal.is_undefined()
     {
         return acyclic_auth::refusal::javascript::parts(&refusal, |view| {
@@ -60,7 +60,7 @@ fn original_error(value: JsValue) -> Error {
         })
         .map_or_else(|_| unavailable(), Error::from_status_parts);
     }
-    if let Ok(detail) = Reflect::get(&value, &"detailBytes".into())
+    if let Ok(detail) = Reflect::get(value, &"detailBytes".into())
         && !detail.is_undefined()
         && let Some(error) = detail
             .dyn_into::<Uint8Array>()
@@ -71,7 +71,7 @@ fn original_error(value: JsValue) -> Error {
     {
         return error;
     }
-    error_code(&value)
+    error_code(value)
         .ok()
         .and_then(|code| wire::ErrorCode::try_from(code).ok())
         .filter(|code| *code != wire::ErrorCode::Unspecified)
@@ -80,7 +80,7 @@ fn original_error(value: JsValue) -> Error {
 
 /// Preserve an original Objects failure at a JavaScript boundary.
 #[must_use]
-pub fn js_error(value: Error) -> JsValue {
+pub fn js_error(value: &Error) -> JsValue {
     let result = js_sys::Error::new(&value.to_string());
     result.set_name("ObjectsV1Error");
     // The fresh error is extensible and has no caller-defined properties.
@@ -95,7 +95,7 @@ pub fn js_error(value: Error) -> JsValue {
 
 fn method(owner: &JsValue, name: &str) -> Result<Function, Error> {
     Reflect::get(owner, &JsValue::from_str(name))
-        .map_err(original_error)?
+        .map_err(|error| original_error(&error))?
         .dyn_into()
         .map_err(|_| unavailable())
 }
@@ -125,7 +125,7 @@ impl JavaScriptTransport {
         let owner = self
             .open
             .call2(&self.owner, &JsValue::from_str(route), &input)
-            .map_err(original_error)?;
+            .map_err(|error| original_error(&error))?;
         Ok(Request {
             close: method(&owner, "close")?,
             owner,
@@ -140,8 +140,8 @@ struct Request {
 
 impl Request {
     fn maximum_frame_bytes(&self) -> Result<Option<usize>, Error> {
-        let maximum =
-            Reflect::get(&self.owner, &"maximumFrameBytes".into()).map_err(original_error)?;
+        let maximum = Reflect::get(&self.owner, &"maximumFrameBytes".into())
+            .map_err(|error| original_error(&error))?;
         if maximum.is_undefined() {
             return Ok(None);
         }
@@ -158,13 +158,14 @@ impl Request {
     }
 
     fn opened(&self) -> Result<(), Error> {
-        let opened = Reflect::get(&self.owner, &"opened".into()).map_err(original_error)?;
+        let opened =
+            Reflect::get(&self.owner, &"opened".into()).map_err(|error| original_error(&error))?;
         if !opened.is_undefined() {
             opened
                 .dyn_into::<Function>()
                 .map_err(|_| unavailable())?
                 .call0(&self.owner)
-                .map_err(original_error)?;
+                .map_err(|error| original_error(&error))?;
         }
         Ok(())
     }
@@ -172,21 +173,23 @@ impl Request {
     async fn next(&self) -> Result<Option<JsValue>, Error> {
         let promise: Promise = method(&self.owner, "next")?
             .call0(&self.owner)
-            .map_err(original_error)?
+            .map_err(|error| original_error(&error))?
             .dyn_into()
             .map_err(|_| unavailable())?;
-        let reply = JsFuture::from(promise).await.map_err(original_error)?;
+        let reply = JsFuture::from(promise)
+            .await
+            .map_err(|error| original_error(&error))?;
         Ok((!reply.is_null()).then_some(reply))
     }
 }
 
 fn reply_body(reply: &JsValue) -> Result<Bytes, Error> {
     let body: Uint8Array = Reflect::get(reply, &"body".into())
-        .map_err(original_error)?
+        .map_err(|error| original_error(&error))?
         .dyn_into()
         .map_err(|_| unavailable())?;
-    let (body, ()) =
-        acyclic_stream::javascript_bytes::snapshot(&body, |_| Ok(())).map_err(original_error)?;
+    let (body, ()) = acyclic_stream::javascript_bytes::snapshot(&body, |_| Ok(()))
+        .map_err(|error| original_error(&error))?;
     Ok(body.into())
 }
 
@@ -204,13 +207,14 @@ impl Transport for JavaScriptTransport {
         let request = self.request(route, &input)?;
         let reply = request.next().await?.ok_or_else(unavailable)?;
         let body = reply_body(&reply)?;
-        let revision = Reflect::get(&reply, &"revision".into()).map_err(original_error)?;
+        let revision =
+            Reflect::get(&reply, &"revision".into()).map_err(|error| original_error(&error))?;
         let revision = if revision.is_undefined() {
             None
         } else {
             let revision: Uint8Array = revision.dyn_into().map_err(|_| unavailable())?;
             let (revision, ()) = acyclic_stream::javascript_bytes::snapshot(&revision, |_| Ok(()))
-                .map_err(original_error)?;
+                .map_err(|error| original_error(&error))?;
             let revision = acyclic_stream::wire::Revision::decode(Bytes::from(revision))
                 .map_err(|_| unavailable())?;
             Some(
@@ -346,7 +350,7 @@ impl ObjectsV1Request {
     /// as well as a parked change; no second observation source is created.
     pub fn observe(owner: JsValue, input: &Uint8Array) -> Result<Self, JsValue> {
         let input = availability_input(input)?;
-        let transport = JavaScriptTransport::new(owner).map_err(js_error)?;
+        let transport = JavaScriptTransport::new(owner).map_err(|error| js_error(&error))?;
         let client = super::BinaryObjects::new(transport);
         Ok(Self::observe_source(async move {
             crate::route::availability(&client, input).await
@@ -357,14 +361,14 @@ impl ObjectsV1Request {
     pub fn frame(input: &Uint8Array) -> Result<Vec<u8>, JsValue> {
         let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
         let frame = wire::AvailabilityCursor::decode(input.as_slice())
-            .map_err(|_| js_error(unavailable()))?;
+            .map_err(|_| js_error(&unavailable()))?;
         Ok(frame.encode_length_delimited_to_vec())
     }
 
     /// Resolve one original reply, or null when closed or consumed.
     #[wasm_bindgen(unchecked_return_type = "ObjectsV1BinaryReply | null")]
     pub async fn next(&self) -> Result<JsValue, JsValue> {
-        match self.state.next().await.map_err(js_error)? {
+        match self.state.next().await.map_err(|error| js_error(&error))? {
             Some((body, revision)) => js_reply(&body, revision.as_ref()),
             None => Ok(JsValue::NULL),
         }
@@ -379,5 +383,5 @@ impl ObjectsV1Request {
 fn availability_input(input: &Uint8Array) -> Result<wire::AvailabilityRequest, JsValue> {
     let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
     wire::AvailabilityRequest::decode(input.as_slice())
-        .map_err(|_| js_error(wire::ErrorCode::InvalidArgument.into()))
+        .map_err(|_| js_error(&wire::ErrorCode::InvalidArgument.into()))
 }

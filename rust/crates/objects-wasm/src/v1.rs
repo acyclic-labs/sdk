@@ -12,18 +12,18 @@ use wasm_bindgen::prelude::*;
 )]
 fn byte_limit(value: f64) -> Result<usize, JsValue> {
     if value.is_nan() || value < 0.0 || value.fract() != 0.0 {
-        return Err(error(wire::ErrorCode::InvalidArgument.into()));
+        return Err(error(&wire::ErrorCode::InvalidArgument.into()));
     }
     Ok(value as usize)
 }
 
 #[wasm_bindgen]
 pub fn encode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::encode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(error)
+    json::encode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(|cause| error(&cause))
 }
 #[wasm_bindgen]
 pub fn decode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::decode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(error)
+    json::decode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(|cause| error(&cause))
 }
 #[wasm_bindgen]
 pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue> {
@@ -31,7 +31,7 @@ pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue
         .iter()
         .chain(acyclic_objects::HTTP_STREAM_ROUTES)
         .find(|(name, _, _)| *name == route)
-        .ok_or_else(|| error(wire::ErrorCode::InvalidArgument.into()))?;
+        .ok_or_else(|| error(&wire::ErrorCode::InvalidArgument.into()))?;
     Ok(if output { *response } else { *input }.to_owned())
 }
 
@@ -57,7 +57,8 @@ pub fn objects_v1_digest(bytes: &[u8]) -> Vec<u8> {
 /// Checks one route's binary reply against its binary request, as the Rust clients do.
 #[wasm_bindgen]
 pub fn verify_objects_v1(route: &str, input: Vec<u8>, output: Vec<u8>) -> Result<(), JsValue> {
-    acyclic_objects::route::verify(route, input.into(), output.into()).map_err(error)
+    acyclic_objects::route::verify(route, input.into(), output.into())
+        .map_err(|cause| error(&cause))
 }
 
 /// One in-memory account served through the canonical route dispatch.
@@ -94,7 +95,11 @@ impl ObjectsV1Memory {
         route: String,
         bytes: &js_sys::Uint8Array,
     ) -> Result<js_sys::Uint8Array, JsValue> {
-        let reply = self.open(route, bytes)?.body().await.map_err(error)?;
+        let reply = self
+            .open(route, bytes)?
+            .body()
+            .await
+            .map_err(|cause| error(&cause))?;
         Ok(js_sys::Uint8Array::from(reply.as_slice()))
     }
 }
