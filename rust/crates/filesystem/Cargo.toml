@@ -82,6 +82,7 @@ build-script-inputs = [
 test-build-script = ["operation_claim_model"]
 test-without-build-script = [
     "extent_codec",
+    "metadata_codec",
     "checkout_cancellation",
     "checkout_content",
     "checkout_live",
@@ -108,6 +109,7 @@ test-without-build-script = [
 ]
 test-narrow-runfiles = [
     "extent_codec",
+    "metadata_codec",
     "checkout_cancellation",
     "checkout_content",
     "checkout_live",
@@ -151,6 +153,7 @@ rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
 extent_codec = ["acyclic_fs", "acyclic_fs_format"]
+metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
 memory_authority = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
 memory_objects = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
@@ -319,6 +322,10 @@ path = "tests/memory_objects.rs"
 [[test]]
 name = "extent_codec"
 path = "tests/extent_codec.rs"
+
+[[test]]
+name = "metadata_codec"
+path = "tests/metadata_codec.rs"
 
 [[test]]
 name = "checkout_cancellation"
