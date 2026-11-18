@@ -769,16 +769,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let directory = fixture_directory();
     let relocated_root = directory.path().join("source");
     let relocated_output = directory.path().join("output");
-    assert!(Command::new(runtime::git())
-        .args([
-            "clone",
-            "--quiet",
-            fixture.root.to_str().unwrap(),
-            relocated_root.to_str().unwrap()
-        ])
-        .status()
-        .unwrap()
-        .success());
+    clone_source(&fixture.root, &relocated_root);
     let relocated = Fixture {
         directory,
         root: relocated_root,

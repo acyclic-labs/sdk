@@ -459,64 +459,53 @@ fn run_generate(
     ))
 }
 
-fn generated_span_fixture_pair() -> (Fixture, Fixture) {
-    let first = fixture(false);
-    let generated_relative = "target/generated/wire.rs";
-    let generated = first.root.join(generated_relative);
-    fs::create_dir_all(generated.parent().unwrap()).unwrap();
-    fs::write(&generated, b"pub struct Wire;\n").unwrap();
-
-    let receipt_path = first.rustdoc.join("demo_docs.json");
-    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
-    receipt["index"]["0"]["span"] = json!({
-        "filename": generated.canonicalize().unwrap().to_string_lossy(),
-        "begin": [1, 0],
-        "end": [1, 16]
-    });
-    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
-
-    let directory = fixture_directory();
-    let second_root = directory.path().join("source");
+fn clone_source(source: &Path, destination: &Path) {
     let clone = Command::new(runtime::git())
-        .args([
-            "clone",
-            "--quiet",
-            first.root.to_str().unwrap(),
-            second_root.to_str().unwrap(),
-        ])
+        .args(["clone", "--quiet"])
+        .arg(source)
+        .arg(destination)
         .output()
         .unwrap();
     assert!(
         clone.status.success(),
         "git clone failed: {}",
-        String::from_utf8_lossy(&clone.stderr)
+        output_message(&clone)
     );
+}
+
+fn generated_span_fixture_pair() -> (Fixture, Fixture) {
+    fn place_span(root: &Path, receipt: &mut Value) {
+        let generated = root.join("target/generated/wire.rs");
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        fs::write(&generated, b"pub struct Wire;\n").unwrap();
+        receipt["index"]["0"]["span"] = json!({
+            "filename": generated.canonicalize().unwrap().to_string_lossy(),
+            "begin": [1, 0],
+            "end": [1, 16]
+        });
+    }
+    let first = fixture(false);
+
+    let receipt_path = first.rustdoc.join("demo_docs.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    place_span(&first.root, &mut receipt);
+    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+
+    let directory = fixture_directory();
+    let second_root = directory.path().join("source");
+    clone_source(&first.root, &second_root);
     fs::create_dir_all(second_root.join("rustdoc")).unwrap();
-    fs::copy(
-        first.rustdoc.join("demo_docs.json"),
-        second_root.join("rustdoc/demo_docs.json"),
-    )
-    .unwrap();
     fs::copy(
         first.rustdoc.join("demo_docs.source.sha256"),
         second_root.join("rustdoc/demo_docs.source.sha256"),
     )
     .unwrap();
-    let second_generated = second_root.join(generated_relative);
-    fs::create_dir_all(second_generated.parent().unwrap()).unwrap();
-    fs::write(&second_generated, b"pub struct Wire;\n").unwrap();
-    let second_receipt = second_root.join("rustdoc/demo_docs.json");
-    let mut second_json: Value =
-        serde_json::from_slice(&fs::read(&second_receipt).unwrap()).unwrap();
-    second_json["index"]["0"]["span"] = json!({
-        "filename": second_generated
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy(),
-        "begin": [1, 0],
-        "end": [1, 16]
-    });
-    fs::write(&second_receipt, serde_json::to_vec(&second_json).unwrap()).unwrap();
+    place_span(&second_root, &mut receipt);
+    fs::write(
+        second_root.join("rustdoc/demo_docs.json"),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
 
     let second = Fixture {
         directory,
