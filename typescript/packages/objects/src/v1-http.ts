@@ -44,7 +44,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       return objectsStreamRequest(input, async function* (bytes, controller) {
         const ready = ensureObjectsWasm(controller.signal);
         if (ready !== undefined) await ready;
-        yield* client.send(route, bytes, controller);
+        yield* client.send(route, bytes, controller, true);
       }, this.timeoutMs, this.maximumResponse);
     }
     return objectsRequest(input, async (bytes, controller) => {
@@ -52,7 +52,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       if (ready !== undefined) await ready;
       return observed(this.observer, "objects", route,
         async sizes => {
-          const source = this.send(route, bytes, controller, sizes);
+          const source = this.send(route, bytes, controller, false, sizes);
           try {
             const reply = await source.next();
             if (reply.done) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
@@ -61,9 +61,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         });
     }, this.timeoutMs);
   }
-  private async *send(route: string, input: Uint8Array, controller: AbortController, sizes?: OperationSizes): AsyncGenerator<Uint8Array, void> {
+  private async *send(route: string, input: Uint8Array, controller: AbortController, streaming: boolean, sizes?: OperationSizes): AsyncGenerator<Uint8Array, void> {
     controller.signal.throwIfAborted();
-    const streaming = route === "blobs/availability";
     const request = encode_objects_v1_json(objects_v1_http_type(route, false), input, input.byteLength);
     if (sizes) sizes.requestBytes = request.byteLength;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
