@@ -473,7 +473,10 @@ impl FuseProjection {
                             return Ok(self.core.source.create_directory(path, metadata, work)?);
                         }
                         let (kind, device) =
-                            crate::native_mount::source::special_mount_node(kind, u64::from(rdev))?;
+                            acyclic_fs_native_contract::device::special_mount_node(
+                                kind,
+                                u64::from(rdev),
+                            )?;
                         Ok(self
                             .core
                             .source

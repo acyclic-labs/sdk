@@ -104,26 +104,6 @@ pub type ContentSink<'a> =
 pub type NativeMountContentSink<'a> =
     dyn FnMut(u64, crate::kernel::OwnedSourceChunk) -> Result<(), MountSourceError> + 'a;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn special_mount_node(
-    mode: libc::mode_t,
-    device: u64,
-) -> Result<(MountNodeKind, Option<(u32, u32)>), i32> {
-    let kind = match mode {
-        libc::S_IFIFO => MountNodeKind::Fifo,
-        libc::S_IFSOCK => MountNodeKind::Socket,
-        libc::S_IFCHR => MountNodeKind::CharacterDevice,
-        libc::S_IFBLK => MountNodeKind::BlockDevice,
-        _ => return Err(libc::EOPNOTSUPP),
-    };
-    let device = matches!(
-        kind,
-        MountNodeKind::CharacterDevice | MountNodeKind::BlockDevice
-    )
-    .then(|| crate::native_host::split_device(device));
-    Ok((kind, device))
-}
-
 /// One data span within a bounded sparse open-file snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MountSparseSpan {

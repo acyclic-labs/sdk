@@ -438,6 +438,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-lease-path-proof",
+ "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-stream",
  "futures",
@@ -490,6 +491,7 @@ version = "0.2.0"
 dependencies = [
  "cap-primitives",
  "cap-std",
+ "libc",
 ]
 
 [[package]]

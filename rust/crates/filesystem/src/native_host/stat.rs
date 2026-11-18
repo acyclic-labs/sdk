@@ -77,7 +77,9 @@ impl HostStat {
             crate::demand::SourceNodeKind::CharacterDevice
                 | crate::demand::SourceNodeKind::BlockDevice
         ) {
-            return Some(split_device(self.raw.st_rdev as u64));
+            return Some(acyclic_fs_native_contract::device::split_device(
+                self.raw.st_rdev as u64,
+            ));
         }
         None
     }
