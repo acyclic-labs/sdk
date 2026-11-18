@@ -162,3 +162,8 @@ path = "tests/main.rs"
 [[test]]
 name = "session-contracts"
 path = "tests/session_contracts.rs"
+
+[[test]]
+name = "provider-contracts"
+path = "tests/provider_contracts.rs"
+required-features = ["conformance"]

@@ -24,17 +24,8 @@ mod record_formats;
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod retry_recovery_loom;
 
-#[cfg(all(not(loom), feature = "conformance"))]
-mod wave1_coverage;
-
-#[cfg(all(not(loom), feature = "conformance"))]
-mod wave1_keys;
-
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod wave1_loom;
-
-#[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "conformance"))]
-mod wave1_recovery;
 
 #[cfg(all(loom, feature = "model-checking"))]
 mod revision_frontier_loom;
