@@ -3,7 +3,8 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use super::{
-    Capabilities, ColourDepth, Environment, ImageProtocol, KeyboardProtocol, ModeState, Multiplexer,
+    Capabilities, ColourDepth, Environment, ImageProtocol, KeyboardProtocol, MOUSE_SELECTIONS,
+    ModeState, Multiplexer,
 };
 
 /// Startup query deadline, shared by the entire batch, not by each query.
@@ -16,8 +17,7 @@ const INDEPENDENT_MODES: [u16; 5] = [2026, 2027, 1004, 2004, 1049];
 fn modes() -> impl Iterator<Item = u16> {
     INDEPENDENT_MODES
         .into_iter()
-        .chain(super::restore::MOUSE_PROTOCOLS)
-        .chain(super::restore::MOUSE_ENCODINGS)
+        .chain(MOUSE_SELECTIONS.into_iter().flatten().copied())
 }
 
 /// Deadline-bound transport. Readiness waits belong to the original device;

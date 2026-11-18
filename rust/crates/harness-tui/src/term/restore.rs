@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 use super::{Capabilities, ModeState};
+use acyclic_harness_tui_terminal::MOUSE_SELECTIONS;
 
 /// Screen selection made by the application/configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,12 +24,6 @@ pub struct RestoreGuard<W: Write> {
     /// Device accesses other than presented frames (see `Present`).
     outside: u64,
 }
-
-/// xterm has two independent exclusive selections: reporting protocol and
-/// encoding. Both must restore the selection displaced by the session.
-pub(super) const MOUSE_PROTOCOLS: [u16; 5] = [9, 1000, 1001, 1002, 1003];
-pub(super) const MOUSE_ENCODINGS: [u16; 4] = [1005, 1006, 1015, 1016];
-const MOUSE_SELECTIONS: [&[u16]; 2] = [&MOUSE_PROTOCOLS, &MOUSE_ENCODINGS];
 
 impl<W: Write> RestoreGuard<W> {
     /// No terminal changes occur until setup or `enable_mode` is called.
@@ -418,8 +413,7 @@ fn resume_reapplies_the_latest_exclusive_selection() {
     let mut caps = Capabilities::default();
     for mode in [1049]
         .into_iter()
-        .chain(MOUSE_PROTOCOLS)
-        .chain(MOUSE_ENCODINGS)
+        .chain(MOUSE_SELECTIONS.into_iter().flatten().copied())
     {
         caps.modes.insert(mode, ModeState::Reset);
     }

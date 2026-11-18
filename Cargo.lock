@@ -1369,6 +1369,7 @@ name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
  "acyclic-harness-tui-core",
+ "acyclic-harness-tui-terminal",
  "acyclic-markdown",
  "acyclic-native-runtime",
  "acyclic-test-support",
@@ -1389,7 +1390,6 @@ dependencies = [
  "tempfile",
  "unicode-segmentation",
  "unicode-width",
- "vte",
  "zeroize",
 ]
 
@@ -1416,6 +1416,14 @@ dependencies = [
  "libfuzzer-sys",
  "serde_json",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "acyclic-harness-tui-terminal"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness-tui-core",
+ "vte",
 ]
 
 [[package]]

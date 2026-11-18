@@ -164,6 +164,7 @@ filegroup(
         "//rust/crates/harness-sse:Cargo.toml",
         "//rust/crates/harness-suite:Cargo.toml",
         "//rust/crates/harness-tui-core:Cargo.toml",
+        "//rust/crates/harness-tui-terminal:Cargo.toml",
         "//rust/crates/harness-tui:Cargo.toml",
         "//rust/crates/harness-tui/fuzz:Cargo.toml",
         "//rust/crates/harness:Cargo.toml",
