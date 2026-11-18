@@ -6,7 +6,8 @@ use acyclic_machines::{
     OperatingSystem, OperationPhase, Platform, Precondition, ProviderCapability, ProviderError,
     Shell, Support, SuspensionPolicy,
 };
-use acyclic_stream::testing::{Counted, RequestLedger, Requests};
+use acyclic_stream::testing::{RequestLedger, Requests};
+use counted::Counted;
 use futures::StreamExt as _;
 use std::num::NonZeroU32;
 

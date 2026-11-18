@@ -1,6 +1,29 @@
 //! Transparent forwarding at the Machines provider boundary.
+
+/// The shared stream request ledger, owned locally so the Machines provider
+/// trait can be implemented for it.
+pub struct Counted<P>(StreamCounted<P>);
+
+impl<P> Counted<P> {
+    /// Starts an independent ledger around a provider.
+    pub fn new(inner: P) -> Self {
+        Self(StreamCounted::new(inner))
+    }
+    /// The wrapped provider, for implementing a forwarding adapter.
+    pub fn inner(&self) -> &P {
+        self.0.inner()
+    }
+    /// Records one request at the backend's actual dispatch boundary.
+    pub fn record(&self, class: RequestClass) {
+        self.0.record(class);
+    }
+    /// Retains accounting after moving this provider into a trait object.
+    pub fn ledger(&self) -> RequestLedger {
+        self.0.ledger()
+    }
+}
 use acyclic_machines::*;
-use acyclic_stream::testing::{Counted, RequestClass};
+use acyclic_stream::testing::{Counted as StreamCounted, RequestClass, RequestLedger};
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
