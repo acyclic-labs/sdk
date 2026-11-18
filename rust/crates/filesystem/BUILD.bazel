@@ -1703,6 +1703,68 @@ isolated_test(
 )
 
 rust_test(
+    name = "workspace_join_history_cases",
+    crate_root = "tests/workspace_join_history.rs",
+    srcs = [
+        "tests/support/transaction.rs",
+        "tests/support/unbounded.rs",
+        "tests/support/workspace.rs",
+        "tests/workspace_join_history.rs",
+        "tests/workspace_join_history/workspace/mod.rs",
+        "tests/workspace_join_history/workspace/tests/joins.rs",
+        "tests/workspace_join_history/workspace/tests/mod.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+        ":build_script",
+    ] + [
+        "@sdk_crates//tokio-1.54.1",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "workspace_join_history",
+    binary = ":workspace_join_history_cases",
+    id = "acyclic-fs::workspace_join_history",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "workspace_join_history_full-cloud",
+    binary = ":workspace_join_history_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::workspace_join_history",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
     name = "workspace_merge_cases",
     crate_root = "tests/workspace_merge.rs",
     srcs = [
