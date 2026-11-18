@@ -39,6 +39,26 @@ mod checkpoint_maps;
 pub mod codec_fuzz {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn check_decode_custody(
+        check: impl FnOnce(&PreparationIo) -> Result<()>,
+    ) -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let result = check(&PreparationIo::from_native_work(&work)?);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "codec custody was retained"
+        );
+        result
+    }
+
     pub(super) fn check_versioned_frame<T>(
         bytes: &[u8],
         versions: impl IntoIterator<Item = u8>,

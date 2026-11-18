@@ -77,31 +77,17 @@ pub(super) mod codec_fuzz {
     fn check_observation(bytes: &[u8]) -> Result<()> {
         let ordinary = decode_observation(bytes, None);
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
-            {
-                let io = PreparationIo::from_native_work(&work)?;
-                let funded = decode_observation(bytes, Some(&io));
-                assert_eq!(
-                    funded.as_ref().map(|_| ()).map_err(Error::code),
-                    ordinary.as_ref().map(|_| ()).map_err(Error::code)
-                );
-                if let (Ok(funded), Ok(ordinary)) = (&funded, &ordinary) {
-                    assert_eq!(encode(funded)?, encode(ordinary)?);
-                }
-            }
+        super::super::codec_fuzz::check_decode_custody(|io| {
+            let funded = decode_observation(bytes, Some(io));
             assert_eq!(
-                work.live_allocation_bytes(),
-                baseline,
-                "decoder scratch retires on admission and refusal"
+                funded.as_ref().map(|_| ()).map_err(Error::code),
+                ordinary.as_ref().map(|_| ()).map_err(Error::code)
             );
-        }
+            if let (Ok(funded), Ok(ordinary)) = (&funded, &ordinary) {
+                assert_eq!(encode(funded)?, encode(ordinary)?);
+            }
+            Ok(())
+        })?;
         if let Ok(value) = ordinary {
             let encoded = encode(&value)?;
             let restored = decode_observation(&encoded, None)?;

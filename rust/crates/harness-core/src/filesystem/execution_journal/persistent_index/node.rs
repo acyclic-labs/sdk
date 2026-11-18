@@ -175,55 +175,53 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
     use super::*;
 
     pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
+        let result = check_node(bytes);
+        assert!(
+            result.is_ok(),
+            "journal node codec check failed: {result:?}"
+        );
+    }
+
+    fn check_node(bytes: &[u8]) -> Result<()> {
         for sequence in [0, u64::MAX] {
             super::super::value::codec_fuzz::check(bytes, sequence);
             let ordinary = Node::decode(bytes, sequence, None);
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                let cancellation = acyclic_fs::CancellationToken::new();
-                let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .expect("unbounded decoder work");
-                let baseline = work.live_allocation_bytes();
-                {
-                    let io =
-                        PreparationIo::from_native_work(&work).expect("original work is admitted");
-                    let funded = Node::decode(bytes, sequence, Some(&io));
-                    assert_eq!(
-                        funded.as_ref().map(|_| ()).map_err(Error::code),
-                        ordinary.as_ref().map(|_| ()).map_err(Error::code)
-                    );
-                    if let Ok(value) = funded {
-                        let (encoded, held) = value.encode(Some(&io)).unwrap();
-                        let _hold = io.guard_owned(held).unwrap();
-                        assert_eq!(encoded.as_ref(), bytes);
-                        assert!(Node::decode(&encoded, sequence, Some(&io)).is_ok());
-                    }
+            crate::filesystem::execution_journal::codec_fuzz::check_decode_custody(|io| {
+                let funded = Node::decode(bytes, sequence, Some(io));
+                assert_eq!(
+                    funded.as_ref().map(|_| ()).map_err(Error::code),
+                    ordinary.as_ref().map(|_| ()).map_err(Error::code)
+                );
+                if let Ok(value) = funded {
+                    let (encoded, held) = value.encode(Some(io))?;
+                    let _hold = io.guard_owned(held)?;
+                    assert_eq!(encoded.as_ref(), bytes);
+                    assert!(Node::decode(&encoded, sequence, Some(io)).is_ok());
                 }
-                assert_eq!(work.live_allocation_bytes(), baseline);
-            }
+                Ok(())
+            })?;
             if let Ok(value) = ordinary {
-                let (encoded, _) = value.encode(None).expect("admitted node encodes");
+                let (encoded, _) = value.encode(None)?;
                 assert_eq!(encoded.as_ref(), bytes);
                 let required = match value {
                     Node::Leaf { .. } => LEAF_HEADER_BYTES,
                     Node::Branch { .. } => encoded.len(),
                 };
-                for end in 0..required {
-                    assert!(Node::decode(&encoded[..end], sequence, None).is_err());
+                let framed = encoded.get(..required).ok_or_else(malformed)?;
+                for end in 0..framed.len() {
+                    let truncated = framed.get(..end).ok_or_else(malformed)?;
+                    assert!(Node::decode(truncated, sequence, None).is_err());
                 }
+                let kind = encoded.first().ok_or_else(malformed)? & 15;
                 for version in [0, 1, 15] {
-                    let header = [(encoded[0] & 15) | (version << 4)];
-                    assert_eq!(
-                        Node::decode(&header, sequence, None).err().unwrap().code(),
-                        crate::wire::ErrorCode::Unsupported
-                    );
+                    let header = [kind | (version << 4)];
+                    assert!(Node::decode(&header, sequence, None)
+                        .is_err_and(|error| error.code() == crate::wire::ErrorCode::Unsupported));
                 }
-                assert_eq!(
-                    Node::decode(&[0x23], sequence, None).err().unwrap().code(),
-                    crate::wire::ErrorCode::Storage
+                assert!(
+                    Node::decode(&[0x23], sequence, None)
+                        .is_err_and(|error| error.code() == crate::wire::ErrorCode::Storage)
                 );
                 if matches!(value, Node::Branch { .. }) {
                     assert!(Node::decode(&encoded, 0, None).is_err());
@@ -233,6 +231,7 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
                 }
             }
         }
+        Ok(())
     }
 
     pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
