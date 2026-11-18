@@ -353,9 +353,10 @@ fn extend_feature_closure(
 ) {
     let mut pending = vec![root];
     while let Some(feature) = pending.pop() {
-        if !result.insert(feature.to_owned()) {
+        if result.contains(feature) {
             continue;
         }
+        result.insert(feature.to_owned());
         if let Some(dependencies) = features.get(feature) {
             for dependency in dependencies {
                 let local = dependency.strip_prefix("?").unwrap_or(dependency);
