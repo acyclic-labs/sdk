@@ -299,6 +299,23 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
     )
     .unwrap_err()
     .contains("revision differs"));
+    let manifest = fixture.path().join("Cargo.toml");
+    let original_manifest = fs::read(&manifest).unwrap();
+    fs::write(&manifest, "different manifest").unwrap();
+    assert!(
+        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
+            .unwrap_err()
+            .contains("source bytes differ")
+    );
+    fs::write(manifest, original_manifest).unwrap();
+    let entry = fixture.path().join("historical-fixture-0.1.0");
+    fs::remove_file(entry.join("src/lib.rs")).unwrap();
+    let (release, archive) = fixture.pack_archive(&entry);
+    assert!(
+        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
+            .unwrap_err()
+            .contains("missing Cargo Rust source")
+    );
     let (dirty, dirty_archive) = fixture.archive_with_dirty(&revision, "", true);
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &dirty, &dirty_archive)
@@ -330,30 +347,6 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
         verify_archive(&metadata, fixture.path(), &revision, &invalid, &archive)
             .unwrap_err()
             .contains("invalid registry version")
-    );
-}
-#[test]
-fn archive_rejects_missing_target_source_and_changed_original_manifest() {
-    let fixture = Fixture::new();
-    let metadata = fixture.metadata();
-    let revision = "a".repeat(40);
-    let (release, archive) = fixture.archive(&revision, "");
-    let manifest = fixture.path().join("Cargo.toml");
-    let original_manifest = fs::read(&manifest).unwrap();
-    fs::write(&manifest, "different manifest").unwrap();
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("source bytes differ")
-    );
-    fs::write(manifest, original_manifest).unwrap();
-    let entry = fixture.path().join("historical-fixture-0.1.0");
-    fs::remove_file(entry.join("src/lib.rs")).unwrap();
-    let (release, archive) = fixture.pack_archive(&entry);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("missing Cargo Rust source")
     );
 }
 #[test]
