@@ -38,7 +38,7 @@ deadlines and cancellation retain their shared implementations.
 Validate the native exchange controls with:
 
 ```sh
-cargo test --locked -p acyclic-harness-providers --lib authorization::tests
+bazel test //rust/crates/harness-providers:acyclic_harness_providers_test
 ```
 
 Run the WASM controls with `wasm-bindgen-test-runner` installed:
