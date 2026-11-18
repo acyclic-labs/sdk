@@ -6,6 +6,12 @@ pub struct WasmStream {
     session: Option<crate::session::Client>,
 }
 
+impl Default for WasmStream {
+    fn default() -> Self {
+        Self::from_provider(std::sync::Arc::new(MemoryStream::default()))
+    }
+}
+
 /// Persisted capacities of an injected journal domain.
 #[cfg(feature = "wasm-journal")]
 #[derive(Deserialize, Tsify)]
@@ -108,13 +114,7 @@ impl WasmStream {
     #[must_use]
     /// Creates an in-process provider.
     pub fn new() -> Self {
-        let provider: std::sync::Arc<dyn StreamProvider> =
-            std::sync::Arc::new(MemoryStream::default());
-        Self {
-            connections: None,
-            session: None,
-            provider,
-        }
+        Self::default()
     }
 
     /// Opens the canonical Rust provider on one durable `IndexedDB` journal.

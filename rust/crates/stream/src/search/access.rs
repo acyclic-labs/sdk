@@ -5,6 +5,7 @@ use futures::StreamExt as _;
 use futures::TryStreamExt as _;
 
 #[derive(Default)]
+#[cfg_attr(target_arch = "wasm32", derive(Clone, Copy))]
 pub(super) struct Owner {
     #[cfg(not(target_arch = "wasm32"))]
     allocation: Option<acyclic_native_runtime::ReadAllocation>,
