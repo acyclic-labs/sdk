@@ -1,4 +1,5 @@
 use acyclic_machines::*;
+use async_trait::async_trait;
 use futures::stream;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};

@@ -2,7 +2,7 @@
 
 use super::*;
 use acyclic_machines::{
-    JournalCompleted, JournalIntent, intent_digest, journal_decode, journal_encode, results,
+    JournalCompleted, JournalIntent, intent_digest, journal_encode, results,
 };
 
 /// Capture the shipped simulator's public create/fork/recovery outcomes

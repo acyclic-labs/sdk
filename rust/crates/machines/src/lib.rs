@@ -87,6 +87,8 @@ pub const DEFAULT_IDLE_SUSPEND: Duration = Duration::from_secs(15);
 mod contract;
 pub use contract::*;
 mod provider;
+#[doc(hidden)]
+pub use provider::events;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use provider::journal_codec::codec_fuzz;
 #[cfg(feature = "test-support")]
