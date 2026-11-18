@@ -259,8 +259,6 @@ impl NativeDemandSource {
             };
             with_fixture_content(self, &child, stat, work)?
         };
-        #[cfg(feature = "test-support")]
-        let stat = with_fixture_content(self, &directory.join(&entry.name), stat, work)?;
         let ((encoding, bytes), allocation) = source_name(&entry.name, self.inner.profile, work)?;
         backing.bytes += bytes.capacity() as u64;
         if let Some(allocation) = allocation {
