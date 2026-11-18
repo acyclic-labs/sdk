@@ -266,7 +266,7 @@ fn open_log_file(
             .open(&paths.current)
         {
             Ok(file) => {
-                sync_directory(paths.directory())?;
+                sync_parent(paths.directory(), NativeDurability::Full)?;
                 file
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()
