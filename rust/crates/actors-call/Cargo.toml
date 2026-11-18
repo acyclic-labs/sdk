@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Caller-owned Actors call journal and spend escrow"
 
+[package.metadata.bazel]
+unit-test-only-sources = ["src/call/model/tests.rs"]
+
 [features]
 test-support = ["dep:acyclic-stream-wire", "dep:futures", "dep:prost"]
 
