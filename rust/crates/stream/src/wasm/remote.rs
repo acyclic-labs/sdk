@@ -144,17 +144,7 @@ impl StreamProvider for Remote {
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let key = request.idempotency_key;
-                    let body = wire::AppendRequest {
-                        path: request.path.to_string(),
-                        records: request
-                            .records
-                            .into_iter()
-                            .map(crate::wire_codec::append_record_wire)
-                            .collect(),
-                        if_tail: request.if_tail,
-                        idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
-                    };
+                    let body = crate::wire_codec::append_to_wire(request);
                     let result = self
                         .call(body, |mut service, request| async move {
                             service.append(request).await

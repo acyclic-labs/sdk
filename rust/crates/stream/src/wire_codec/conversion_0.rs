@@ -245,6 +245,20 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
     })
 }
 
+/// Encodes an append request, transferring its record bodies into the wire message.
+pub fn append_to_wire(request: crate::AppendRequest) -> wire::AppendRequest {
+    wire::AppendRequest {
+        path: request.path.to_string(),
+        records: request
+            .records
+            .into_iter()
+            .map(append_record_wire)
+            .collect(),
+        if_tail: request.if_tail,
+        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+    }
+}
+
 /// Encodes a fork request for any Stream transport.
 pub fn fork_to_wire(request: &crate::ForkRequest) -> wire::ForkRequest {
     wire::ForkRequest {

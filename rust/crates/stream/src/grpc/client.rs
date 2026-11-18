@@ -150,16 +150,7 @@ impl StreamProvider for Client {
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let body = wire::AppendRequest {
-                        path: request.path.to_string(),
-                        records: request
-                            .records
-                            .into_iter()
-                            .map(crate::wire_codec::append_record_wire)
-                            .collect(),
-                        if_tail: request.if_tail,
-                        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-                    };
+                    let body = crate::wire_codec::append_to_wire(request);
                     let response = self
                         .unary(body, |mut service, request| {
                             Box::pin(async move { service.append(request).await })
