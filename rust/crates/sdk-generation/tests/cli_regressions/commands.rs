@@ -2,7 +2,7 @@ use super::*;
 
 use std::{
     cell::{Cell, RefCell},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     process::Output,
     rc::Rc,
 };
@@ -19,8 +19,6 @@ type Replay = (Output, Vec<(PathBuf, Vec<u8>)>);
 #[derive(Default)]
 struct State {
     outputs: RefCell<BTreeMap<Key, Replay>>,
-    executed: Cell<usize>,
-    replayed: Cell<usize>,
     replayed_compilers: Cell<usize>,
 }
 
@@ -33,15 +31,15 @@ struct Key {
 }
 
 fn query(command: &Command) -> Option<Key> {
-    let arguments = command.get_args().map(OsString::from).collect::<Vec<_>>();
-    let first = arguments.first()?.to_str()?;
+    let mut arguments = command.get_args();
+    let first = arguments.next()?.to_str()?;
     let program = Path::new(command.get_program()).file_stem()?.to_str()?;
     let git = program == "git";
     let pure = match program {
         "git" => {
             matches!(first, "rev-parse" | "status" | "merge-base")
                 || first == "--no-replace-objects"
-                    && arguments.get(1).is_some_and(|arg| {
+                    && arguments.next().is_some_and(|arg| {
                         matches!(arg.to_str(), Some("rev-parse" | "log" | "ls-tree"))
                     })
         }
@@ -52,7 +50,7 @@ fn query(command: &Command) -> Option<Key> {
     };
     pure.then(|| Key {
         program: command.get_program().to_owned(),
-        arguments,
+        arguments: command.get_args().map(OsString::from).collect(),
         directory: git
             .then(|| command.get_current_dir().map(PathBuf::from))
             .flatten(),
@@ -72,33 +70,55 @@ fn query(command: &Command) -> Option<Key> {
     })
 }
 
+fn argument_value<'a>(args: impl Iterator<Item = &'a OsStr>, name: &str) -> Option<&'a OsStr> {
+    args.skip_while(|arg| *arg != name).nth(1)
+}
+
+fn command_env<'a>(command: &'a Command, name: &str) -> Option<&'a OsStr> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == name)
+        .and_then(|(_, value)| value)
+}
+
+fn rustdoc_directory(target_dir: &Path, target: Option<&OsStr>) -> PathBuf {
+    target.map_or_else(
+        || target_dir.join("doc"),
+        |target| target_dir.join(target).join("doc"),
+    )
+}
+
+fn optional_io<T>(result: std::io::Result<T>) -> std::io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 // Replay exactly the JSON that this real Cargo invocation produced. Different
 // feature/target/owner arguments have different keys. Build scripts and examples
 // in mutation controls never enter this scope.
 fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)>> {
-    let args = command.get_args().collect::<Vec<_>>();
-    if args.first().and_then(|arg| arg.to_str()) != Some("rustdoc") {
+    let mut args = command.get_args();
+    if args.next().and_then(|arg| arg.to_str()) != Some("rustdoc") {
         return Ok(Vec::new());
     }
-    let directory = command
-        .get_envs()
-        .find(|(key, _)| *key == "CARGO_TARGET_DIR")
-        .and_then(|(_, value)| value)
-        .map(PathBuf::from)
-        .unwrap();
-    let target = args.windows(2).find(|pair| pair[0] == "--target").unwrap()[1];
+    let directory = Path::new(command_env(command, "CARGO_TARGET_DIR").unwrap());
+    let target = argument_value(args, "--target").unwrap();
     let mut artifacts = Vec::new();
-    for directory in [directory.join("doc"), directory.join(target).join("doc")] {
-        if !directory.is_dir() {
+    for target in [None, Some(target)] {
+        let Some(entries) = optional_io(fs::read_dir(rustdoc_directory(directory, target)))? else {
             continue;
-        }
-        for entry in fs::read_dir(directory)? {
+        };
+        for entry in entries {
             let path = entry?.path();
             if path
                 .extension()
                 .is_some_and(|extension| extension == "json")
             {
-                artifacts.push((path.clone(), fs::read(path)?));
+                let bytes = fs::read(&path)?;
+                artifacts.push((path, bytes));
             }
         }
     }
@@ -137,17 +157,40 @@ fn execute_command(command: &mut Command) -> std::io::Result<Output> {
     command.output()
 }
 
-fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
-    static FIXTURES: std::sync::OnceLock<std::io::Result<Vec<Value>>> = std::sync::OnceLock::new();
+#[derive(serde::Deserialize)]
+struct FixtureMetadata {
+    package: String,
+    toolchain: String,
+    manifest_path: PathBuf,
+    owner_path: PathBuf,
+    selected_lock: Option<PathBuf>,
+    receipt_name: String,
+    target_args: Vec<String>,
+    entrypoint: PathBuf,
+    proc_macro: bool,
+    cargo_flags: Vec<String>,
+    sources: Vec<FixtureSource>,
+    output: PathBuf,
+    artifacts: Option<PathBuf>,
+}
+
+#[derive(serde::Deserialize)]
+struct FixtureSource {
+    file: PathBuf,
+    relative: PathBuf,
+}
+
+fn rustdoc_fixtures() -> std::io::Result<&'static [FixtureMetadata]> {
+    static FIXTURES: std::sync::OnceLock<std::io::Result<Vec<FixtureMetadata>>> =
+        std::sync::OnceLock::new();
     FIXTURES
         .get_or_init(|| {
             let index = acyclic_test_support::source_path(
                 "rust/proofs/sdk-rustdoc-fixtures/feature_profiles.index.json",
             );
-            match fs::read(index) {
-                Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-                Err(error) => Err(error),
+            match optional_io(fs::read(index))? {
+                Some(bytes) => Ok(serde_json::from_slice(&bytes)?),
+                None => Ok(Vec::new()),
             }
         })
         .as_deref()
@@ -157,42 +200,27 @@ fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
 // The action's metadata names every source and Cargo flag in its key. Reuse
 // its output only for byte-identical source and the same complete profile.
 fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
-    if command.get_args().next() != Some(std::ffi::OsStr::new("rustdoc")) {
+    if command.get_args().next() != Some(OsStr::new("rustdoc")) {
         return Ok(None);
     }
-    let args = command.get_args().collect::<Vec<_>>();
-    if !args.iter().any(|arg| *arg == "--lib" || *arg == "--bin") {
-        return Ok(None);
-    }
-    let value = |name: &str| {
-        args.windows(2)
-            .find(|pair| pair[0] == name)
-            .map(|pair| pair[1])
-    };
-    let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
+    let value = |name: &str| argument_value(command.get_args(), name).and_then(OsStr::to_str);
+    let Some(manifest) = value("--manifest-path") else {
         return Ok(None);
     };
-    let Some(manifest) = manifest_path.to_str() else {
+    let manifest_path = Path::new(manifest);
+    let Some(package) = value("--package") else {
         return Ok(None);
     };
-    let Some(package) = value("--package").and_then(|arg| arg.to_str()) else {
+    let Some(target) = value("--target") else {
         return Ok(None);
     };
-    let Some(target) = value("--target").and_then(|arg| arg.to_str()) else {
-        return Ok(None);
-    };
-    let env = |name: &str| {
-        command
-            .get_envs()
-            .find(|(key, _)| *key == name)
-            .and_then(|(_, value)| value)
-    };
+    let env = |name: &str| command_env(command, name);
     let rustflags = if cfg!(windows) {
         "-C\u{1f}prefer-dynamic"
     } else {
         ""
     };
-    if env("CARGO_ENCODED_RUSTFLAGS").and_then(std::ffi::OsStr::to_str) != Some(rustflags) {
+    if env("CARGO_ENCODED_RUSTFLAGS").and_then(OsStr::to_str) != Some(rustflags) {
         return Ok(None);
     }
     if env("CARGO_HOME")
@@ -202,174 +230,152 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         return Ok(None);
     }
     let Some(selected_toolchain) = env("RUSTUP_TOOLCHAIN")
-        .and_then(std::ffi::OsStr::to_str)
+        .and_then(OsStr::to_str)
         .and_then(|selected| selected.strip_suffix(target))
         .and_then(|selected| selected.strip_suffix('-'))
     else {
         return Ok(None);
     };
-    for metadata in rustdoc_fixtures()? {
-        if metadata["package"].as_str() != Some(package) {
+    'fixture: for metadata in rustdoc_fixtures()? {
+        if metadata.package != package {
             continue;
         }
-        if metadata["toolchain"].as_str().unwrap() != selected_toolchain {
+        if metadata.toolchain != selected_toolchain {
             continue;
         }
-        let declared_manifest = Path::new(metadata["manifest_path"].as_str().unwrap());
-        let mut root = manifest_path;
-        for _ in declared_manifest.components() {
-            let Some(parent) = root.parent() else {
-                return Ok(None);
-            };
-            root = parent;
-        }
-        if root.join(declared_manifest) != manifest_path
-            || root
-                .ancestors()
-                .any(|ancestor| ancestor.join(".cargo").exists())
-        {
+        let declared_manifest = &metadata.manifest_path;
+        if !manifest_path.ends_with(declared_manifest) {
             continue;
         }
-        let mut expected_args = vec![
+        let mut prefix = [
             "rustdoc",
             "--locked",
             "--manifest-path",
             manifest,
             "--package",
             package,
-        ];
-        expected_args.extend(
-            metadata["target_args"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|flag| flag.as_str().unwrap()),
-        );
-        expected_args.extend(["--target", target]);
-        expected_args.extend(
-            metadata["cargo_flags"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|flag| flag.as_str().unwrap()),
-        );
-        let selected_lock = metadata["selected_lock"].as_str().unwrap();
-        let config = if selected_lock.is_empty() {
-            None
-        } else {
-            let Ok(lock) = root.join(selected_lock).canonicalize() else {
+        ]
+        .into_iter()
+        .chain(metadata.target_args.iter().map(String::as_str))
+        .chain(["--target", target])
+        .chain(metadata.cargo_flags.iter().map(String::as_str));
+        let mut actual = command.get_args().map(OsStr::to_str);
+        if !prefix.all(|expected| actual.next() == Some(Some(expected))) {
+            continue;
+        }
+        let Some(root) = manifest_path
+            .ancestors()
+            .nth(declared_manifest.components().count())
+        else {
+            return Ok(None);
+        };
+        let config = if let Some(selected_lock) = &metadata.selected_lock {
+            let Some(lock) = optional_io(root.join(selected_lock).canonicalize())? else {
                 continue;
             };
             Some(format!(
                 "resolver.lockfile-path={}",
                 serde_json::to_string(lock.to_str().unwrap())?
             ))
+        } else {
+            None
         };
-        if let Some(config) = &config {
-            expected_args.extend(["--config", config.as_str()]);
-        }
-        expected_args.extend(["--", "-Z", "unstable-options", "--output-format", "json"]);
-        if args
-            .iter()
-            .map(|arg| arg.to_str())
-            .collect::<Option<Vec<_>>>()
+        let suffix = config
             .as_deref()
-            != Some(expected_args.as_slice())
-        {
+            .into_iter()
+            .flat_map(|value| ["--config", value])
+            .chain(["--", "-Z", "unstable-options", "--output-format", "json"]);
+        if !actual.eq(suffix.map(Some)) {
             continue;
         }
-        let sources = metadata["sources"].as_array().unwrap();
-        let artifacts = metadata["artifacts"].as_str().unwrap();
-        let mut relative_sources = Vec::new();
-        let mut matches = true;
-        for source in sources {
-            let relative = source["relative"].as_str().unwrap();
-            let source = source["file"].as_str().unwrap();
-            let expected = fs::read(acyclic_test_support::source_path(source))?;
-            if fs::read(root.join(relative)).ok().as_deref() != Some(expected.as_slice()) {
-                matches = false;
-                break;
+        for ancestor in root.ancestors() {
+            if ancestor.join(".cargo").try_exists()? {
+                continue 'fixture;
             }
-            if Path::new(relative)
+        }
+        let sources = &metadata.sources;
+        let artifacts = metadata.artifacts.as_deref();
+        let mut source_paths = Vec::new();
+        for source in sources {
+            let relative = source.relative.as_path();
+            let checkout_source = root.join(relative);
+            let Some(actual) = optional_io(fs::read(&checkout_source))? else {
+                continue 'fixture;
+            };
+            if actual != fs::read(acyclic_test_support::source_path(&source.file))? {
+                continue 'fixture;
+            }
+            if relative
                 .file_name()
                 .is_some_and(|name| name == "Cargo.toml")
             {
-                let build = Path::new(relative).parent().unwrap().join("build.rs");
-                if root.join(&build).exists()
-                    && (artifacts.is_empty()
-                        || !sources.iter().any(|source| {
-                            source["relative"].as_str().map(Path::new) == Some(build.as_path())
-                        }))
-                {
-                    matches = false;
-                    break;
+                let build = relative.parent().unwrap().join("build.rs");
+                let covered =
+                    artifacts.is_some() && sources.iter().any(|source| source.relative == build);
+                if !covered && root.join(&build).try_exists()? {
+                    continue 'fixture;
                 }
             }
-            if relative.ends_with(".rs") {
-                relative_sources.push(Path::new(relative));
+            if relative.extension() == Some(OsStr::new("rs")) {
+                source_paths.push((relative, checkout_source.to_string_lossy().into_owned()));
             }
         }
-        if !matches {
-            continue;
-        }
-        let output_path = metadata["output"].as_str().unwrap();
+        let output_path = &metadata.output;
         let mut json: Value =
             serde_json::from_slice(&fs::read(acyclic_test_support::source_path(output_path))?)?;
         if json["target"]["triple"].as_str() != Some(target) {
             continue;
         }
         let target_dir = Path::new(env("CARGO_TARGET_DIR").unwrap());
-        let mut referenced = std::collections::BTreeSet::new();
-        let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
-        let owner = metadata["owner_path"].as_str().unwrap();
-        let entrypoint = Path::new(metadata["entrypoint"].as_str().unwrap());
-        let owner_entrypoint = Path::new(owner).join(entrypoint);
+        let mut referenced = BTreeMap::new();
+        let artifact_target = target_dir.join(output_path.file_stem().unwrap());
+        let owner = &metadata.owner_path;
+        let entrypoint = metadata.entrypoint.as_path();
+        let owner_entrypoint = owner.join(entrypoint);
         rustdoc_paths::visit(&mut json, |kind, path| {
             if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
-                let relative = PathBuf::from(relative);
-                *path = artifact_target
-                    .join(&relative)
-                    .to_string_lossy()
-                    .into_owned();
-                referenced.insert(relative);
+                let destination = referenced
+                    .entry(PathBuf::from(relative))
+                    .or_insert_with(|| artifact_target.join(relative));
+                *path = destination.to_string_lossy().into_owned();
             } else if matches!(kind, rustdoc_paths::Kind::Source) {
                 let filename = Path::new(path);
-                if let Some(source) = relative_sources.iter().find(|source| {
+                if let Some((_, replacement)) = source_paths.iter().find(|(source, _)| {
                     filename.ends_with(source)
                         || filename == entrypoint && **source == owner_entrypoint.as_path()
                 }) {
-                    *path = root.join(source).to_string_lossy().into_owned();
+                    path.clone_from(replacement);
                 }
             }
         });
         if !referenced.is_empty() {
+            let Some(artifacts) = artifacts else {
+                return Err(std::io::Error::other(
+                    "Rustdoc fixture references undeclared artifacts",
+                ));
+            };
             let artifacts = acyclic_test_support::source_path(artifacts);
-            for relative in referenced {
-                let destination = artifact_target.join(&relative);
+            for (relative, destination) in referenced {
                 let source = artifacts.join(relative);
-                if destination.exists() {
-                    if fs::read(&destination)? != fs::read(&source)? {
+                match optional_io(fs::read(&destination))? {
+                    Some(existing) if existing == fs::read(&source)? => {}
+                    Some(_) => {
                         return Err(std::io::Error::other(format!(
                             "Rustdoc fixture artifacts disagree at {}",
                             destination.display()
                         )));
                     }
-                } else {
-                    fs::create_dir_all(destination.parent().unwrap())?;
-                    fs::copy(source, destination)?;
+                    None => {
+                        fs::create_dir_all(destination.parent().unwrap())?;
+                        fs::copy(source, destination)?;
+                    }
                 }
             }
         }
-        let output_dir = if metadata["proc_macro"].as_bool() == Some(true) {
-            target_dir.join("doc")
-        } else {
-            target_dir.join(target).join("doc")
-        };
-        let output = output_dir.join(format!(
-            "{}.json",
-            metadata["receipt_name"].as_str().unwrap()
-        ));
-        fs::create_dir_all(output.parent().unwrap())?;
+        let target = (!metadata.proc_macro).then_some(OsStr::new(target));
+        let output_dir = rustdoc_directory(target_dir, target);
+        let output = output_dir.join(format!("{}.json", metadata.receipt_name));
+        fs::create_dir_all(&output_dir)?;
         fs::write(output, serde_json::to_vec(&json)?)?;
         #[cfg(unix)]
         use std::os::unix::process::ExitStatusExt;
@@ -401,9 +407,10 @@ impl Queries {
                 };
                 if let Some((output, artifacts)) = state.outputs.borrow().get(&key) {
                     for (path, bytes) in artifacts {
-                        fs::write(path, bytes)?;
+                        if optional_io(fs::read(path))?.as_ref() != Some(bytes) {
+                            fs::write(path, bytes)?;
+                        }
                     }
-                    state.replayed.set(state.replayed.get() + 1);
                     if !artifacts.is_empty() {
                         state
                             .replayed_compilers
@@ -412,7 +419,6 @@ impl Queries {
                     return Ok(output.clone());
                 }
                 let output = execute_command(command)?;
-                state.executed.set(state.executed.get() + 1);
                 let artifacts = if output.status.success() {
                     compiler_outputs(command)?
                 } else {
@@ -439,20 +445,6 @@ impl Queries {
             self.0.replayed_compilers.get(),
         )
     }
-
-    pub(super) fn counts(&self) -> (usize, usize) {
-        (self.0.executed.get(), self.0.replayed.get())
-    }
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        eprintln!(
-            "POLICY_COMMANDS executed={} replayed={}",
-            self.executed.get(),
-            self.replayed.get()
-        );
-    }
 }
 
 proptest::proptest! {
@@ -465,15 +457,13 @@ proptest::proptest! {
         command.args(["metadata", "--locked", "--config", &argument]);
         let original = query(&command).unwrap();
         command.env("CARGO_HOME", &value);
-        proptest::prop_assert_eq!(query(&command).unwrap(), original.clone());
+        proptest::prop_assert_eq!(&query(&command).unwrap(), &original);
         command.env("RUSTUP_TOOLCHAIN", &value);
-        proptest::prop_assert_ne!(query(&command).unwrap(), original.clone());
+        proptest::prop_assert_ne!(&query(&command).unwrap(), &original);
         command.env_remove("RUSTUP_TOOLCHAIN");
         let mut missing = Command::new("cargo"); missing.args(["metadata", "--locked"]);
-        proptest::prop_assert_ne!(query(&missing).unwrap(), original);
         // Negative control: discarding authority arguments aliases these two.
-        proptest::prop_assert_eq!(command.get_program(), missing.get_program());
-        proptest::prop_assert_eq!(command.get_args().next(), missing.get_args().next());
+        proptest::prop_assert_ne!(query(&missing).unwrap(), original);
         let mut compiler = Command::new("cargo"); compiler.args(["rustdoc", "--locked"]);
         let compiler_key = query(&compiler).unwrap();
         compiler.args(["--features", &argument]);

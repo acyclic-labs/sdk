@@ -57,7 +57,7 @@ def _rustdoc_fixture_impl(ctx):
         "toolchain": toolchain,
         "manifest_path": ctx.attr.manifest_path,
         "owner_path": ctx.attr.owner_path,
-        "selected_lock": ctx.attr.selected_lock,
+        "selected_lock": ctx.attr.selected_lock or None,
         "receipt_name": receipt_name,
         "target_args": target_args,
         "entrypoint": "src/main.rs" if binary_name else "src/lib.rs",
@@ -65,7 +65,7 @@ def _rustdoc_fixture_impl(ctx):
         "cargo_flags": ctx.attr.cargo_flags,
         "sources": [{"file": _repository_path(file.short_path), "relative": relative} for file, relative in sources],
         "output": _repository_path(output.short_path),
-        "artifacts": _repository_path(artifacts.short_path) if artifacts else "",
+        "artifacts": _repository_path(artifacts.short_path) if artifacts else None,
     }
     args = ctx.actions.args()
     args.add(output)
