@@ -286,7 +286,7 @@ pub use attachments::{
     verified_content_bytes,
 };
 use buffers::*;
-pub(crate) use content::content_error;
+pub use content::content_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use content::require_owner_reader;
 pub use content::{

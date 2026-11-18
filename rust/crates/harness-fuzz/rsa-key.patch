@@ -1,5 +1,5 @@
---- a/rust/crates/harness-core/src/oidc/keys.rs
-+++ b/rust/crates/harness-core/src/oidc/keys.rs
+--- a/rust/crates/harness-oidc/src/keys.rs
++++ b/rust/crates/harness-oidc/src/keys.rs
 @@ -252,7 +252,6 @@
                      || modulus
                          .first()

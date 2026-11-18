@@ -1,7 +1,7 @@
 //! Checks original experiment decoders against independent admission invariants.
 #![no_main]
 
-use acyclic_harness_core::experiments::{
+use acyclic_harness_experiments::{
     Error, Observation,
     analysis::{AnalysisReport, Contrast},
     plan::PairAssignment,

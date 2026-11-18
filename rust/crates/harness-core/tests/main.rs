@@ -21,7 +21,6 @@ pub(crate) mod sync {
 #[cfg(all(loom, feature = "model-checking"))]
 mod mcp_loom;
 #[cfg(all(loom, feature = "model-checking"))]
-use mcp_loom::mcp;
 #[cfg(all(loom, feature = "model-checking"))]
 use sync::{
     Arc,

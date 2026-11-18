@@ -16,7 +16,7 @@ native-javascript = ["dep:napi", "dep:napi-derive"]
 js-credential = ["javascript", "dep:wasm-bindgen-futures", "dep:web-sys"]
 grpc-metadata = ["dep:tonic"]
 grpc = ["grpc-metadata", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
-test-support = ["dep:acyclic-differential"]
+test-support = ["dep:acyclic-differential", "acyclic-observability/test-support",]
 client = ["dep:reqwest"]
 
 [dependencies]

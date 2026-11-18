@@ -131,10 +131,12 @@ pub(crate) fn events<'a>(
     }
 }
 
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) use acyclic_harness_http::retry_after_at;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_harness_core::http::retry_after_at;
     use acyclic_harness_core::{ModelTransportFailure, OperationId};
     fn dispatch() -> ModelDispatch {
         ModelDispatch {

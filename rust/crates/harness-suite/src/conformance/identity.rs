@@ -2,12 +2,12 @@
 mod key_sets;
 mod tokens;
 use crate::conformance::{Backend, Result, admission::fixture::Fixture};
+use crate::oidc;
 use acyclic_harness_core::{
     Capabilities,
     conversation::VolumeOperation,
     core::AuthorityRoot,
     filesystem::{TurnAdmission, agent_authority},
-    oidc,
 };
 use acyclic_stream::UnixMillisClock as _;
 use serde_json::{Value, json};

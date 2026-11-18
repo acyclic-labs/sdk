@@ -1,0 +1,38 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**", "tests/**"]
+name = "acyclic-harness-devices"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Attached devices behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-devices"
+
+[features]
+test-support = ["acyclic-harness-core/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-auth/test-support", "acyclic-fs/test-support", "acyclic-machines/test-support",]
+
+[dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+
+[dev-dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+tempfile = "3.27.0"
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util", "process", "io-util"] }
+
+[lints]
+workspace = true

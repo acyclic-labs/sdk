@@ -141,15 +141,23 @@ filegroup(
         "//rust/crates/harness-control-checks:Cargo.toml",
         "//rust/crates/harness-control:Cargo.toml",
         "//rust/crates/harness-core:Cargo.toml",
+        "//rust/crates/harness-devices:Cargo.toml",
+        "//rust/crates/harness-experiments:Cargo.toml",
         "//rust/crates/harness-fuzz:Cargo.toml",
         "//rust/crates/harness-hosting:Cargo.toml",
+        "//rust/crates/harness-http:Cargo.toml",
+        "//rust/crates/harness-input-watch:Cargo.toml",
         "//rust/crates/harness-json:Cargo.toml",
         "//rust/crates/harness-layout:Cargo.toml",
         "//rust/crates/harness-local:Cargo.toml",
+        "//rust/crates/harness-mcp:Cargo.toml",
         "//rust/crates/harness-metrics:Cargo.toml",
         "//rust/crates/harness-mock-model:Cargo.toml",
         "//rust/crates/harness-model-cache:Cargo.toml",
         "//rust/crates/harness-modules:Cargo.toml",
+        "//rust/crates/harness-native-settings:Cargo.toml",
+        "//rust/crates/harness-objects:Cargo.toml",
+        "//rust/crates/harness-oidc:Cargo.toml",
         "//rust/crates/harness-provider-protocol:Cargo.toml",
         "//rust/crates/harness-provider-response:Cargo.toml",
         "//rust/crates/harness-providers:Cargo.toml",
@@ -292,8 +300,8 @@ proto_js(
     name = "workspace_acyclic_labs_stream_proto",
     schemas = {
         "//compatibility:proto/validation/v1/options.proto": "compatibility/proto/validation/v1/options.proto",
-        "//rust/crates/stream-wire:proto/stream/v1/stream.proto": "rust/crates/stream-wire/proto/stream/v1/stream.proto",
-        "//rust/crates/stream-wire:proto/stream/v1/session.proto": "rust/crates/stream-wire/proto/stream/v1/session.proto",
+        "//rust/crates/stream:proto/stream/v1/stream.proto": "rust/crates/stream/proto/stream/v1/stream.proto",
+        "//rust/crates/stream:proto/stream/v1/session.proto": "rust/crates/stream/proto/stream/v1/session.proto",
     },
 )
 
@@ -523,9 +531,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree/rust/proofs/sdk-rustdoc-fixtures",
-    srcs = glob(["rust/proofs/sdk-rustdoc-fixtures/**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)

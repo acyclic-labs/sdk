@@ -79,7 +79,7 @@ pub(crate) use bounded_io::PreparationScope;
 pub use bounded_io::UploadRecord;
 use bounded_io::decode_record;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use bounded_io::native_decoded;
+pub use bounded_io::native_decoded;
 pub use bounded_io::{Charged, PreparationCustody, PreparationIo};
 pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,9 +109,9 @@ pub use native_access::{
     local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
 };
 pub use native_contract::{
-    NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
-    NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
-    NativeVolumeNamespace,
+    McpStdioRequest, NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult,
+    NativeProcessStop, NativeProcessStopKind, NativeViewManifest, NativeViewOptions,
+    NativeVolumeMapping, NativeVolumeNamespace,
 };
 mod config;
 use config::*;

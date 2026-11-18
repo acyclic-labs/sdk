@@ -1,5 +1,5 @@
---- a/rust/crates/harness-core/src/mcp/http/body.rs
-+++ b/rust/crates/harness-core/src/mcp/http/body.rs
+--- a/rust/crates/harness-mcp/src/http/body.rs
++++ b/rust/crates/harness-mcp/src/http/body.rs
 @@ -79,7 +79,7 @@
                      return Poll::Ready(Some(Err(Error::Indeterminate(*this.operation))));
                  };

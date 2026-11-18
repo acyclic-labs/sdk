@@ -23,7 +23,8 @@ test-support = [
     "acyclic-grpc-observability/test-support",
     "acyclic-native-runtime/test-support",
     "acyclic-objects/test-support",
-    "acyclic-stream/test-support"]
+    "acyclic-stream/test-support",
+    "acyclic-observability/test-support",]
 
 [dependencies]
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }

@@ -16,6 +16,7 @@ acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["conformance", "test-support"] }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-harness-oidc = { version = "=0.2.0", path = "../harness-oidc" }
 acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "conformance", "test-support"] }

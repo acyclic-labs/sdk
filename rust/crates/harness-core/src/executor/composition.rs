@@ -291,7 +291,8 @@ impl StockExecutor {
     }
 
     /// Removes fresh tool-call grants while preserving the pinned catalog and admitted versions.
-    pub(crate) fn without_tool_authority(mut self) -> Self {
+    /// Removes the tool authority from this executor.
+    pub fn without_tool_authority(mut self) -> Self {
         self.tools.restrict_sources(&[]);
         self.tool_scope
             .grants
@@ -317,7 +318,8 @@ impl StockExecutor {
 
     /// Intersect an immutable role ceiling with both model and executable
     /// authority. A missing grant is never supplied by a template's prose.
-    pub(crate) fn with_tool_ceiling(mut self, allowed: &[String]) -> Result<Self> {
+    /// Restricts the executor to the supplied tool names.
+    pub fn with_tool_ceiling(mut self, allowed: &[String]) -> Result<Self> {
         self.tools.restrict_sources(allowed);
         self.tool_scope.grants.0.retain(|grant| {
             grant

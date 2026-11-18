@@ -179,7 +179,7 @@ impl WorkspaceEntry {
 
     /// Whole-volume adapters must not discard a view's access restrictions.
     /// Scoped adapters retain the complete entry instead.
-    pub(crate) fn whole_volume(&self) -> crate::Result<&VolumeRef> {
+    pub fn whole_volume(&self) -> crate::Result<&VolumeRef> {
         if !self.root.is_empty() || self.mode != WorkspaceMode::ReadWrite {
             return Err(crate::Error::FilesystemAccessConfiguration(
                 "restricted workspace requires a scoped adapter",

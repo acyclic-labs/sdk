@@ -21,6 +21,25 @@ acyclic_test_support::counting_allocator!();
 // Everything below the client and host compositions lives in
 // `acyclic-harness-core`; its public items keep their paths here.
 pub use acyclic_harness_core::*;
+#[cfg(not(target_arch = "wasm32"))]
+/// Attached devices: a user's machine runs the `shell` commands agents dispatch to it.
+pub use acyclic_harness_devices as devices;
+/// Experiment planning and analysis.
+pub use acyclic_harness_experiments as experiments;
+/// Shared host HTTP boundary.
+pub use acyclic_harness_http as http;
+#[cfg(not(target_arch = "wasm32"))]
+/// Host input invalidation.
+pub use acyclic_harness_input_watch as input_watch;
+/// MCP clients over the ordinary tool, execution and interaction owners.
+pub use acyclic_harness_mcp as mcp;
+#[cfg(not(target_arch = "wasm32"))]
+/// Native settings admission.
+pub use acyclic_harness_native_settings as native_settings;
+/// Object content stores.
+pub use acyclic_harness_objects as objects;
+/// Cached OIDC verification.
+pub use acyclic_harness_oidc as oidc;
 /// Provider-neutral web search, with credentials confined to the host.
 pub use acyclic_harness_search as search;
 /// Credential-free, bounded HTTP source retrieval.

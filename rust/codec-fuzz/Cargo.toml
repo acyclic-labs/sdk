@@ -35,6 +35,7 @@ acyclic-auth = { path = "../crates/auth", features = ["test-support"] }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, features = ["test-support"] }
 acyclic-fs-wire = { path = "../crates/filesystem-wire" }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, features = ["test-support"] }
+acyclic-harness-mcp = { path = "../crates/harness-mcp", features = ["test-support"] }
 acyclic-harness-client = { path = "../crates/harness-client" }
 acyclic-inference = { path = "../crates/inference", default-features = false, features = ["http-codec"] }
 acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support"] }
