@@ -82,7 +82,15 @@ build-script-inputs = [
 test-build-script = ["operation_claim_model"]
 test-narrow-runfiles = [
     "checkout_cancellation",
+    "checkout_content",
+    "checkout_live",
+    "checkout_merge",
+    "checkout_profiles",
+    "checkout_publication",
+    "checkout_read",
     "checkout_reconciliation",
+    "checkout_tracking",
+    "checkout_transactions",
     "memory_authority",
     "memory_objects",
     "mount_routing",
