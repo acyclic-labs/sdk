@@ -92,7 +92,7 @@ impl InputKeymap {
     }
 
     /// Whether the canonical chord starts any configured key sequence.
-    pub fn has_prefix(&self, prefix: &str) -> bool {
+    pub(crate) fn has_prefix(&self, prefix: &str) -> bool {
         KEYMAP
             .iter()
             .map(|binding| binding.chord)

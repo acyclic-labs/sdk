@@ -1,7 +1,12 @@
 use crate::input_keymap::KeyBinding;
 use crate::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::{Action, InputKeymap};
+use arrayvec::ArrayString;
 use std::fmt::Write as _;
+
+// Four modifier labels (21 bytes), then at most three lowercased Unicode
+// scalars (12 bytes), or the longest named key (9 bytes), fit in 40 bytes.
+const CHORD_BYTES: usize = 40;
 
 /// A decoded editing key, or committed text from a terminal character event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +20,87 @@ pub enum DecodedKey {
     },
     /// One terminal character event; hosts may also deliver whole IME commits.
     Text(char),
+}
+
+/// A pending first key and the edit it would perform on its own.
+#[derive(Clone, Debug)]
+pub struct PendingChord {
+    prefix: ArrayString<CHORD_BYTES>,
+    started_ms: u64,
+    fallback: Option<DecodedKey>,
+}
+
+/// How a key continues a pending two-key binding.
+pub enum ChordContinuation {
+    /// A repeat of the first key leaves the prefix pending.
+    Repeat,
+    /// The key completed a binding.
+    Matched(DecodedKey),
+    /// The pending first key must be handled before this key.
+    Unmatched,
+}
+
+impl PendingChord {
+    /// Start a prefix for a pressed key with a sequence or cut fallback.
+    pub fn start(
+        key: KeyEvent,
+        bindings: &InputKeymap,
+        started_ms: u64,
+        fallback: Option<DecodedKey>,
+    ) -> Option<Self> {
+        if key.kind != KeyEventKind::Press {
+            return None;
+        }
+        let prefix = event_chord(key)?;
+        (bindings.has_prefix(&prefix)
+            || matches!(
+                fallback,
+                Some(DecodedKey::Action {
+                    action: Action::CutPrefix,
+                    ..
+                })
+            ))
+        .then_some(Self {
+            prefix,
+            started_ms,
+            fallback,
+        })
+    }
+
+    /// Whether the caller's monotonic clock has reached the prefix deadline.
+    pub fn timed_out(&self, now_ms: u64, timeout_ms: u64) -> bool {
+        now_ms.saturating_sub(self.started_ms) >= timeout_ms
+    }
+
+    /// Consume the pending key and recover its original edit and timestamp.
+    pub fn into_fallback(self) -> Option<(u64, DecodedKey)> {
+        self.fallback.map(|decoded| (self.started_ms, decoded))
+    }
+
+    /// Match a second key in a buffer sized for two canonical chords.
+    pub fn continuation(&self, key: KeyEvent, bindings: &InputKeymap) -> ChordContinuation {
+        let Some(next) = event_chord(key) else {
+            return ChordContinuation::Unmatched;
+        };
+        match key.kind {
+            KeyEventKind::Repeat if next == self.prefix => ChordContinuation::Repeat,
+            KeyEventKind::Press => {
+                let mut sequence = ArrayString::<{ 2 * CHORD_BYTES + 1 }>::new();
+                if write!(sequence, "{} {next}", self.prefix).is_err() {
+                    return ChordContinuation::Unmatched;
+                }
+                bindings
+                    .resolve(&sequence)
+                    .map_or(ChordContinuation::Unmatched, |binding| {
+                        ChordContinuation::Matched(DecodedKey::Action {
+                            action: binding.action,
+                            select: false,
+                        })
+                    })
+            }
+            _ => ChordContinuation::Unmatched,
+        }
+    }
 }
 
 /// Resolve an already decoded key through the declarative editor bindings.
@@ -87,14 +173,11 @@ fn normalize_key(mut key: KeyEvent) -> KeyEvent {
     key
 }
 
-/// Canonical spelling of a key event, kept inline for allocation-free routing.
-pub fn event_chord(key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
+fn event_chord(key: KeyEvent) -> Option<ArrayString<CHORD_BYTES>> {
     normalized_chord(normalize_key(key))
 }
 
-// Four modifier labels (21 bytes), then at most three lowercased Unicode
-// scalars (12 bytes), or the longest named key (9 bytes), fit in 40 bytes.
-fn normalized_chord(key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
+fn normalized_chord(key: KeyEvent) -> Option<ArrayString<CHORD_BYTES>> {
     let name = match key.code {
         KeyCode::Backspace => "Backspace",
         KeyCode::Enter => "Enter",
@@ -114,7 +197,7 @@ fn normalized_chord(key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
         KeyCode::F(_) | KeyCode::Char(_) => "",
         _ => return None,
     };
-    let mut chord = arrayvec::ArrayString::new();
+    let mut chord = ArrayString::new();
     for (modifier, label) in [
         (KeyModifiers::CONTROL, "Ctrl+"),
         (KeyModifiers::ALT, "Alt+"),
