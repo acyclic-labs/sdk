@@ -53,7 +53,7 @@ try {
   assertFields("CommittedFork", [["source", 1], ["destination", 2], ["forked_at", 3], ["tail", 4], ["records", 5], ["exclude", 6]]);
   assertFields("Child", [["path", 1], ["tail_record", 2], ["origin", 3], ["tail", 4]]);
   assertFields("ChildrenPageRequest", [["parent", 1], ["after", 2], ["hierarchy_version", 3], ["limit", 4], ["tail_stream", 5], ["offset", 6]]);
-  assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
+  assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3], ["scanned", 4]]);
   assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3], ["at_least", 4]]);
   assertFields("HeadRequest", [["path", 1]]);
   assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4], ["projection", 5], ["durable_through", 6], ["retained", 7], ["at", 8]]);
