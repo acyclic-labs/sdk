@@ -5,11 +5,13 @@ use acyclic_fs::kernel::{
 };
 use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
 use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, ObjectReadRequest,
+    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectBackend,
+    ObjectReadRequest,
 };
-use acyclic_fs_format::object_reference::ObjectKind;
+use acyclic_fs_format::object_reference::{ObjectId, ObjectKind};
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters};
 use acyclic_stream::OwnedBytes;
+use std::task::{Context, Poll, Waker};
 
 use super::super::blob_objects::put_blob_page;
 use super::super::memory::memory_objects;
@@ -179,35 +181,7 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
 async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = memory_objects();
-    let first = put_object(
-        &store,
-        ObjectKind::BlobChunk,
-        OwnedBytes::from_static(b"abcd"),
-    )
-    .await?;
-    let second = put_object(
-        &store,
-        ObjectKind::BlobChunk,
-        OwnedBytes::from_static(b"efgh"),
-    )
-    .await?;
-    let page = BlobPage {
-        first_offset: 0,
-        end_offset: 8,
-        node: BlobNode::Leaf(vec![
-            BlobChunkRef {
-                first_offset: 0,
-                end_offset: 4,
-                chunk: first,
-            },
-            BlobChunkRef {
-                first_offset: 4,
-                end_offset: 8,
-                chunk: second,
-            },
-        ]),
-    };
-    let root = put_blob_page(&store, &page, 8).await?;
+    let (root, second) = adjacent_chunks(&store).await?;
     let read = read_blob_range(
         &store,
         root,
@@ -232,5 +206,85 @@ async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
             reason: ResidencyReason::SequentialRange,
         })
     );
+    Ok(())
+}
+
+async fn adjacent_chunks(
+    store: &MemoryObjectBackend,
+) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
+    let first = put_object(
+        store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"abcd"),
+    )
+    .await?;
+    let second = put_object(
+        store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"efgh"),
+    )
+    .await?;
+    let page = BlobPage {
+        first_offset: 0,
+        end_offset: 8,
+        node: BlobNode::Leaf(vec![
+            BlobChunkRef {
+                first_offset: 0,
+                end_offset: 4,
+                chunk: first,
+            },
+            BlobChunkRef {
+                first_offset: 4,
+                end_offset: 8,
+                chunk: second,
+            },
+        ]),
+    };
+    let root = put_blob_page(store, &page, 8).await?;
+    Ok((root, second))
+}
+
+#[tokio::test]
+async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let (root, _) = adjacent_chunks(&store).await?;
+    let result = read_blob_range(
+        &store,
+        root,
+        ByteRange {
+            offset: 5,
+            length: 2,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(result.bytes.as_ref(), b"fg");
+    assert_eq!(result.work.page_reads, 1);
+    assert_eq!(result.work.object_probes, 2);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let mut future = std::pin::pin!(read_blob_range(
+        &store,
+        root,
+        ByteRange {
+            offset: 5,
+            length: 2,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancelled,
+    ));
+    let mut context = Context::from_waker(Waker::noop());
+    let Poll::Ready(cancelled_result) = future.as_mut().poll(&mut context) else {
+        return Err("pre-cancelled asynchronous blob read remained pending".into());
+    };
+    let failure = cancelled_result
+        .err()
+        .ok_or("pre-cancelled asynchronous blob read unexpectedly succeeded")?;
+    assert!(matches!(failure.error, BlobReadError::Cancelled));
+    assert_eq!(*failure.work()?, WorkCounters::default());
     Ok(())
 }

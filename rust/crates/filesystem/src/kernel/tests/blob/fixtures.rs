@@ -5,7 +5,6 @@ use crate::async_storage::AsyncObjectStore;
 use crate::memory::MemoryObjectStore;
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
-use std::task::{Context, Poll, Waker};
 
 struct ScriptedSource {
     bytes: OwnedBytes,
