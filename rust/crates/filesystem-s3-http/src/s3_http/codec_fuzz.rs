@@ -75,12 +75,12 @@ fn check_inner(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 
 fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
     for version in [0, 2, u8::MAX] {
-        let mut header = RecordCursor::new(std::slice::from_ref(&version));
+        let (tag, consumed) = inspect_multipart_header(std::slice::from_ref(&version));
         assert!(
-            matches!(header.any_header(), Err(MultipartStorageError::UnsupportedVersion(found)) if found == version)
+            matches!(tag, Err(MultipartStorageError::UnsupportedVersion(found)) if found == version)
         );
         assert_eq!(
-            header.offset, 0,
+            consumed, 0,
             "unsupported version must not consume a payload field"
         );
         let error: s3s::S3Error =
@@ -92,14 +92,12 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
             Err(MultipartStorageError::UnsupportedVersion(found)) if found == version
         ));
     }
-    let mut missing = RecordCursor::new(&[]);
     assert!(matches!(
-        missing.any_header(),
+        inspect_multipart_header(&[]).0,
         Err(MultipartStorageError::UnsupportedVersion(0))
     ));
-    let mut truncated = RecordCursor::new(&[MULTIPART_RECORD_VERSION]);
     assert!(matches!(
-        truncated.any_header(),
+        inspect_multipart_header(&[MULTIPART_RECORD_VERSION]).0,
         Err(MultipartStorageError::Malformed)
     ));
     // The declared count cannot allocate beyond the actual fixed-width entries,

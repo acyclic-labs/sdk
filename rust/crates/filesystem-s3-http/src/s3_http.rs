@@ -8,7 +8,18 @@
 use acyclic_fs::ObjectId;
 use acyclic_fs::WorkBudget;
 use acyclic_fs::kernel::AsyncBlobSource;
-use acyclic_fs::s3_multipart::*;
+#[cfg(feature = "test-support")]
+use acyclic_fs::s3_multipart::{
+    MULTIPART_RECORD_VERSION, decode_multipart_header, inspect_multipart_header,
+};
+use acyclic_fs::s3_multipart::{
+    MultipartPart, MultipartSnapshot, MultipartStorageError, MultipartTerminal,
+    StreamBackedAuthority, encode_multipart_aborted, encode_multipart_completed,
+    encode_multipart_completing, encode_multipart_created, encode_multipart_part,
+    read_multipart_snapshot,
+};
+#[cfg(any(test, feature = "test-support"))]
+use acyclic_fs::s3_multipart::{MultipartStorageResult, decode_multipart};
 use acyclic_fs::{
     AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, S3Error, S3ListCursor,
     S3ListOptions, Workspace,

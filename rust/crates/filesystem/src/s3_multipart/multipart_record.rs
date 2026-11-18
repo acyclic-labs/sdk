@@ -351,15 +351,23 @@ pub fn decode_multipart(
     Ok(replay.snapshot)
 }
 
+/// Returns the decoded record tag and the byte count consumed by header validation.
+#[cfg(feature = "test-support")]
+pub fn inspect_multipart_header(bytes: &[u8]) -> (MultipartStorageResult<u8>, usize) {
+    let mut cursor = RecordCursor::new(bytes);
+    let tag = cursor.any_header();
+    (tag, cursor.offset)
+}
+
 /// Cursor for the versioned multipart record format.
-pub struct RecordCursor<'a> {
+struct RecordCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
 impl<'a> RecordCursor<'a> {
     /// Starts reading a record at its version byte.
-    pub fn new(bytes: &'a [u8]) -> Self {
+    fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
@@ -423,7 +431,7 @@ impl<'a> RecordCursor<'a> {
     }
 
     /// Validates the version and returns the record tag.
-    pub fn any_header(&mut self) -> MultipartStorageResult<u8> {
+    fn any_header(&mut self) -> MultipartStorageResult<u8> {
         let version = self
             .bytes
             .get(self.offset)
