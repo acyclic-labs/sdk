@@ -1,8 +1,13 @@
 //! Hosted Stream requests shared by native and browser clients.
-use crate::{MAX_COMMAND_BYTES, memory, wire_codec};
+use crate::MAX_COMMAND_BYTES;
+#[cfg(any(test, target_arch = "wasm32"))]
+use crate::{memory, wire_codec};
+#[cfg(any(test, target_arch = "wasm32"))]
 use acyclic_stream_wire::token::TokenOperation;
+#[cfg(any(test, target_arch = "wasm32"))]
 use acyclic_stream_wire::wire;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+#[cfg(any(test, target_arch = "wasm32"))]
 use prost::Message;
 use serde_json::{Value, json};
 type Result<T = ()> = std::result::Result<T, &'static str>;
@@ -18,6 +23,7 @@ fn options(name: &str, sequence: Option<u64>, key: &crate::IdempotencyKey) -> Va
     Value::Object(value)
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn valid_token_expiry(value: &str) -> bool {
     let bytes = value.as_bytes();
     let Some((unit, digits)) = bytes.split_last() else {
@@ -28,6 +34,7 @@ fn valid_token_expiry(value: &str) -> bool {
         && matches!(*unit, b's' | b'm' | b'h' | b'd')
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
     if !valid_token_expiry(&request.expires_in) || request.allow.is_empty() {
         return Err("invalid_argument");
@@ -46,6 +53,7 @@ fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
     Ok(())
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn request_json_append(input: &[u8]) -> Result<Value> {
     let request = wire::AppendRequest::decode(input).map_err(|_| "invalid_argument")?;
     let request = wire_codec::append_from_wire(request).map_err(|error| error.code())?;
@@ -78,6 +86,7 @@ fn append_record_json(record: &crate::AppendRecord) -> Value {
     })
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn request_json_fork(input: &[u8]) -> Result<Value> {
     let request = wire::ForkRequest::decode(input).map_err(|_| "invalid_argument")?;
     let request = wire_codec::fork_from_wire(request).map_err(|error| error.code())?;
@@ -147,6 +156,7 @@ fn effect_json(effect: &crate::CommitEffect) -> Value {
     json!({ "conditions": conditions, "mutations": mutations, "soft": effect.soft })
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn request_json_commit(input: &[u8]) -> Result<Value> {
     let request = wire::CommitRequest::decode(input).map_err(|_| "invalid_argument")?;
     if request.include_envelope {
@@ -179,6 +189,7 @@ fn commit_json(mut request: crate::CommitRequest) -> Result<Value> {
     Ok(value)
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn request_json_tokens_create(input: &[u8]) -> Result<Value> {
     let request = wire::CreateTokenRequest::decode(input).map_err(|_| "invalid_argument")?;
     validate_token_request(&request)?;
@@ -209,6 +220,7 @@ fn request_json_tokens_create(input: &[u8]) -> Result<Value> {
     }))
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 fn request_json(route: &str, input: &[u8]) -> Result<Value> {
     if input.len() > MAX_COMMAND_BYTES {
         return Err("limit_exceeded");
@@ -219,7 +231,7 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 wire::InspectIdempotencyRequest::decode(input).map_err(|_| "invalid_argument")?;
             let key = crate::IdempotencyKey::new(request.idempotency_key)
                 .map_err(|_| "invalid_argument")?;
-            Ok(json!({ "idempotencyKey": STANDARD.encode(key.as_bytes()) }))
+            Ok(identity_json("idempotencyKey", key.as_bytes()))
         }
         "heads" => {
             let wire = wire::HeadsRequest::decode(input).map_err(|_| "invalid_argument")?;
@@ -324,13 +336,23 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
         "commits/read" => {
             let request = wire::ReadCommitRequest::decode(input).map_err(|_| "invalid_argument")?;
             let id = wire_codec::commit_id(&request.commit_id).map_err(|_| "invalid_argument")?;
-            Ok(json!({ "commitId": STANDARD.encode(id.as_bytes()) }))
+            Ok(identity_json("commitId", id.as_bytes()))
         }
         "tokens/create" => request_json_tokens_create(input),
         _ => Err("invalid_argument"),
     }
 }
 
+fn identity_json(name: &str, bytes: &[u8]) -> Value {
+    json!({ (name): STANDARD.encode(bytes) })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn encode_identity(name: &str, bytes: &[u8]) -> Result<String> {
+    serde_json::to_string(&identity_json(name, bytes)).map_err(|_| "could not encode request")
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
     serde_json::to_string(&request_json(route, input)?).map_err(|_| "could not encode request")
 }
@@ -342,15 +364,20 @@ pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_fork(request: &crate::ForkRequest) -> Result<String> {
+    crate::request::validate_fork_size(request).map_err(|error| error.code())?;
     serde_json::to_string(&fork_json(request)?).map_err(|_| "could not encode request")
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_commit(request: crate::CommitRequest) -> Result<String> {
+    if crate::wire_codec::requests::commit_len(&request) > MAX_COMMAND_BYTES {
+        return Err("limit_exceeded");
+    }
     serde_json::to_string(&commit_json(request)?).map_err(|_| "could not encode request")
 }
 
 /// Adds the minimum cut, one entry per authority; the host serves at or above it.
+#[cfg(any(test, target_arch = "wasm32"))]
 fn with_at_least(value: Value, at_least: &[wire::Revision]) -> Value {
     match value {
         Value::Object(mut object) => {
