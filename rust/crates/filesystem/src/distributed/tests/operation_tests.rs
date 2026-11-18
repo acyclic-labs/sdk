@@ -12,7 +12,7 @@ fn fork() -> WorkspaceForkCommit {
 
 #[tokio::test]
 async fn indexed_authority_record_size_admission_covers_creation_and_append() -> TestResult {
-    let empty = crate::streams_record::BorrowedStreamsDurableRecord {
+    let empty = acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord {
         epoch: Epoch::GENESIS,
         sequence: Sequence::new(1),
         operation_id: proposed(80).operation_id,
@@ -51,7 +51,7 @@ async fn indexed_authority_record_size_admission_covers_creation_and_append() ->
             .expect_err("creation must reserve the operation index before value allocation");
         assert!(matches!(error,
             AuthorityError::Authority(AuthorityStoreError::DurableCodec(
-                crate::StreamsAuthorityRecordError::RecordTooLarge { observed, maximum }
+                acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::RecordTooLarge { observed, maximum }
             )) if observed == maximum_value as u64 + 1 && maximum == maximum_value as u64
         ));
         assert!(store.head(authority, &mut work).await.is_err());
@@ -84,7 +84,7 @@ async fn indexed_authority_record_size_admission_covers_creation_and_append() ->
             .expect_err("append must reserve the operation index before value allocation");
         assert!(matches!(error,
             AuthorityError::Authority(AuthorityStoreError::DurableCodec(
-                crate::StreamsAuthorityRecordError::RecordTooLarge { observed, maximum }
+                acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::RecordTooLarge { observed, maximum }
             )) if observed == maximum_value as u64 + 1 && maximum == maximum_value as u64
         ));
         assert_eq!(store.head(authority, &mut work).await?, expected);
@@ -802,15 +802,16 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
         let mut sequence = 1_u64;
         let mut digest = first.digest;
         if invalid == 6 {
-            let mut record = crate::streams_record::BorrowedStreamsDurableRecord {
-                epoch: Epoch::GENESIS,
-                sequence: Sequence::new(2),
-                operation_id: proposed(94).operation_id,
-                fingerprint: proposed(94).fingerprint,
-                previous_digest: first.digest,
-                digest: Digest::ZERO,
-                payload: b"publication",
-            };
+            let mut record =
+                acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord {
+                    epoch: Epoch::GENESIS,
+                    sequence: Sequence::new(2),
+                    operation_id: proposed(94).operation_id,
+                    fingerprint: proposed(94).fingerprint,
+                    previous_digest: first.digest,
+                    digest: Digest::ZERO,
+                    payload: b"publication",
+                };
             record.digest = work.durable_digest(id, &record)?;
             let encoded = StreamsDurableRecord::encode_borrowed_with(
                 &record,

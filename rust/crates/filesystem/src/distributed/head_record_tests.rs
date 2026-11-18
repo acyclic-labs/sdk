@@ -189,8 +189,10 @@ async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalen
     .await?;
     let source = created().await?;
     let fixture = single_record(&source).await?;
-    let encoded =
-        crate::streams_record::StreamsDurableRecord::encode(&fixture, STREAM_RECORD_LIMIT)?;
+    let encoded = acyclic_fs_authority_record::streams_record::StreamsDurableRecord::encode(
+        &fixture,
+        STREAM_RECORD_LIMIT,
+    )?;
     let cancel = CancellationToken::new();
     let mut old = AuthorityWork::new(BUDGET, &cancel);
     let (expected, _expected_allocation) = Fallback(&source)
@@ -365,8 +367,10 @@ async fn retained_head_record_still_rejects_corrupt_digest_and_stream_sequence()
         } else {
             record.digest = Digest::from_bytes([0xff; 32]);
         }
-        let encoded =
-            crate::streams_record::StreamsDurableRecord::encode(&record, STREAM_RECORD_LIMIT)?;
+        let encoded = acyclic_fs_authority_record::streams_record::StreamsDurableRecord::encode(
+            &record,
+            STREAM_RECORD_LIMIT,
+        )?;
         let path = stream_path(AUTHORITY, "/records")?;
         store
             .provider

@@ -171,7 +171,10 @@ pub(super) async fn read_one<P: crate::distributed::AuthorityProvider + ?Sized>(
 }
 pub(super) fn decode_record<'a>(
     record: &'a acyclic_stream::Record,
-) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, AuthorityStoreError> {
+) -> Result<
+    acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'a>,
+    AuthorityStoreError,
+> {
     StreamsDurableRecord::decode_borrowed(&record.value, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))
 }

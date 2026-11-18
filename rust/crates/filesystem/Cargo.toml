@@ -193,7 +193,7 @@ native_view_table = []
 local_commit_model = []
 native_checkpoint = ["acyclic_auth", "acyclic_fs_native_contract", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acyclic_fs_wire", "prost", "serde_json"]
-wire_error_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_auth", "acyclic_fs_native_contract", "acyclic_fs_wire", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "bytes", "prost_reflect", "tokio", "tonic"]
+wire_error_contracts = ["acyclic_fs", "acyclic_fs_authority_record", "acyclic_fs_format", "acyclic_auth", "acyclic_fs_native_contract", "acyclic_fs_wire", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "bytes", "prost_reflect", "tokio", "tonic"]
 wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
 source_lifecycle = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tempfile", "tokio"]
 s3_contracts = ["acyclic_fs", "acyclic_fs_work", "bytes", "tokio"]
@@ -461,6 +461,7 @@ acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-fs-wire = { version = "=0.2.0", path = "../filesystem-wire" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs-authority-record = { version = "=0.2.0", path = "../filesystem-authority-record" }
 acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
 async-trait.workspace = true
 blake3.workspace = true

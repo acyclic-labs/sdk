@@ -9,11 +9,11 @@ use std::mem::size_of;
 use wasm_bindgen::JsCast;
 use {
     acyclic_fs::{
-        AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CreateAuthorityOutcome,
-        DurableCommit, FenceOutcome, GuardedAppend, Head, ProposedCommit, PublicationPermit,
-        PublicationReservation, ReplayLimit, ReservationOutcome, WorkspaceForkCommit,
-        WorkspaceForkOutcome,
+        AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CreateAuthorityOutcome, FenceOutcome,
+        GuardedAppend, Head, ProposedCommit, PublicationPermit, PublicationReservation,
+        ReplayLimit, ReservationOutcome, WorkspaceForkCommit, WorkspaceForkOutcome,
     },
+    acyclic_fs_authority_record::DurableCommit,
     acyclic_fs_format::authority::{Epoch, Sequence},
     acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
     acyclic_fs_format::object_reference::ObjectKind,

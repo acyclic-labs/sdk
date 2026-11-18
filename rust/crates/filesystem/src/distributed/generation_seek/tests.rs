@@ -249,7 +249,7 @@ async fn forged_header_is_not_publication_evidence() -> TestResult {
         .await?;
     let payload = payload.ok_or("publication missing")?;
     let fake = GenerationId::new(Digest::from_bytes([79; 32]));
-    let mut durable = crate::streams_record::BorrowedStreamsDurableRecord {
+    let mut durable = acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord {
         epoch: head.epoch,
         sequence: head.sequence.checked_next()?,
         operation_id: OperationId::new(),

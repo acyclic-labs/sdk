@@ -337,7 +337,7 @@ fn prepare_requests(
             .map_err(|_| crate::FsError::InvalidAuthorityHistory)?;
         let digest = work.durable_digest(
             request.authority_id,
-            &crate::streams_record::BorrowedStreamsDurableRecord {
+            &acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord {
                 epoch: request.epoch,
                 sequence,
                 operation_id: request.commit.operation_id,

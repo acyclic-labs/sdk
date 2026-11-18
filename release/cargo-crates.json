@@ -39,6 +39,7 @@
   "acyclic-fs-native-contract",
   "acyclic-fs-storage-probe",
   "acyclic-fs-work",
+  "acyclic-fs-authority-record",
   "acyclic-fs-merge",
   "acyclic-fs-darwin-bridge",
   "acyclic-fs",

@@ -5,7 +5,9 @@
 //! retains the remaining FS authority fields in that body so a remote adapter
 //! can reconstruct the FS hash chain without a private side index.
 
-use crate::foundation::{Digest, DurableCommit, Epoch, OperationId, ProposedCommit, Sequence};
+use crate::DurableCommit;
+use acyclic_fs_format::authority::{Epoch, Sequence};
+use acyclic_fs_format::identity::{Digest, OperationId};
 use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use bytes::Bytes;
 use thiserror::Error;
@@ -38,14 +40,21 @@ pub struct StreamsDurableRecord(pub DurableCommit);
 
 /// Validated durable fields borrowing the original provider record.
 #[derive(Clone, Copy)]
-pub(crate) struct BorrowedStreamsDurableRecord<'a> {
-    pub(crate) epoch: Epoch,
-    pub(crate) sequence: Sequence,
-    pub(crate) operation_id: OperationId,
-    pub(crate) fingerprint: Digest,
-    pub(crate) previous_digest: Digest,
-    pub(crate) digest: Digest,
-    pub(crate) payload: &'a [u8],
+pub struct BorrowedStreamsDurableRecord<'a> {
+    /// Writer-fencing epoch.
+    pub epoch: Epoch,
+    /// Assigned authority sequence.
+    pub sequence: Sequence,
+    /// Stable retry identity.
+    pub operation_id: OperationId,
+    /// Original command fingerprint.
+    pub fingerprint: Digest,
+    /// Previous hash-chain head.
+    pub previous_digest: Digest,
+    /// Commit hash-chain head.
+    pub digest: Digest,
+    /// Canonical operation bytes borrowed from the record.
+    pub payload: &'a [u8],
 }
 
 impl StreamsDurableRecord {
@@ -70,7 +79,7 @@ impl StreamsDurableRecord {
     }
 
     /// Uses the canonical field writer with caller-owned allocation admission.
-    pub(crate) fn encode_with<E>(
+    pub fn encode_with<E>(
         commit: &DurableCommit,
         maximum_record_bytes: u64,
         write: impl FnOnce(&[u8], &[&[u8]]) -> Result<Bytes, E>,
@@ -88,7 +97,7 @@ impl StreamsDurableRecord {
     }
 
     /// The single canonical writer also accepts already borrowed proposal data.
-    pub(crate) fn encode_borrowed_with<E, T>(
+    pub fn encode_borrowed_with<E, T>(
         commit: &BorrowedStreamsDurableRecord<'_>,
         maximum_record_bytes: u64,
         write: impl FnOnce(&[u8], &[&[u8]]) -> Result<T, E>,
@@ -139,7 +148,7 @@ impl StreamsDurableRecord {
     }
 
     /// Parses canonical durable fields without allocating or copying the payload.
-    pub(crate) fn decode_borrowed(
+    pub fn decode_borrowed(
         encoded: &[u8],
         maximum_record_bytes: u64,
     ) -> Result<BorrowedStreamsDurableRecord<'_>, StreamsAuthorityRecordError> {
@@ -156,7 +165,7 @@ impl StreamsDurableRecord {
 
     /// Admits each validated fixed-field copy immediately before it occurs,
     /// then records the completed copy. Earlier fields remain spent on refusal.
-    pub(crate) fn decode_borrowed_with<'a, E, F>(
+    pub fn decode_borrowed_with<'a, E, F>(
         encoded: &'a [u8],
         maximum_record_bytes: u64,
         mut copy: F,
@@ -260,12 +269,8 @@ impl StreamsAuthorityRecord {
     /// # Errors
     ///
     /// Rejects a zero limit, an oversized record, or an allocation failure.
-    pub fn encode(
-        commit: &ProposedCommit,
-        epoch: Epoch,
-        maximum_record_bytes: u64,
-    ) -> Result<Bytes, StreamsAuthorityRecordError> {
-        let payload_bytes = u64::try_from(commit.payload.len())
+    pub fn encode(&self, maximum_record_bytes: u64) -> Result<Bytes, StreamsAuthorityRecordError> {
+        let payload_bytes = u64::try_from(self.payload.len())
             .map_err(|_| StreamsAuthorityRecordError::LengthOverflow)?;
         let encoded_bytes = STREAMS_AUTHORITY_RECORD_HEADER_BYTES
             .checked_add(payload_bytes)
@@ -279,11 +284,11 @@ impl StreamsAuthorityRecord {
             .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
         encoded.extend_from_slice(DOMAIN);
         encoded.extend_from_slice(&VERSION.to_le_bytes());
-        encoded.extend_from_slice(&epoch.get().to_le_bytes());
-        encoded.extend_from_slice(&commit.operation_id.into_bytes());
-        encoded.extend_from_slice(commit.fingerprint.as_bytes());
+        encoded.extend_from_slice(&self.epoch.get().to_le_bytes());
+        encoded.extend_from_slice(&self.operation_id.into_bytes());
+        encoded.extend_from_slice(self.fingerprint.as_bytes());
         encoded.extend_from_slice(&payload_bytes.to_le_bytes());
-        encoded.extend_from_slice(&commit.payload);
+        encoded.extend_from_slice(&self.payload);
         Ok(Bytes::from(encoded))
     }
 
@@ -342,18 +347,6 @@ impl StreamsAuthorityRecord {
             fingerprint,
             payload: Bytes::from(payload),
         })
-    }
-
-    /// Converts the decoded envelope to the FS proposal accepted by an
-    /// authority adapter.
-    #[must_use]
-    pub fn proposed_commit(&self) -> ProposedCommit {
-        ProposedCommit {
-            publication: None,
-            operation_id: self.operation_id,
-            fingerprint: self.fingerprint,
-            payload: self.payload.clone(),
-        }
     }
 }
 
@@ -544,9 +537,9 @@ mod tests {
         assert_eq!(copied, 2);
     }
 
-    fn proposal() -> ProposedCommit {
-        ProposedCommit {
-            publication: None,
+    fn proposal() -> StreamsAuthorityRecord {
+        StreamsAuthorityRecord {
+            epoch: Epoch::GENESIS,
             operation_id: OperationId::from_bytes([1; 16]),
             fingerprint: Digest::from_bytes([2; 32]),
             payload: Bytes::from_static(b"canonical-operation"),
@@ -570,18 +563,20 @@ mod tests {
     #[test]
     fn round_trip_preserves_the_complete_streams_envelope() {
         let original = proposal();
-        let encoded = StreamsAuthorityRecord::encode(&original, Epoch::GENESIS, 4096)
+        let encoded = original
+            .encode(4096)
             .unwrap_or_else(|_| unreachable!("test record fits"));
         let decoded = StreamsAuthorityRecord::decode(&encoded, 4096)
             .unwrap_or_else(|_| unreachable!("test record decodes"));
         assert_eq!(decoded.epoch, Epoch::GENESIS);
-        assert_eq!(decoded.proposed_commit(), original);
+        assert_eq!(decoded, original);
     }
 
     #[test]
     fn malformed_records_fail_before_payload_allocation() {
         let original = proposal();
-        let encoded = StreamsAuthorityRecord::encode(&original, Epoch::GENESIS, 4096)
+        let encoded = original
+            .encode(4096)
             .unwrap_or_else(|_| unreachable!("test record fits"));
         assert_eq!(
             StreamsAuthorityRecord::decode(&encoded[..encoded.len() - 1], 4096),
@@ -599,7 +594,8 @@ mod tests {
     #[test]
     fn domain_version_epoch_and_trailing_bytes_are_strict() {
         let original = proposal();
-        let encoded = StreamsAuthorityRecord::encode(&original, Epoch::GENESIS, 4096)
+        let encoded = original
+            .encode(4096)
             .unwrap_or_else(|_| unreachable!("test record fits"));
         let mut invalid_domain = encoded.to_vec();
         invalid_domain[0] ^= 1;

@@ -10,11 +10,11 @@ use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, FenceOutcome,
     ObjectId, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
 };
-use crate::streams_record::StreamsDurableRecord;
 use crate::{
     AsyncAuthorityStore, AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork,
     WorkspaceForkCommit, WorkspaceForkOutcome,
 };
+use acyclic_fs_authority_record::streams_record::StreamsDurableRecord;
 use acyclic_stream::StreamProviderExt as _;
 use bytes::Bytes;
 use futures::StreamExt;

@@ -35,7 +35,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         conflicts: &[acyclic_stream::CommitConflict],
         work: &mut AuthorityWork<'_>,
         mut observe: impl FnMut(
-            crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+            acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'_>,
             &acyclic_stream::Record,
             &mut AuthorityWork<'_>,
         ) -> Result<(), AuthorityStoreError>,
@@ -131,7 +131,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         cursor: ConflictCursor,
         work: &mut AuthorityWork<'_>,
         observe: &mut impl FnMut(
-            crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+            acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'_>,
             &acyclic_stream::Record,
             &mut AuthorityWork<'_>,
         ) -> Result<(), AuthorityStoreError>,

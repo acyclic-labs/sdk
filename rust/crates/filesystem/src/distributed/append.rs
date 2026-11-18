@@ -69,7 +69,7 @@ pub(in crate::distributed) struct AppendReceipt<'a> {
     authority_id: AuthorityId,
     epoch: Epoch,
     commit: &'a ProposedCommit,
-    durable: crate::streams_record::BorrowedStreamsDurableRecord<'a>,
+    durable: acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'a>,
     records: StreamPath,
     gate: StreamPath,
     lease_path: Option<StreamPath>,

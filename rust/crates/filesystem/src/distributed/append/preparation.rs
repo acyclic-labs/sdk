@@ -450,7 +450,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
 fn prepare_record<'a>(
     request: &'a crate::GuardedAppend,
     work: &mut AuthorityWork<'_>,
-) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, AuthorityStoreError> {
+) -> Result<
+    acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'a>,
+    AuthorityStoreError,
+> {
     let authority_id = request.authority_id;
     let epoch = request.epoch;
     let expected = request.expected;
@@ -459,7 +462,7 @@ fn prepare_record<'a>(
         .sequence
         .checked_next()
         .map_err(|_| AuthorityStoreError::SequenceExhausted)?;
-    let mut durable = crate::streams_record::BorrowedStreamsDurableRecord {
+    let mut durable = acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord {
         epoch,
         sequence,
         operation_id: commit.operation_id,

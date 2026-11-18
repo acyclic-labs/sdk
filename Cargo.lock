@@ -252,6 +252,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-authority-record",
  "acyclic-fs-format",
  "acyclic-fs-wire",
  "acyclic-fs-work",
@@ -386,6 +387,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-collections",
+ "acyclic-fs-authority-record",
  "acyclic-fs-base",
  "acyclic-fs-darwin-bridge",
  "acyclic-fs-format",
@@ -464,6 +466,16 @@ dependencies = [
  "windows",
  "writeable",
  "zeroize",
+]
+
+[[package]]
+name = "acyclic-fs-authority-record"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs-format",
+ "acyclic-fs-work",
+ "bytes",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

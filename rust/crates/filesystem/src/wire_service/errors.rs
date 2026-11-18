@@ -168,16 +168,16 @@ fn authority_code(error: &AuthorityStoreError) -> Code {
         E::Cancelled => Code::Cancelled,
         E::NativeStream(error) => stream_code(error),
         E::DurableCodec(error) => match error {
-            crate::StreamsAuthorityRecordError::InvalidLimit => Code::InvalidArgument,
-            crate::StreamsAuthorityRecordError::RecordTooLarge { .. }
-            | crate::StreamsAuthorityRecordError::LengthOverflow
-            | crate::StreamsAuthorityRecordError::AllocationFailed => Code::ResourceExhausted,
-            crate::StreamsAuthorityRecordError::InvalidDomain
-            | crate::StreamsAuthorityRecordError::UnsupportedVersion(_)
-            | crate::StreamsAuthorityRecordError::Truncated
-            | crate::StreamsAuthorityRecordError::TrailingBytes
-            | crate::StreamsAuthorityRecordError::ZeroEpoch
-            | crate::StreamsAuthorityRecordError::ZeroSequence => Code::DataLoss,
+            acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::InvalidLimit => Code::InvalidArgument,
+            acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::RecordTooLarge { .. }
+            | acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::LengthOverflow
+            | acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::AllocationFailed => Code::ResourceExhausted,
+            acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::InvalidDomain
+            | acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::UnsupportedVersion(_)
+            | acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::Truncated
+            | acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::TrailingBytes
+            | acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::ZeroEpoch
+            | acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::ZeroSequence => Code::DataLoss,
         },
         E::CorruptStatic(_) | E::Corrupt(_) => Code::DataLoss,
         E::AccountingHandoffActive

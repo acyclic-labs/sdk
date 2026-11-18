@@ -27,15 +27,16 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         )?;
         let genesis = work.stream_bytes(GENESIS_DOMAIN, &[&epoch.get().to_le_bytes()])?;
         let generation = if let Some(commit) = proposed {
-            let mut record = crate::streams_record::BorrowedStreamsDurableRecord {
-                epoch,
-                sequence: Sequence::new(1),
-                operation_id: commit.operation_id,
-                fingerprint: commit.fingerprint,
-                previous_digest: Head::genesis(epoch).digest,
-                digest: Digest::ZERO,
-                payload: &commit.payload,
-            };
+            let mut record =
+                acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord {
+                    epoch,
+                    sequence: Sequence::new(1),
+                    operation_id: commit.operation_id,
+                    fingerprint: commit.fingerprint,
+                    previous_digest: Head::genesis(epoch).digest,
+                    digest: Digest::ZERO,
+                    payload: &commit.payload,
+                };
             record.digest = work.durable_digest(authority, &record)?;
             head = Head {
                 epoch: record.epoch,

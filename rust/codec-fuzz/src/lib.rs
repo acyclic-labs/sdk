@@ -1393,17 +1393,12 @@ pub fn filesystem_codecs(bytes: &[u8]) {
     assert!(acyclic_fs::lazy_workspace::codec_fuzz::check(bytes));
     assert!(acyclic_fs::materializer::codec_fuzz::check(bytes).is_ok());
     assert!(acyclic_fs::native_ownership_codec::check(bytes));
-    use acyclic_fs::{
-        streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
-        workspace_context_wire as context,
+    use acyclic_fs::workspace_context_wire as context;
+    use acyclic_fs_authority_record::streams_record::{
+        StreamsAuthorityRecord, StreamsDurableRecord,
     };
     if let Ok(value) = StreamsAuthorityRecord::decode(bytes, u64::MAX) {
-        assert_eq!(
-            StreamsAuthorityRecord::encode(&value.proposed_commit(), value.epoch, u64::MAX)
-                .unwrap()
-                .as_ref(),
-            bytes
-        );
+        assert_eq!(value.encode(u64::MAX).unwrap().as_ref(), bytes);
     }
     if let Ok(value) = StreamsDurableRecord::decode(bytes, u64::MAX) {
         assert_eq!(

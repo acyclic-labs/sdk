@@ -1,0 +1,18 @@
+[package]
+name = "acyclic-fs-authority-record"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Canonical Stream framing for filesystem authority records"
+
+[dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+bytes.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

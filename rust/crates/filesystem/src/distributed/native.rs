@@ -508,7 +508,7 @@ impl<'a> AuthorityWork<'a> {
 
     pub(super) fn publication_record(
         &mut self,
-        record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+        record: &acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'_>,
         generation: Option<GenerationId>,
     ) -> Result<acyclic_stream::AppendRecord, AuthorityStoreError> {
         let operation = record.operation_id.into_bytes();
@@ -602,8 +602,10 @@ impl<'a> AuthorityWork<'a> {
     pub(super) fn decode_durable<'record>(
         &mut self,
         bytes: &'record [u8],
-    ) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'record>, AuthorityStoreError>
-    {
+    ) -> Result<
+        acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'record>,
+        AuthorityStoreError,
+    > {
         let native = self.is_native();
         crate::kernel::decode_owned(&mut self.accounting(), |observe| {
             StreamsDurableRecord::decode_borrowed_with(bytes, STREAM_RECORD_LIMIT, observe)?

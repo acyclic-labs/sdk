@@ -11,7 +11,7 @@ pub(super) struct OperationRecordProof {
 
 impl OperationRecordProof {
     pub(super) fn new(
-        durable: crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+        durable: acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'_>,
         record: &acyclic_stream::Record,
         work: &AuthorityWork<'_>,
     ) -> Result<Self, AuthorityStoreError> {
@@ -124,7 +124,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     pub(super) fn locate_operation_in(
         &self,
         authority: AuthorityId,
-        record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+        record: &acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'_>,
         conditions: &mut Vec<CommitCondition>,
         mutations: &mut Vec<CommitMutation>,
         work: &mut AuthorityWork<'_>,

@@ -1128,24 +1128,24 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     )?;
     capture_actors(manifest)?;
     use {
-        acyclic_fs::{
-            DurableCommit, ProposedCommit,
+        acyclic_fs_authority_record::{
+            DurableCommit,
             streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
         },
         acyclic_fs_format::authority::{Epoch, Sequence},
         acyclic_fs_format::identity::{Digest, OperationId},
     };
-    let proposed = ProposedCommit {
-        publication: None,
+    let proposed = StreamsAuthorityRecord {
+        epoch: Epoch::new(1)?,
         operation_id: OperationId::from_bytes([1; 16]),
         fingerprint: Digest::from_bytes([2; 32]),
         payload: Bytes::from_static(b"codec payload"),
     };
-    let epoch = Epoch::new(1)?;
+    let epoch = proposed.epoch;
     save(
         "filesystem_codecs",
         "authority",
-        &StreamsAuthorityRecord::encode(&proposed, epoch, u64::MAX)?,
+        &proposed.encode(u64::MAX)?,
         "StreamsAuthorityRecord::encode",
         manifest,
     )?;

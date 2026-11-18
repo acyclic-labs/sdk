@@ -167,7 +167,7 @@ pub enum AuthorityStoreError {
     NativeStream(#[from] acyclic_stream::StreamError),
     /// Canonical durable record validation preserves its actual typed cause.
     #[error(transparent)]
-    DurableCodec(#[from] crate::streams_record::StreamsAuthorityRecordError),
+    DurableCodec(#[from] acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError),
     /// Fixed canonical corruption reason needs no owned diagnostic buffer.
     #[error("authority storage is corrupt: {0}")]
     CorruptStatic(&'static str),

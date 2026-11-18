@@ -22,7 +22,10 @@ pub(super) fn authority_decode_borrowed<'a>(
     authority: AuthorityId,
     encoded: &'a [u8],
     meter: &mut AuthorityWork<'_>,
-) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, AuthorityStoreError> {
+) -> Result<
+    acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'a>,
+    AuthorityStoreError,
+> {
     let borrowed = meter.decode_durable(encoded)?;
     let digest = meter.durable_digest(authority, &borrowed)?;
     if digest != borrowed.digest {
@@ -35,7 +38,7 @@ pub(super) fn authority_decode_borrowed<'a>(
 }
 
 pub(super) fn durable_commit(
-    borrowed: crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+    borrowed: acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'_>,
     committed_at_micros: u64,
     payload: Bytes,
 ) -> DurableCommit {

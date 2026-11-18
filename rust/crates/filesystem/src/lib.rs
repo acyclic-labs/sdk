@@ -173,7 +173,6 @@ pub mod speculation;
 #[doc(hidden)]
 pub mod staged_objects;
 pub mod storage;
-pub mod streams_record;
 #[cfg(test)]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
@@ -195,6 +194,7 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
+use acyclic_fs_authority_record::DurableCommit;
 use acyclic_fs_format::authority::{Epoch, Sequence};
 use acyclic_fs_format::identity::{
     AuthorityId, CheckoutId, Digest, FileId, MountId, OperationId, VolumeId, WatchId,
@@ -249,8 +249,7 @@ pub use facade::{
 };
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
-    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, DurableCommit, Head, ProposedCommit,
-    authority_commit_digest,
+    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, Head, ProposedCommit, authority_commit_digest,
 };
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
@@ -396,10 +395,6 @@ pub use storage::{
     CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject, ObjectFailure, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationPermit,
     PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
-};
-pub use streams_record::{
-    STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,
-    StreamsDurableRecord,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use watch::{

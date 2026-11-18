@@ -133,7 +133,7 @@ impl<'a> AuthorityWork<'a> {
     pub(crate) fn durable_digest(
         &mut self,
         authority: AuthorityId,
-        record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
+        record: &acyclic_fs_authority_record::streams_record::BorrowedStreamsDurableRecord<'_>,
     ) -> Result<crate::Digest, AuthorityStoreError> {
         let hashing = WorkCounters {
             bytes_hashed: crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES

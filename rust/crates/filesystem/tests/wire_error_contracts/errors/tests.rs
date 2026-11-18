@@ -73,7 +73,7 @@ cases! {
     authority_cancelled: authority(AuthorityStoreError::Cancelled) => Cancelled;
     authority_handoff: authority(AuthorityStoreError::AccountingHandoffActive) => FailedPrecondition;
     authority_stream: authority(AuthorityStoreError::NativeStream(acyclic_stream::StreamError::AccessDenied)) => PermissionDenied;
-    authority_codec: authority(AuthorityStoreError::DurableCodec(acyclic_fs::StreamsAuthorityRecordError::InvalidDomain)) => DataLoss;
+    authority_codec: authority(AuthorityStoreError::DurableCodec(acyclic_fs_authority_record::streams_record::StreamsAuthorityRecordError::InvalidDomain)) => DataLoss;
     authority_corrupt_static: converted(AuthorityStoreError::CorruptStatic("invalid durable state")) => DataLoss;
     authority_rejected_static: authority(AuthorityStoreError::RejectedStatic("rejected")) => FailedPrecondition;
     authority_replay_limit: authority(AuthorityStoreError::InvalidReplayLimit) => InvalidArgument;
