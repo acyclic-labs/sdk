@@ -32,7 +32,7 @@ const INCARNATION: &str = "incarnation";
 const METADATA_WORDS: usize = 10;
 
 /// Caller-selected durable recovery and canonical state capacities; omission is unbounded.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BrowserStreamLimits {
     /// Maximum retained successful journal commands.
     pub commands: Option<u64>,
@@ -40,16 +40,6 @@ pub struct BrowserStreamLimits {
     pub journal_bytes: Option<u64>,
     /// Canonical Rust state capacity; must match on every opener.
     pub memory: MemoryLimits,
-}
-
-impl Default for BrowserStreamLimits {
-    fn default() -> Self {
-        Self {
-            commands: None,
-            journal_bytes: None,
-            memory: MemoryLimits::default(),
-        }
-    }
 }
 
 struct Cache {

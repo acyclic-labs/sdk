@@ -2,6 +2,7 @@
 //! pointers; this adapter only projects calls and owns cursor cancellation.
 //! Every byte argument is the port's own copy, so an asynchronous port may
 //! read it after WebAssembly memory grows.
+use super::read_chunk_frame;
 use crate::*;
 use futures::StreamExt;
 use js_sys::{Promise, Reflect, Uint8Array};
@@ -69,9 +70,7 @@ struct CursorFrames {
 impl CursorFrames {
     async fn next(&mut self) -> Result<Option<wire::SessionFrame>, StreamError> {
         loop {
-            let mut remaining = &self.chunk[self.offset..];
-            let frame = self.decoder.read(&mut remaining)?;
-            self.offset = self.chunk.len() - remaining.len();
+            let frame = read_chunk_frame(&mut self.decoder, &self.chunk, &mut self.offset)?;
             if frame.is_some() {
                 return Ok(frame);
             }

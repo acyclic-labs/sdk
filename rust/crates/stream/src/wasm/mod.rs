@@ -40,5 +40,16 @@ mod socket;
 
 mod session_io;
 mod session_server;
-pub use session_server::{serve_wasm_grpc_session, serve_wasm_session};
+pub use session_server::{WasmSessionService, serve_wasm_session};
+
+fn read_chunk_frame(
+    decoder: &mut wire_codec::session::FrameDecoder,
+    chunk: &[u8],
+    offset: &mut usize,
+) -> Result<Option<wire::SessionFrame>, StreamError> {
+    let mut remaining = chunk.get(*offset..).ok_or(StreamError::InvalidResponse)?;
+    let frame = decoder.read(&mut remaining)?;
+    *offset = chunk.len() - remaining.len();
+    Ok(frame)
+}
 include!("wasm_session.rs");

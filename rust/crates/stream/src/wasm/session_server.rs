@@ -17,50 +17,25 @@ impl Drop for Input {
     }
 }
 
-/// Serves canonical protobuf frames with the existing session engine and cursor.
-/// `next(signal)` pulls one frame, returns null at EOF, and must cancel pending
-/// platform I/O when its signal aborts. Closing the returned cursor aborts input
-/// and drops all session-owned calls and follows; no writer or queue is detached.
+/// The account providers and limits used by a WASM session.
+pub struct WasmSessionService {
+    /// Account-scoped Stream operations.
+    pub provider: Arc<dyn StreamProvider>,
+    /// Credential verification and revocation source.
+    pub authority: Arc<session::Authority>,
+    /// Optional account resource observations.
+    pub resources: Option<Arc<dyn ResourceProvider>>,
+    /// Account-scoped call dispatch.
+    pub calls: Arc<dyn CallProvider>,
+    /// Node identity and negotiated session limits.
+    pub spec: session::SessionSpec,
+}
+
+/// Serves canonical frames or gRPC envelopes through the same session engine.
+/// `next(signal)` returns null at EOF and must cancel pending I/O on abort.
+/// Closing the cursor aborts input and drops session-owned calls and follows.
 pub fn serve_wasm_session(
-    provider: Arc<dyn StreamProvider>,
-    authority: Arc<session::Authority>,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    calls: Arc<dyn CallProvider>,
-    node: String,
-    limits: session::Limits,
-    next: js_sys::Function,
-    shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
-) -> Result<WasmFollow, JsValue> {
-    serve(
-        provider, authority, resources, calls, node, limits, next, shutdown, false,
-    )
-}
-
-/// The same server over a standard gRPC request body. Chunks may split or
-/// coalesce envelopes. The platform owns HTTP/2 headers and terminal trailers;
-/// the returned cursor owns both body directions, calls and follows.
-pub fn serve_wasm_grpc_session(
-    provider: Arc<dyn StreamProvider>,
-    authority: Arc<session::Authority>,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    calls: Arc<dyn CallProvider>,
-    node: String,
-    limits: session::Limits,
-    next: js_sys::Function,
-    shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
-) -> Result<WasmFollow, JsValue> {
-    serve(
-        provider, authority, resources, calls, node, limits, next, shutdown, true,
-    )
-}
-
-fn serve(
-    provider: Arc<dyn StreamProvider>,
-    authority: Arc<session::Authority>,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    calls: Arc<dyn CallProvider>,
-    node: String,
-    limits: session::Limits,
+    service: WasmSessionService,
     next: js_sys::Function,
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
     grpc: bool,
@@ -74,13 +49,10 @@ fn serve(
     };
     let incoming = futures::stream::try_unfold(input, |mut input| async move {
         loop {
-            if let Some(decoder) = input.decoder.as_mut() {
-                let mut remaining = &input.chunk[input.offset..];
-                let frame = decoder.read(&mut remaining)?;
-                input.offset = input.chunk.len() - remaining.len();
-                if let Some(frame) = frame {
-                    return Ok(Some((frame, input)));
-                }
+            if let Some(decoder) = input.decoder.as_mut()
+                && let Some(frame) = read_chunk_frame(decoder, &input.chunk, &mut input.offset)?
+            {
+                return Ok(Some((frame, input)));
             }
             let value = input
                 .next
@@ -111,11 +83,11 @@ fn serve(
         }
     });
     let responses = session::serve_with_products(
-        provider,
-        authority,
-        resources,
-        calls,
-        session::SessionSpec { node, limits },
+        service.provider,
+        service.authority,
+        service.resources,
+        service.calls,
+        service.spec,
         Box::pin(incoming),
         shutdown,
     )
