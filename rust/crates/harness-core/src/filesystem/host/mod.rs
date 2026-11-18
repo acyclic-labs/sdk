@@ -8,7 +8,8 @@ mod private_view;
 pub struct FilesystemHost<A: 'static, O: 'static> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
-    pub(in crate::filesystem) changes: Option<Arc<dyn acyclic_stream::StreamProvider>>,
+    pub(in crate::filesystem) changes:
+        Option<acyclic_stream::ProviderOwner<dyn acyclic_stream::StreamProvider>>,
     publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -141,7 +142,7 @@ impl<A, O> FilesystemHost<A, O> {
     /// This port adds no journal, scan, timer or standing task.
     pub fn with_changes(
         mut self: Arc<Self>,
-        streams: Arc<dyn acyclic_stream::StreamProvider>,
+        streams: acyclic_stream::ProviderOwner<dyn acyclic_stream::StreamProvider>,
     ) -> Result<Arc<Self>>
     where
         A: AsyncAuthorityStore,

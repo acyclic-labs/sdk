@@ -176,7 +176,7 @@ struct Session<P: ?Sized> {
     /// The registered next trust change; `None` while the trust owner is lost.
     trust_changed: Option<acyclic_auth::trust::Changed>,
     deadline: Option<u64>,
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Option<Arc<dyn CallProvider>>,
     sockets: Option<Arc<dyn SocketProvider>>,
@@ -240,7 +240,7 @@ impl<P: ?Sized> ServingSession<P> {
 /// Opens one bidirectional node session over the canonical provider.
 /// The host binds authenticated public trust, audience and presenting account.
 pub fn serve<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     authority: Arc<Authority>,
     node: String,
     limits: Limits,
@@ -259,7 +259,7 @@ pub fn serve<P: StreamProvider + ?Sized>(
 
 /// Opens a session whose product follows are resolved by their owning provider.
 pub fn serve_with_resources<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     authority: Arc<Authority>,
     resources: Arc<dyn ResourceProvider>,
     node: String,
@@ -292,7 +292,7 @@ pub struct SessionSpec {
 /// Completing `shutdown` drops producers and closes admitted channels without
 /// data credit. Its owner must complete it when the serving runtime stops.
 pub fn serve_with_products<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     authority: Arc<Authority>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Arc<dyn CallProvider>,
@@ -327,7 +327,7 @@ fn serve_on_with_products<
     P: StreamProvider + ?Sized,
     E: From<StreamError> + crate::ProviderTask + 'static,
 >(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     authority: Arc<Authority>,
     products: Products,
     node: String,

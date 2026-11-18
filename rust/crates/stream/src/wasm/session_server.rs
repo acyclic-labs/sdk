@@ -20,7 +20,7 @@ impl Drop for Input {
 /// The account providers and limits used by a WASM session.
 pub struct WasmSessionService {
     /// Account-scoped Stream operations.
-    pub provider: Arc<dyn StreamProvider>,
+    pub provider: crate::ProviderOwner<dyn StreamProvider>,
     /// Credential verification and revocation source.
     pub authority: Arc<session::Authority>,
     /// Optional account resource observations.

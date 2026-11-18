@@ -458,8 +458,8 @@ pub(in crate::bindings) fn memory_engine(
     maximum_memory_bytes: Option<u64>,
     cache: ObjectCacheOptions,
 ) -> Result<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>, JsValue> {
-    let streams: Arc<dyn acyclic_stream::StreamProvider> =
-        Arc::new(acyclic_stream::MemoryStream::default());
+    let streams: acyclic_stream::ProviderOwner<dyn acyclic_stream::StreamProvider> =
+        acyclic_stream::ProviderOwner::new(acyclic_stream::MemoryStream::default());
     if maximum_object_bytes.is_some_and(|bytes| bytes == 0 || usize::try_from(bytes).is_err())
         || maximum_memory_bytes == Some(0)
         || maximum_object_bytes

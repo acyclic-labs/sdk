@@ -85,7 +85,7 @@ impl Visibility {
 }
 
 pub(super) fn source<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     request: crate::ChildrenPageRequest,
     visibility: Visibility,
     identity: wire::SessionChannel,
@@ -107,7 +107,7 @@ pub(super) fn source<P: StreamProvider + ?Sized>(
 /// Projects an already coherent provider view; authorization never causes a
 /// second observation. A filtered-out named head refuses the whole view.
 pub(super) fn heads<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     request: crate::HeadsRequest,
     authorization: ResourceAuthorization,
     visibility: Option<Visibility>,

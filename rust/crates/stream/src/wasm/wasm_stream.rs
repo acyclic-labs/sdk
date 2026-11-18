@@ -1,9 +1,15 @@
 /// Browser ABI over canonical Rust memory or durable providers.
 #[wasm_bindgen]
 pub struct WasmStream {
-    provider: std::sync::Arc<dyn StreamProvider>,
+    provider: crate::ProviderOwner<dyn StreamProvider>,
     connections: Option<crate::session::Connections>,
     session: Option<crate::session::Client>,
+}
+
+impl Default for WasmStream {
+    fn default() -> Self {
+        Self::from_provider(Rc::new(MemoryStream::default()))
+    }
 }
 
 /// Persisted capacities of an injected journal domain.
@@ -93,13 +99,13 @@ impl WasmStream {
         let provider = crate::JournalStream::open(journal, limits)
             .await
             .map_err(js_error)?;
-        Ok(Self::from_provider(std::sync::Arc::new(provider)))
+        Ok(Self::from_provider(Rc::new(provider)))
     }
 
     /// A canonical provider RPC port injected by a trusted host.
     #[wasm_bindgen(js_name = connectProvider)]
     pub fn connect_provider(port: JsValue) -> Result<WasmStream, JsValue> {
-        Ok(Self::from_provider(std::sync::Arc::new(
+        Ok(Self::from_provider(Rc::new(
             provider_rpc::InjectedStream::new(port).map_err(js_error)?,
         )))
     }
@@ -108,13 +114,7 @@ impl WasmStream {
     #[must_use]
     /// Creates an in-process provider.
     pub fn new() -> Self {
-        let provider: std::sync::Arc<dyn StreamProvider> =
-            std::sync::Arc::new(MemoryStream::default());
-        Self {
-            connections: None,
-            session: None,
-            provider,
-        }
+        Self::default()
     }
 
     /// Opens the canonical Rust provider on one durable `IndexedDB` journal.
@@ -129,7 +129,7 @@ impl WasmStream {
             journal_bytes: maximum_journal_bytes,
             ..Default::default()
         };
-        let provider: std::sync::Arc<dyn StreamProvider> = std::sync::Arc::new(
+        let provider = Rc::new(
             crate::BrowserStream::open(&name, limits)
                 .await
                 .map_err(js_error)?,
@@ -172,7 +172,7 @@ impl WasmStream {
     pub fn connect(endpoint: &str, credential: js_sys::Function) -> Result<WasmStream, JsValue> {
         let remote = remote::Remote::new(endpoint, credential).map_err(js_error)?;
         let session = remote.session();
-        Ok(Self::from_session(std::sync::Arc::new(remote), session))
+        Ok(Self::from_session(Rc::new(remote), session))
     }
 
     /// Pushes the next successful handshake, including reconnects without further records.
@@ -359,7 +359,7 @@ impl WasmStream {
 impl WasmStream {
     /// Shares a host's existing provider and authenticated session pool.
     pub fn from_session(
-        provider: std::sync::Arc<dyn StreamProvider>,
+        provider: crate::ProviderOwner<dyn StreamProvider>,
         session: crate::session::Client,
     ) -> Self {
         Self {
@@ -370,7 +370,7 @@ impl WasmStream {
     }
 
     /// Adapts an existing canonical provider without choosing another backend.
-    pub fn from_provider(provider: std::sync::Arc<dyn StreamProvider>) -> Self {
+    pub fn from_provider(provider: crate::ProviderOwner<dyn StreamProvider>) -> Self {
         Self {
             provider,
             connections: None,
@@ -389,7 +389,7 @@ impl WasmStream {
     }
     /// Shares the exact provider with higher-level Rust WASM clients.
     #[must_use]
-    pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> {
+    pub fn provider(&self) -> crate::ProviderOwner<dyn StreamProvider> {
         self.provider.clone()
     }
 }

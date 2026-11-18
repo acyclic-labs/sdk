@@ -69,7 +69,7 @@ pub struct SentReply {
 /// status position share one publication, so subscribing from `watch.from`
 /// cannot miss a concurrent answer. No transcript or output body is returned.
 pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &std::sync::Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     within: &acyclic_actors::addressing::ActorReference,
     sender: &AgentPath,
     id: &IntentId,

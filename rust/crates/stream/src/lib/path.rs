@@ -199,9 +199,11 @@ impl StreamPath {
     /// Canonical path text.
     #[must_use]
     pub fn as_str(&self) -> &str {
+        #[cfg(target_arch = "wasm32")]
+        let PathText::Plain(text) = &self.text;
+        #[cfg(not(target_arch = "wasm32"))]
         let text: &str = match &self.text {
             PathText::Plain(text) => text,
-            #[cfg(not(target_arch = "wasm32"))]
             PathText::Native(text) => &text.text,
         };
         // `length` always ends on a segment boundary of `text`.

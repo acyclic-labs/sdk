@@ -782,7 +782,7 @@ impl ChildWakes {
     /// No index IO, reconstruction of a subtree or per-child retained state.
     pub async fn page<P: acyclic_stream::StreamProvider + ?Sized>(
         &self,
-        provider: std::sync::Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         agent: &AgentPath,
         after: Option<u64>,
         limit: usize,

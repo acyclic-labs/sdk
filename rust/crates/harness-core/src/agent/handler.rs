@@ -169,7 +169,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
     /// diagnostic data is shared; neither handler retains the other's driver.
     pub fn with_diagnostics_from(mut self, source: &Self) -> Result<Self, GuestError> {
         if self.agents.store.root() != source.agents.store.root()
-            || !Arc::ptr_eq(self.agents.store.provider(), source.agents.store.provider())
+            || !acyclic_stream::ProviderOwner::ptr_eq(
+                self.agents.store.provider(),
+                source.agents.store.provider(),
+            )
         {
             return Err(GuestError::Handler("diagnostic store differs".into()));
         }
@@ -446,23 +449,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         observed
             .state
             .open_children
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
         observed
             .state
             .archive_pending
-            .bind(Arc::clone(self.store.provider()));
-        observed
-            .state
-            .awaiting
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
+        observed.state.awaiting.bind(self.store.provider().clone());
         observed
             .state
             .topology_refusals
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
         observed
             .state
             .spawned_children
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
         Ok((observed, cursor))
     }
 }
@@ -712,19 +712,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         if let Some(state) = state.as_mut() {
             state
                 .open_children
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
             state
                 .archive_pending
-                .bind(Arc::clone(self.agents.store.provider()));
-            state
-                .awaiting
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
+            state.awaiting.bind(self.agents.store.provider().clone());
             state
                 .topology_refusals
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
             state
                 .spawned_children
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
         }
         let retained = self
             .diagnostics
@@ -780,7 +778,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
         }
         prepared
-            .persist_indexes(Arc::clone(self.agents.store.provider()), checkpoint)
+            .persist_indexes(self.agents.store.provider().clone(), checkpoint)
             .await?;
         let participant = match &self.volumes {
             Some(volumes) => {
@@ -1141,7 +1139,7 @@ where
 
 /// Host controls use the same original checkpoint/adoption reader as AgentHost.
 pub(crate) async fn observe_state<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &std::sync::Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     within: &ActorReference,
     agent: &AgentPath,
 ) -> Result<AgentState, Error> {

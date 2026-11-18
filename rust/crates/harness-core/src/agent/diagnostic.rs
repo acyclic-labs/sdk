@@ -120,7 +120,7 @@ impl Diagnostic {
     /// identity; failures propagate without an independent retry or tail probe.
     pub(super) async fn stage<P: crate::store::JournalProvider + ?Sized>(
         &self,
-        provider: &std::sync::Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         text: &str,
     ) -> Result<(), Error> {
         let path = self.path()?;

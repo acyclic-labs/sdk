@@ -23,7 +23,8 @@ use acyclic_fs::{
 };
 use acyclic_objects::{Blobs, MemoryObjects};
 use acyclic_stream::{
-    BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, StreamError, StreamProvider,
+    BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, ProviderOwner, StreamError,
+    StreamProvider,
 };
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -36,14 +37,14 @@ pub(super) type Objects = acyclic_fs::SharedObjectStore;
 /// reads and writes.
 #[derive(Clone)]
 pub(super) struct Providers {
-    pub(super) stream: Arc<dyn StreamProvider>,
+    pub(super) stream: ProviderOwner<dyn StreamProvider>,
     pub(super) filesystem: Arc<FilesystemHost<Authorities, Objects>>,
     pub(super) placement: Fs<Authorities, Objects>,
 }
 
 impl Providers {
     fn new(
-        stream: Arc<dyn StreamProvider>,
+        stream: ProviderOwner<dyn StreamProvider>,
         authority: Authorities,
         objects: Objects,
         durable: bool,
@@ -51,9 +52,9 @@ impl Providers {
     ) -> Result<Self, JsValue> {
         let placement = Fs::new(authority, objects, EmbeddedCapabilities { durable });
         let ancestry =
-            acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(Arc::clone(&stream)));
+            acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(stream.clone()));
         let filesystem = FilesystemHost::new(placement.clone(), &options.filesystem_provider, None)
-            .and_then(|host| host.with_changes(Arc::clone(&stream)))
+            .and_then(|host| host.with_changes(stream.clone()))
             .and_then(|host| host.with_project_families(ancestry))
             .map_err(js_error)?;
         Ok(Self {
@@ -92,7 +93,7 @@ impl Providers {
         )
         .await
         .map_err(storage)?;
-        let stream: Arc<dyn StreamProvider> = Arc::new(stream);
+        let stream: ProviderOwner<dyn StreamProvider> = ProviderOwner::new(stream);
         Self::new(
             stream.clone(),
             StreamAuthorityStore::new(stream),
@@ -107,7 +108,7 @@ impl Providers {
     /// The database names in `options` are unused.
     pub(super) fn memory(options: &WasmBrowserAgentOptions) -> Result<Self, JsValue> {
         Self::over(
-            Arc::new(MemoryStream::new(Self::memory_limits(options))),
+            ProviderOwner::new(MemoryStream::new(Self::memory_limits(options))),
             Arc::new(MemoryObjects::memory()),
             false,
             options,
@@ -121,7 +122,7 @@ impl Providers {
     /// its record is written. This host does not advance that epoch, so its
     /// publications remain retained across provider restarts.
     pub(super) fn over(
-        stream: Arc<dyn StreamProvider>,
+        stream: ProviderOwner<dyn StreamProvider>,
         objects: Arc<dyn Blobs>,
         durable: bool,
         options: &WasmBrowserAgentOptions,
@@ -130,7 +131,7 @@ impl Providers {
             .with_object_limit(Some(options.maximum_object_bytes))
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(
-            Arc::clone(&stream),
+            stream.clone(),
             StreamAuthorityStore::new(stream),
             Arc::new(objects),
             durable,
@@ -158,7 +159,7 @@ impl Providers {
         };
         let turns = Arc::new(
             FilesystemTurnHost::new(
-                Arc::clone(&self.stream),
+                self.stream.clone(),
                 owner.within()?,
                 Arc::clone(&self.filesystem),
                 owner.issuer.clone(),
@@ -271,7 +272,7 @@ impl WasmAgentProviders {
     /// # Errors
     /// When `options` or the object limit are invalid.
     pub fn over(
-        stream: Arc<dyn StreamProvider>,
+        stream: ProviderOwner<dyn StreamProvider>,
         objects: Arc<dyn Blobs>,
         durable: bool,
         options: JsValue,
