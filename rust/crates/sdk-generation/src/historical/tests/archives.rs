@@ -255,11 +255,15 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     assert!(verify_producer_resolution(fixture.path(), directory, &producer).is_err());
 }
 
-fn assert_rejects_changed_source(root: &Path, relative: &str, verify: impl FnOnce() -> String) {
+fn assert_rejects_changed_source<T: std::fmt::Debug>(
+    root: &Path,
+    relative: &str,
+    verify: impl FnOnce() -> Result<T, String>,
+) {
     let path = root.join(relative);
     let original = fs::read(&path).unwrap();
     fs::write(&path, b"changed checkout bytes").unwrap();
-    let error = verify();
+    let error = verify().expect_err("changed checkout source must be rejected");
     assert!(
         error.contains("source bytes differ") && error.ends_with(relative),
         "{relative}: {error}"
@@ -285,7 +289,7 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     );
     for source in ["src/lib.rs", "Cargo.toml"] {
         assert_rejects_changed_source(fixture.path(), source, || {
-            verify(&revision, &release, &archive).unwrap_err()
+            verify(&revision, &release, &archive)
         });
     }
     let mut wrong = release.clone();
@@ -453,7 +457,7 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
     for name in names {
         assert!(files.contains_key(name));
         assert_rejects_changed_source(fixture.path(), name, || {
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap_err()
+            verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
         });
     }
 }
