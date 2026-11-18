@@ -20,7 +20,7 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
 
-/// Compiler-linked admission for the unary Stream service.
+/// Compiler-linked admission for generated Stream service methods.
 pub mod rpc {
     use acyclic_auth_action as auth_action;
     include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
@@ -34,8 +34,9 @@ macro_rules! hosted_http_routes {
             ("tokens/create", "token"),
         ];
 
-        /// Resolves a hosted HTTP path to its canonical path and generated unary RPC.
-        /// Token issuance is a hosted operation outside the unary Stream service.
+        /// Resolves a hosted HTTP path to its canonical path and generated RPC identity.
+        /// Use the protobuf descriptor for the transport shape of methods such as server-streaming Read.
+        /// Token issuance is a hosted operation outside the generated Stream service.
         pub fn hosted_http_rpc(path: &str) -> Option<(&'static str, rpc::StreamRpc)> {
             match path {
                 $($path => Some(($path, rpc::StreamRpc::$method)),)+
