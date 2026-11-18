@@ -171,7 +171,7 @@ struct FixtureMetadata {
     cargo_flags: Vec<String>,
     sources: Vec<FixtureSource>,
     output: String,
-    artifacts: String,
+    artifacts: Option<PathBuf>,
 }
 
 #[derive(serde::Deserialize)]
@@ -301,7 +301,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             }
         }
         let sources = &metadata.sources;
-        let artifacts = &metadata.artifacts;
+        let artifacts = metadata.artifacts.as_deref();
         let mut relative_sources = Vec::new();
         for source in sources {
             let relative = source.relative.as_path();
@@ -317,7 +317,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             {
                 let build = relative.parent().unwrap().join("build.rs");
                 let covered =
-                    !artifacts.is_empty() && sources.iter().any(|source| source.relative == build);
+                    artifacts.is_some() && sources.iter().any(|source| source.relative == build);
                 if !covered && root.join(&build).try_exists()? {
                     continue 'fixture;
                 }
@@ -357,11 +357,11 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             }
         });
         if !referenced.is_empty() {
-            if artifacts.is_empty() {
+            let Some(artifacts) = artifacts else {
                 return Err(std::io::Error::other(
                     "Rustdoc fixture references undeclared artifacts",
                 ));
-            }
+            };
             let artifacts = acyclic_test_support::source_path(artifacts);
             for relative in referenced {
                 let destination = artifact_target.join(&relative);
