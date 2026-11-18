@@ -92,7 +92,7 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
     let mut command = Command::new(compiler.executable());
     // Each include directory is spelled whole, so the test's inputs can be read from its source.
     for directory in [
-        "rust/crates/actors/proto",
+        "rust/crates/actors-contract/proto",
         "rust/crates/filesystem-wire/proto",
         "rust/crates/objects/proto",
         "rust/crates/machines/proto",

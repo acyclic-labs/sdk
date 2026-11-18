@@ -22,6 +22,10 @@ mod guest_activation;
 mod guest_contract;
 
 #[cfg(not(loom))]
+#[path = "guest_manifest.rs"]
+mod guest_manifest;
+
+#[cfg(not(loom))]
 #[path = "guest_metadata.rs"]
 mod guest_metadata;
 

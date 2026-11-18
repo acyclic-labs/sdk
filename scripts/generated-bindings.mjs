@@ -101,7 +101,7 @@ export const compatibilityArtifacts = {
     conformanceDigest: "rust/crates/inference/conformance/inference.json",
   },
   actors: {
-    schemaDigest: "rust/crates/actors/proto/actors/v1/actors.proto",
+    schemaDigest: "rust/crates/actors-contract/proto/actors/v1/actors.proto",
     descriptorDigest: "compatibility/descriptors/actors-v1.bin",
   },
 };

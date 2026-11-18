@@ -1,0 +1,55 @@
+[package]
+name = "acyclic-actors-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Public Actors v1 contract, wire types and guest ABI"
+readme = "README.md"
+
+[features]
+model-checking = ["dep:loom"]
+test-support = ["acyclic-auth/test-support", "acyclic-objects/test-support"]
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc-metadata"] }
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+bytes = { workspace = true, features = ["serde"] }
+http.workspace = true
+http-body = "1.1.0"
+loom = { version = "0.7.3", features = ["futures"], optional = true }
+prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
+tokio-util = { version = "=0.7.20", features = ["rt"] }
+tonic-prost.workspace = true
+ts-rs = "=12.0.1"
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
+tonic = { workspace = true, features = ["codegen", "router", "transport", "tls-ring"] }
+tokio = { version = "1.48.0", default-features = false, features = ["time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tonic = { workspace = true, features = ["codegen"] }
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+futures.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[build-dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+
+[lints]
+workspace = true

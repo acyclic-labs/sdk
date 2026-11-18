@@ -1,6 +1,6 @@
 [package]
 autotests = false
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**"]
+include = ["Cargo.toml", "README.md", "src/**", "examples/**", "tests/**", "benches/**"]
 name = "acyclic-actors"
 version.workspace = true
 edition.workspace = true
@@ -17,8 +17,9 @@ test = false
 
 [features]
 conformance = ["acyclic-stream/conformance"]
-model-checking = ["dep:loom", "acyclic-stream/model-checking"]
+model-checking = ["dep:loom", "acyclic-stream/model-checking", "acyclic-actors-contract/model-checking"]
 test-support = [
+    "acyclic-actors-contract/test-support",
     "acyclic-auth/test-support",
     "acyclic-grpc-observability/test-support",
     "acyclic-native-runtime/test-support",
@@ -26,6 +27,7 @@ test-support = [
     "acyclic-stream/test-support"]
 
 [dependencies]
+acyclic-actors-contract = { version = "=0.2.0", path = "../actors-contract" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
@@ -94,11 +96,6 @@ rcgen = "0.14.10"
 tempfile = "3.27.0"
 tracing-subscriber.workspace = true
 
-
-[build-dependencies]
-acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
-acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
-acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
 
 [lints]
 workspace = true

@@ -23,7 +23,7 @@ cargo_build_script(
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/actors:proto/actors/v1/actors.proto",
+        "//rust/crates/actors-contract:proto/actors/v1/actors.proto",
         "//rust/crates/auth:proto/auth/v1/auth.proto",
         "//rust/crates/filesystem-wire:proto/filesystem/v2/filesystem.proto",
         "//rust/crates/filesystem-wire:proto/protocol/v1/protocol.proto",

@@ -24,6 +24,7 @@
     "patches/napi-rs-cli-3.10.12.patch",
     "rust-toolchain.toml",
     "rust/crates/actors",
+    "rust/crates/actors-contract",
     "rust/crates/actors-napi",
     "rust/crates/actors-wasm",
     "rust/crates/auth",

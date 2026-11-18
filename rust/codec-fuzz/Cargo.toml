@@ -11,7 +11,7 @@ cargo-fuzz = true
 # The build script compiles each family's protocol from that crate's sources.
 [package.metadata.bazel]
 build-script-data = [
-    "../crates/actors/proto",
+    "../crates/actors-contract/proto",
     "../crates/auth/proto",
     "../crates/filesystem-wire/proto",
     "../crates/harness-core/proto",

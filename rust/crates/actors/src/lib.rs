@@ -3,49 +3,40 @@
 acyclic_test_support::counting_allocator!();
 
 /// Shared canonical account-relative resource addressing.
-pub use acyclic_auth::addressing;
-
+pub use acyclic_actors_contract::addressing;
 /// Compiler-linked public method admission.
-pub mod authorization {
-    use acyclic_auth::action as auth_action;
-    include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
-}
-pub use authorization::{AUTHORIZATION, ActorsMethod};
-
-/// Worker methods served by the same canonical Actors service.
-pub mod workers_authorization {
-    use acyclic_auth::action as auth_action;
-    include!(concat!(env!("OUT_DIR"), "/workers_authorization.rs"));
-}
-
+pub use acyclic_actors_contract::{AUTHORIZATION, ActorsMethod, workers_authorization};
 /// Rust-owned semantic projections for generated SDK metadata.
-pub use contract::{
+pub use acyclic_actors_contract::{
     ContractError, domain, validate_add_subscription, validate_delete, validate_deployment,
     validate_fork, validate_remove_subscription, validate_resume_subscription, validate_update,
 };
+/// Rust-owned Actors contract declarations and schema renderer.
+pub use acyclic_actors_contract::contract;
+/// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
+pub use acyclic_actors_contract::guest;
+/// Event-owned hosting of an arbitrary Handler over injected storage.
+pub use acyclic_actors_contract::hosting;
+/// Deployment versions, cohort selection, call provenance and durable handoff.
+pub use acyclic_actors_contract::live_update;
+/// Rust-owned Actors v1 wire types and schema metadata.
+pub use acyclic_actors_contract::wire;
+/// Canonical version-one descriptor set.
+pub use acyclic_actors_contract::{FILE_DESCRIPTOR_SET, HTTP_ROUTES};
 
 /// The one invocation protocol: a caller-owned call journal.
 pub mod call;
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 
-/// Rust-owned Actors contract declarations and schema renderer.
-pub mod contract;
-
 /// One conformance suite for local and hosted Actors runtimes.
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 /// Per-agent spend balances staged in the original actor step transaction.
 pub mod escrow;
-/// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
-pub mod guest;
-/// Event-owned hosting of an arbitrary Handler over injected storage.
-pub mod hosting;
 mod identity;
 /// Inbox invocation protocol shared by native and hosted actors.
 pub mod invocation;
-/// Deployment versions, cohort selection, call provenance and durable handoff.
-pub mod live_update;
 /// Provider-backed actor storage and the single-node `local::Runtime`.
 pub mod local;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.
@@ -61,36 +52,6 @@ pub mod grpc;
 /// Native HTTP client for the canonical Actors v1 Protobuf JSON service.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
-
-/// Rust-owned Actors v1 wire types and schema metadata.
-#[allow(
-    clippy::allow_attributes_without_reason,
-    dead_code,
-    missing_docs,
-    reason = "tonic emits this module and its generated server dispatch code"
-)]
-pub mod wire;
-
-/// Canonical version-one descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
-
-/// Rust-owned route names used by the TypeScript transport generator.
-pub const HTTP_ROUTES: &[(&str, &str)] = &[
-    ("deployNamespace", "v1/actors/namespaces/deploy"),
-    ("updateNamespace", "v1/actors/namespaces/update"),
-    ("inspectActor", "v1/actors/inspect"),
-    ("addSubscription", "v1/actors/subscriptions/add"),
-    ("removeSubscription", "v1/actors/subscriptions/remove"),
-    ("resumeSubscription", "v1/actors/subscriptions/resume"),
-    ("checkpointActor", "v1/actors/checkpoint"),
-    ("invokeActor", "v1/actors/invoke"),
-    ("deleteAll", "v1/actors/storage/delete-all"),
-    ("deployWorker", "v1/workers/deploy"),
-    ("invokeWorker", "v1/workers/invoke"),
-    ("deleteWorker", "v1/workers/delete"),
-    ("forkActor", "v1/actors/fork"),
-];
 
 #[cfg(test)]
 mod tests {
