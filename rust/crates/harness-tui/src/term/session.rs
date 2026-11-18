@@ -9,7 +9,7 @@ use signal_hook::consts::signal::SIGTSTP;
 use super::lifecycle::{self, Arc, Mutex, Owner, State};
 use super::tty::{InputReadiness, InputWait, RawTty};
 use super::{Capabilities, Decoder, Environment, ProbeIo, ScreenMode, detect};
-use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
+use acyclic_harness_tui_core::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 /// Process-owned terminal lifecycle. The signal worker restores even while the
 /// application is computing or blocked outside terminal I/O. The one state lock

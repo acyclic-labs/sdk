@@ -1,8 +1,6 @@
-use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
-use acyclic_harness_tui::{
-    ClipboardContent, InputEffect, InputKeymap, KEYMAP, PromptInput, prepare_image,
-    unix_editor_command,
-};
+use acyclic_harness_tui_core::key_event::{KeyCode, KeyEvent, KeyModifiers};
+use acyclic_harness_tui::{ClipboardContent, InputEffect, PromptInput, prepare_image, unix_editor_command};
+use acyclic_harness_tui_core::{InputKeymap, KEYMAP};
 use proptest::prelude::*;
 
 proptest! {
@@ -64,7 +62,7 @@ proptest! {
     fn edited_and_normal_submissions_keep_the_original_query_contract(
         submissions in prop::collection::vec((any::<bool>(), any::<bool>(), "[a-z界\r\n]{0,16}"), 0..24)
     ) {
-        use acyclic_harness_tui::Editor;
+        use acyclic_harness_tui_core::Editor;
         let mut input = PromptInput::new(Editor::new("draft"));
         for (step, (edit, cancel, raw)) in submissions.into_iter().enumerate() {
             let text = format!("entry:{raw}");
@@ -82,7 +80,7 @@ proptest! {
 
     #[test]
     fn cancelling_search_restores_history_navigation_and_draft(raw in "[a-z界\r\n]{0,24}", matches in any::<bool>()) {
-        use acyclic_harness_tui::Editor;
+        use acyclic_harness_tui_core::Editor;
         let draft = format!("draft:{raw}");
         let expected = draft.replace("\r\n", "\n").replace('\r', "\n");
         let mut input = PromptInput::new(Editor::new(&draft));
@@ -107,7 +105,7 @@ proptest! {
     fn replacing_history_source_invalidates_in_flight_replies(
         draft in "[a-z界\r\n]{0,24}", stale in "[a-z界]{0,12}", reloads in 1usize..8
     ) {
-        use acyclic_harness_tui::Editor;
+        use acyclic_harness_tui_core::Editor;
         let mut input = PromptInput::new(Editor::new(&draft));
         input.editor.set_cursor(0, false);
         let expected = input.editor.text().to_owned();

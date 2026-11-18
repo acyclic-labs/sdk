@@ -1,8 +1,9 @@
-use crate::key_decode::{DecodedKey, decode_key, event_chord};
-use crate::key_event::{
+use acyclic_harness_tui_core::key_decode::{DecodedKey, decode_key, event_chord};
+use acyclic_harness_tui_core::key_event::{
     KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use crate::{Action, CompletionMenu, Editor, InputKeymap, Motion, Viewport};
+use crate::Viewport;
+use acyclic_harness_tui_core::{Action, CompletionMenu, Editor, InputKeymap, Motion};
 use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -43,7 +44,7 @@ pub enum InputEffect {
     /// A source anchor selected by the transcript track; the host writes layout.json.
     ScrollTo {
         /// Resolved source position, or the live tail.
-        anchor: Option<crate::TranscriptAnchor>,
+        anchor: Option<acyclic_harness_tui_core::TranscriptAnchor>,
     },
     /// Interrupt the active operation.
     Interrupt,
@@ -139,7 +140,7 @@ impl PromptInput {
 
     /// Apply preferences to active and suspended drafts so cancelling an edit or
     /// search cannot resurrect preferences from an older file snapshot.
-    pub fn set_settings(&mut self, settings: crate::UiSettings) -> bool {
+    pub fn set_settings(&mut self, settings: acyclic_harness_tui_core::UiSettings) -> bool {
         if !self.editor.set_settings(settings) {
             return false;
         }
@@ -556,7 +557,7 @@ impl PromptInput {
                 self.editor.set_cursor(self.editor.cursor(), false);
             }
             other => {
-                if other != Action::App(crate::AppAction::Find) {
+                if other != Action::App(acyclic_harness_tui_core::AppAction::Find) {
                     self.editor.break_group();
                 }
                 effects.push(InputEffect::Host(other));

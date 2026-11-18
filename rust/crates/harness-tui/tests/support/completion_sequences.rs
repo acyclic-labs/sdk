@@ -1,7 +1,6 @@
-use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use acyclic_harness_tui::{
-    CompletionMenu, Editor, InputEffect, InputKeymap, PromptInput, completion_request,
-};
+use acyclic_harness_tui_core::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use acyclic_harness_tui::{InputEffect, PromptInput};
+use acyclic_harness_tui_core::{CompletionMenu, Editor, InputKeymap, completion_request};
 use unicode_segmentation::UnicodeSegmentation;
 
 fn candidate(menu: &mut CompletionMenu, path: &str) -> Result<(), std::io::Error> {

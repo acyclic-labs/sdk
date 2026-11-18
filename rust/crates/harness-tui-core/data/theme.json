@@ -1,0 +1,23 @@
+{
+  "mode": "auto",
+  "dark": {
+    "fg": "default",
+    "muted": "#7f848e",
+    "accent": "#61afef",
+    "attention": "#e5c07b",
+    "success": "#98c379",
+    "error": "#e06c75",
+    "diff-add": "#98c379",
+    "diff-del": "#e06c75"
+  },
+  "light": {
+    "fg": "default",
+    "muted": "#6e7781",
+    "accent": "#0969da",
+    "attention": "#9a6700",
+    "success": "#1a7f37",
+    "error": "#cf222e",
+    "diff-add": "#1a7f37",
+    "diff-del": "#cf222e"
+  }
+}

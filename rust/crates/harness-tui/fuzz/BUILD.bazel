@@ -34,6 +34,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -63,6 +64,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -92,6 +94,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -121,6 +124,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -150,6 +154,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -179,6 +184,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -206,6 +212,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -235,6 +242,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -264,6 +272,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",
@@ -291,6 +300,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/harness-tui:acyclic_harness_tui",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//serde_json-1.0.154",

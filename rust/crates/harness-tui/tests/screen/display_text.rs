@@ -1,4 +1,4 @@
-use acyclic_harness_tui::{display_text, display_text_prefix};
+use acyclic_harness_tui_core::display_text::{display_text, display_text_prefix};
 use proptest::strategy::Strategy;
 use std::borrow::Cow;
 

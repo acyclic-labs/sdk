@@ -1,12 +1,10 @@
-use acyclic_harness_tui::key_event::{
+use acyclic_harness_tui_core::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
 use acyclic_harness_tui::ratatui::layout::Rect;
-use acyclic_harness_tui::{
-    Editor, InputEffect, InputKeymap, PromptInput, Viewport, editor_command, prepare_image,
-    windows_editor_command,
-};
+use acyclic_harness_tui::{InputEffect, PromptInput, Viewport, editor_command, prepare_image, windows_editor_command};
+use acyclic_harness_tui_core::{Editor, InputKeymap};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod history_source {

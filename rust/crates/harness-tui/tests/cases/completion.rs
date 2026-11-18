@@ -1,14 +1,13 @@
 //! Completion parsing, file folds and popup snapshots.
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_harness_tui::InputKeymap;
-use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use acyclic_harness_tui_core::InputKeymap;
+use acyclic_harness_tui_core::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use acyclic_harness_tui::ratatui::{
     Terminal, backend::TestBackend, buffer::Buffer, layout::Rect, widgets::Widget,
 };
-use acyclic_harness_tui::{
-    CompletionMenu, CompletionPopup, Editor, completion_request, fuzzy_score,
-};
+use acyclic_harness_tui::{CompletionPopup};
+use acyclic_harness_tui_core::{CompletionMenu, Editor, completion_request, fuzzy_score};
 use proptest::prelude::*;
 
 #[path = "../support/completion_deltas.rs"]
@@ -158,7 +157,8 @@ fn quoted_and_mid_token_requests_replace_the_whole_token() {
 
 #[test]
 fn prompt_controller_accepts_completion_before_submit_and_prioritizes_escape() {
-    use acyclic_harness_tui::{Action, InputEffect, PromptInput};
+    use acyclic_harness_tui::{InputEffect, PromptInput};
+use acyclic_harness_tui_core::{Action};
     let mut input = PromptInput::new(Editor::new("/th"));
     commands(&mut input.completion);
     input.refresh_completions();

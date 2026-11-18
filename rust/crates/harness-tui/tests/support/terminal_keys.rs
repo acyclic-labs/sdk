@@ -1,4 +1,4 @@
-use acyclic_harness_tui::key_event::KeyCode;
+use acyclic_harness_tui_core::key_event::KeyCode;
 
 // Independent protocol examples from xterm ctlseqs "PC-Style Function Keys"
 // and kitty keyboard-protocol "Functional key definitions". These are wire

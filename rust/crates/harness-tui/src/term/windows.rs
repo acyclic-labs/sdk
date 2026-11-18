@@ -1,6 +1,6 @@
 use super::console_owner::Owner;
 use super::{Capabilities, Decoder, Environment, ProbeIo, RestoreGuard, ScreenMode, detect};
-use crate::key_event::InputEvent;
+use acyclic_harness_tui_core::key_event::InputEvent;
 use acyclic_native_runtime::terminal as ffi;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};

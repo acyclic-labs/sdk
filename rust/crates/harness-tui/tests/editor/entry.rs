@@ -1,5 +1,5 @@
 use super::sequences::recall;
-use acyclic_harness_tui::{Editor, Motion};
+use acyclic_harness_tui_core::{Editor, Motion};
 use proptest::prelude::*;
 
 fn incoming_text() -> impl Strategy<Value = String> {

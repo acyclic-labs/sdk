@@ -1,4 +1,4 @@
-use acyclic_harness_tui::{CompletionMenu, Editor};
+use acyclic_harness_tui_core::{CompletionMenu, Editor};
 
 /// Compare incremental popup output and acceptance with a fresh full parse after
 /// every edit. The reference menu never shares cached parser/editor state.

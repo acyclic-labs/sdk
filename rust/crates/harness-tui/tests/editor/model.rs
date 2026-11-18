@@ -1,5 +1,5 @@
 use super::sequences::recall;
-use acyclic_harness_tui::{Editor, Layout, Motion};
+use acyclic_harness_tui_core::{Editor, Layout, Motion};
 use proptest::prelude::*;
 use unicode_segmentation::UnicodeSegmentation;
 

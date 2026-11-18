@@ -1,9 +1,7 @@
-use acyclic_harness_tui::{Editor, Motion};
+use acyclic_harness_tui_core::{Editor, Motion};
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_harness_tui::{
-    InputEffect, PromptInput,
-    key_event::{KeyCode, KeyEvent, KeyModifiers},
-};
+use acyclic_harness_tui::{InputEffect, PromptInput};
+use acyclic_harness_tui_core::{key_event::{KeyCode, KeyEvent, KeyModifiers}};
 
 #[test]
 fn continuation_removes_only_the_backslash_of_a_collapsed_paste() {
@@ -54,7 +52,7 @@ fn a_megabyte_paste_is_not_retained_again_for_each_following_edit() {
 
 #[test]
 fn default_keymap_is_unambiguous() {
-    use acyclic_harness_tui::KEYMAP;
+    use acyclic_harness_tui_core::KEYMAP;
     let mut seen = std::collections::BTreeSet::new();
     for binding in KEYMAP {
         assert!(seen.insert(binding.chord), "duplicate {}", binding.chord);

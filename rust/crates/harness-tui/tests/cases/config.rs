@@ -1,15 +1,10 @@
 //! Configuration precedence, live rendering, parser invariants and negative controls.
 #![cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, style::Color};
-use acyclic_harness_tui::{
-    ACTIONS, Action, AppAction, Editor, InputEffect, PromptInput, PromptWidget, Viewport,
-    config::{
-        ConfigDiagnostics, ConfigFile, ConfigView, DiagnosticKind, Scope, ThemeRole, Token, fold,
-        parse,
-    },
-    key_event::{KeyCode, KeyEvent, KeyModifiers as M},
-    term::{Capabilities, ColourDepth},
-};
+use acyclic_harness_tui::{InputEffect, PromptInput, PromptWidget, Viewport, config::ConfigDiagnostics, config::ConfigView, config::ThemeRole, term::{Capabilities, ColourDepth}};
+use acyclic_harness_tui_core::{ACTIONS, Action, AppAction, Editor, key_event::{KeyCode, KeyEvent, KeyModifiers as M}};
+use acyclic_harness_tui_core::config::{ConfigFile, DiagnosticKind, Scope, fold, parse};
+use acyclic_harness_tui_core::Token;
 use acyclic_test_support::differential::oracle::{Observer, Oracle};
 use proptest::prelude::*;
 use sequences::{Parsed, Stage};
@@ -693,7 +688,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn scrollback_is_a_bounded_tail(lines in prop::collection::vec(any::<u8>(), 0..100), keep in 1usize..100) {
-        let mut settings = acyclic_harness_tui::DEFAULT_SETTINGS;
+        let mut settings = acyclic_harness_tui_core::DEFAULT_SETTINGS;
         settings.scrollback_lines = keep;
         let visible = settings.scrollback(&lines);
         prop_assert_eq!(visible.len(), keep.min(lines.len()));
@@ -836,9 +831,9 @@ proptest! {
         let chord = format!("F{key}");
         let target = if disabled { serde_json::Value::Null } else { action.chord.into() };
         let text = json!({"bindings":{chord.clone():target}}).to_string();
-        let map = acyclic_harness_tui::InputKeymap::parse(&text).unwrap();
+        let map = acyclic_harness_tui_core::InputKeymap::parse(&text).unwrap();
         let saved = map.encode();
-        let restored = acyclic_harness_tui::InputKeymap::parse(&saved).unwrap();
+        let restored = acyclic_harness_tui_core::InputKeymap::parse(&saved).unwrap();
         prop_assert_eq!(&restored, &map);
         let mut view = ConfigView::default();
         view.set_file(Scope::User, ConfigFile::Keymap, Some(&saved));
@@ -858,7 +853,7 @@ fn obsolete_flat_and_chord_target_formats_are_rejected() {
         r#"{"bindings":{"Ctrl+l":"Home"}}"#,
         r#"{"bindings":{"Ctrl+l":""}}"#,
     ] {
-        assert!(acyclic_harness_tui::InputKeymap::parse(text).is_err());
+        assert!(acyclic_harness_tui_core::InputKeymap::parse(text).is_err());
     }
 }
 
@@ -874,7 +869,7 @@ proptest! {
         let preferences = view.settings().unwrap();
         prop_assert_eq!(preferences.reduced_motion, reduced);
         let encoded = serde_json::to_string(&preferences).unwrap();
-        let decoded: acyclic_harness_tui::UiSettings = serde_json::from_str(&encoded).unwrap();
+        let decoded: acyclic_harness_tui_core::UiSettings = serde_json::from_str(&encoded).unwrap();
         prop_assert_eq!(preferences, decoded);
         if reduced {
             let theme = acyclic_harness_tui::config::ThemeStyles::default();

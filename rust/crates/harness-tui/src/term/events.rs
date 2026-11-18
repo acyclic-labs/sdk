@@ -1,6 +1,6 @@
 //! A bounded asynchronous view of the terminal's one native blocking reader.
 use super::Tty;
-use crate::key_event::InputEvent;
+use acyclic_harness_tui_core::key_event::InputEvent;
 use futures::{SinkExt as _, StreamExt as _, stream::LocalBoxStream};
 use std::io;
 

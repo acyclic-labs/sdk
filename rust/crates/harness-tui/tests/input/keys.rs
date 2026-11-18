@@ -1,5 +1,5 @@
-use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers as M};
-use acyclic_harness_tui::{Action, DecodedKey, InputKeymap, Motion, decode_key, key_chord};
+use acyclic_harness_tui_core::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers as M};
+use acyclic_harness_tui_core::{Action, DecodedKey, InputKeymap, Motion, decode_key, key_chord};
 
 #[test]
 fn repeat_policy_selection_modifiers_and_platform_keys() {

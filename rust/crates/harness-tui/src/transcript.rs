@@ -6,10 +6,8 @@
 //! streaming tail rewraps alone, so a delta costs the tail block's rows.
 //! A turn's tool calls show as collapsed cards, one muted row each.
 
-use crate::{
-    Layout,
-    config::{ThemeStyles, Token},
-};
+use crate::config::ThemeStyles;
+use acyclic_harness_tui_core::{Layout, Token};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},

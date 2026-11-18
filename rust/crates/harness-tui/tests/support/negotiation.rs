@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::time::{Duration, Instant};
 
-use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
+use acyclic_harness_tui_core::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::{
     Decoder, Environment, Multiplexer, PROBE_LIMIT, PROBE_TIMEOUT, Probe, ProbeIo, detect,
 };

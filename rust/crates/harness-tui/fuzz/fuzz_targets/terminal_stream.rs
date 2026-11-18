@@ -1,7 +1,7 @@
 //! Check terminal stream partitioning and recovery against protocol examples.
 #![no_main]
 
-use acyclic_harness_tui::key_event::{InputEvent, KeyEvent, KeyModifiers};
+use acyclic_harness_tui_core::key_event::{InputEvent, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::{Decoder, PROBE_LIMIT};
 use libfuzzer_sys::fuzz_target;
 

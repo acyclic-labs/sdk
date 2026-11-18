@@ -1,12 +1,8 @@
 //! Full-screen goldens through the shipping encoder and an independent terminal.
 #![cfg(not(target_arch = "wasm32"))]
 #![cfg(test)]
-use acyclic_harness_tui::{
-    BlockKind, Editor, Hyperlinks, PromptInput, RowLink, Screen, TranscriptRows, Viewport,
-    config::ConfigView,
-    ratatui::{layout::Size, style::Modifier, text::Line},
-    term::{Capabilities, ColourDepth, FrameEffects, FrameTerminal, Present, RestoreGuard},
-};
+use acyclic_harness_tui::{BlockKind, Hyperlinks, PromptInput, RowLink, Screen, TranscriptRows, Viewport, config::ConfigView, ratatui::{layout::Size, style::Modifier, text::Line}, term::{Capabilities, ColourDepth, FrameEffects, FrameTerminal, Present, RestoreGuard}};
+use acyclic_harness_tui_core::{Editor};
 use alacritty_terminal::{
     event::EventListener,
     grid::Dimensions,
@@ -186,7 +182,7 @@ fn frame_config(
         Line::raw("src/main.rs +1 -1"),
         Line::styled(
             "+ answer = 42",
-            theme.token(acyclic_harness_tui::config::Token::DiffAdd),
+            theme.token(acyclic_harness_tui_core::Token::DiffAdd),
         ),
     ];
     let goal = [Line::raw("Ship the theme")];
@@ -194,13 +190,13 @@ fn frame_config(
     let reasoning = [Line::styled(
         "Checking the public contract…",
         theme
-            .token(acyclic_harness_tui::config::Token::Muted)
+            .token(acyclic_harness_tui_core::Token::Muted)
             .add_modifier(Modifier::ITALIC),
     )];
     let usage = [Line::raw("model · 24% (2400/10000) · $0.12 · 2 children").right_aligned()];
     let notifications = [Line::styled(
         "Waiting for your input",
-        theme.token(acyclic_harness_tui::config::Token::Attention),
+        theme.token(acyclic_harness_tui_core::Token::Attention),
     )];
     let (rows, links, code) = transcript.presentation();
     let feedback_rows = acyclic_harness_tui::Feedback::lines(&[]);
@@ -250,7 +246,7 @@ fn frame_config(
 
 #[test]
 fn forced_ansi_code_has_contrast_against_opposite_terminal_defaults() -> io::Result<()> {
-    use acyclic_harness_tui::config::{ConfigFile, Scope};
+    use acyclic_harness_tui_core::config::{ConfigFile, Scope};
     use alacritty_terminal::vte::ansi::Color;
     let size = Size::new(80, 24);
     for (mode, background, foreground, band) in

@@ -1,8 +1,9 @@
-use acyclic_harness_tui::key_event::{
+use acyclic_harness_tui_core::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind,
 };
 use acyclic_harness_tui::ratatui::layout::Rect;
-use acyclic_harness_tui::{Action, Editor, InputEffect, InputKeymap, PromptInput, Viewport};
+use acyclic_harness_tui::{InputEffect, PromptInput, Viewport};
+use acyclic_harness_tui_core::{Action, Editor, InputKeymap};
 
 fn press(input: &mut PromptInput, code: KeyCode, mods: M, at: u64) -> Vec<InputEffect> {
     input.key(KeyEvent::new(code, mods), at, 80)

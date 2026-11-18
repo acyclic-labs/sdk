@@ -1,9 +1,7 @@
-use acyclic_harness_tui::{Editor, Layout, Motion};
+use acyclic_harness_tui_core::{Editor, Layout, Motion};
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_harness_tui::{
-    InputEffect, PromptInput,
-    key_event::{KeyCode, KeyEvent, KeyModifiers},
-};
+use acyclic_harness_tui::{InputEffect, PromptInput};
+use acyclic_harness_tui_core::{key_event::{KeyCode, KeyEvent, KeyModifiers}};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Apply editor operations and check grapheme, paste, layout and undo semantics.

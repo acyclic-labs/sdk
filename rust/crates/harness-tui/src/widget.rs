@@ -1,4 +1,4 @@
-use crate::Editor;
+use acyclic_harness_tui_core::Editor;
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::StatefulWidget};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;

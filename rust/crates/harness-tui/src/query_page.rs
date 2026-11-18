@@ -1,6 +1,6 @@
 //! Layout of one admitted live-query page. No I/O, source discovery or runtime
 //! logic lives here: callers supply rows and retain their source-owned cursor.
-use crate::Layout;
+use acyclic_harness_tui_core::Layout;
 use ratatui::text::Line;
 
 /// Presentation shared by paged file views. Retained work is proportional to

@@ -8,7 +8,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
+use acyclic_harness_tui_core::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::{
     ColourDepth, Environment, ImageProtocol, KeyboardProtocol, Multiplexer, ScreenMode, Tty,
 };

@@ -1,12 +1,13 @@
 //! The theme is a handful of semantic colour tokens in a dark and a light
 //! set. Widgets name roles, each a token plus text attributes, so a theme
 //! file never restates the UI's structure: overriding a colour is one key.
+use acyclic_harness_tui_core::Token;
+use acyclic_harness_tui_core::config::theme::{NAMES, rgb};
 use crate::term::{Capabilities, ColourDepth};
 use ratatui::style::{Color, Modifier, Style};
 use serde_json::Value;
 use std::sync::LazyLock;
 
-include!(concat!(env!("OUT_DIR"), "/theme.rs"));
 
 /// What a widget draws: a token and the attributes it adds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,24 +92,6 @@ pub fn default_style(role: ThemeRole) -> Style {
     SHIPPED.style(role)
 }
 
-const NAMES: [&str; 16] = [
-    "black",
-    "red",
-    "green",
-    "yellow",
-    "blue",
-    "magenta",
-    "cyan",
-    "gray",
-    "dark-gray",
-    "light-red",
-    "light-green",
-    "light-yellow",
-    "light-blue",
-    "light-magenta",
-    "light-cyan",
-    "white",
-];
 const ANSI: [[u8; 3]; 16] = [
     [0, 0, 0],
     [128, 0, 0],
@@ -155,17 +138,6 @@ const HUES: [[Color; 2]; 6] = [
     [Color::Magenta, Color::LightMagenta],
 ];
 
-pub(super) fn valid_color(text: &str) -> bool {
-    text == "default" || NAMES.contains(&text) || rgb(text).is_some()
-}
-fn rgb(text: &str) -> Option<[u8; 3]> {
-    let hex = text.strip_prefix('#')?;
-    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let [_, red, green, blue] = u32::from_str_radix(hex, 16).ok()?.to_be_bytes();
-    Some([red, green, blue])
-}
 /// The xterm 256-colour palette entry for `index`.
 fn palette(index: u8) -> [u8; 3] {
     if let Some(ansi) = ANSI.get(usize::from(index)) {

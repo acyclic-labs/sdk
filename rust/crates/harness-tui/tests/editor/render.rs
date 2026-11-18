@@ -1,4 +1,5 @@
-use acyclic_harness_tui::{Editor, PromptWidget, Viewport};
+use acyclic_harness_tui::{PromptWidget, Viewport};
+use acyclic_harness_tui_core::{Editor};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect};
 
 #[test]

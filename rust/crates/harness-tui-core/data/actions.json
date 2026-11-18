@@ -1,0 +1,608 @@
+[
+  {
+    "name": "voice",
+    "action": "Action::Voice",
+    "help": "Toggle voice dictation",
+    "repeat": false
+  },
+  {
+    "name": "cursor.left",
+    "action": "Action::Move(Motion::Left)",
+    "help": "Previous grapheme",
+    "repeat": true
+  },
+  {
+    "name": "cursor.right",
+    "action": "Action::Move(Motion::Right)",
+    "help": "Next grapheme",
+    "repeat": true
+  },
+  {
+    "name": "cursor.up",
+    "action": "Action::Move(Motion::Up)",
+    "help": "Previous completion, row or history at buffer start",
+    "repeat": true
+  },
+  {
+    "name": "cursor.down",
+    "action": "Action::Move(Motion::Down)",
+    "help": "Next completion, row or history at buffer end",
+    "repeat": true
+  },
+  {
+    "name": "cursor.line-start",
+    "action": "Action::Move(Motion::LineStart)",
+    "help": "Line start",
+    "repeat": true
+  },
+  {
+    "name": "cursor.line-end",
+    "action": "Action::Move(Motion::LineEnd)",
+    "help": "Line end",
+    "repeat": true
+  },
+  {
+    "name": "cursor.start",
+    "action": "Action::Move(Motion::Start)",
+    "help": "Buffer start",
+    "repeat": true
+  },
+  {
+    "name": "cursor.end",
+    "action": "Action::Move(Motion::End)",
+    "help": "Buffer end",
+    "repeat": true
+  },
+  {
+    "name": "cursor.word-left",
+    "action": "Action::Move(Motion::WordLeft)",
+    "help": "Previous word",
+    "repeat": true
+  },
+  {
+    "name": "cursor.word-right",
+    "action": "Action::Move(Motion::WordRight)",
+    "help": "Next word",
+    "repeat": true
+  },
+  {
+    "name": "delete.backward",
+    "action": "Action::Delete(true)",
+    "help": "Delete previous grapheme",
+    "repeat": true
+  },
+  {
+    "name": "delete.forward",
+    "action": "Action::Delete(false)",
+    "help": "Delete next grapheme",
+    "repeat": true
+  },
+  {
+    "name": "delete-word.backward",
+    "action": "Action::DeleteWord(true)",
+    "help": "Delete previous word",
+    "repeat": true
+  },
+  {
+    "name": "delete-word.forward",
+    "action": "Action::DeleteWord(false)",
+    "help": "Delete next word",
+    "repeat": true
+  },
+  {
+    "name": "kill.line-start",
+    "action": "Action::Kill(Motion::LineStart)",
+    "help": "Kill to line start",
+    "repeat": true
+  },
+  {
+    "name": "select-all",
+    "action": "Action::SelectAll",
+    "help": "Select all",
+    "repeat": false
+  },
+  {
+    "name": "undo",
+    "action": "Action::Undo",
+    "help": "Undo",
+    "repeat": false
+  },
+  {
+    "name": "redo",
+    "action": "Action::Redo",
+    "help": "Redo",
+    "repeat": false
+  },
+  {
+    "name": "kill.line-end",
+    "action": "Action::Kill(Motion::LineEnd)",
+    "help": "Kill to line end",
+    "repeat": true
+  },
+  {
+    "name": "kill.word-left",
+    "action": "Action::Kill(Motion::WordLeft)",
+    "help": "Kill previous word",
+    "repeat": true
+  },
+  {
+    "name": "yank",
+    "action": "Action::Yank",
+    "help": "Yank",
+    "repeat": false
+  },
+  {
+    "name": "rotate-yank",
+    "action": "Action::RotateYank",
+    "help": "Rotate yank",
+    "repeat": false
+  },
+  {
+    "name": "reverse-search",
+    "action": "Action::ReverseSearch",
+    "help": "Reverse prompt search",
+    "repeat": false
+  },
+  {
+    "name": "copy-or-interrupt",
+    "action": "Action::CopyOrInterrupt",
+    "help": "Copy selection; otherwise clear/interrupt; twice quits",
+    "repeat": false
+  },
+  {
+    "name": "delete-or-quit",
+    "action": "Action::DeleteOrQuit",
+    "help": "Delete forwards; quit when empty",
+    "repeat": false
+  },
+  {
+    "name": "cut-prefix",
+    "action": "Action::CutPrefix",
+    "help": "Cut; Ctrl+E next opens $EDITOR",
+    "repeat": false
+  },
+  {
+    "name": "external-editor",
+    "action": "Action::ExternalEditor",
+    "help": "External editor",
+    "repeat": false
+  },
+  {
+    "name": "paste",
+    "action": "Action::Paste",
+    "help": "Paste text or clipboard image",
+    "repeat": false
+  },
+  {
+    "name": "submit",
+    "action": "Action::Submit",
+    "help": "Accept completion or submit; trailing backslash continues",
+    "repeat": false
+  },
+  {
+    "name": "newline",
+    "action": "Action::Newline",
+    "help": "Insert newline",
+    "repeat": false
+  },
+  {
+    "name": "tab",
+    "action": "Action::Tab",
+    "help": "Accept completion or indent; host may route dock",
+    "repeat": false
+  },
+  {
+    "name": "literal-tab",
+    "action": "Action::LiteralTab",
+    "help": "Insert tab",
+    "repeat": false
+  },
+  {
+    "name": "previous-dock",
+    "action": "Action::PreviousDock",
+    "help": "Previous completion or dock item",
+    "repeat": false
+  },
+  {
+    "name": "escape",
+    "action": "Action::Escape",
+    "help": "Cancel input mode or host escape ladder",
+    "repeat": false
+  },
+  {
+    "name": "transcript-up",
+    "action": "Action::TranscriptUp",
+    "help": "Scroll transcript up",
+    "repeat": true
+  },
+  {
+    "name": "transcript-down",
+    "action": "Action::TranscriptDown",
+    "help": "Scroll transcript down",
+    "repeat": true
+  },
+  {
+    "name": "cursor.logical-up",
+    "action": "Action::Move(Motion::LogicalUp)",
+    "help": "cursor.logical-up",
+    "repeat": true
+  },
+  {
+    "name": "cursor.logical-down",
+    "action": "Action::Move(Motion::LogicalDown)",
+    "help": "cursor.logical-down",
+    "repeat": true
+  },
+  {
+    "name": "app.picker",
+    "action": "Action::App(AppAction::Picker)",
+    "help": "Picker",
+    "repeat": false
+  },
+  {
+    "name": "app.new-session",
+    "action": "Action::App(AppAction::NewSession)",
+    "help": "New session",
+    "repeat": false
+  },
+  {
+    "name": "app.delete-session",
+    "action": "Action::App(AppAction::DeleteSession)",
+    "help": "Delete session",
+    "repeat": false
+  },
+  {
+    "name": "app.reasoning",
+    "action": "Action::App(AppAction::Reasoning)",
+    "help": "Reasoning",
+    "repeat": false
+  },
+  {
+    "name": "app.details",
+    "action": "Action::App(AppAction::Details)",
+    "help": "Details",
+    "repeat": false
+  },
+  {
+    "name": "app.diff",
+    "action": "Action::App(AppAction::Diff)",
+    "help": "Diff",
+    "repeat": false
+  },
+  {
+    "name": "app.tree",
+    "action": "Action::App(AppAction::Tree)",
+    "help": "Tree",
+    "repeat": false
+  },
+  {
+    "name": "app.terminal",
+    "action": "Action::App(AppAction::Terminal)",
+    "help": "Terminal",
+    "repeat": false
+  },
+  {
+    "name": "app.find",
+    "action": "Action::App(AppAction::Find)",
+    "help": "Find",
+    "repeat": false
+  },
+  {
+    "name": "app.pause",
+    "action": "Action::App(AppAction::Pause)",
+    "help": "Pause",
+    "repeat": false
+  },
+  {
+    "name": "app.stop",
+    "action": "Action::App(AppAction::Stop)",
+    "help": "Stop",
+    "repeat": false
+  },
+  {
+    "name": "app.resume",
+    "action": "Action::App(AppAction::Resume)",
+    "help": "Resume",
+    "repeat": false
+  },
+  {
+    "name": "app.mode",
+    "action": "Action::App(AppAction::Mode)",
+    "help": "Mode",
+    "repeat": false
+  },
+  {
+    "name": "app.clear-all",
+    "action": "Action::App(AppAction::ClearAll)",
+    "help": "Clear all",
+    "repeat": false
+  },
+  {
+    "name": "app.attention-next",
+    "action": "Action::App(AppAction::AttentionNext)",
+    "help": "Attention next",
+    "repeat": false
+  },
+  {
+    "name": "app.attention-previous",
+    "action": "Action::App(AppAction::AttentionPrevious)",
+    "help": "Attention previous",
+    "repeat": false
+  },
+  {
+    "name": "app.theme",
+    "action": "Action::App(AppAction::Theme)",
+    "help": "Theme",
+    "repeat": false
+  },
+  {
+    "name": "app.export",
+    "action": "Action::App(AppAction::Export)",
+    "help": "Export",
+    "repeat": false
+  },
+  {
+    "name": "app.feedback",
+    "action": "Action::App(AppAction::Feedback)",
+    "help": "Feedback",
+    "repeat": false
+  },
+  {
+    "name": "app.open",
+    "action": "Action::App(AppAction::Open)",
+    "help": "Open",
+    "repeat": false
+  },
+  {
+    "name": "app.shell",
+    "action": "Action::App(AppAction::Shell)",
+    "help": "Shell",
+    "repeat": false
+  },
+  {
+    "name": "app.delegate",
+    "action": "Action::App(AppAction::Delegate)",
+    "help": "Delegate",
+    "repeat": false
+  },
+  {
+    "name": "app.search",
+    "action": "Action::App(AppAction::Search)",
+    "help": "Search",
+    "repeat": false
+  },
+  {
+    "name": "app.fetch",
+    "action": "Action::App(AppAction::Fetch)",
+    "help": "Fetch",
+    "repeat": false
+  },
+  {
+    "name": "app.compact",
+    "action": "Action::App(AppAction::Compact)",
+    "help": "Compact",
+    "repeat": false
+  },
+  {
+    "name": "app.model",
+    "action": "Action::App(AppAction::Model)",
+    "help": "Model",
+    "repeat": false
+  },
+  {
+    "name": "app.plan",
+    "action": "Action::App(AppAction::Plan)",
+    "help": "Plan",
+    "repeat": false
+  },
+  {
+    "name": "app.goal",
+    "action": "Action::App(AppAction::Goal)",
+    "help": "Goal",
+    "repeat": false
+  },
+  {
+    "name": "app.mcp",
+    "action": "Action::App(AppAction::Mcp)",
+    "help": "Mcp",
+    "repeat": false
+  },
+  {
+    "name": "app.sessions",
+    "action": "Action::App(AppAction::Sessions)",
+    "help": "Sessions",
+    "repeat": false
+  },
+  {
+    "name": "app.parent",
+    "action": "Action::App(AppAction::Parent)",
+    "help": "Parent",
+    "repeat": false
+  },
+  {
+    "name": "app.child",
+    "action": "Action::App(AppAction::Child)",
+    "help": "Child",
+    "repeat": false
+  },
+  {
+    "name": "app.sibling-next",
+    "action": "Action::App(AppAction::SiblingNext)",
+    "help": "Sibling next",
+    "repeat": false
+  },
+  {
+    "name": "app.sibling-previous",
+    "action": "Action::App(AppAction::SiblingPrevious)",
+    "help": "Sibling previous",
+    "repeat": false
+  },
+  {
+    "name": "app.navigation-back",
+    "action": "Action::App(AppAction::NavigationBack)",
+    "help": "Navigation back",
+    "repeat": false
+  },
+  {
+    "name": "app.navigation-forward",
+    "action": "Action::App(AppAction::NavigationForward)",
+    "help": "Navigation forward",
+    "repeat": false
+  },
+  {
+    "name": "app.help",
+    "action": "Action::App(AppAction::Help)",
+    "help": "Help",
+    "repeat": false
+  },
+  {
+    "name": "app.focus-messages",
+    "action": "Action::App(AppAction::FocusMessages)",
+    "help": "Focus messages",
+    "repeat": false
+  },
+  {
+    "name": "app.focus-input",
+    "action": "Action::App(AppAction::FocusInput)",
+    "help": "Focus input",
+    "repeat": false
+  },
+  {
+    "name": "app.toggle-wrap",
+    "action": "Action::App(AppAction::ToggleWrap)",
+    "help": "Toggle wrap",
+    "repeat": false
+  },
+  {
+    "name": "app.toggle-notifications",
+    "action": "Action::App(AppAction::ToggleNotifications)",
+    "help": "Toggle notifications",
+    "repeat": false
+  },
+  {
+    "name": "app.quit",
+    "action": "Action::App(AppAction::Quit)",
+    "help": "Quit",
+    "repeat": false
+  },
+  {
+    "name": "app.stop-all",
+    "action": "Action::App(AppAction::StopAll)",
+    "help": "Stop all",
+    "repeat": false
+  },
+  {
+    "name": "app.resume-all",
+    "action": "Action::App(AppAction::ResumeAll)",
+    "help": "Resume all",
+    "repeat": false
+  },
+  {
+    "name": "app.new-agent",
+    "action": "Action::App(AppAction::NewAgent)",
+    "help": "New agent",
+    "repeat": false
+  },
+  {
+    "name": "app.close-panel",
+    "action": "Action::App(AppAction::ClosePanel)",
+    "help": "Close panel",
+    "repeat": false
+  },
+  {
+    "name": "app.next-message",
+    "action": "Action::App(AppAction::NextMessage)",
+    "help": "Next message",
+    "repeat": false
+  },
+  {
+    "name": "app.previous-message",
+    "action": "Action::App(AppAction::PreviousMessage)",
+    "help": "Previous message",
+    "repeat": false
+  },
+  {
+    "name": "app.open-changes",
+    "action": "Action::App(AppAction::OpenChanges)",
+    "help": "Open changes",
+    "repeat": false
+  },
+  {
+    "name": "app.toggle-follow-tail",
+    "action": "Action::App(AppAction::ToggleFollowTail)",
+    "help": "Toggle follow tail",
+    "repeat": false
+  },
+  {
+    "name": "select.left",
+    "action": "Action::Select(Motion::Left)",
+    "help": "Select: Previous grapheme",
+    "repeat": true
+  },
+  {
+    "name": "select.right",
+    "action": "Action::Select(Motion::Right)",
+    "help": "Select: Next grapheme",
+    "repeat": true
+  },
+  {
+    "name": "select.up",
+    "action": "Action::Select(Motion::Up)",
+    "help": "Select: Previous completion, row or history at buffer start",
+    "repeat": true
+  },
+  {
+    "name": "select.down",
+    "action": "Action::Select(Motion::Down)",
+    "help": "Select: Next completion, row or history at buffer end",
+    "repeat": true
+  },
+  {
+    "name": "select.line-start",
+    "action": "Action::Select(Motion::LineStart)",
+    "help": "Select: Line start",
+    "repeat": true
+  },
+  {
+    "name": "select.line-end",
+    "action": "Action::Select(Motion::LineEnd)",
+    "help": "Select: Line end",
+    "repeat": true
+  },
+  {
+    "name": "select.start",
+    "action": "Action::Select(Motion::Start)",
+    "help": "Select: Buffer start",
+    "repeat": true
+  },
+  {
+    "name": "select.end",
+    "action": "Action::Select(Motion::End)",
+    "help": "Select: Buffer end",
+    "repeat": true
+  },
+  {
+    "name": "select.word-left",
+    "action": "Action::Select(Motion::WordLeft)",
+    "help": "Select: Previous word",
+    "repeat": true
+  },
+  {
+    "name": "select.word-right",
+    "action": "Action::Select(Motion::WordRight)",
+    "help": "Select: Next word",
+    "repeat": true
+  },
+  {
+    "name": "select.logical-up",
+    "action": "Action::Select(Motion::LogicalUp)",
+    "help": "Select: cursor.logical-up",
+    "repeat": true
+  },
+  {
+    "name": "select.logical-down",
+    "action": "Action::Select(Motion::LogicalDown)",
+    "help": "Select: cursor.logical-down",
+    "repeat": true
+  }
+]

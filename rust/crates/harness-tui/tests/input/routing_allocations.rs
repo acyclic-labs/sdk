@@ -1,8 +1,5 @@
-use acyclic_harness_tui::{
-    InputEffect, PromptInput, Viewport, WHEEL_ROWS,
-    key_event::{InputEvent, KeyModifiers, MouseEvent, MouseEventKind},
-    ratatui::layout::Rect,
-};
+use acyclic_harness_tui::{InputEffect, PromptInput, Viewport, WHEEL_ROWS, ratatui::layout::Rect};
+use acyclic_harness_tui_core::{key_event::{InputEvent, KeyModifiers, MouseEvent, MouseEventKind}};
 
 fn route<const ALLOCATE: bool>(input: &mut PromptInput, n: usize, output: &mut Vec<InputEffect>) {
     output.clear();

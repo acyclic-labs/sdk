@@ -1,6 +1,6 @@
 //! Exercise arbitrary terminal bytes through the production decoder.
 #![no_main]
-use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
+use acyclic_harness_tui_core::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::{Decoder, Environment, encode_key};
 use libfuzzer_sys::fuzz_target;
 

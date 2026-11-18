@@ -1,10 +1,8 @@
 //! Configuration parsing, shared by the config fuzz targets and the config
 //! tests: the fixture records [`Seen`] events and only [`INVARIANTS`] judge
 //! them. Tests inject defects through `tamper`.
-use acyclic_harness_tui::{
-    InputKeymap,
-    config::{ConfigFile, Diagnostic, DiagnosticKind, Scope, parse_bytes},
-};
+use acyclic_harness_tui_core::{InputKeymap};
+use acyclic_harness_tui_core::config::{ConfigFile, Diagnostic, DiagnosticKind, Scope, parse_bytes};
 use serde_json::Value;
 
 /// A parse result as the production parser returns it.

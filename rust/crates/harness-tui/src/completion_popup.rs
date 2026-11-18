@@ -1,4 +1,6 @@
-use crate::{CompletionMenu, Editor, buffer::slice, widget::cells};
+use crate::widget::cells;
+use acyclic_harness_tui_core::buffer::slice;
+use acyclic_harness_tui_core::{CompletionMenu, Editor};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,

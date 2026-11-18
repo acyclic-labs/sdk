@@ -40,16 +40,12 @@ cargo_build_script(
     ],
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV,
-    deps = [
-        "@sdk_crates//serde_json-1.0.154",
-    ],
 )
 
 rust_library(
     name = "acyclic_harness_tui",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/harness-tui/fuzz:transcript_anchor.rs",
         "tests/support/status_flags.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
@@ -70,6 +66,7 @@ rust_library(
         ":build_script",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//arrayvec-0.7.8",
@@ -91,6 +88,7 @@ rust_library(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//arrayvec-0.7.8",
@@ -113,6 +111,7 @@ rust_library(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//arrayvec-0.7.8",
@@ -306,6 +305,7 @@ rust_test(
         ":build_script",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/test-support:acyclic_test_support",
@@ -331,6 +331,7 @@ rust_test(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/test-support:acyclic_test_support",
@@ -357,6 +358,7 @@ rust_test(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core",
         "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/test-support:acyclic_test_support",
@@ -429,9 +431,6 @@ cargo_build_script(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
-    deps = [
-        "@sdk_crates//serde_json-1.0.154",
-    ],
 )
 
 rust_library(
@@ -439,7 +438,6 @@ rust_library(
     crate_name = "acyclic_harness_tui",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/harness-tui/fuzz:transcript_anchor.rs",
         "tests/support/status_flags.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
@@ -460,6 +458,7 @@ rust_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/harness-tui-core:acyclic_harness_tui_core_wasm",
         "//rust/crates/markdown:acyclic_markdown_wasm",
         "@wasm_crates//arrayvec-0.7.8",
         "@wasm_crates//caseless-0.2.2",

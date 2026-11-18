@@ -1,9 +1,7 @@
 //! Presentation of one admitted diff page. Source paging belongs to its caller.
-use crate::{
-    QueryPage,
-    config::{ThemeStyles, Token},
-    display_text,
-};
+use crate::{QueryPage, config::ThemeStyles};
+use acyclic_harness_tui_core::Token;
+use acyclic_harness_tui_core::display_text::display_text;
 use ratatui::{
     style::Modifier,
     text::{Line, Span},
@@ -279,9 +277,10 @@ mod tests {
     use super::*;
     use crate::{
         PromptInput,
-        config::{ConfigFile, ConfigView, Scope},
+        config::ConfigView,
         term::{Capabilities, ColourDepth},
     };
+    use acyclic_harness_tui_core::config::{ConfigFile, Scope};
 
     fn theme(light: bool, depth: ColourDepth) -> ThemeStyles {
         let mut config = ConfigView::default();

@@ -129,12 +129,12 @@ impl ScreenAreas {
     pub fn event(
         &self,
         input: &mut PromptInput,
-        event: crate::key_event::InputEvent,
+        event: acyclic_harness_tui_core::key_event::InputEvent,
         viewport: &mut Viewport,
         now_ms: u64,
-        anchor_at: &mut dyn FnMut(usize) -> Option<crate::TranscriptAnchor>,
+        anchor_at: &mut dyn FnMut(usize) -> Option<acyclic_harness_tui_core::TranscriptAnchor>,
     ) -> impl Iterator<Item = crate::InputEffect> + use<> {
-        use crate::key_event::{InputEvent, MouseButton, MouseEventKind};
+        use acyclic_harness_tui_core::key_event::{InputEvent, MouseButton, MouseEventKind};
         use crate::prompt_input::Drag;
         if self.scrollbar_total == 0 && input.drag == Some(Drag::Scrollbar) {
             input.drag = None;
@@ -415,7 +415,7 @@ impl Screen<'_> {
         let frame_area = frame.area();
         frame
             .buffer_mut()
-            .set_style(frame_area, input.theme.token(crate::config::Token::Fg));
+            .set_style(frame_area, input.theme.token(acyclic_harness_tui_core::Token::Fg));
         if !self.feedback
             && let Some((visible, total)) = &self.scrollbar
         {
@@ -436,14 +436,14 @@ impl Screen<'_> {
         }
         frame.render_widget(
             Paragraph::new(self.header.clone())
-                .style(input.theme.token(crate::config::Token::Muted)),
+                .style(input.theme.token(acyclic_harness_tui_core::Token::Muted)),
             areas.header,
         );
         let thinking = self.thinking_line(input, &areas, transcript_scroll, now_ms);
         areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
             frame.render_widget(
-                crate::Feedback(&input.theme, self.feedback_rows, self.feedback_scroll),
+                crate::feedback::Feedback(&input.theme, self.feedback_rows, self.feedback_scroll),
                 areas.transcript,
             );
         } else {
@@ -501,7 +501,7 @@ impl Screen<'_> {
             self.status.clone().right_aligned()
         };
         frame.render_widget(
-            status.style(input.theme.token(crate::config::Token::Muted)),
+            status.style(input.theme.token(acyclic_harness_tui_core::Token::Muted)),
             areas.status,
         );
         if !self.tree.is_empty() {

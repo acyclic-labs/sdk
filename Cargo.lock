@@ -514,7 +514,6 @@ dependencies = [
  "acyclic-fs",
  "acyclic-fs-base",
  "acyclic-fs-format",
- "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-native-runtime",
@@ -531,7 +530,6 @@ dependencies = [
 name = "acyclic-fs-native-contract"
 version = "0.2.0"
 dependencies = [
- "acyclic-fs-format",
  "cap-primitives",
  "cap-std",
  "libc",
@@ -643,6 +641,7 @@ dependencies = [
  "acyclic-harness-search",
  "acyclic-harness-suite",
  "acyclic-harness-tui",
+ "acyclic-harness-tui-core",
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-daytona",
@@ -652,6 +651,7 @@ dependencies = [
  "acyclic-stream-wire",
  "acyclic-test-support",
  "arrayvec",
+ "async-stream",
  "async-trait",
  "base64 0.23.1",
  "blake3",
@@ -680,6 +680,7 @@ dependencies = [
  "ratatui",
  "rcgen",
  "regex-lite",
+ "reqwest 0.12.28",
  "rmcp",
  "rustix",
  "rustls",
@@ -697,6 +698,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "toml",
  "tonic",
  "tonic-prost",
@@ -791,8 +793,8 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-collections",
- "acyclic-contract-derive",
  "acyclic-decimal-u64",
+ "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-executable-search",
  "acyclic-fs",
@@ -804,7 +806,6 @@ dependencies = [
  "acyclic-harness-control-checks",
  "acyclic-harness-json",
  "acyclic-harness-layout",
- "acyclic-harness-model-cache",
  "acyclic-harness-modules",
  "acyclic-harness-sse",
  "acyclic-host-platform",
@@ -1094,21 +1095,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-harness-model-cache"
-version = "0.2.0"
-dependencies = [
- "acyclic-contract-derive",
- "acyclic-harness-layout",
- "acyclic-test-support",
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tsify",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "acyclic-harness-modules"
 version = "0.2.0"
 dependencies = [
@@ -1284,6 +1270,7 @@ dependencies = [
 name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
+ "acyclic-harness-tui-core",
  "acyclic-markdown",
  "acyclic-native-runtime",
  "acyclic-test-support",
@@ -1311,10 +1298,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-tui-core"
+version = "0.2.0"
+dependencies = [
+ "acyclic-test-support",
+ "arrayvec",
+ "caseless",
+ "crossterm",
+ "proptest",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "acyclic-harness-tui-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-harness-tui",
+ "acyclic-harness-tui-core",
  "libfuzzer-sys",
  "serde_json",
  "unicode-segmentation",
@@ -1881,8 +1884,8 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-collections",
- "acyclic-contract-derive",
  "acyclic-decimal-u64",
+ "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-log-frame",
  "acyclic-native-runtime",
@@ -2060,18 +2063,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-stream-wire"
-version = "0.2.0"
-dependencies = [
- "acyclic-auth-action",
- "acyclic-proto-build",
- "prost",
- "serde_json",
- "tonic",
- "tonic-prost",
-]
-
-[[package]]
 name = "acyclic-syntect"
 version = "0.2.0"
 dependencies = [
@@ -2094,6 +2085,18 @@ name = "acyclic-test-runner"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+]
+
+[[package]]
+name = "acyclic-stream-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth-action",
+ "acyclic-proto-build",
+ "prost",
+ "serde_json",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -8924,15 +8927,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
 
 [[package]]
-name = "stream-rpc-inventory"
-version = "0.2.0"
-dependencies = [
- "acyclic-stream",
- "acyclic-stream-wire",
- "serde_json",
-]
-
-[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8941,6 +8935,15 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
  "unicode-properties",
+]
+
+[[package]]
+name = "stream-rpc-inventory"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "acyclic-stream-wire",
+ "serde_json",
 ]
 
 [[package]]

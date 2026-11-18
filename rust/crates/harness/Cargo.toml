@@ -75,8 +75,10 @@ acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false }
+acyclic-harness-tui-core = { version = "=0.2.0", path = "../harness-tui-core" }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
+async-stream = "=0.3.6"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-machines-daytona = { version = "=0.2.0", path = "../machines-daytona" }
@@ -102,6 +104,7 @@ sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 toml = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
@@ -118,6 +121,7 @@ getrandom = { workspace = true }
 loom = { version = "=0.7.3", optional = true }
 same-file = { version = "1.0.6", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+reqwest = { workspace = true }
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"] }
 hyper-util = { workspace = true }
 http-body-util = { version = "0.1.3" }
@@ -152,6 +156,7 @@ acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-
 which = "8.0.6"
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+tokio-util = { workspace = true, features = ["rt"] }
 rcgen = "0.14.10"
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true

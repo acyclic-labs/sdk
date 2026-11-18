@@ -1,7 +1,8 @@
 //! Composed-screen parity: layout, prompt routing, persistence and resize.
 #![cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, layout::Rect, text::Line};
-use acyclic_harness_tui::{Editor, PromptBox, PromptInput, Screen, Viewport};
+use acyclic_harness_tui::{PromptBox, PromptInput, Screen, Viewport};
+use acyclic_harness_tui_core::{Editor};
 use proptest::prelude::*;
 
 fn visible(terminal: &Terminal<TestBackend>) -> String {
@@ -275,12 +276,10 @@ proptest! {
 fn mouse_hit_testing_uses_the_composed_prompt_area_and_copies_a_whole_grapheme()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_harness_tui::ratatui::style::Modifier;
-    use acyclic_harness_tui::{
-        InputEffect, PromptBox,
-        key_event::{
+    use acyclic_harness_tui::{InputEffect, PromptBox};
+use acyclic_harness_tui_core::{key_event::{
             KeyCode, KeyEvent, KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind,
-        },
-    };
+        }};
     let screen = Screen::default();
     let mut input = PromptInput::new(Editor::new("abc界d"));
     let mut viewport = Viewport::default();
@@ -331,10 +330,8 @@ fn mouse_hit_testing_uses_the_composed_prompt_area_and_copies_a_whole_grapheme()
 #[test]
 fn multiline_prompt_growth_does_not_capture_transcript_page_keys()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::{
-        Action, InputEffect,
-        key_event::{KeyCode, KeyEvent, KeyModifiers as M},
-    };
+    use acyclic_harness_tui::{InputEffect};
+use acyclic_harness_tui_core::{Action, key_event::{KeyCode, KeyEvent, KeyModifiers as M}};
     let rows: Vec<_> = (0..20)
         .map(|index| Line::from(format!("message {index}")))
         .collect();
@@ -372,10 +369,8 @@ fn multiline_prompt_growth_does_not_capture_transcript_page_keys()
 #[test]
 fn large_paste_is_compact_in_layout_and_expands_in_queued_submission()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::{
-        InputEffect,
-        key_event::{KeyCode, KeyEvent, KeyModifiers as M},
-    };
+    use acyclic_harness_tui::{InputEffect};
+use acyclic_harness_tui_core::{key_event::{KeyCode, KeyEvent, KeyModifiers as M}};
     let pasted = (0..12)
         .map(|index| format!("pasted line {index}"))
         .collect::<Vec<_>>()
@@ -403,10 +398,8 @@ fn large_paste_is_compact_in_layout_and_expands_in_queued_submission()
 #[test]
 fn composed_prompt_restores_each_item_draft_and_shared_history_from_snapshots()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::{
-        InputEffect,
-        key_event::{KeyCode, KeyEvent, KeyModifiers as M},
-    };
+    use acyclic_harness_tui::{InputEffect};
+use acyclic_harness_tui_core::{key_event::{KeyCode, KeyEvent, KeyModifiers as M}};
     let mut input = PromptInput::new(Editor::new("earlier prompt"));
     let submitted = input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1, 38);
     let [InputEffect::Submit { text, .. }] = submitted.as_slice() else {

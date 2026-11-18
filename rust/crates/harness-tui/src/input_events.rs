@@ -1,4 +1,4 @@
-use crate::key_event::{InputEvent, MouseEventKind};
+use acyclic_harness_tui_core::key_event::{InputEvent, MouseEventKind};
 use crate::{InputEffect, PromptInput, Viewport};
 use ratatui::layout::Rect;
 

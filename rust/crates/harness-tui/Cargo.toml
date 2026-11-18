@@ -11,10 +11,8 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 [features]
 model-checking = ["dep:loom"]
 
-[build-dependencies]
-serde_json.workspace = true
-
 [dependencies]
+acyclic-harness-tui-core = { version = "=0.2.0", path = "../harness-tui-core" }
 futures.workspace = true
 loom = { version = "0.7.3", optional = true }
 acyclic-markdown = { version = "=0.2.0", path = "../markdown" }

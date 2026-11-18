@@ -1,7 +1,7 @@
 use std::io;
 
 use super::{PROBE_LIMIT, Probe, ProbeReplies};
-use crate::key_event::{
+use acyclic_harness_tui_core::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };

@@ -1,10 +1,8 @@
 //! R25: input and streamed deltas through the real editor, transcript and paint
 //! path. Work counters, rather than shared-host wall time, are the oracle.
 use super::*;
-use crate::{
-    BlockKind, TranscriptRows,
-    key_event::{KeyCode, KeyEvent, KeyModifiers},
-};
+use crate::{BlockKind, TranscriptRows};
+use acyclic_harness_tui_core::key_event::{KeyCode, KeyEvent, KeyModifiers};
 use acyclic_test_support::scale::{Bound, assert_scales};
 
 #[derive(Debug, PartialEq, Eq)]

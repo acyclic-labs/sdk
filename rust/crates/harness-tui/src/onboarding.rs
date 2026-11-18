@@ -1,6 +1,6 @@
 //! Host-only setup input. Secret bytes are never echoed or retained in a
 //! conversation, draft, history or diagnostic; the input allocation is wiped.
-use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
+use acyclic_harness_tui_core::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Write};
 use zeroize::Zeroizing;

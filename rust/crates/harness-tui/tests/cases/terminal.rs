@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
-use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
+use acyclic_harness_tui_core::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::*;
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
@@ -580,7 +580,7 @@ fn alternate_screen_reports_sgr_wheel_and_inline_keeps_native_scrolling() -> io:
             _ => None,
         })
         .collect();
-    use acyclic_harness_tui::key_event::MouseEventKind::{ScrollDown, ScrollUp};
+    use acyclic_harness_tui_core::key_event::MouseEventKind::{ScrollDown, ScrollUp};
     assert_eq!(
         kinds,
         [

@@ -12,6 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 serde_json = "1"
 acyclic-harness-tui = { path = ".." }
+acyclic-harness-tui-core = { path = "../../harness-tui-core" }
 unicode-segmentation = "1.12"
 
 [[bin]]

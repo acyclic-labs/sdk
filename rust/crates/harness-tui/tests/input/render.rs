@@ -1,5 +1,7 @@
 use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, style::Style};
-use acyclic_harness_tui::{Editor, PromptBox, PromptInput, Viewport, config::Token};
+use acyclic_harness_tui::{PromptBox, PromptInput, Viewport};
+use acyclic_harness_tui_core::{Editor};
+use acyclic_harness_tui_core::Token;
 
 #[test]
 fn editing_message_border_title_and_text_snapshot() -> Result<(), Box<dyn std::error::Error>> {

@@ -2,7 +2,8 @@
 //! to one text and the style of each of its byte ranges for wrapping, with
 //! each tone in its theme token's colour.
 
-use crate::config::{ThemeStyles, Token};
+use crate::config::ThemeStyles;
+use acyclic_harness_tui_core::Token;
 use acyclic_markdown::Tone;
 use ratatui::style::{Modifier, Style};
 use std::{ops::Range, sync::Arc};
