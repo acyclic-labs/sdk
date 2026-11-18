@@ -147,31 +147,30 @@ async function wasmResolution() {
 }
 const wasm = await wasmResolution();
 const [base] = runs;
-// The workspace metadata the tests read instead of running Cargo. It holds the workspace members
-// only, with manifest paths relative to the workspace root, so the file is relocatable and small.
-const workspaceMetadata = (() => {
+// The SDK docs tests assemble their relocatable metadata from independent package inputs.
+function workspaceMetadataFiles() {
+  const prefix = "workspace-metadata";
   const members = new Set(base.workspace_members);
-  const relative = p => path.relative(base.workspace_root, p).replaceAll("\\", "/");
-  // Cargo's package id embeds the absolute checkout path; the tests only compare ids, so keep
-  // them stable across worktrees.
-  const stableId = id => id.replaceAll(base.workspace_root, ".");
-  return JSON.stringify({
-    packages: base.packages.filter(p => members.has(p.id)).map(({workspace_member, ...p}) => ({
-      ...p,
-      id: stableId(p.id),
-      manifest_path: relative(p.manifest_path),
-      dependencies: [],
-      targets: [],
-    })),
-    workspace_members: base.workspace_members.map(stableId),
-    workspace_default_members: Array.isArray(base.workspace_default_members) ? base.workspace_default_members.map(stableId) : base.workspace_default_members,
-    resolve: null,
-    target_directory: "target",
-    version: base.version,
-    workspace_root: ".",
-    metadata: base.metadata,
-  }) + "\n";
-})();
+  const defaultMembers = new Set(base.workspace_default_members);
+  const shards = new Map(trackedFiles(root, [`${prefix}/packages/*.json`]).map(file => [file, null]));
+  shards.set(`${prefix}/header.json`, JSON.stringify({version: base.version, metadata: base.metadata}));
+  for (const {workspace_member, ...pkg} of base.packages) {
+    if (!members.has(pkg.id)) continue;
+    const {id, manifest_path, ...fields} = pkg;
+    const shard = {
+      defaultMember: defaultMembers.has(id),
+      package: {
+        ...fields,
+        id: id.replaceAll(base.workspace_root, "."),
+        manifest_path: path.relative(base.workspace_root, manifest_path).replaceAll("\\", "/"),
+        dependencies: [],
+        targets: [],
+      },
+    };
+    shards.set(`${prefix}/packages/${pkg.name}.json`, JSON.stringify(shard));
+  }
+  return shards;
+}
 const packages = new Map([...runs, ...(wasm ? [wasm.run] : [])].flatMap(run => run.packages.map(p => [p.id, p])));
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
@@ -1371,7 +1370,7 @@ const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n
 /** @type {Map<string,string|null>} */
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
-  ["workspace-metadata.json", workspaceMetadata],
+  ["workspace-metadata.json", null],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 ${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
@@ -1383,6 +1382,7 @@ ${windowsLoads}${windowsToolchain()}`],
 ${rustfmtToolchains()}`],
 ]);
 if (wasm) {
+  for (const [file, text] of workspaceMetadataFiles()) files.set(file, text);
   files.set("harness-tools.bzl", HEADER + "\nHARNESS_TOOLS = {\n" + [...harnessTools].map(label =>
     `    ${q(label)}: Label(${q(label)}),\n`).join("") + "}\n");
   const modules = wasm.modules.map(module => {

@@ -6,7 +6,7 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
     let root = acyclic_test_support::source_path("");
     let metadata = load_workspace_metadata(
         &root,
-        &acyclic_test_support::source_path("workspace-metadata.json"),
+        &acyclic_test_support::source_path("workspace-metadata/workspace-metadata.json"),
     )
     .unwrap();
     let targets = [

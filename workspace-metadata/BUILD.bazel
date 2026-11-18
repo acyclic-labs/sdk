@@ -1,0 +1,9 @@
+load(":assemble.bzl", "assemble_workspace_metadata")
+
+assemble_workspace_metadata(
+    name = "workspace_metadata",
+    header = "header.json",
+    packages = glob(["packages/*.json"]),
+    out = "workspace-metadata.json",
+    visibility = ["//rust/crates/sdk-docs:__pkg__"],
+)
