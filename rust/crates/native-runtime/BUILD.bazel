@@ -337,6 +337,8 @@ rust_test(
         "src/claim/record.rs",
         "tests/cached_flush.rs",
         "tests/claim_codec/oracle.rs",
+        "tests/file_lock/mod.rs",
+        "tests/file_lock/tests.rs",
         "tests/main.rs",
         "tests/native_claim_record.rs",
         "tests/native_owner_record.rs",

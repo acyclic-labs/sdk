@@ -229,7 +229,3 @@ impl Drop for FileLock {
         let _ = self.unlock();
     }
 }
-
-#[cfg(test)]
-#[path = "file_lock_tests.rs"]
-mod tests;

@@ -1,4 +1,4 @@
-use super::{FileLock, FileLockMode};
+use acyclic_native_runtime::{FileLock, FileLockMode, is_exclusive_lock_contention};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
@@ -15,7 +15,7 @@ fn open(path: &Path) -> io::Result<File> {
 fn is_free(path: &Path) -> io::Result<bool> {
     match FileLock::try_acquire(open(path)?, FileLockMode::Exclusive) {
         Ok(_probe) => Ok(true),
-        Err(error) if crate::is_exclusive_lock_contention(&error) => Ok(false),
+        Err(error) if is_exclusive_lock_contention(&error) => Ok(false),
         Err(error) => Err(error),
     }
 }
