@@ -2568,6 +2568,8 @@ rust_test(
         "tests/checkout_profiles/facade/tests/special.rs",
         "tests/checkout_profiles/model/mod.rs",
         "tests/checkout_profiles/model/tests.rs",
+        "tests/checkout_profiles/path/mod.rs",
+        "tests/checkout_profiles/path/tests.rs",
         "tests/support/allow_publication.rs",
         "tests/support/checkout_fixture.rs",
         "tests/support/checkout_tracking.rs",

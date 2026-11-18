@@ -4,3 +4,5 @@
 mod facade;
 #[path = "checkout_profiles/model/mod.rs"]
 mod model;
+#[path = "checkout_profiles/path/mod.rs"]
+mod path;
