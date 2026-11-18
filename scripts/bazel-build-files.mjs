@@ -924,7 +924,9 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   for (const target of executables.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
     covered.add(`test ${target.kind[0]} ${target.name}`);
     // Cargo gives integration tests and benches the package's executables as CARGO_BIN_EXE_<name>.
-    const binaries = target.kind.includes("test") || target.kind.includes("bench")
+    // Packages may declare just the executables their tests start in test-tools.
+    const binaries = bazel?.["test-package-binaries"] !== false &&
+      (target.kind.includes("test") || target.kind.includes("bench"))
       ? Object.fromEntries(p.targets.filter(t => t.kind.includes("bin")).map(bin => [`:${bin.name}`, bin.name]))
       : {};
     const reads = runtimeData(target);
