@@ -799,13 +799,11 @@ fn run_historical_generation(
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");
     let profiles = if result.status.success() || version.join(PROFILE_TABLE).is_file() {
-        let releases: Value = serde_json::from_slice(
+        let releases: Vec<Value> = serde_json::from_slice(
             &fs::read(version.join("sdk-docs-registry-releases.v1.json")).unwrap(),
         )
         .unwrap();
         let expected = releases
-            .as_array()
-            .unwrap()
             .iter()
             .map(|release| (release["crate"].as_str().unwrap(), 4))
             .collect::<Vec<_>>();
