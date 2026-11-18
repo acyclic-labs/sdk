@@ -94,6 +94,11 @@ test-without-build-script = [
     "memory_authority",
     "memory_objects",
     "mount_routing",
+    "workspace_context_contracts",
+    "workspace_contracts",
+    "workspace_fork_selection",
+    "workspace_join_history",
+    "workspace_merge",
 ]
 test-narrow-runfiles = [
     "checkout_cancellation",

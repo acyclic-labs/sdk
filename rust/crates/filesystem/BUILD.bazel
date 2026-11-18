@@ -1760,7 +1760,6 @@ rust_test(
     lint_config = ":lints",
     deps = [
         ":acyclic_fs",
-        ":build_script",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
@@ -1889,7 +1888,6 @@ rust_test(
     lint_config = ":lints",
     deps = [
         ":acyclic_fs",
-        ":build_script",
     ] + [
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
@@ -1947,7 +1945,6 @@ rust_test(
     lint_config = ":lints",
     deps = [
         ":acyclic_fs",
-        ":build_script",
     ] + [
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "@sdk_crates//bytes-1.12.1",
@@ -2205,7 +2202,6 @@ rust_test(
     lint_config = ":lints",
     deps = [
         ":acyclic_fs",
-        ":build_script",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
@@ -3255,7 +3251,6 @@ rust_test(
     lint_config = ":lints",
     deps = [
         ":acyclic_fs",
-        ":build_script",
     ] + [
         "@sdk_crates//tokio-1.54.1",
     ],
