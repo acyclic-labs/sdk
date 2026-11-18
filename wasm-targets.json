@@ -77,5 +77,12 @@
     "outName": "acyclic_hosted_actors_conformance",
     "module": "//rust/crates/conformance/hosted-actors:acyclic_hosted_actors_conformance_wasm_cdylib",
     "label": "//wasm:hosted-actors"
+  },
+  {
+    "name": "cloudflare-conformance",
+    "directory": "rust/crates/conformance/cloudflare/generated",
+    "outName": "acyclic_cloudflare_conformance",
+    "module": "//rust/crates/conformance/cloudflare:acyclic_cloudflare_conformance_wasm_cdylib",
+    "label": "//wasm:cloudflare-conformance"
   }
 ]

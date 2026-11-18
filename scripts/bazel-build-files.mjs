@@ -136,7 +136,12 @@ async function wasmResolution() {
   const {hostedActorsWasm} = await import(pathToFileURL(path.join(root, "scripts/build-hosted-actors-conformance.mjs")).href);
   const modules = [...Object.keys(wasmPackages).map(name => ({name, ...wasmSelection(name),
     outputPackage:wasmPackages[name].outputPackage ?? name, runtime:wasmPackages[name].runtime, build:wasmPackages[name].build, runtimeDirectory:wasmPackages[name].runtimeDirectory,
-    directory:`typescript/packages/${wasmPackages[name].outputPackage ?? name}/generated/wasm`})), {...hostedActorsWasm, outputPackage:undefined}];
+    directory:`typescript/packages/${wasmPackages[name].outputPackage ?? name}/generated/wasm`})), {...hostedActorsWasm, outputPackage:undefined}, {
+    name: "cloudflare-conformance",
+    selection: ["-p", "acyclic-cloudflare-conformance"],
+    outName: "acyclic_cloudflare_conformance",
+    directory: "rust/crates/conformance/cloudflare/generated",
+  }];
   const selected = modules.map(module => module.selection);
   return {run: workspaceBrowserGraph(root, selected), roots:new Set(selected.map(args => args[args.indexOf("-p") + 1])), modules, testConsumers:wasmTestConsumers};
 }

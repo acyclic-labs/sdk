@@ -15,6 +15,7 @@ FEATURES = [
 
 WASM_FEATURES = [
         "browser",
+        "conformance",
         "wasm",
         "wasm-journal",
     ]
@@ -4771,6 +4772,7 @@ rust_library(
         "//rust/crates/harness-hosting:acyclic_harness_hosting_wasm",
         "//rust/crates/harness-local:acyclic_harness_local_wasm",
         "//rust/crates/harness-search:acyclic_harness_search_wasm",
+        "//rust/crates/harness-suite:acyclic_harness_suite_wasm",
         "//rust/crates/harness-tui:acyclic_harness_tui_wasm",
         "//rust/crates/host-platform:acyclic_host_platform_wasm",
         "//rust/crates/machines-daytona:acyclic_machines_daytona_wasm",
@@ -4782,6 +4784,7 @@ rust_library(
         "@wasm_crates//base64_0_23_1-0.23.1",
         "@wasm_crates//blake3-1.8.7",
         "@wasm_crates//bytes-1.12.1",
+        "@wasm_crates//ed25519-dalek-3.0.0",
         "@wasm_crates//futures-0.3.34",
         "@wasm_crates//hex-0.4.3",
         "@wasm_crates//http-1.5.0",

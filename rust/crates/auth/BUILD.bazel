@@ -17,6 +17,7 @@ WASM_FEATURES = [
         "grpc-metadata",
         "javascript",
         "js-credential",
+        "test-support",
     ]
 
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-auth","CARGO_PKG_DESCRIPTION":"Shared capability chain contract and verification","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
@@ -723,6 +724,7 @@ rust_library(
         ":build_script_wasm",
     ] + [
         "//rust/crates/auth-action:acyclic_auth_action_wasm",
+        "//rust/crates/differential:acyclic_differential_wasm",
         "//rust/crates/observability:acyclic_observability_wasm",
         "@wasm_crates//base64_0_23_1-0.23.1",
         "@wasm_crates//bytes-1.12.1",
