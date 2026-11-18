@@ -56,6 +56,7 @@ acyclic-fs-work = "observations"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
+checkout_merge = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 local_facade = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_objects", "acyclic_stream", "tempfile", "tokio"]
 creation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tempfile", "tokio"]
 native_source = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tempfile", "tokio"]
@@ -183,6 +184,10 @@ path = "tests/workspace_simulation.rs"
 [[test]]
 name = "local_facade"
 path = "tests/local_facade.rs"
+
+[[test]]
+name = "checkout_merge"
+path = "tests/checkout_merge.rs"
 
 [[test]]
 name = "workspace_context_contracts"

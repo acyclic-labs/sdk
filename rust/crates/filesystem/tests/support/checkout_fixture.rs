@@ -11,12 +11,18 @@ pub(crate) fn writable_pinned() -> CheckoutMode {
     }
 }
 
+pub(crate) fn config() -> VolumeConfig {
+    VolumeConfig::portable(Lifecycle::Ephemeral)
+}
+
 pub(crate) fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
-    Ok(NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            value.as_bytes().to_vec(),
-        )?],
-        VolumeConfig::portable(Lifecycle::Ephemeral).limits,
-    )?)
+    path_parts(&[value])
+}
+
+pub(crate) fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
+    let components = values
+        .iter()
+        .map(|value| LogicalName::new(NameEncoding::Utf8, value.as_bytes().to_vec()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(NamespacePath::new(components, config().limits)?)
 }
