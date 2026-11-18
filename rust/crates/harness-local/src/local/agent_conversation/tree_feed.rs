@@ -151,11 +151,15 @@ impl SupervisionFeed {
         Ok(self.next_record().await?.1)
     }
 
-    /// Read the typed event with its original stream cursor, independent of
-    /// the source fact the event references.
-    pub async fn next_record(
+    /// Read the typed event with its original stream cursor and publication
+    /// identity, independent of the source fact the event references.
+    pub async fn next_publication(
         &mut self,
-    ) -> Result<(crate::supervision::Position, crate::supervision::Event)> {
+    ) -> Result<(
+        crate::supervision::Position,
+        acyclic_stream::Record,
+        crate::supervision::Event,
+    )> {
         let record = self.0.next().await?;
         let event: crate::supervision::Event =
             serde_json::from_slice(&record.record.value).map_err(failed)?;
@@ -174,8 +178,18 @@ impl SupervisionFeed {
                 stream: record.stream,
                 sequence: record.record.sequence,
             },
+            record.record,
             event,
         ))
+    }
+
+    /// Read the typed event with its original stream cursor, independent of
+    /// the source fact the event references.
+    pub async fn next_record(
+        &mut self,
+    ) -> Result<(crate::supervision::Position, crate::supervision::Event)> {
+        let (position, _, event) = self.next_publication().await?;
+        Ok((position, event))
     }
 }
 
