@@ -570,7 +570,6 @@ mod identity;
 mod live;
 mod local;
 mod merge;
-mod paths;
 mod profiles;
 mod protocol_helpers;
 mod publication;

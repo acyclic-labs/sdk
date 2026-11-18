@@ -1,4 +1,18 @@
-use super::*;
+use acyclic_fs::kernel::{ExtentSeekTarget, Mutation};
+use acyclic_fs::model::CheckoutMode;
+use acyclic_fs::{
+    AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, FileCloneRequest,
+    Fs,
+};
+use acyclic_fs_format::{
+    identity::VolumeId,
+    metadata::{FileMetadata, MetadataField},
+};
+use acyclic_stream::OwnedBytes;
+
+use super::B;
+use super::checkout_fixture::{config, path, path_parts};
+use super::fixtures::open_checkout;
 
 #[tokio::test]
 async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
@@ -11,7 +25,8 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
             .value;
     assert_eq!(volume.id(), VolumeId::from_bytes([117; 16]));
     assert_eq!(volume.config(), config());
-    let mut checkout = open_checkout(&volume, writable_tracking(), &cancellation).await?;
+    let mut checkout =
+        open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancellation).await?;
     let source = path("source-path")?;
     let destination = path("destination-path")?;
     let source_id = (checkout.create(
@@ -37,8 +52,10 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         &cancellation,
     ))
     .await?;
-    let mut metadata = FileMetadata::default();
-    metadata.modified_ns = MetadataField::Value(99);
+    let metadata = FileMetadata {
+        modified_ns: MetadataField::Value(99),
+        ..FileMetadata::default()
+    };
     (checkout.set_attributes(source.clone(), metadata, None, B, &cancellation)).await?;
     (checkout.change_content(
         destination.clone(),
@@ -130,18 +147,20 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         &cancellation,
     ))
     .await?;
-    assert_eq!(batch.value.entries.len(), 3);
+    let [source_entry, renamed_entry, absent_entry] = batch.value.entries.as_slice() else {
+        return Err("expected three batch lookup results".into());
+    };
     assert_eq!(
-        batch.value.entries[0].record.map(|record| record.file_id),
+        source_entry.record.as_ref().map(|record| record.file_id),
         Some(source_id)
     );
     assert_eq!(
-        batch.value.entries[1].record.map(|record| record.file_id),
+        renamed_entry.record.as_ref().map(|record| record.file_id),
         Some(source_id)
     );
-    assert!(batch.value.entries[2].record.is_none());
+    assert!(absent_entry.record.is_none());
     let records = (checkout.list_directory_records(
-        &root_path()?,
+        &path_parts(&[])?,
         std::ops::Bound::Unbounded,
         16,
         B,
@@ -176,8 +195,7 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     (checkout.mutate(
         vec![Mutation::Remove {
             path: renamed,
-            expected_file_id: Some(source_id)
-                .map_or(MetadataField::Unavailable, MetadataField::Value),
+            expected_file_id: MetadataField::Value(source_id),
         }],
         B,
         &cancellation,
