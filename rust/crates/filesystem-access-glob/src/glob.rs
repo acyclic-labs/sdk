@@ -1,8 +1,11 @@
-use super::InvalidPolicy;
-include!(concat!(env!("OUT_DIR"), "/case_fold.rs"));
-use super::compilation::spend;
+//! Canonical volume-relative glob matching and automata.
 
-pub(super) fn valid_path(path: &str) -> bool {
+use super::{GlobError, spend};
+
+include!(concat!(env!("OUT_DIR"), "/case_fold.rs"));
+
+/// Checks that a volume-relative path is canonical.
+pub fn valid_path(path: &str) -> bool {
     !path.contains(['\\', '\0'])
         && (path.is_empty()
             || path
@@ -10,14 +13,15 @@ pub(super) fn valid_path(path: &str) -> bool {
                 .all(|part| !part.is_empty() && part != "." && part != ".."))
 }
 
-pub(super) fn validate(pattern: &str) -> Result<(), InvalidPolicy> {
+/// Validates the supported canonical glob grammar.
+pub fn validate(pattern: &str) -> Result<(), GlobError> {
     if pattern.contains('\0')
         || (!pattern.is_empty()
             && pattern
                 .split('/')
                 .any(|part| part.is_empty() || part == "." || part == ".."))
     {
-        return Err(InvalidPolicy(
+        return Err(GlobError(
             "expected canonical glob with *, ? or ** components and escaped literals",
         ));
     }
@@ -26,7 +30,7 @@ pub(super) fn validate(pattern: &str) -> Result<(), InvalidPolicy> {
         for token in tokens(part) {
             let next_star = matches!(token?, Token::Star);
             if star && next_star && part != "**" {
-                return Err(InvalidPolicy("** must occupy a complete component"));
+                return Err(GlobError("** must occupy a complete component"));
             }
             star = next_star;
         }
@@ -41,31 +45,33 @@ enum Token {
     Question,
 }
 
-fn tokens(pattern: &str) -> impl Iterator<Item = Result<Token, InvalidPolicy>> + '_ {
+fn tokens(pattern: &str) -> impl Iterator<Item = Result<Token, GlobError>> + '_ {
     let mut chars = pattern.chars();
     std::iter::from_fn(move || {
         Some(match chars.next()? {
             '\\' => match chars.next() {
                 Some(ch @ ('*' | '?' | '[' | ']' | '{' | '}')) => Ok(Token::Literal(ch)),
-                _ => Err(InvalidPolicy("invalid glob literal escape")),
+                _ => Err(GlobError("invalid glob literal escape")),
             },
             '*' => Ok(Token::Star),
             '?' => Ok(Token::Question),
-            '[' | ']' | '{' | '}' => Err(InvalidPolicy("glob classes are not supported")),
+            '[' | ']' | '{' | '}' => Err(GlobError("glob classes are not supported")),
             ch => Ok(Token::Literal(ch)),
         })
     })
 }
 
-pub(super) fn question_count(pattern: &str) -> usize {
+/// Counts single-character wildcard tokens.
+pub fn question_count(pattern: &str) -> usize {
     tokens(pattern)
         .filter(|token| matches!(token, Ok(Token::Question)))
         .count()
 }
 
-pub(super) fn literal_subtree(path: &str) -> Result<String, InvalidPolicy> {
+/// Escapes a canonical path as a recursive subtree pattern.
+pub fn literal_subtree(path: &str) -> Result<String, GlobError> {
     if !valid_path(path) {
-        return Err(InvalidPolicy("expected canonical literal subtree"));
+        return Err(GlobError("expected canonical literal subtree"));
     }
     let escapes = path
         .chars()
@@ -75,7 +81,7 @@ pub(super) fn literal_subtree(path: &str) -> Result<String, InvalidPolicy> {
         .len()
         .checked_add(escapes)
         .and_then(|bytes| bytes.checked_add(3))
-        .ok_or(InvalidPolicy("literal subtree size overflow"))?;
+        .ok_or(GlobError("literal subtree size overflow"))?;
     let mut escaped = String::with_capacity(capacity);
     for ch in path.chars() {
         if matches!(ch, '*' | '?' | '[' | ']' | '{' | '}') {
@@ -88,7 +94,8 @@ pub(super) fn literal_subtree(path: &str) -> Result<String, InvalidPolicy> {
 }
 
 // Independent reference matcher: dynamic programming over path components.
-pub(super) fn matches(pattern: &str, path: &str, folded: bool) -> bool {
+/// Matches a canonical path, with optional Unicode folding.
+pub fn matches(pattern: &str, path: &str, folded: bool) -> bool {
     let parts: Vec<_> = if path.is_empty() {
         Vec::new()
     } else {
@@ -158,13 +165,18 @@ fn component_matches(pattern: &str, text: &str, folded: bool) -> bool {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Symbol {
+/// A transition predicate in the glob automaton.
+pub enum Symbol {
+    /// Matches a single literal character.
     Literal(char),
+    /// Matches one character within a path component.
     Component,
+    /// Matches any character, including a separator.
     Any,
 }
 
-pub(super) fn folded_question_states() -> usize {
+/// Counts extra automaton states needed by Unicode expansions.
+pub fn folded_question_states() -> usize {
     CASE_FOLD_EXPANSIONS
         .iter()
         .map(|expansion| expansion.chars().count().saturating_sub(1))
@@ -172,7 +184,8 @@ pub(super) fn folded_question_states() -> usize {
 }
 
 impl Symbol {
-    pub(super) fn matches(self, ch: char) -> bool {
+    /// Checks a transition against the next character.
+    pub fn matches(self, ch: char) -> bool {
         match self {
             Self::Literal(c) => c == ch,
             Self::Component => ch != '/',
@@ -182,24 +195,30 @@ impl Symbol {
 }
 
 #[derive(Default)]
-pub(super) struct Node {
+/// One state and its outgoing transitions.
+pub struct Node {
+    /// Character transitions and destination states.
     pub edges: Vec<(Symbol, usize)>,
+    /// Transitions that consume no input.
     pub epsilon: Vec<usize>,
 }
 
 #[derive(Default)]
-pub(super) struct Nfa {
+/// Nondeterministic automaton for a set of glob patterns.
+pub struct Nfa {
+    /// Dense state table.
     pub nodes: Vec<Node>,
 }
 
 /// Reuse a dense visitation epoch across transitions, without clearing the NFA
 /// or searching the growing closure for every edge.
-pub(super) struct ClosureScratch {
+pub struct ClosureScratch {
     seen: Vec<usize>,
     epoch: usize,
 }
 
 impl ClosureScratch {
+    /// Creates scratch for the given number of states.
     pub fn new(nodes: usize) -> Self {
         Self {
             seen: vec![0; nodes],
@@ -207,7 +226,7 @@ impl ClosureScratch {
         }
     }
 
-    fn begin(&mut self, work: &mut usize) -> Result<(), InvalidPolicy> {
+    fn begin(&mut self, work: &mut usize) -> Result<(), GlobError> {
         if self.epoch == usize::MAX {
             spend(work, self.seen.len())?;
             self.seen.fill(0);
@@ -217,11 +236,11 @@ impl ClosureScratch {
         Ok(())
     }
 
-    fn insert(&mut self, state: usize) -> Result<bool, InvalidPolicy> {
+    fn insert(&mut self, state: usize) -> Result<bool, GlobError> {
         let seen = self
             .seen
             .get_mut(state)
-            .ok_or(InvalidPolicy("invalid glob state"))?;
+            .ok_or(GlobError("invalid glob state"))?;
         let fresh = *seen != self.epoch;
         *seen = self.epoch;
         Ok(fresh)
@@ -229,23 +248,21 @@ impl ClosureScratch {
 }
 
 impl Nfa {
-    fn node_mut(&mut self, id: usize) -> Result<&mut Node, InvalidPolicy> {
+    fn node_mut(&mut self, id: usize) -> Result<&mut Node, GlobError> {
         self.nodes
             .get_mut(id)
-            .ok_or(InvalidPolicy("invalid glob state"))
+            .ok_or(GlobError("invalid glob state"))
     }
 
-    pub fn node(&mut self) -> Result<usize, InvalidPolicy> {
+    /// Appends an empty state.
+    pub fn node(&mut self) -> Result<usize, GlobError> {
         let id = self.nodes.len();
         self.nodes.push(Node::default());
         Ok(id)
     }
 
-    pub fn pattern(
-        &mut self,
-        pattern: &str,
-        folded: bool,
-    ) -> Result<(usize, usize), InvalidPolicy> {
+    /// Adds a pattern and returns its entry and accepting states.
+    pub fn pattern(&mut self, pattern: &str, folded: bool) -> Result<(usize, usize), GlobError> {
         let start = self.node()?;
         let mut current = start;
         let mut components: Vec<_> = pattern.split('/').filter(|part| !part.is_empty()).collect();
@@ -339,12 +356,13 @@ impl Nfa {
         Ok((start, current))
     }
 
+    /// Adds all states reachable through epsilon transitions.
     pub fn close(
         &self,
         states: &mut Vec<usize>,
         work: &mut usize,
         scratch: &mut ClosureScratch,
-    ) -> Result<(), InvalidPolicy> {
+    ) -> Result<(), GlobError> {
         let mut cursor = 0;
         while let Some(id) = states.get(cursor).copied() {
             spend(work, 1)?;
@@ -352,7 +370,7 @@ impl Nfa {
             for next in &self
                 .nodes
                 .get(id)
-                .ok_or(InvalidPolicy("invalid glob state"))?
+                .ok_or(GlobError("invalid glob state"))?
                 .epsilon
             {
                 spend(work, 1)?;
@@ -366,18 +384,19 @@ impl Nfa {
             states
                 .len()
                 .checked_mul(states.len().checked_ilog2().unwrap_or(0) as usize + 1)
-                .ok_or(InvalidPolicy("glob compilation work overflow"))?,
+                .ok_or(GlobError("glob compilation work overflow"))?,
         )?;
         states.sort_unstable();
         Ok(())
     }
 
+    /// Closes the initial state set.
     pub fn start(
         &self,
         states: &mut Vec<usize>,
         work: &mut usize,
         scratch: &mut ClosureScratch,
-    ) -> Result<(), InvalidPolicy> {
+    ) -> Result<(), GlobError> {
         scratch.begin(work)?;
         let mut unique = 0;
         for index in 0..states.len() {
@@ -391,13 +410,14 @@ impl Nfa {
         self.close(states, work, scratch)
     }
 
+    /// Advances through one character, then closes the resulting state set.
     pub fn step(
         &self,
         states: &[usize],
         ch: char,
         work: &mut usize,
         scratch: &mut ClosureScratch,
-    ) -> Result<Vec<usize>, InvalidPolicy> {
+    ) -> Result<Vec<usize>, GlobError> {
         scratch.begin(work)?;
         let mut next = Vec::new();
         for id in states {
@@ -405,7 +425,7 @@ impl Nfa {
             for (symbol, target) in &self
                 .nodes
                 .get(*id)
-                .ok_or(InvalidPolicy("invalid glob state"))?
+                .ok_or(GlobError("invalid glob state"))?
                 .edges
             {
                 spend(work, 1)?;

@@ -1,0 +1,21 @@
+[package]
+name = "acyclic-fs-access-glob"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Canonical glob matching for filesystem access policies"
+
+[package.metadata.bazel]
+build-script-inputs = []
+
+[dependencies]
+thiserror.workspace = true
+
+[build-dependencies]
+icu_casemap.workspace = true
+
+[lints]
+workspace = true

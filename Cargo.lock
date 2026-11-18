@@ -386,6 +386,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-collections",
+ "acyclic-fs-access-glob",
  "acyclic-fs-base",
  "acyclic-fs-darwin-bridge",
  "acyclic-fs-format",
@@ -464,6 +465,14 @@ dependencies = [
  "windows",
  "writeable",
  "zeroize",
+]
+
+[[package]]
+name = "acyclic-fs-access-glob"
+version = "0.2.0"
+dependencies = [
+ "icu_casemap",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
