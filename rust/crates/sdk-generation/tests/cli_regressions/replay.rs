@@ -67,7 +67,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         });
     };
     let manifest_path = original.output.join(GENERATION_MANIFEST);
-    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let mut manifest = read_generation_manifest(&original.output);
     let release_path = PathBuf::from(manifest["releaseManifest"].as_str().unwrap());
     let digest_path = release_path.with_extension("sha256");
     let inventory = manifest["rustdocFiles"]
