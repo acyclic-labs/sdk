@@ -21,8 +21,7 @@ mod fork;
 mod origin;
 
 /// Exact command for rerunning the endpoint suite with the same environment.
-pub const RECOVERY: &str =
-    "cargo run -p acyclic-stream --features conformance --example wave1-conformance";
+pub const RECOVERY: &str = "bazel run //rust/crates/stream:wave1-conformance_example";
 
 /// Fixed histories; no provider-specific cases or in-memory fallback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

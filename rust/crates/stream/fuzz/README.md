@@ -9,7 +9,7 @@ opaque details use its actual writer, rather than fabricated base64 trailers.
 Capture the corpus from the SDK's original status producer:
 
 ```sh
-cargo run --locked -p acyclic-stream --features test-support --example status-corpus
+ACYCLIC_TEST_SOURCE_ROOT="$PWD" bazel run //rust/crates/stream:status-corpus_example
 cargo test --locked -p acyclic-stream --lib wire_codec::status_contract::tests::status_contract_and_planted_decoder_faults -- --exact
 cargo +nightly fuzz run --fuzz-dir rust/crates/stream/fuzz status -- -runs=1000 -seed=1 -max_len=256
 ```

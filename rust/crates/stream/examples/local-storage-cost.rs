@@ -1,6 +1,5 @@
 //! Credential-free local storage baseline, including forced snapshot recovery.
-//! Linux: cargo run --locked -p acyclic-stream --all-features
-//! --example local-storage-cost -- 1000 128
+//! Linux: `bazel run //rust/crates/stream:local-storage-cost_example -- 1000 128`.
 #[cfg(not(target_arch = "wasm32"))]
 mod benchmark {
     use acyclic_stream::{
