@@ -2852,6 +2852,7 @@ rust_test(
         "tests/export_codec/kernel/transfer/tests.rs",
         "tests/support/export_manifest.rs",
         "tests/support/generation_root.rs",
+        "tests/support/memory_objects.rs",
         "tests/support/transfer_manifest.rs",
     ],
     edition = "2024",
@@ -2872,6 +2873,7 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//hex-0.4.3",
         "@sdk_crates//tokio-1.54.1",
@@ -2909,6 +2911,7 @@ rust_test(
         "tests/extent_clone/kernel/extent_clone/tests.rs",
         "tests/extent_clone/kernel/mod.rs",
         "tests/support/extent_objects.rs",
+        "tests/support/memory_objects.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -2928,6 +2931,7 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
     ],

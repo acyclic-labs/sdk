@@ -1,8 +1,7 @@
-use acyclic_fs::GenerationId;
 use acyclic_fs::kernel::GenerationRoot;
 use acyclic_fs_format::{
     identity::{Digest, FileId, VolumeId},
-    object_reference::{ObjectId, ObjectKind, ObjectStorage},
+    object_reference::{GenerationId, ObjectId, ObjectKind, ObjectStorage},
 };
 
 pub(super) fn root() -> GenerationRoot {

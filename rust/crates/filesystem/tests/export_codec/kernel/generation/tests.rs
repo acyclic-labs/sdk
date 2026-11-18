@@ -1,11 +1,10 @@
-use acyclic_fs::GenerationId;
 use acyclic_fs::kernel::{
     CanonicalDecodeError, DecodeLimits, GenerationRoot, ReadAllocationStep, decode_generation_root,
     encode_generation_root, generation_root_id,
 };
 use acyclic_fs_format::{
     identity::Digest,
-    object_reference::{ObjectId, ObjectKind, ObjectStorage},
+    object_reference::{GenerationId, ObjectId, ObjectKind, ObjectStorage},
 };
 
 #[path = "../../../support/generation_root.rs"]

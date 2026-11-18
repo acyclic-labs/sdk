@@ -1,9 +1,13 @@
+use acyclic_fs::CancellationToken;
 use acyclic_fs::kernel::{
     GenerationTransferError, TransferCursor, export_generation_batch_async,
     import_generation_batch_async,
 };
-use acyclic_fs::{CancellationToken, MemoryObjectStore};
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
+
+#[path = "../../../support/memory_objects.rs"]
+mod memory;
+use memory::memory_objects;
 
 #[path = "../../../support/transfer_manifest.rs"]
 mod transfer_manifest;
@@ -13,7 +17,7 @@ use transfer_manifest::fixture;
 async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, _) = fixture();
-    let store = MemoryObjectStore::default();
+    let store = memory_objects();
     let cancellation = CancellationToken::new();
     let terminal = (export_generation_batch_async(
         &store,
@@ -71,7 +75,7 @@ async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
 async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, _) = fixture();
-    let store = MemoryObjectStore::default();
+    let store = memory_objects();
     let cancellation = CancellationToken::new();
 
     for (maximum_objects, maximum_object_bytes) in
@@ -154,7 +158,7 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
 async fn import_rejects_every_noncanonical_page_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, [chunk, root]) = fixture();
-    let store = MemoryObjectStore::default();
+    let store = memory_objects();
     let cancellation = CancellationToken::new();
     for (cursor, bodies, maximum_objects, expected) in [
         (

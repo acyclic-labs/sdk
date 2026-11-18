@@ -158,8 +158,8 @@ acyclic-fs-work = "observations"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
-export_codec = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "hex", "tokio"]
-extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
+export_codec = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "hex", "tokio"]
+extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "tokio"]
 extent_codec = ["acyclic_fs", "acyclic_fs_format"]
 metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
 tree_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
