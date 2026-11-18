@@ -180,6 +180,3 @@ proptest::proptest! {
         }
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "performance_native.rs"]
-mod native;

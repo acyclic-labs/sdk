@@ -155,7 +155,11 @@ pub mod native_mount;
 mod native_name;
 pub mod operation_window;
 pub mod path;
+#[cfg(not(test))]
 use acyclic_fs_work::performance;
+#[cfg(test)]
+#[path = "tests/performance_scope.rs"]
+mod performance;
 mod record_store;
 pub mod s3;
 #[cfg(not(target_arch = "wasm32"))]
