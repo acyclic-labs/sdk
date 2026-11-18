@@ -6,7 +6,10 @@ use crate::model::{ModelContent, ModelMessage, ModelRole};
 
 #[test]
 fn partial_field_copy_releases_original_custody_and_cancelled_copy_is_empty() {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    use {
+        acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        acyclic_fs_work::performance::WorkBudget,
+    };
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(
         WorkBudget {

@@ -41,7 +41,7 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
         )?
         .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = if native {
@@ -121,7 +121,7 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
     // and the allocation high-water mark reproducible.
     let operation = OperationId::from_bytes([81; 16]);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work.invocation_window()?)?;
@@ -235,7 +235,7 @@ async fn full_fold_negative_control_is_detected_by_the_flat_append_read_bound() 
     let (journal, _issuer) = journal().await?;
     let operation = OperationId::new();
     let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )?;
     journal
@@ -305,7 +305,7 @@ async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and
     )?;
     let operation = OperationId::new();
     let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )?;
     let failure = |step, message: &str| ExecutionEvent::ToolFailed {
@@ -380,7 +380,7 @@ async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and
 fn quiescence_work_is_flat_for_a_thousand_settled_dispatches() -> Result<()> {
     let mut summary = ExecutionSummary::default();
     let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )?;
     super::accept(

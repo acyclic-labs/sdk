@@ -62,15 +62,16 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
     #[cfg(not(target_arch = "wasm32"))]
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     #[cfg(not(target_arch = "wasm32"))]
     let io = PreparationIo::from_native_work(&work)?;
     #[cfg(target_arch = "wasm32")]
-    let io = PreparationIo::from_budget(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)?;
-    let standalone = PreparationIo::from_budget(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)?;
+    let io = PreparationIo::from_budget(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel)?;
+    let standalone =
+        PreparationIo::from_budget(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel)?;
     for byte_io in [&standalone, &io] {
         roundtrip::<Policy>(byte_io, &io, bytes)?;
         roundtrip::<Capability>(byte_io, &io, bytes)?;

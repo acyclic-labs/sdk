@@ -33,7 +33,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
             crate::filesystem::execution_journal::test_support::journal().await?;
         let operation = OperationId::new();
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let native_baseline = work.live_allocation_bytes()?;

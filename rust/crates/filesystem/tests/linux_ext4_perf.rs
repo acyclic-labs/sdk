@@ -8,9 +8,12 @@ mod native_access;
 use std::path::Path;
 
 use acyclic_fs::kernel::KernelAccounting;
-use acyclic_fs::{
-    CancellationToken, Fs, LocalOptions, MaterializeOptions, MountOptions, MountPath,
-    PublicationPermit, WorkBudget,
+use {
+    acyclic_fs::{
+        CancellationToken, Fs, LocalOptions, MaterializeOptions, MountOptions, MountPath,
+        PublicationPermit,
+    },
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 #[path = "support/portable_source.rs"]

@@ -1,11 +1,14 @@
 use super::*;
 use crate::filesystem::PreparationIo;
 use acyclic_fs::access::{Action as FsAction, Effect, Policy};
-use acyclic_fs::{
-    CancellationToken, WorkBudget,
-    model::{CheckoutMode, GenerationSelector},
-};
 use proptest::prelude::*;
+use {
+    acyclic_fs::{
+        CancellationToken,
+        model::{CheckoutMode, GenerationSelector},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
@@ -101,9 +104,9 @@ async fn publish_volume_policy(
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )

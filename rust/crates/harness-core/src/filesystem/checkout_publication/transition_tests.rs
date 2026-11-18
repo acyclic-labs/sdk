@@ -1,6 +1,6 @@
 use super::*;
-use acyclic_fs::{OperationId, WorkCounters};
 use proptest::prelude::*;
+use {acyclic_fs::OperationId, acyclic_fs_work::performance::WorkCounters};
 
 fn generation_associations(digest: [u8; 32], root: [u8; 16]) -> [acyclic_fs::GenerationId; 5] {
     use acyclic_fs::{Digest, FileId, GenerationId, ObjectId, ObjectKind, ObjectStorage};
@@ -82,10 +82,13 @@ proptest! {
     }
 }
 
-use acyclic_fs::{
-    CancellationToken, LocalFs, LocalOptions, MultiRootMaterializer, WorkBudget, WorkspaceRootId,
-};
 use std::collections::BTreeMap;
+use {
+    acyclic_fs::{
+        CancellationToken, LocalFs, LocalOptions, MultiRootMaterializer, WorkspaceRootId,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Clone, Copy)]
@@ -158,7 +161,7 @@ impl Fixture {
                     WorkBudget::UNBOUNDED,
                     &cancellation,
                     |_| {
-                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                             value: (),
                             work: WorkCounters::UNCHARGED,
                         }))

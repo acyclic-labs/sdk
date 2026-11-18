@@ -529,7 +529,10 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     let cancellation = acyclic_fs::CancellationToken::new();
     let before = view
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value
@@ -541,7 +544,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .workspace()
         .operation_generation(
             capture_key,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -573,7 +576,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .workspace()
         .generation(
             publisher.staged_generation(&replacement)?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -595,7 +598,10 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     );
     let after = view
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value
@@ -614,7 +620,7 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
         let physical = &*publisher.tools.workspace;
         let view = physical.view();
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
         let before = view
             .workspace()
             .head(budget, &cancellation)
@@ -689,7 +695,7 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
     let physical = &*publisher.tools.workspace;
     let view = physical.view();
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     assert_eq!(
         view.workspace()
             .operation_generation(key, budget, &cancellation)
@@ -1079,7 +1085,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         Ok(())
     }
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     let before = tools
         .workspace
         .view()
@@ -1175,7 +1181,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
     deny.resource.path = "secrets/**".into();
     policy.layers[0].push(deny);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     let mut checkout = tools
         .workspace
         .view()
@@ -1208,8 +1214,11 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             budget,
             &cancellation,
             |_| {
-                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                std::future::ready(Ok::<
+                    _,
+                    acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>,
+                >(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: Default::default(),
                     },
@@ -1379,7 +1388,10 @@ async fn removed_captured_directory_can_become_a_file_before_checkout_capture() 
         let cancellation = acyclic_fs::CancellationToken::new();
         let before = view
             .workspace()
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;
@@ -1387,7 +1399,7 @@ async fn removed_captured_directory_can_become_a_file_before_checkout_capture() 
             before
                 .stat(
                     "/directory",
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation
                 )
                 .await
@@ -1432,7 +1444,10 @@ async fn removed_captured_directory_can_become_a_file_before_checkout_capture() 
         );
         let after = view
             .workspace()
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;
@@ -1440,7 +1455,7 @@ async fn removed_captured_directory_can_become_a_file_before_checkout_capture() 
             after
                 .stat(
                     "/directory",
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation
                 )
                 .await

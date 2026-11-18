@@ -667,7 +667,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     graph
         .register_root(
             &root,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -677,7 +677,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             &root,
             "uploads",
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -876,12 +876,18 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .await?;
     assert_eq!(recovered.as_ref(), Some(&committed));
     let root_before = root
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value
         .id();
     let branch_before = branch
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value
         .id();
@@ -903,15 +909,21 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         committed
     );
     assert_eq!(
-        root.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value
-            .id(),
+        root.head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation
+        )
+        .await?
+        .value
+        .id(),
         root_before
     );
     assert_eq!(
         branch
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await?
             .value
             .id(),
@@ -1234,7 +1246,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     let rejected = path_work.receipt();
     assert_eq!(
         rejected,
-        acyclic_fs::WorkCounters {
+        acyclic_fs_work::performance::WorkCounters {
             items_examined: rejected.items_examined,
             ..path_prefix
         }

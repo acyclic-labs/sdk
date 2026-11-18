@@ -19,6 +19,7 @@ path = "src/scenarios.rs"
 test = false
 
 [dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-test-support = { path = "../test-support" }
 acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem" }

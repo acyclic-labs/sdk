@@ -3,8 +3,11 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityRoot},
 };
-use acyclic_fs::{CancellationToken, Fs, WorkBudget};
 use futures::TryStreamExt as _;
+use {
+    acyclic_fs::{CancellationToken, Fs},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[tokio::test]
 async fn changed_path_queries_suspend_at_each_row_and_keep_the_original_cut() -> Result<()> {

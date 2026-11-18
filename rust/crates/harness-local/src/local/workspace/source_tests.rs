@@ -8,8 +8,11 @@ async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() 
     let path = directory.path().join("checkout");
     std::fs::create_dir(&path).map_err(storage)?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let held = acyclic_fs::hold_root(&path).map_err(storage)?;
     let identity = held.identity();
     let name = format!(

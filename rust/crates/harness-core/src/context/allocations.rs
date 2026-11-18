@@ -26,7 +26,11 @@ pub(super) fn context_contract<T: Serialize>(
             })?;
         let diagnostic_bytes =
             crate::executor::json::audited_serde_diagnostic_bytes(0, private_labels)?;
-        let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
+        let diagnostic = work.claim(
+            diagnostic_bytes,
+            0,
+            acyclic_fs_work::performance::WorkCounters::default(),
+        )?;
         let mut observer = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(work)?,
         );

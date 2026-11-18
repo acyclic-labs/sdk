@@ -228,7 +228,7 @@ impl<
     {
         let expected = self.generations[5];
         let candidate = self.with_home(apply.candidate)?;
-        let mut spent = acyclic_fs::WorkCounters::UNCHARGED;
+        let mut spent = acyclic_fs_work::performance::WorkCounters::UNCHARGED;
         let mut changes = io.cursor_receipt(
             expected
                 .changed_paths_to(apply.candidate, io, io.cancellation())

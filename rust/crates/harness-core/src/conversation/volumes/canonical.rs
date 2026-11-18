@@ -152,13 +152,16 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn restored_owned_volume_hash_exceeds_the_same_copy_allowance() -> Result<()> {
-        use acyclic_fs::{
-            CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
+        use {
+            acyclic_fs::{
+                CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError,
+            },
+            acyclic_fs_work::performance::WorkError,
         };
         for volume in volumes()? {
             let expected = previous_labels(&volume)?[0].clone();
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(10_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(10_000, 1_048_576);
             budget.bytes_copied = expected.len() as u64;
             let positive = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -204,7 +207,7 @@ mod tests {
         for volume in volumes()? {
             let expected = previous_labels(&volume)?;
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(10_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(10_000, 1_048_576);
             budget.bytes_copied = expected.iter().map(|label| label.len() as u64).sum();
             let work = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

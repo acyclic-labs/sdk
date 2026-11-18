@@ -1,6 +1,9 @@
 use super::*;
-use acyclic_fs::{CancellationToken, MountPublication, WorkBudget};
 use acyclic_native_runtime::spawn;
+use {
+    acyclic_fs::{CancellationToken, MountPublication},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[cfg(test)]
 pub(in crate::local) const HOME_PATH: &str = "home";

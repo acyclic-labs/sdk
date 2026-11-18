@@ -2,13 +2,13 @@
 //! just the pinned tail, without decoding or indexing any conversation records.
 use super::*;
 use crate::agent::{AgentPath, AgentRecord};
-use acyclic_fs::{NativeMaterializationWork, WorkCounters};
 use acyclic_stream::{
     HeadProjection, HeadSet, HeadsRequest, NativeStreamOutput, NativeStreamProvider, ReadRequest,
     Revision, RevisionCut, RevisionScope,
 };
 use futures::StreamExt;
 use std::sync::Arc;
+use {acyclic_fs::NativeMaterializationWork, acyclic_fs_work::performance::WorkCounters};
 mod watch;
 
 struct Prepared {

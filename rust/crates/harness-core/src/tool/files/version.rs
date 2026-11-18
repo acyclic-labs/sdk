@@ -10,7 +10,7 @@ pub fn check_version(input: &[u8]) {
     };
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .expect("version control admits its original ledger");

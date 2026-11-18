@@ -11,7 +11,7 @@ use std::sync::{
 
 fn work() -> Result<acyclic_fs::NativeMaterializationWork> {
     acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })

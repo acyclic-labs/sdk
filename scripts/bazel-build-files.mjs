@@ -639,7 +639,7 @@ const wasmGraph = wasm && {nodes:[wasmNodes], roots:wasm.roots, suffix:"_wasm",
 // and every renamed dependency's alias. crate_universe's all_crate_deps() and aliases() are not
 // used: they follow its default-features resolution, and aliases() drops the conditional aliases
 // of a package with more than one cfg condition.
-function edges(p, kinds, graph) {
+function edges(p, kinds, graph, variants = {}) {
   return (graph?.nodes ?? nodes).map(byId => {
     const deps = [], procMacros = [], aliases = {};
     for (const dep of byId.get(p.id)?.deps ?? []) {
@@ -647,7 +647,12 @@ function edges(p, kinds, graph) {
       const target = packages.get(dep.pkg);
       const lib = libOf(target);
       const targetGraph = kinds.includes("build") || lib.kind.includes("proc-macro") ? undefined : graph;
-      const name = members.has(dep.pkg) ? `${label(target)}:${crateName(lib)}${targetGraph?.suffix ?? ""}` : (targetGraph?.hubLabel ?? hubLabel)(dep.pkg);
+      const variant = variants[target.name];
+      if (variant && (!members.has(dep.pkg) || target.metadata?.bazel?.["library-test-variant"] !== variant)) {
+        throw new Error(`Unknown unit-test library variant ${target.name}:${variant}`);
+      }
+      const targetSuffix = variant ? `_${variant}` : targetGraph?.suffix ?? "";
+      const name = members.has(dep.pkg) ? `${label(target)}:${crateName(lib)}${targetSuffix}` : (targetGraph?.hubLabel ?? hubLabel)(dep.pkg);
       if (dep.name !== crateName(lib)) aliases[name] = dep.name;
       (lib.kind.includes("proc-macro") ? procMacros : deps).push(name);
     }
@@ -660,7 +665,13 @@ function buildFile(p, graph) {
   const manifest = path.relative(root, p.manifest_path).replaceAll("\\", "/");
   const inheritedLints = toml(root, manifest).lints?.workspace === true;
   const checkCfg = checkCfgFlags(manifest, Object.keys(p.features).sort());
-  const features = (graph?.nodes ?? nodes).map(byId => [...(byId.get(p.id)?.features ?? [])].sort());
+  const bazel = p.metadata?.bazel;
+  const testOnlySources = bazel?.["unit-test-only-sources"] ?? [];
+  const libraryTestFeatures = bazel?.["library-test-features"] ?? [];
+  const libraryTestVariant = bazel?.["library-test-variant"];
+  const unitTestVariants = bazel?.["unit-test-dependency-variants"] ?? {};
+  const features = (graph?.nodes ?? nodes).map(byId =>
+    [...(byId.get(p.id)?.features ?? [])].filter(feature => !libraryTestFeatures.includes(feature)).sort());
   const suffix = graph?.suffix ?? "";
   const configured = graph ? (values, render) => render(values[0]) : perTriple;
   // A source path relative to the package, or the label of a file another package owns.
@@ -675,28 +686,28 @@ function buildFile(p, graph) {
   const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs";
   const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
-  const libInputs = target => {
+  const libInputs = (target, unitTest = false) => {
     const extra = extras(target, libCovered);
     return [
-      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(extra.srcs))],
+      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...(unitTest ? [] : testOnlySources)]), list(extra.srcs))],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
     ];
   };
   const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
   const clippyConfig = fs.existsSync(path.join(path.dirname(p.manifest_path), "clippy.toml")) ? q("clippy.toml") : undefined;
-  const common = target => [
+  const common = (target, features = graph ? "WASM_FEATURES" : "FEATURES") => [
     ["clippy_config", clippyConfig],
     ["edition", q(target.edition)],
     ["version", q(p.version)],
-    ["crate_features", graph ? "WASM_FEATURES" : "FEATURES"],
+    ["crate_features", features],
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", opt === undefined && !checkCfg.length ? undefined : list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg])],
     ["lint_config", q(":lints")],
     ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : undefined],
   ];
   // Rendered dependencies of one target.
-  const deps = (kinds, extra = [], extraMacros = []) => {
-    const first = edges(p, kinds, graph);
+  const deps = (kinds, extra = [], extraMacros = [], variants = {}) => {
+    const first = edges(p, kinds, graph, variants);
     return [
       ["deps", plus(list(extra), configured(first, e => list(e.deps)))],
       ["proc_macro_deps", plus(list(extraMacros), configured(first, e => list(e.procMacros)))],
@@ -811,15 +822,38 @@ function buildFile(p, graph) {
       ...deps([null], ownDeps),
       ["visibility", q(["//visibility:public"])],
     ]]);
+    if (!graph && libraryTestVariant) {
+      rules.push(["rust_library", [
+        ["name", q(`${crateName(lib)}_${libraryTestVariant}`)],
+        ["crate_name", q(crateName(lib))],
+        ["crate_root", q(local(lib.src_path))],
+        ...libInputs(lib),
+        ...common(lib, plus("FEATURES", list(libraryTestFeatures))),
+        ...deps([null], ownDeps),
+        ["visibility", q(["//visibility:public"])],
+        ["tags", q(["manual"])],
+      ]]);
+    }
     // A crate with unit tests compiles its library again in test configuration; a crate whose
     // tests are all integration tests only links the library's rlib. rust_test does not inherit
     // compile_data.
-    if (!graph && lib.test && libUnitTests) covered.add(`test ${lib.kind[0]} ${lib.name}`), test(`${crateName(lib)}_test`, [
-      ["crate", q(`:${crateName(lib)}`)],
-      ["compile_data", list(extras(lib, libCovered).data)],
-      ...common(lib).filter(([k]) => k !== "rustc_env"),
-      ...deps(["dev"]),
-    ], runtimeData(lib), {}, p.name);
+    if (!graph && lib.test && libUnitTests) {
+      const standalone = testOnlySources.length || Object.keys(unitTestVariants).length;
+      const attrs = standalone ? [
+        ["crate_name", q(crateName(lib))],
+        ["crate_root", q(local(lib.src_path))],
+        ...libInputs(lib, true),
+        ...common(lib),
+        ...deps([null, "dev"], ownDeps, [], unitTestVariants),
+      ] : [
+        ["crate", q(`:${crateName(lib)}`)],
+        ["compile_data", list(extras(lib, libCovered).data)],
+        ...common(lib).filter(([k]) => k !== "rustc_env"),
+        ...deps(["dev"]),
+      ];
+      covered.add(`test ${lib.kind[0]} ${lib.name}`);
+      test(`${crateName(lib)}_test`, attrs, runtimeData(lib), {}, p.name);
+    }
   }
   const executables = !graph && workspace.has(p.id) ? p.targets : [];
   for (const bin of executables.filter(t => t.kind.includes("bin"))) {

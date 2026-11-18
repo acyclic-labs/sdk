@@ -18,13 +18,16 @@ use acyclic_fs::kernel::{FileMetadata, MetadataField};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
 };
-use acyclic_fs::{
-    CancellationToken, CaptureOptions, Fs, IdempotencyKey, LazyWorkspace, LocalOptions,
-    MaterializeOptions, MemoryLazyWorkspaceStore, MountPath, PublicationPermit, TransactionCommit,
-    WorkBudget, capture_paths, capture_root_identity, host_path_to_namespace,
-};
 use acyclic_stream::OwnedBytes;
 use serde_json::json;
+use {
+    acyclic_fs::{
+        CancellationToken, CaptureOptions, Fs, IdempotencyKey, LazyWorkspace, LocalOptions,
+        MaterializeOptions, MemoryLazyWorkspaceStore, MountPath, PublicationPermit,
+        TransactionCommit, capture_paths, capture_root_identity, host_path_to_namespace,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 fn component(value: &str) -> Vec<u8> {
     value.encode_utf16().flat_map(u16::to_le_bytes).collect()
@@ -59,7 +62,7 @@ async fn ntfs_demand_identifies_hard_links_by_file_identity()
         VolumeLimits::default(),
         None,
         None,
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .await
@@ -110,7 +113,7 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
             VolumeLimits::default(),
             None,
             None,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -256,10 +259,10 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                acyclic_fs::OperationReceipt {
+            Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>>(
+                acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 },
             )
         },
@@ -435,7 +438,7 @@ async fn attach_ntfs(
             VolumeLimits::default(),
             None,
             None,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -627,7 +630,7 @@ async fn native_lazy_workspace_lists_windows_source_directories()
             VolumeLimits::default(),
             None,
             None,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

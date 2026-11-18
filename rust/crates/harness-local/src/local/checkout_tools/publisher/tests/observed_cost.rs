@@ -126,7 +126,7 @@ async fn writes_never_pay_for_a_lost_watch() -> Result<()> {
             acyclic_fs::IdempotencyKey::from_bytes(
                 crate::local::checkout_tools::capture::capture_operation(operation, 0).into_bytes(),
             ),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -296,14 +296,18 @@ async fn head_identity(
         .checkout(
             acyclic_fs::model::GenerationSelector::Head,
             acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
         .map_err(storage)?
         .value;
     let lookup = checkout
-        .lookup_no_follow(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .lookup_no_follow(
+            &name,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value;
@@ -492,9 +496,9 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
         started.elapsed().as_micros()
     );
     assert_eq!(original, captured);
-    let budget = acyclic_fs::WorkBudget {
+    let budget = acyclic_fs_work::performance::WorkBudget {
         output_bytes: 64 * 1024,
-        ..acyclic_fs::WorkBudget::UNBOUNDED
+        ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
     };
     let bounded = publisher
         .observed_with_budget(view, operation, staged.clone(), budget)
@@ -536,11 +540,11 @@ async fn same_payloads(
     let mut payloads = Vec::new();
     let config = view.workspace().volume_config();
     let mut allocations = acyclic_fs::kernel::allocation::AllocationLedger::default();
-    let mut counters = acyclic_fs::WorkCounters::UNCHARGED;
+    let mut counters = acyclic_fs_work::performance::WorkCounters::UNCHARGED;
     let mut accounting = acyclic_fs::kernel::KernelAccounting::borrowed_standalone(
         &mut allocations,
         &mut counters,
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     );
     let (path, _allocation) = acyclic_fs::kernel::NamespacePath::parse_in_profile(
@@ -556,7 +560,7 @@ async fn same_payloads(
             .workspace()
             .generation(
                 publisher.staged_generation(file)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -565,7 +569,7 @@ async fn same_payloads(
         let (records, _allocation) = generation
             .lookup_paths(
                 std::slice::from_ref(&path),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -685,7 +689,7 @@ async fn first_publications_preserve_the_imported_baseline_and_external_edits() 
                 acyclic_fs::IdempotencyKey::from_bytes(
                     capture::baseline_operation(workspace.id()).into_bytes(),
                 ),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -693,7 +697,10 @@ async fn first_publications_preserve_the_imported_baseline_and_external_edits() 
             .value
             .expect("the initial import precedes the first authored publication");
         let head = workspace
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;
@@ -711,7 +718,12 @@ async fn first_publications_preserve_the_imported_baseline_and_external_edits() 
         ] {
             assert_eq!(
                 generation
-                    .read(path, 64, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                    .read(
+                        path,
+                        64,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                        &cancellation
+                    )
                     .await
                     .map_err(storage)?
                     .value

@@ -154,7 +154,7 @@ impl NativeWorkspaceTransaction {
             .commit(
                 None,
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 publication_ready::<acyclic_fs::WorkspaceError>,
             )

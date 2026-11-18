@@ -2,8 +2,11 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
-use acyclic_fs::performance::BOUNDARY_BUDGET;
-use acyclic_fs::{CancellationToken, Fs, NativeMaterializationWork, WorkCounters};
+use acyclic_fs_work::performance::BOUNDARY_BUDGET;
+use {
+    acyclic_fs::{CancellationToken, Fs, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 #[tokio::test]
 async fn unchanged_checkout_charges_and_cross_thread_retirement_remain_exact()

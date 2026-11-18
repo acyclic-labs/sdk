@@ -2,13 +2,16 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     use acyclic_harness::{
         LocalHarness, LocalHarnessConfig, filesystem::hosting::LocalGuestEnrollment,
         local::host_owner::HostWorkspaceOwner,
     };
     use serde::Deserialize;
     use std::{io::Read, path::PathBuf, sync::Arc};
+    use {
+        acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        acyclic_fs_work::performance::WorkBudget,
+    };
 
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]

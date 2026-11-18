@@ -109,6 +109,8 @@ mod heap_future;
 pub mod hosted_contract;
 pub use hosted_contract::{MAX_BYTE_RESPONSE_ENVELOPE_BYTES, MINIMUM_HANDSHAKE_RESPONSE_BYTES};
 mod identity;
+#[cfg(kani)]
+mod kani_proofs;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;
@@ -120,13 +122,6 @@ pub mod merge_driver;
 pub mod model;
 pub mod mount;
 pub mod multi_root;
-mod obs;
-#[cfg(all(feature = "tooling", not(target_arch = "wasm32")))]
-#[doc(hidden)]
-pub mod tooling_contracts;
-pub use acyclic_fs_base::numeric::exact_u32_from_f64;
-#[cfg(kani)]
-mod kani_proofs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_capture;
 #[cfg(not(target_arch = "wasm32"))]
@@ -145,6 +140,10 @@ mod native_identity;
     )
 ))]
 mod native_ownership;
+mod obs;
+#[cfg(all(feature = "tooling", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod tooling_contracts;
 #[cfg(all(target_os = "linux", feature = "fuzzing"))]
 #[doc(hidden)]
 pub use acyclic_native_runtime::receive_packet_device_reply_for_test;
@@ -156,7 +155,11 @@ pub mod native_mount;
 mod native_name;
 pub mod operation_window;
 pub mod path;
-pub mod performance;
+#[cfg(not(test))]
+use acyclic_fs_work::performance;
+#[cfg(test)]
+#[path = "tests/performance_scope.rs"]
+mod performance;
 mod record_store;
 pub mod s3;
 #[cfg(not(target_arch = "wasm32"))]
@@ -179,7 +182,6 @@ pub mod streams_record;
 #[cfg(test)]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
-pub use acyclic_fs_base::text_merge;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod watch;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
@@ -376,7 +378,7 @@ pub use operation_window::{
     WorkspaceOperationFinish,
 };
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
-pub use performance::{
+use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
     WorkObservationError,
 };

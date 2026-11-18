@@ -8,7 +8,7 @@ fn returned_native_output_transfers_paid_custody_and_retires_after_cancellation(
     for cancelled in [false, true] {
         let cancellation = CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
             &cancellation,
         )?;
         io.retain_owned(13)?;
@@ -52,7 +52,7 @@ fn output_custody_outlives_preparation_observer() -> Result<()> {
 }
 
 fn output_custody_outlives_observer(measured: bool) -> Result<()> {
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let cancellation = CancellationToken::new();
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let attempt = io.scoped()?;
@@ -95,7 +95,7 @@ fn output_custody_outlives_observer(measured: bool) -> Result<()> {
 fn cancelled_custody_transfer_preserves_the_current_owner() -> Result<()> {
     let cancellation = CancellationToken::new();
     let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
         &cancellation,
     )?;
     let mut reservation = io.reserve_decode(8)?;
@@ -114,7 +114,7 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
     use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
     use acyclic_collections::FixedIndex;
 
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let cancellation = CancellationToken::new();
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let PreparationIo::Owned { work, .. } = &io else {

@@ -98,7 +98,7 @@ proptest! {
             let reference = workspace_ref(fixture.volume.provider().clone(), &fixture.volume.storage_name(&mut None)?)?;
             let before = fixture.host.resolve(&reference, None).await?.generation;
             let io = measured.then(|| PreparationIo::from_budget(
-                acyclic_fs::performance::BOUNDARY_BUDGET, &CancellationToken::new(),
+                acyclic_fs_work::performance::BOUNDARY_BUDGET, &CancellationToken::new(),
             )).transpose()?;
             let path = if existing { "secrets/key" } else { "secrets/new" };
             let result = put(&fixture, &grant, path, "attempt", io.as_ref()).await;

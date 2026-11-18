@@ -3,13 +3,18 @@ use acyclic_fs::kernel::{FileMetadata, NamespacePath};
 use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode, VolumeLimits,
 };
-use acyclic_fs::{
-    AuthoredMutation, ContentChange, ContentTimes, FsError, LivePublicationObservation,
-    OperationId, OperationReceipt,
-};
 use acyclic_stream::OwnedBytes;
+use {
+    acyclic_fs::{
+        AuthoredMutation, ContentChange, ContentTimes, FsError, LivePublicationObservation,
+        OperationId,
+    },
+    acyclic_fs_work::performance::OperationReceipt,
+};
 
-async fn allow(_: WorkBudget) -> acyclic_fs::MeasuredResult<OperationReceipt<()>, FsError> {
+async fn allow(
+    _: WorkBudget,
+) -> acyclic_fs_work::performance::MeasuredResult<OperationReceipt<()>, FsError> {
     Ok(OperationReceipt {
         value: (),
         work: WorkCounters::UNCHARGED,

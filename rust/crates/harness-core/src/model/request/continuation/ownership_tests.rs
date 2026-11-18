@@ -116,7 +116,7 @@ fn continuations_observe_original_cancellation_before_reusing_declarations() -> 
     for native in [false, true] {
         for append in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+            let budget = acyclic_fs_work::performance::work_budget(1_000_000, 4 * 1024 * 1024);
             let work = native
                 .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
                 .transpose()

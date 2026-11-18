@@ -19,7 +19,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
     graph
         .register_root(
             &root,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -29,13 +29,16 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
             &root,
             "directory-branch",
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
         .value;
     let pinned = child
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value;
     let generation = host.generation_ref_id(pinned.id(), None)?;
@@ -97,7 +100,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         root.read(
             "/rows/02",
             4096,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation
         )
         .await?
@@ -152,7 +155,10 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
     // while user data is selected from a descendant.
     {
         let child_before = child
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?
             .value
             .id();
@@ -185,7 +191,10 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         );
         assert_eq!(
             child
-                .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .head(
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
                 .await?
                 .value
                 .id(),
@@ -217,7 +226,10 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         assert_eq!(length, if pinned.is_some() { 3 } else { 10 });
     }
     let before_policy_change = child
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value
         .id();
@@ -252,7 +264,10 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
     Arc::get_mut(&mut host).unwrap().publication_pause = None;
     assert_eq!(
         child
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await?
             .value
             .id(),
@@ -315,7 +330,10 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         assert_eq!(current.entries.len(), page.entries.len());
     }
     let before_refusal = child
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value;
     for (path, key) in [
@@ -344,7 +362,10 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
     }
     assert_eq!(
         child
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await?
             .value
             .id(),
@@ -409,7 +430,7 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     graph
         .register_root(
             &root,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -446,7 +467,7 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
             &root,
             "restore-branch",
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -457,7 +478,7 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     let mut transaction = child
         .begin_transaction(
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -466,7 +487,7 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
         .write(
             "/rows/02",
             bytes::Bytes::from_static(b"changed"),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?;
@@ -474,10 +495,10 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
         .commit::<acyclic_fs::WorkspaceError, _, _>(
             None,
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                Ok(acyclic_fs::OperationReceipt {
+                Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
                     work: WorkCounters::UNCHARGED,
                 })
@@ -485,7 +506,10 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
         )
         .await?;
     let before = child
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value
         .id();
@@ -499,9 +523,12 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     let refused = crate::tools::git::run_volume_with_guard(
         command_workspace(&child),
         Some(
-            root.capture_policy_cut(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-                .await?
-                .value,
+            root.capture_policy_cut(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value,
         ),
         &arguments,
         || async {
@@ -524,7 +551,10 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     );
     assert_eq!(
         child
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await?
             .value
             .id(),
@@ -534,9 +564,12 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     crate::tools::git::run_volume_with_guard(
         command_workspace(&child),
         Some(
-            root.capture_policy_cut(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-                .await?
-                .value,
+            root.capture_policy_cut(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value,
         ),
         &arguments,
         || async { access.require(&root).await },
@@ -547,7 +580,7 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
             .read(
                 "/rows/02",
                 4096,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation
             )
             .await?
@@ -567,7 +600,7 @@ async fn write_policy(
         .checkout(
             acyclic_fs::model::GenerationSelector::Head,
             acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -576,7 +609,7 @@ async fn write_policy(
         .write_access_policy(
             &serde_json::to_vec(&policy)?,
             acyclic_fs::NamedAttributeWriteMode::Replace,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?;
@@ -587,10 +620,10 @@ async fn write_policy(
             None,
             None,
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
                     work: WorkCounters::UNCHARGED,
                 }))
@@ -731,7 +764,7 @@ proptest! {
             }.to_scope_label().map_err(|error| Error::Invalid(error.to_string()))?]);
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancellation,
             ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             // SDK receipts reconcile deferred proof-control retirement.
             let _ = work.receipt();

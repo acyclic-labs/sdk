@@ -385,7 +385,7 @@ where
                                 "text conflict {path} is no longer UTF-8"
                             ))
                         })?;
-                        if crate::text_merge::has_conflict_markers(text) {
+                        if acyclic_fs_base::text_merge::has_conflict_markers(text) {
                             return Err(WorkspaceMultiRootPublisherError::Candidate(format!(
                                 "text conflict {path} still contains conflict markers"
                             )));

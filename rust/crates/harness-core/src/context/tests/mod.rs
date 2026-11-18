@@ -5,15 +5,15 @@ use crate::{
     model::{FileProjectionPolicy, ModelContentPart, ModelRole},
     resources::ProviderRef,
 };
-fn owned_context_budget() -> acyclic_fs::WorkBudget {
-    acyclic_fs::WorkBudget {
+fn owned_context_budget() -> acyclic_fs_work::performance::WorkBudget {
+    acyclic_fs_work::performance::WorkBudget {
         bytes_copied: 1_048_576,
         bytes_encoded: 1_048_576,
         bytes_hashed: 1_048_576,
         items_examined: 4096,
         allocation_operations: 4096,
         peak_allocation_bytes: 1_048_576,
-        ..acyclic_fs::WorkBudget::default()
+        ..acyclic_fs_work::performance::WorkBudget::default()
     }
 }
 

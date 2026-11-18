@@ -1,15 +1,18 @@
-use acyclic_fs::{
-    AppendOutcome, AsyncAuthorityStore, AuthorityId, AuthorityWork, CancellationToken, Digest,
-    Epoch, GenerationId, GuardedAppend, NativeMaterializationWork, OperationId, OperationLease,
-    OperationLeaseId, OperationWindowCoordinator, OperationWindowPhase, OperationWindowSnapshot,
-    OperationWindowStore, ProposedCommit, PublicationPermit, StreamAuthorityStore,
-    StreamOperationWindowStore, WorkCounters, WorkspaceId,
-};
 use acyclic_stream::MemoryStream;
 use bytes::Bytes;
 use divan::Bencher;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::runtime::Runtime;
+use {
+    acyclic_fs::{
+        AppendOutcome, AsyncAuthorityStore, AuthorityId, AuthorityWork, CancellationToken, Digest,
+        Epoch, GenerationId, GuardedAppend, NativeMaterializationWork, OperationId, OperationLease,
+        OperationLeaseId, OperationWindowCoordinator, OperationWindowPhase,
+        OperationWindowSnapshot, OperationWindowStore, ProposedCommit, PublicationPermit,
+        StreamAuthorityStore, StreamOperationWindowStore, WorkspaceId,
+    },
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([7; 16]);
 const LEASE: OperationLeaseId = OperationLeaseId::from_bytes([11; 16]);
@@ -79,7 +82,7 @@ fn commit(
 ) -> WorkCounters {
     let mut work = match original {
         Some(original) => AuthorityWork::native(original, cancellation),
-        None => AuthorityWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, cancellation),
+        None => AuthorityWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, cancellation),
     };
     let outcome = runtime
         .block_on(store.compare_and_append(request, &mut work, None::<&mut ()>))
@@ -115,7 +118,7 @@ fn commit_under_lease(bencher: Bencher, native: bool) {
         };
         let authority_id = AuthorityId::from_bytes(authority_id);
         let store = StreamAuthorityStore::new(stream);
-        let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
         let mut work = AuthorityWork::new(budget, &cancellation);
         runtime
             .block_on(store.create_authority(

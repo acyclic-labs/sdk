@@ -696,17 +696,17 @@ proptest! {
         prop_assert_eq!(first.matches_policy_revision(generation(if generation_changed { 2 } else { 1 }), revision(next)),
             origin == next && (!(restricted || !history) || !generation_changed));
         let cancel = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(cause, _)| proptest::test_runner::TestCaseError::fail(cause.to_string()))?;
         let baseline = work.live_allocation_bytes().unwrap();
         prop_assert_eq!(baseline, acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
         let bytes = first.logical_owned_bytes();
-        let custody = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let custody = work.claim(bytes, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
         let view = AccessView::new_native(first, custody)?;
         let pinned = view.current()?;
         let before = work.live_allocation_bytes().unwrap();
         let next = compile()?;
-        view.publish_native(next, work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        view.publish_native(next, work.claim(bytes, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?)?;
         prop_assert!(work.live_allocation_bytes().unwrap() > before);
         drop(view);
         prop_assert!(work.live_allocation_bytes().unwrap() >= baseline + bytes);

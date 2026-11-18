@@ -50,7 +50,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path) -> Result<(), Failure> 
             let workspace = engine
                 .open_workspace(
                     "crash-owner",
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -58,7 +58,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path) -> Result<(), Failure> 
             Ok::<_, Failure>(workspace.value.id().volume_id())
         })?;
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(error, _)| error)?;

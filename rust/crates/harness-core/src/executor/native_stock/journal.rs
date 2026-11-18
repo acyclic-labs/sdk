@@ -11,7 +11,7 @@ pub(in crate::executor) async fn stage_bytes(
     validate_journal(journal, io)?;
     let _key_hold;
     if let Some(io) = io {
-        io.preflight(acyclic_fs::WorkCounters {
+        io.preflight(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: bytes.len() as u64 * (1 + u64::from(bind_content)),
             ..Default::default()
         })?;
@@ -20,7 +20,7 @@ pub(in crate::executor) async fn stage_bytes(
     let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
     let identity = bind_content.then(|| blake3::hash(bytes));
     if let Some(io) = io {
-        io.spent(acyclic_fs::WorkCounters {
+        io.spent(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: bytes.len() as u64 * (1 + u64::from(bind_content)),
             ..Default::default()
         })?;

@@ -732,7 +732,7 @@ fn source() -> StreamPath {
 
 fn io() -> PreparationIo {
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .unwrap();

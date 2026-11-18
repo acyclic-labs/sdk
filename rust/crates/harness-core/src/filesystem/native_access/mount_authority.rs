@@ -195,8 +195,11 @@ mod tests {
             .map_err(|error| Error::Storage(error.to_string()))?;
         acyclic_fs::initialize_native_mount_services()?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let filesystem = acyclic_fs::Fs::memory();
         let workspace = filesystem
             .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(

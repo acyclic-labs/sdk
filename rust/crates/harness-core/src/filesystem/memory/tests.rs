@@ -6,8 +6,8 @@ use crate::{
 };
 use serde_json::{Value, json};
 
-const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =
-    acyclic_fs::performance::work_budget(100_000, 16_000_000);
+const FINITE_CONTENT_BUDGET: acyclic_fs_work::performance::WorkBudget =
+    acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
 
 mod access;
 mod approvals;
@@ -451,7 +451,7 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
     let cancellation = acyclic_fs::CancellationToken::new();
     #[cfg(not(target_arch = "wasm32"))]
     let range_work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             source_bytes_read: 64 * 1024,
             bytes_copied: 64 * 1024,
             ..FINITE_CONTENT_BUDGET

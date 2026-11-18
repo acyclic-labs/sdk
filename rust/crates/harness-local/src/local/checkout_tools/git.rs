@@ -226,7 +226,8 @@ mod tests {
             signed.copy(&mut None)?,
         );
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut work = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let mut work =
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation);
         root.view()
             .fork(
                 &project.storage_name(&mut None)?,

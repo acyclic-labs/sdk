@@ -1,8 +1,9 @@
 //! Actual allocator requests and admission boundaries for shared ledger and name ownership.
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters, WorkspaceName,
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkspaceName},
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 fn measured<T>(operation: impl FnOnce() -> T) -> (T, acyclic_test_support::AllocationInfo) {
     let acyclic_test_support::AllocationInfo {
@@ -37,7 +38,7 @@ fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling() {
     acyclic_fs::watch::initialize_native_watch_services().unwrap();
     let cancellation = CancellationToken::new();
     let (probe, allocations) = measured(|| {
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+        NativeMaterializationWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancellation)
             .unwrap()
     });
     assert_eq!(allocations.count_total, 1);
@@ -65,7 +66,7 @@ fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling() {
             NativeMaterializationWork::new(
                 WorkBudget {
                     peak_allocation_bytes: ceiling,
-                    ..acyclic_fs::performance::BOUNDARY_BUDGET
+                    ..acyclic_fs_work::performance::BOUNDARY_BUDGET
                 },
                 &cancellation,
             )

@@ -2,7 +2,7 @@ macro_rules! unbounded_future {
     ($owner:expr, $operation:ident($($argument:expr),* $(,)?)) => {
         ($owner).$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
     };
@@ -21,7 +21,7 @@ macro_rules! browser_call {
     ($owner:ident, $operation:ident($($argument:expr),* $(,)?)) => {{
         $owner.engine.$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &CancellationToken::default(),
         ).await.map_err(js_error)
     }};

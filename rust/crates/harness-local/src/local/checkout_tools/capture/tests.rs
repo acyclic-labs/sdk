@@ -556,8 +556,11 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {
-                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                std::future::ready(Ok::<
+                    _,
+                    acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>,
+                >(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: WorkCounters::UNCHARGED,
                     },

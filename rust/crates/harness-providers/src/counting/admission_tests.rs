@@ -494,7 +494,7 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
                 let (request, _) = request(&provider).unwrap();
                 let cancel = acyclic_fs::CancellationToken::new();
                 let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::work_budget(1_000_000, 4_000_000),
+                    acyclic_fs_work::performance::work_budget(1_000_000, 4_000_000),
                     &cancel,
                 )
                 .unwrap();

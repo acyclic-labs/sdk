@@ -1,6 +1,6 @@
 use super::*;
 use crate::core::Authority;
-use acyclic_fs::{NativeWorkReservation, WorkCounters};
+use {acyclic_fs::NativeWorkReservation, acyclic_fs_work::performance::WorkCounters};
 
 /// Observes only a protected completion accepted under pre-action custody.
 pub(crate) struct AcceptedCompletionIo {
@@ -133,7 +133,7 @@ impl HistoryIo for AcceptedCompletionIo {
         if bytes > maximum {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded {
+                    acyclic_fs_work::performance::WorkError::BudgetExceeded {
                         counter: "peak_allocation_bytes",
                         observed: bytes,
                         maximum,
@@ -310,12 +310,12 @@ impl HistoryIo for AcceptedCompletionIo {
     fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
         let staged_bytes = self.staged_bytes.checked_add(bytes).ok_or_else(|| {
             Self::native_error(NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::Overflow,
+                acyclic_fs_work::performance::WorkError::Overflow,
             ))
         })?;
         let staged_items = self.staged_items.checked_add(count).ok_or_else(|| {
             Self::native_error(NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::Overflow,
+                acyclic_fs_work::performance::WorkError::Overflow,
             ))
         })?;
         self.admit_output(staged_bytes, staged_items)?;
@@ -330,7 +330,7 @@ impl HistoryIo for AcceptedCompletionIo {
             ..WorkCounters::default()
         })
     }
-    fn remaining(&self) -> Result<acyclic_fs::WorkBudget> {
+    fn remaining(&self) -> Result<acyclic_fs_work::performance::WorkBudget> {
         let mut remaining = self.remaining_work();
         remaining.peak_allocation_bytes = self.available_pool_bytes();
         Ok(remaining)

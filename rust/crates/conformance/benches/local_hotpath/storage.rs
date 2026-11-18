@@ -9,7 +9,6 @@ use acyclic_actors::{
     guest::{AlarmChange, Checkpoint, CodecIdentity, Subscription, Transition, Trigger},
     local::{PreparedPublish, Snapshot, Store},
 };
-use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_objects::{Blobs, ByteRange, Digest, Head, Kind};
 use acyclic_stream::testing::RequestClass;
 use acyclic_stream::{AppendOutcome, CommitCondition, CommitMutation, Stream, StreamPath};
@@ -24,6 +23,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
     time::Instant,
 };
+use {acyclic_fs::CancellationToken, acyclic_fs_work::performance::WorkBudget};
 
 #[derive(Default)]
 struct DeliveryWake {
@@ -828,12 +828,13 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                        acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: Default::default(),
-                        },
-                    )
+                    Ok::<
+                        _,
+                        acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>,
+                    >(acyclic_fs_work::performance::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
                 },
             )
         )

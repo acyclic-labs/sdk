@@ -68,7 +68,7 @@ pub(crate) fn vec_with_capacity<T>(capacity: usize, io: Option<&PreparationIo>) 
 
 pub(crate) fn charge_items(io: Option<&PreparationIo>, items: u64) -> Result<()> {
     if let Some(io) = io {
-        let charge = acyclic_fs::WorkCounters {
+        let charge = acyclic_fs_work::performance::WorkCounters {
             items_examined: items,
             ..Default::default()
         };
@@ -171,7 +171,7 @@ pub(super) fn result_bound(
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     #[cfg(not(target_arch = "wasm32"))]
     let _span = tracing::debug_span!("acyclic.harness.request.hash", bytes = bytes.len()).entered();
-    let charge = acyclic_fs::WorkCounters {
+    let charge = acyclic_fs_work::performance::WorkCounters {
         bytes_hashed: bytes.len() as u64,
         ..Default::default()
     };

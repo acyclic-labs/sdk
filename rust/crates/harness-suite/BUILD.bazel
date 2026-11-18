@@ -35,6 +35,7 @@ rust_library(
     deps = [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",

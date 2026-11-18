@@ -235,7 +235,7 @@ fn update_hasher(
     bytes: &[u8],
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    let charge = acyclic_fs::WorkCounters {
+    let charge = acyclic_fs_work::performance::WorkCounters {
         bytes_hashed: bytes.len() as u64,
         ..Default::default()
     };

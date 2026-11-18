@@ -60,11 +60,11 @@ impl HttpFetch {
         for redirects in 0..=MAXIMUM_REDIRECTS {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
-                work.admit(acyclic_fs::WorkCounters {
+                work.admit(acyclic_fs_work::performance::WorkCounters {
                     source_bytes_read: 1,
                     ..Default::default()
                 })?;
-                work.charge(acyclic_fs::WorkCounters {
+                work.charge(acyclic_fs_work::performance::WorkCounters {
                     backend_read_operations: 1,
                     items_examined: 1,
                     ..Default::default()
@@ -156,7 +156,7 @@ fn url_allocation(
     let held = allocation(work, length * 4 + std::mem::size_of::<Url>() + 128)?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters {
+        work.charge(acyclic_fs_work::performance::WorkCounters {
             allocation_operations: u64::from(usize::BITS - length.leading_zeros()) + 2,
             ..Default::default()
         })?;
@@ -170,7 +170,7 @@ fn parse_url(
 ) -> Result<(Url, acyclic_fs::NativeCustody)> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters {
+        work.charge(acyclic_fs_work::performance::WorkCounters {
             items_examined: text.len() as u64,
             ..Default::default()
         })?;

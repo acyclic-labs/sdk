@@ -1,13 +1,17 @@
 //! Composite continuations keep their decoded backing on its original meter.
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::{
-    CancellationToken, Fs, LazyDirectoryCursor, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore,
-    NativeMaterializationWork, OperationId, VolumeConfig, VolumeInitialization, WorkBudget,
-    demand::{Empty, Routed, native::NativeDemandSource},
-    kernel::{KernelAccounting, LogicalName, NameEncoding},
-};
 use std::{borrow::Cow, sync::Arc};
+use {
+    acyclic_fs::{
+        CancellationToken, Fs, LazyDirectoryCursor, LazyWorkspace, Lifecycle,
+        MemoryLazyWorkspaceStore, NativeMaterializationWork, OperationId, VolumeConfig,
+        VolumeInitialization,
+        demand::{Empty, Routed, native::NativeDemandSource},
+        kernel::{KernelAccounting, LogicalName, NameEncoding},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[tokio::test]
 async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()

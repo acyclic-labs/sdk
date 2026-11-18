@@ -7,13 +7,16 @@ mod unbounded;
 use std::time::Instant;
 
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
-use acyclic_fs::{
-    CancellationToken, CaptureOptions, Fs, IdempotencyKey, LocalOptions, LocalStreamDurability,
-    WorkBudget, capture_baseline, capture_root_identity,
-};
 use bytes::Bytes;
 use futures::future::LocalBoxFuture;
 use std::future::Future;
+use {
+    acyclic_fs::{
+        CancellationToken, CaptureOptions, Fs, IdempotencyKey, LocalOptions, LocalStreamDurability,
+        capture_baseline, capture_root_identity,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 fn boxed<'a, F: Future + 'a>(future: F) -> LocalBoxFuture<'a, F::Output> {
     Box::pin(future)
@@ -61,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fs = boxed(Fs::local(options())).await?;
     let workspace = boxed(fs.create_workspace(
         "benchmark",
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     ))
     .await
@@ -76,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             boxed(transaction.write(
                 &format!("/entry-{index:04}"),
                 Bytes::from(format!("value-{index}")),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             ))
             .await?;
@@ -86,15 +89,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .commit(
                     None,
                     acyclic_fs::PublicationPermit::Unrestricted,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                     |_| async {
-                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                            acyclic_fs::OperationReceipt {
-                                value: (),
-                                work: acyclic_fs::WorkCounters::default(),
-                            },
-                        )
+                        Ok::<
+                            _,
+                            acyclic_fs_work::performance::OperationFailure<
+                                acyclic_fs::WorkspaceError,
+                            >,
+                        >(acyclic_fs_work::performance::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs_work::performance::WorkCounters::default(),
+                        })
                     },
                 )
                 .await
@@ -128,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fs = boxed(Fs::local(options())).await?;
     let workspace = boxed(fs.open_workspace(
         "benchmark",
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     ))
     .await
@@ -171,7 +177,7 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     let fs = boxed(Fs::local(LocalOptions::new(storage.path()))).await?;
     let workspace = boxed(fs.create_workspace(
         "capture-benchmark",
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     ))
     .await

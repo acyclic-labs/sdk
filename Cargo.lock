@@ -226,6 +226,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-wire",
+ "acyclic-fs-work",
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-inference",
@@ -273,6 +274,7 @@ dependencies = [
  "acyclic-agent-host-conformance",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-harness-client",
  "acyclic-harness-core",
@@ -336,6 +338,7 @@ dependencies = [
  "acyclic-collections",
  "acyclic-fs-base",
  "acyclic-fs-wire",
+ "acyclic-fs-work",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -432,6 +435,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-lease-path-proof",
+ "acyclic-fs-work",
  "acyclic-stream",
  "futures",
  "libfuzzer-sys",
@@ -464,6 +468,8 @@ name = "acyclic-fs-napi"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-base",
+ "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-native-runtime",
  "bytes",
@@ -487,6 +493,8 @@ name = "acyclic-fs-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-base",
+ "acyclic-fs-work",
  "acyclic-objects",
  "acyclic-stream",
  "blake3",
@@ -515,6 +523,16 @@ dependencies = [
  "prost-types",
  "tonic",
  "tonic-prost",
+]
+
+[[package]]
+name = "acyclic-fs-work"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -556,6 +574,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-hosting",
@@ -666,6 +685,7 @@ name = "acyclic-harness-conformance"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -703,6 +723,8 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-fs-base",
+ "acyclic-fs-work",
  "acyclic-harness-control",
  "acyclic-harness-json",
  "acyclic-harness-layout",
@@ -864,6 +886,7 @@ name = "acyclic-harness-layout"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-stream",
@@ -880,6 +903,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-hosting",
@@ -1014,6 +1038,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-harness-core",
  "acyclic-harness-provider-protocol",
@@ -1068,6 +1093,7 @@ name = "acyclic-harness-search"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness-core",
  "acyclic-harness-layout",
  "acyclic-stream",
@@ -1104,6 +1130,7 @@ name = "acyclic-harness-sse"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-stream",
  "bytes",
  "futures",
@@ -1118,6 +1145,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-hosting",
@@ -8069,6 +8097,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
+ "acyclic-fs-work",
  "acyclic-objects",
  "acyclic-stream",
  "acyclic-workers",

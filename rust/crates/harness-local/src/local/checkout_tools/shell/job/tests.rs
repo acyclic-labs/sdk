@@ -252,7 +252,10 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
     let head = physical
         .view()
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value;
@@ -260,7 +263,7 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
         .read(
             "/retained",
             64,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await

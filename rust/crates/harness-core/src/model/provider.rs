@@ -247,7 +247,7 @@ impl<'a> NativeModelStream<'a> {
         let custody = work.claim(
             bytes,
             u64::from(bytes != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
         )?;
         let cancelled = work.cancellation_wait()?;
         Ok(Self {

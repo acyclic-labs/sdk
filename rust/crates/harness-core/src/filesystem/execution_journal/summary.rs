@@ -40,7 +40,7 @@ impl ExecutionSummary {
             | ExecutionEvent::ToolFailed { call_id, .. } => call_id.len() as u64,
             _ => 0,
         };
-        let work = acyclic_fs::WorkCounters {
+        let work = acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: hashed,
             ..Default::default()
         };

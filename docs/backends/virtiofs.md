@@ -50,7 +50,7 @@ The local JSON has `directory` (canonical local filesystem store),
 Serialize the enrollment with the SDK so its `volume` remains the exact existing
 `VolumeRef`; use `GuestPosixPolicy { identities: vec![(0, 0), (1000, 1000)],
 metadata: true }` only when the local owner enrolls those identities and metadata
-mutations. Serialize a finite `acyclic_fs::performance::work_budget(ops, bytes)`
+mutations. Serialize a finite `acyclic_fs_work::performance::work_budget(ops, bytes)`
 as `budget`; omitted counters have zero allowance. The command opens the enrolled
 volume, does not create a substitute project volume, and needs no `/dev/fuse`.
 The existing source must support the intended native POSIX metadata operations.

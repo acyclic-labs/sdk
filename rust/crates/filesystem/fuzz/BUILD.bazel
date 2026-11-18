@@ -948,6 +948,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -963,6 +964,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -977,6 +979,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -1060,6 +1063,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -1075,6 +1079,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -1089,6 +1094,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",

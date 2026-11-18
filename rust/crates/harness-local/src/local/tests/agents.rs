@@ -538,7 +538,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         client::{AgentCommand, AgentReply},
         model::ModelContent,
     };
-    use acyclic_fs::{CancellationToken, WorkBudget};
+    use {acyclic_fs::CancellationToken, acyclic_fs_work::performance::WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
@@ -1153,7 +1153,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly_world() -> Result
     let private = filesystem
         .open_workspace(
             private.storage_name(&mut None)?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -3931,7 +3931,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     use crate::agent::{
         Delivered, InboxRecord, IntentId, NoticePayload, RestoreMode, Sender, TurnOutcome,
     };
-    use acyclic_fs::{CancellationToken, WorkBudget};
+    use {acyclic_fs::CancellationToken, acyclic_fs_work::performance::WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
@@ -4238,10 +4238,13 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| {
-                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                std::future::ready(Ok::<
+                    _,
+                    acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>,
+                >(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     },
                 ))
             },
@@ -4321,7 +4324,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
 
 #[tokio::test]
 async fn historical_session_forks_keep_source_only_files_from_adoption() -> Result<()> {
-    use acyclic_fs::{CancellationToken, WorkBudget};
+    use {acyclic_fs::CancellationToken, acyclic_fs_work::performance::WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let provider = super::scripted([
@@ -4426,7 +4429,7 @@ fn historical_child_settles_after_its_parent_has_later_context_segments() -> Res
 async fn historical_child_settles_after_its_parent_has_later_context_segments_world() -> Result<()>
 {
     use crate::filesystem::VolumeResources;
-    use acyclic_fs::{CancellationToken, WorkBudget};
+    use {acyclic_fs::CancellationToken, acyclic_fs_work::performance::WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
@@ -4642,7 +4645,7 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
         acyclic_stream::OwnedBytes::from_static(b"SESSION_ONLY_INSTRUCTIONS"),
         acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
         acyclic_fs::PublicationPermit::Unrestricted,
-        &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+        &mut acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation),
     )
     .await
     .map_err(agent)?;

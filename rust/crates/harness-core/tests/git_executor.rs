@@ -1,14 +1,17 @@
 //! Managed git facade behavior through the harness public API.
 
 use acyclic_fs::facade::FsWork as _;
-use acyclic_fs::{
-    CancellationToken, GitCommandOutput, IdempotencyKey, LazyWorkspace, LocalCoreStateStore,
-    LocalFs, LocalOptions, OperationId, PublicationPermit, WorkBudget,
-    demand::native::NativeDemandSource,
-    model::{Lifecycle, VolumeConfig},
-};
 use acyclic_harness_core::{Error, tools::git};
 use std::{borrow::Cow, sync::Arc};
+use {
+    acyclic_fs::{
+        CancellationToken, GitCommandOutput, IdempotencyKey, LazyWorkspace, LocalCoreStateStore,
+        LocalFs, LocalOptions, OperationId, PublicationPermit,
+        demand::native::NativeDemandSource,
+        model::{Lifecycle, VolumeConfig},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[path = "../src/tools/git/path.rs"]
 mod workspace_paths;
@@ -178,7 +181,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -730,7 +733,7 @@ async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -900,7 +903,10 @@ async fn child_show_of_a_directory_settles_as_the_models_error() -> Result<()> {
     assert!(!lost.settles_tool_call(), "{lost:?}");
     // Actual failed accounting, whether direct or wrapped by a lazy checkout,
     // must retain a harness failure rather than settle the accepted model call.
-    use acyclic_fs::{LazyWorkspaceError, WorkCounters, WorkspaceError};
+    use {
+        acyclic_fs::{LazyWorkspaceError, WorkspaceError},
+        acyclic_fs_work::performance::WorkCounters,
+    };
     let mut counters = WorkCounters::UNCHARGED;
     let exhausted = counters
         .charge_items(1, &WorkBudget::UNCHARGED)
@@ -1621,7 +1627,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -1799,7 +1805,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     };
     let (_temp, root, _fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
-    let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
+    let work = NativeMaterializationWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, &stop)
         .map_err(|(cause, _)| cause)?;
     let generation = main.workspace().head(&work, &stop).await?;
     write_text(
@@ -1982,7 +1988,7 @@ async fn every_workspace_name_is_committed_restored_and_cleaned() -> Result<()> 
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -2096,7 +2102,7 @@ async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Re
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(
                 main.workspace(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -2160,7 +2166,7 @@ async fn merge_combines_edits_when_one_side_replaced_the_file() -> Result<()> {
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(
                 main.workspace(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -2217,7 +2223,7 @@ async fn merge_continue_reexamines_a_resolution_whose_conflicted_identity_is_gon
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -2277,7 +2283,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(
                 main.workspace(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -2383,7 +2389,7 @@ async fn agent_merge_takes_an_unmaterialized_host_file_base_from_the_fork_cut() 
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -2458,7 +2464,7 @@ three
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(
                 main.workspace(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -2521,7 +2527,7 @@ async fn agent_discard_retires_only_the_parent_reference() -> Result<()> {
     acyclic_fs::WorkspaceGraph::new(store.clone())
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -2703,7 +2709,7 @@ async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspac
     graph
         .register_root(
             main.workspace(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -2757,7 +2763,7 @@ async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspac
     graph
         .register_root(
             &foreign,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

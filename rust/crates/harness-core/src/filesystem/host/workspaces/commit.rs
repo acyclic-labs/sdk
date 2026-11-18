@@ -352,13 +352,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                             Some(io),
                                             crate::filesystem::access::clock_now(clock.as_ref())
                                                 .map_err(
-                                                    acyclic_fs::OperationFailure::before_work,
+                                                    acyclic_fs_work::performance::OperationFailure::before_work,
                                                 )?,
                                         )
-                                        .map_err(acyclic_fs::OperationFailure::before_work)?;
-                                        Ok(acyclic_fs::OperationReceipt {
+                                        .map_err(acyclic_fs_work::performance::OperationFailure::before_work)?;
+                                        Ok(acyclic_fs_work::performance::OperationReceipt {
                                             value: (),
-                                            work: acyclic_fs::WorkCounters::default(),
+                                            work: acyclic_fs_work::performance::WorkCounters::default(),
                                         })
                                     }
                                 },

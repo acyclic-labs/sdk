@@ -1239,7 +1239,7 @@ mod tests {
             let view = workspace.spawned_project_view(binding.volume()?).await?;
             assert!(!workspace.has_physical_task_source(&view)?);
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+            let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
             view.write(
                 "/inherited.txt",
                 acyclic_stream::OwnedBytes::copy_from_slice(bytes),
@@ -1259,7 +1259,7 @@ mod tests {
             .read(
                 "/inherited.txt",
                 1024,
-                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                &mut acyclic_fs_work::performance::WorkBudget::UNBOUNDED
                     .accounting(&acyclic_fs::CancellationToken::new()),
             )
             .await
@@ -1372,7 +1372,8 @@ mod tests {
                 .spawned_project_view(project.volume()?)
                 .await?;
             let cancellation = acyclic_fs::CancellationToken::new();
-            let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+            let mut accounting =
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation);
             // Use the same lazy writer as tools: an overwrite preserves the
             // native source identity rather than adding an unrelated file to
             // the authored-only generation underneath that source.
@@ -1627,7 +1628,7 @@ mod tests {
             acyclic_stream::OwnedBytes::from_static(b"nested\n"),
             acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
             acyclic_fs::PublicationPermit::Unrestricted,
-            &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+            &mut acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation),
         )
         .await
         .map_err(storage)?;

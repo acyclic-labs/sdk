@@ -102,7 +102,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let (before, after) = selections
             .first()
             .ok_or_else(|| io.invalid("comparison has no authorized roots"))?;
-        let mut work = acyclic_fs::WorkCounters::default();
+        let mut work = acyclic_fs_work::performance::WorkCounters::default();
         let mut changed = io.cursor_receipt(
             before
                 .cut

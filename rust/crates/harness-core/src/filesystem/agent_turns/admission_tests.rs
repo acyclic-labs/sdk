@@ -196,7 +196,7 @@ async fn native_exact_grants_repair_a_retained_foreign_journal_as_its_owner() ->
         .filesystem
         .open_workspace(
             foreign.storage_name(&mut None)?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -529,14 +529,17 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .filesystem
             .open_workspace(
                 private.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
             .map_err(|failure| crate::filesystem::map_error(failure.error))?
             .value;
         let private_head = private_workspace
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(|failure| crate::filesystem::map_error(failure.error))?
             .value;
@@ -544,7 +547,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .read(
                 "/.system/interactions/custody.json",
                 file_bytes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -830,7 +833,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .filesystem
             .open_workspace(
                 journal.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -1121,7 +1124,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .filesystem
             .open_workspace(
                 foreign.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await

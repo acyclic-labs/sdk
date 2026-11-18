@@ -31,7 +31,7 @@ async fn put(store: &Store, id: ObjectId, bytes: Vec<u8>) {
             id,
             OwnedBytes::from(bytes),
             &mut AuthorityWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &CancellationToken::new(),
             ),
         )
@@ -233,7 +233,7 @@ fn measure(bencher: Bencher, count: u8, workload: Workload, name: &str) {
                 &fixture.store,
                 fixture.request.clone(),
                 DecodeLimits::default(),
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             ))
             .unwrap_or_else(fail);

@@ -2,7 +2,10 @@
 use super::HistoryIo;
 use crate::filesystem::PreparationIo;
 use crate::{Error, Result};
-use acyclic_fs::{CancellationToken, MeasuredResult, OperationReceipt, WorkCounters};
+use {
+    acyclic_fs::CancellationToken,
+    acyclic_fs_work::performance::{MeasuredResult, OperationReceipt, WorkCounters},
+};
 
 /// Aggregate work with deferred output admission.
 pub struct HistoryWork {
@@ -23,7 +26,7 @@ impl HistoryWork {
     #[cfg(test)]
     pub(crate) fn receipt(
         &self,
-    ) -> std::result::Result<WorkCounters, acyclic_fs::WorkObservationError> {
+    ) -> std::result::Result<WorkCounters, acyclic_fs_work::performance::WorkObservationError> {
         self.io.receipt()
     }
     /// Checks cancellation before aggregate work.
@@ -41,7 +44,7 @@ impl HistoryWork {
     pub fn finish<T>(mut self, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
         let result = result.and_then(|value| self.return_staged_output().map(|()| value));
         let work = self.io.receipt();
-        acyclic_fs::performance::finish_measured(result, work, Error::from)
+        acyclic_fs_work::performance::finish_measured(result, work, Error::from)
     }
     /// Transfers the retained native allocation.
     #[cfg(not(target_arch = "wasm32"))]
@@ -54,7 +57,7 @@ impl HistoryWork {
         #[cfg(not(target_arch = "wasm32"))]
         if self.io.original_native_work().is_some() {
             return Error::NativeWork {
-                cause: acyclic_fs::WorkError::Overflow.into(),
+                cause: acyclic_fs_work::performance::WorkError::Overflow.into(),
                 custody: None,
             };
         }
@@ -217,7 +220,7 @@ impl HistoryIo for HistoryWork {
     fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
         HistoryIo::return_output(&mut &self.io, bytes, count)
     }
-    fn remaining(&self) -> Result<acyclic_fs::WorkBudget> {
+    fn remaining(&self) -> Result<acyclic_fs_work::performance::WorkBudget> {
         let mut remaining = self.io.remaining()?;
         remaining.output_bytes = remaining
             .output_bytes

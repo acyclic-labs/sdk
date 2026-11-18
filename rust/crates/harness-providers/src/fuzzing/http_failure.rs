@@ -249,7 +249,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
     for bytes in [&canonical, &escaped] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &cancellation,
         )
         .unwrap();
@@ -261,7 +261,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         assert_eq!(work.live_allocation_bytes(), baseline);
 
         let denied = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(
+            acyclic_fs_work::performance::work_budget(
                 100_000,
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
             ),

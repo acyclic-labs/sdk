@@ -40,7 +40,7 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
             for native in [false, true] {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let budget =
-                    acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+                    acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
                 let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
                 let baseline = work.live_allocation_bytes();
@@ -90,7 +90,7 @@ fn check_scratch_control<T: PreparationRecord + Serialize>(value: &T) -> Result<
     let bytes = crate::contract::canonical_json_bytes(value)?;
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
@@ -149,7 +149,8 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
             let bytes =
                 serde_json::to_vec(&wire).map_err(|error| Error::Invalid(error.to_string()))?;
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
@@ -434,7 +435,8 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
         .await?;
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = if native {

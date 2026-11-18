@@ -19,7 +19,7 @@ proptest! {
         }
         #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4*1024*1024),
+            acyclic_fs_work::performance::work_budget(100_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         #[cfg(not(target_arch = "wasm32"))]

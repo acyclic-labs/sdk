@@ -134,10 +134,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 io,
                                 io.cancellation(),
                                 &mut |_| {
-                                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                                        value: (),
-                                        work: WorkCounters::default(),
-                                    }))
+                                    std::future::ready(Ok(
+                                        acyclic_fs_work::performance::OperationReceipt {
+                                            value: (),
+                                            work: WorkCounters::default(),
+                                        },
+                                    ))
                                 },
                             )
                             .await,
@@ -212,7 +214,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let source_generation = self.generation(&source_workspace, generation, None).await?;
         let target = destination_workspace
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -247,7 +249,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .plan_at(
                 &source_generation,
                 &target,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -336,7 +338,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(acyclic_fs::CreateSpec {
             name: acyclic_fs::WorkspaceName::new(
                 name,
-                &acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .map_err(|failure| map_error(failure.error))?
@@ -364,7 +366,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &name,
                 None,
                 operation,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -378,7 +380,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &name,
                     self.initialization_for(volume),
                     operation,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                     None,
                 )

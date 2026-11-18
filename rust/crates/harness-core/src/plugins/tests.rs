@@ -191,7 +191,7 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
 async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024),
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -292,7 +292,7 @@ impl Tree for Metered<'_> {
 async fn native_after_hook_refusals_retain_the_original_decision() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024),
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -359,10 +359,10 @@ async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<(
     let tree = Script(acyclic_stream::OwnedBytes::from(vec![b'x'; 65536]));
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
                 + 4096,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancel,
     )
@@ -388,9 +388,9 @@ async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<(
 async fn native_rule_metadata_refuses_before_installation() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancel,
     )
@@ -429,9 +429,9 @@ async fn native_rule_metadata_refuses_before_installation() -> Result<()> {
 async fn native_plugin_retains_only_settings_used_by_installed_rules() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: 16 * 1024 * 1024,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancel,
     )

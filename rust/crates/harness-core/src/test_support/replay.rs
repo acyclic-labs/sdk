@@ -8,10 +8,13 @@ use crate::{
     },
     tool::ToolResult,
 };
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, performance::BOUNDARY_BUDGET};
 use futures::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::BOUNDARY_BUDGET,
+};
 
 struct NoLive;
 impl DivergenceSink for NoLive {

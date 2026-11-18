@@ -189,7 +189,11 @@ impl CheckoutPublication {
                 let mut copy = approved.copy_empty().ok_or_else(|| {
                     Error::Unauthorized("checkout approval contains preimages".into())
                 })?;
-                copy.custody = Some(work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
+                copy.custody = Some(work.claim(
+                    0,
+                    0,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )?);
                 copy
             }
             (None, Some(_)) => {
@@ -275,8 +279,11 @@ impl CheckoutPublication {
         // Remove staging before its replay evidence: a failed cleanup must
         // leave the completed marker available to protect later host edits.
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let (directory, _custody) =
             state.native_preparation_directory(identity, operation, &work)?;
         cleanup_directory(&directory)?;
@@ -326,9 +333,11 @@ mod tests {
     #[test]
     fn checkout_paths_retain_the_original_ledger_on_success_and_refusal() -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes()?;
         let identity = NativeRootIdentity::from_bytes([0; 16]);
         let root = std::env::temp_dir().join("checkout-parent/checkout");

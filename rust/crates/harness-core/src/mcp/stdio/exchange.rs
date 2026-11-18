@@ -127,7 +127,7 @@ impl McpStdioExchange {
                     guard
                         .release(guard.bytes().checked_sub(retained).ok_or(
                             acyclic_fs::NativeTreeMaterializationError::Work(
-                                acyclic_fs::WorkError::Overflow,
+                                acyclic_fs_work::performance::WorkError::Overflow,
                             ),
                         )?)
                         .map_err(Error::from)?;

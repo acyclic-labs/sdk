@@ -4,7 +4,7 @@ use proptest::prelude::*;
 
 fn work() -> acyclic_fs::NativeMaterializationWork {
     acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(16_384, 16 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )
     .unwrap()
@@ -104,7 +104,11 @@ fn the_former_boundary_classification_and_real_budget_exhaustion_cannot_be_settl
         super::edit::reserve_vec::<u64>(&mut custody, &mut Vec::new(), usize::MAX).unwrap_err();
     assert!(infrastructure.is_native_failure());
     let exhausted = original
-        .claim(u64::MAX, 0, acyclic_fs::WorkCounters::UNCHARGED)
+        .claim(
+            u64::MAX,
+            0,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+        )
         .unwrap_err();
     let exhausted: Error = exhausted.into();
     assert!(exhausted.is_native_failure());

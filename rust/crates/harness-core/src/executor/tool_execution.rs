@@ -1422,7 +1422,7 @@ mod refusal_admission_tests {
     #[test]
     fn native_unavailable_cause_allocates_nothing_before_ledger_admission() -> Result<()> {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

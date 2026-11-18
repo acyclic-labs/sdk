@@ -203,8 +203,8 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn finite_budget() -> acyclic_fs::WorkBudget {
-    acyclic_fs::performance::work_budget(100_000_000, 100_000_000)
+fn finite_budget() -> acyclic_fs_work::performance::WorkBudget {
+    acyclic_fs_work::performance::work_budget(100_000_000, 100_000_000)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -255,7 +255,7 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
         let work = native_work();
         let baseline = work.live_allocation_bytes();
         let probe = work
-            .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+            .claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)
             .unwrap();
         let (mut ordinary, ordinary_first, _) = request.exchange(None).unwrap();
         let (mut native, first, first_guard) = request.exchange(Some(&work)).unwrap();

@@ -2,9 +2,15 @@ use super::*;
 use acyclic_fs::kernel::{
     FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot, TreePage,
 };
-use acyclic_fs::{AuthorityWork, ObjectSealer, WorkCounters};
-use acyclic_fs::{
-    Digest, FileId, GenerationId, HashedObject, NativeMaterializationWork, ObjectKind, WorkBudget,
+use {
+    acyclic_fs::{AuthorityWork, ObjectSealer},
+    acyclic_fs_work::performance::WorkCounters,
+};
+use {
+    acyclic_fs::{
+        Digest, FileId, GenerationId, HashedObject, NativeMaterializationWork, ObjectKind,
+    },
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 #[derive(Clone)]

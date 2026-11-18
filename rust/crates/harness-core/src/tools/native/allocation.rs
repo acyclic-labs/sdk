@@ -29,7 +29,7 @@ fn native_work(
     deny: bool,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> acyclic_fs::NativeMaterializationWork {
-    let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     if deny {
         budget.peak_allocation_bytes =
             acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
@@ -38,14 +38,18 @@ fn native_work(
 }
 
 /// The input is the JSON argument object passed to the production registry.
-pub fn check(input: &[u8]) -> std::result::Result<(), acyclic_fs::WorkObservationError> {
+pub fn check(
+    input: &[u8],
+) -> std::result::Result<(), acyclic_fs_work::performance::WorkObservationError> {
     if let Ok(arguments) = serde_json::from_slice(input) {
         check_value(arguments)?;
     }
     Ok(())
 }
 
-fn check_value(arguments: Value) -> std::result::Result<(), acyclic_fs::WorkObservationError> {
+fn check_value(
+    arguments: Value,
+) -> std::result::Result<(), acyclic_fs_work::performance::WorkObservationError> {
     use futures::FutureExt as _;
     let mut invocation = ToolInvocation {
         operation_id: crate::OperationId::from_bytes([7; 16]),

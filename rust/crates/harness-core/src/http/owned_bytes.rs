@@ -1,6 +1,6 @@
 use crate::Result;
-use acyclic_fs::{NativeAllocation, WorkCounters};
 use bytes::Bytes;
+use {acyclic_fs::NativeAllocation, acyclic_fs_work::performance::WorkCounters};
 
 struct Owned<T> {
     bytes: T,
@@ -52,7 +52,7 @@ mod tests {
         ) {
             for complete_control in [true, false] {
                 let work = NativeMaterializationWork::new(
-                    acyclic_fs::performance::work_budget(100_000, 4_000_000),
+                    acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
                     &CancellationToken::new(),
                 ).unwrap();
                 let baseline = work.live_allocation_bytes();
@@ -116,7 +116,7 @@ mod tests {
         const CAPACITY: u64 = 4096;
         let baseline = NativeMaterializationWork::accounting_state_bytes();
         for release_first in [false, true] {
-            let mut budget = acyclic_fs::performance::work_budget(100_000, 8_000_000);
+            let mut budget = acyclic_fs_work::performance::work_budget(100_000, 8_000_000);
             budget.peak_allocation_bytes = baseline + CAPACITY;
             let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
                 .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -140,7 +140,7 @@ mod tests {
                     error,
                     crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded {
+                            acyclic_fs_work::performance::WorkError::BudgetExceeded {
                                 counter: "peak_allocation_bytes",
                                 ..
                             }

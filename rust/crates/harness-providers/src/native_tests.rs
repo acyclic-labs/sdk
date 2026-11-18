@@ -131,7 +131,7 @@ impl HttpTransport for Fixture {
 
 pub(crate) fn work(cancel: &CancellationToken) -> Result<NativeMaterializationWork> {
     NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
         cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
@@ -442,7 +442,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     provider.transport =
         crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
     let exhausted = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, baseline),
+        acyclic_fs_work::performance::work_budget(65_536, baseline),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

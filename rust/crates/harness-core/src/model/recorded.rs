@@ -914,7 +914,7 @@ mod tests {
         let mut source = Recording::default();
         source.insert([0; 32], RecordedCall::default());
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
         budget.items_examined = 0;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -924,7 +924,7 @@ mod tests {
             cursor.take(&source, [0; 32], &mut NativeIndexWork(Some(&work))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded { .. }
+                    acyclic_fs_work::performance::WorkError::BudgetExceeded { .. }
                 ),
                 ..
             })
@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(cursor.used, 0);
         assert_eq!(work.live_allocation_bytes(), retained);
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(error, _)| error)?;
@@ -961,7 +961,7 @@ mod tests {
         );
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(error, _)| error)?;
@@ -1035,7 +1035,7 @@ mod tests {
             ));
             let trial = RecordedModel::new(live.clone(), Arc::default(), Arc::new(Quiet));
             let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+            let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
             budget.allocation_operations = 1;
             let refused = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
@@ -1054,7 +1054,7 @@ mod tests {
             assert!(!trial.diverged());
             assert_eq!(live.unused(), 1, "refusal reached the live producer");
             let funded = NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
@@ -1203,9 +1203,11 @@ mod tests {
         // Measure every returned-object allocation through the actual public entry.
         // No event is decoded by this probe: per-event funding remains demand driven.
         let cancellation = acyclic_fs::CancellationToken::new();
-        let probe =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(error, _)| error)?;
+        let probe = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
         let probe_trial = trial();
         let before = probe.receipt();
         let mut prepared = None;
@@ -1222,7 +1224,7 @@ mod tests {
         drop(stream);
         assert!(complete_allocations > 1);
         for allocations in 1..complete_allocations {
-            let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+            let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
             budget.allocation_operations = allocations;
             let refused = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
@@ -1265,7 +1267,7 @@ mod tests {
                 "refused replay admission entered the live provider"
             );
             let funded = NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
@@ -1298,7 +1300,7 @@ mod tests {
         let trial = trial();
         let accepted_cancellation = acyclic_fs::CancellationToken::new();
         let accepted = NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &accepted_cancellation,
         )
         .map_err(|(error, _)| error)?;
@@ -1315,9 +1317,11 @@ mod tests {
         ));
         assert!(futures::StreamExt::next(&mut interrupted).await.is_none());
         drop(interrupted);
-        let funded =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(error, _)| error)?;
+        let funded = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
         let mut resumed = trial
             .generate_with_native_work(&request, dispatch, &funded)?
             .await?;
@@ -1355,16 +1359,18 @@ mod tests {
         // Measure the same production hash, then allow each individual index
         // check but insufficient cumulative traversal and full-ID work. Merely
         // checking admission would incorrectly consume this settlement.
-        let hash_work =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(error, _)| error)?;
+        let hash_work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
         let hash_items = {
             let io = crate::filesystem::PreparationIo::from_native_work(&hash_work)?;
             let before = hash_work.receipt().items_examined;
             tool_key(dispatch.operation_id, "original-0", Some(&io))?;
             hash_work.receipt().items_examined - before
         };
-        let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
         budget.items_examined = hash_items + 48 + "original-0".len() as u64 + 2;
         let limited =
             NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
@@ -1373,7 +1379,7 @@ mod tests {
                 trial.recorded_tool_result(dispatch.operation_id, "original-0", Some(&limited)),
                 Err(Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded {
+                        acyclic_fs_work::performance::WorkError::BudgetExceeded {
                             counter: "items_examined",
                             ..
                         }
@@ -1678,7 +1684,7 @@ mod tests {
                 };
                 register();
                 let cancellation = acyclic_fs::CancellationToken::new();
-                let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+                let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
                 // Lookup borrows its key; refuse the payload copy itself.
                 budget.bytes_copied = 0;
                 let refused = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -1693,7 +1699,7 @@ mod tests {
                     matches!(
                         cause,
                         Some(acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded {
+                            acyclic_fs_work::performance::WorkError::BudgetExceeded {
                                 counter: "bytes_copied",
                                 ..
                             }
@@ -1704,7 +1710,7 @@ mod tests {
                 assert_eq!(refused.live_allocation_bytes(), baseline);
 
                 let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs_work::performance::BOUNDARY_BUDGET,
                     &cancellation,
                 )
                 .map_err(|(error, _)| error)?;
@@ -1719,7 +1725,7 @@ mod tests {
 
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs_work::performance::BOUNDARY_BUDGET,
                     &cancellation,
                 )
                 .map_err(|(error, _)| error)?;
@@ -1748,7 +1754,7 @@ mod tests {
                 let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
                 let retained = work.live_allocation_bytes();
                 let foreign = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs_work::performance::BOUNDARY_BUDGET,
                     &cancellation,
                 )
                 .map_err(|(error, _)| error)?;
@@ -1761,7 +1767,7 @@ mod tests {
                     })
                 ));
                 let resource =
-                    foreign.native_volume_work(acyclic_fs::performance::BOUNDARY_BUDGET)?;
+                    foreign.native_volume_work(acyclic_fs_work::performance::BOUNDARY_BUDGET)?;
                 assert!(foreign.shares_ledger(&resource));
                 assert!(!foreign.shares_allocation_context(&resource));
                 let foreign_io = crate::filesystem::PreparationIo::from_native_work(&foreign)?;

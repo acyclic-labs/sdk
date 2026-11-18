@@ -61,10 +61,10 @@ pub trait HistoryIo: Send {
             return self.receive_record(bytes);
         };
         original
-            .spent(acyclic_fs::WorkCounters {
+            .spent(acyclic_fs_work::performance::WorkCounters {
                 authority_records_read: 1,
                 authority_bytes_read: bytes,
-                ..acyclic_fs::WorkCounters::default()
+                ..acyclic_fs_work::performance::WorkCounters::default()
             })
             .map_err(|cause| Error::NativeWork {
                 cause,
@@ -202,11 +202,11 @@ pub trait HistoryIo: Send {
         reference: &'a crate::conversation::FileRef,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>>;
     /// Remaining.
-    fn remaining(&self) -> Result<acyclic_fs::WorkBudget>;
+    fn remaining(&self) -> Result<acyclic_fs_work::performance::WorkBudget>;
     /// Cancellation.
     fn cancellation(&self) -> &acyclic_fs::CancellationToken;
     /// Receive work.
-    fn receive_work(&mut self, work: acyclic_fs::WorkCounters) -> Result<()>;
+    fn receive_work(&mut self, work: acyclic_fs_work::performance::WorkCounters) -> Result<()>;
 }
 
 /// Funds geometric growth before an append, without reserving an unseen page.

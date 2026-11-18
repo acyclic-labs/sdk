@@ -5,12 +5,15 @@ use crate::{
     agent::{AgentPath, AgentRecord as _, ConversationEntry, HistoryCheckpoint, SpawnVolumes},
 };
 use acyclic_actors::guest::Composer;
-use acyclic_fs::{CancellationToken, FilesystemCommit, WorkBudget};
 use acyclic_stream::{
     CommitCondition, CommitConflict, CommitMutation, CommitOutcome, CommitRequest,
     StreamProviderExt as _,
 };
 use std::sync::{Arc, Mutex};
+use {
+    acyclic_fs::{CancellationToken, FilesystemCommit},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 /// Change the real source once, after capture selected its head and before
 /// the native adapter takes its snapshot. Every cut still uses that adapter.

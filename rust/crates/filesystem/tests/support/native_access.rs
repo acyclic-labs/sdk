@@ -1,10 +1,13 @@
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, MountOptions, WorkBudget,
-    Workspace,
-    access::*,
-    model::{CheckoutMode, GenerationSelector},
-};
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, MountOptions,
+        Workspace,
+        access::*,
+        model::{CheckoutMode, GenerationSelector},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 /// Compile every native fixture view with one stable caller binding.
 pub fn compile_view(

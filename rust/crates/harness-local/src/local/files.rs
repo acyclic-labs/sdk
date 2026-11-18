@@ -198,7 +198,7 @@ impl LocalHarness {
                 acyclic_fs::IdempotencyKey::from_bytes(
                     super::checkout_tools::capture::baseline_operation(original.id()).into_bytes(),
                 ),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -209,7 +209,10 @@ impl LocalHarness {
             })?
             .id();
         let current = selected
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value

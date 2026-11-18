@@ -54,7 +54,13 @@ impl PublicationGroup {
         let allocation = io
             .as_ref()
             .and_then(crate::store::HistoryIo::original_native_work)
-            .map(|work| work.claim(bytes as u64, 1, acyclic_fs::WorkCounters::UNCHARGED))
+            .map(|work| {
+                work.claim(
+                    bytes as u64,
+                    1,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )
+            })
             .transpose()?;
         let mut slots = Vec::new();
         slots.try_reserve_exact(ordered.len()).map_err(storage)?;

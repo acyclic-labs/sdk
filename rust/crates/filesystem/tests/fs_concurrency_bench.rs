@@ -8,16 +8,18 @@ use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
 };
-use acyclic_fs::{
-    AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, Fs, FsError,
-    LivePublicationObservation, OperationId, OperationReceipt, PublicationPermit, WorkBudget,
-    WorkCounters,
-};
 use acyclic_stream::{OwnedBytes, StreamProvider};
 use futures::TryStreamExt;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
+use {
+    acyclic_fs::{
+        AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, Fs, FsError,
+        LivePublicationObservation, OperationId, PublicationPermit,
+    },
+    acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters},
+};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Volume =
@@ -43,7 +45,9 @@ fn path(parts: &[String]) -> Result<NamespacePath> {
         config.limits,
     )?)
 }
-async fn allow(_: WorkBudget) -> acyclic_fs::MeasuredResult<OperationReceipt<()>, FsError> {
+async fn allow(
+    _: WorkBudget,
+) -> acyclic_fs_work::performance::MeasuredResult<OperationReceipt<()>, FsError> {
     Ok(OperationReceipt {
         value: (),
         work: WorkCounters::UNCHARGED,

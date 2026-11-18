@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::{OperationReceipt, WorkBudget, WorkCounters};
+use acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters};
 use acyclic_stream::{
     AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamCategory, StreamPath,
 };
@@ -239,7 +239,7 @@ async fn retained_imports_share_the_original_preparation_capacity()
         .await?
         .value;
     let manifest = Manifest::new([&generation; 6]);
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 16_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000);
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let tree = manifest.tree(&io, u64::MAX);
     let first = tree.read("first.ts").await?.ok_or("missing first import")?;
@@ -281,7 +281,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
 
     let cancellation = acyclic_fs::CancellationToken::new();
     let native = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -447,10 +447,12 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED,
-                    })
+                    Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                        OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    )
                 },
             )
             .await?
@@ -516,7 +518,7 @@ async fn native_manifest_conditions_keep_original_commit_custody()
     use crate::filesystem::PreparationIo;
     let cancellation = acyclic_fs::CancellationToken::new();
     let native = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -572,7 +574,7 @@ async fn native_manifest_conditions_keep_original_commit_custody()
         let original = commit.request().clone();
         let retained = native.live_allocation_bytes();
         let other = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;

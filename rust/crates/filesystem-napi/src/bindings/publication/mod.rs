@@ -56,7 +56,10 @@ impl NativeCheckout {
     pub async fn checkpoint(&self) -> Result<NativeCheckpointResult> {
         let checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
-            .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
+            .checkpoint(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &self.cancellation,
+            )
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -67,7 +70,10 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_head(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
+            .refresh_head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &self.cancellation,
+            )
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -78,7 +84,10 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_live(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
+            .refresh_live(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &self.cancellation,
+            )
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -98,12 +107,12 @@ impl NativeCheckout {
                 None,
                 None,
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &self.cancellation,
                 |_| async {
-                    acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
+                    acyclic_fs::FsResult::Ok(acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     })
                 },
             )
@@ -146,7 +155,7 @@ impl NativeCheckout {
             .apply_authored_live(
                 authored,
                 operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await;
@@ -194,7 +203,7 @@ impl NativeCheckout {
         let receipt = checkout
             .resume_live(
                 operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await;
@@ -248,7 +257,7 @@ impl NativeCheckout {
 }
 
 pub(in crate::bindings) fn encode_created_mutation(
-    receipt: &acyclic_fs::OperationReceipt<FileId>,
+    receipt: &acyclic_fs_work::performance::OperationReceipt<FileId>,
 ) -> Result<NativeMutationResult> {
     Ok(NativeMutationResult {
         file_id: Some(Buffer::from(receipt.value.into_bytes().to_vec())),
@@ -257,7 +266,7 @@ pub(in crate::bindings) fn encode_created_mutation(
 }
 
 pub(in crate::bindings) fn mutation_result(
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeMutationResult> {
     Ok(NativeMutationResult {
         file_id: None,
@@ -267,7 +276,7 @@ pub(in crate::bindings) fn mutation_result(
 
 pub(in crate::bindings) fn commit_result(
     outcome: LivePublicationObservation,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeCommitResult> {
     let (status, generation_id, epoch, sequence, fingerprint) = match outcome {
         LivePublicationObservation::Committed {
@@ -322,7 +331,7 @@ pub(in crate::bindings) fn commit_result(
 
 pub(in crate::bindings) fn live_mutation_result(
     outcome: LiveMutationOutcome,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeLiveMutationResult> {
     let (status, generation_id, epoch, sequence, conflict_count, truncated, fingerprint) =
         match outcome {
@@ -394,10 +403,15 @@ pub(in crate::bindings) fn live_mutation_result(
 
 /// No-work callback for publication.
 pub(in crate::bindings) fn publication_ready<E>(
-    _: acyclic_fs::WorkBudget,
-) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
-    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+    _: acyclic_fs_work::performance::WorkBudget,
+) -> std::future::Ready<
+    acyclic_fs_work::performance::MeasuredResult<
+        acyclic_fs_work::performance::OperationReceipt<()>,
+        E,
+    >,
+> {
+    std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
         value: (),
-        work: acyclic_fs::WorkCounters::UNCHARGED,
+        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     }))
 }

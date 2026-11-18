@@ -106,9 +106,9 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
     let cancel = acyclic_fs::CancellationToken::new();
     let make_work = |bytes, cancel: &acyclic_fs::CancellationToken| {
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: bytes,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             cancel,
         )
@@ -143,7 +143,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 }
@@ -179,10 +179,10 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         "entry hashing escaped the receiving operation"
     );
     let limited = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: 16 * 1024 * 1024,
             bytes_hashed: before_entry,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancel,
     )
@@ -210,7 +210,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "bytes_hashed",
                     ..
                 }
@@ -327,9 +327,9 @@ async fn hook_manifests_pin_source_selectors_and_refuse_invalid_or_cross_kind_so
             "{replacement}"
         );
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: 16 * 1024 * 1024,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &acyclic_fs::CancellationToken::new(),
         )
@@ -373,9 +373,9 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     let files = Files::program("tools/count");
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: 16 * 1024 * 1024,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancel,
     )
@@ -460,7 +460,7 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     let occupied = work.claim(
         work.remaining()?.peak_allocation_bytes,
         1,
-        acyclic_fs::WorkCounters::UNCHARGED,
+        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     )?;
     let error = program
         .bind(Arc::clone(&shell))
@@ -470,7 +470,7 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 }
@@ -507,7 +507,7 @@ async fn hook_bindings_retain_source_and_executable_credit_through_canonical_adm
         let manifest = files.files.get_mut("hooks/count/program.ts").unwrap();
         *manifest = manifest.replace("{kind: 'lifecycle', event: 'Stop'}", source);
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

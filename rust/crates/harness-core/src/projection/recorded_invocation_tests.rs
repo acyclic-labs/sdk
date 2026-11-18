@@ -115,7 +115,7 @@ proptest! {
         let admitted = record.invocation.validate_recorded(&record.metadata, limits, None).is_ok();
         if reserved.is_some() { prop_assert!(!admitted); }
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(2_000_000, 4*1024*1024),
+            acyclic_fs_work::performance::work_budget(2_000_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
         ).expect("fixture ledger");
         let before = work.live_allocation_bytes();

@@ -623,8 +623,8 @@ impl DefaultTextMergeDriver {
             ConflictValue::Absent => None,
             _ => return Err(DriverError::Unsupported),
         };
-        use crate::text_merge::{ByteMerge, ByteMergeLimits};
-        match crate::text_merge::merge_bytes(
+        use acyclic_fs_base::text_merge::{ByteMerge, ByteMergeLimits};
+        match acyclic_fs_base::text_merge::merge_bytes(
             base.map(str::as_bytes),
             Some(ours.as_bytes()),
             Some(theirs.as_bytes()),
@@ -694,7 +694,7 @@ mod tests {
         assert!(matches!(
             driver.resolve(&conflict).expect("resolve"),
             MergeResolution::Text(text)
-                if crate::text_merge::has_conflict_markers(&text)
+                if acyclic_fs_base::text_merge::has_conflict_markers(&text)
                     && std::str::from_utf8(&text).unwrap().contains("<<<<<<< ours")
                     && std::str::from_utf8(&text).unwrap().contains(">>>>>>> theirs")
         ));

@@ -77,7 +77,7 @@ impl SelectedModelContext {
         if let Some(work) = native {
             work.remaining()?;
             if last.is_some() {
-                work.charge(acyclic_fs::WorkCounters {
+                work.charge(acyclic_fs_work::performance::WorkCounters {
                     items_examined: 1,
                     ..Default::default()
                 })?;

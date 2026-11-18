@@ -1,6 +1,9 @@
 //! Independent provider-reopen evidence retained alongside the public suite.
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, WorkBudget};
 use std::{error::Error, time::Instant};
+use {
+    acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 pub async fn verify<A, O, ReopenedAuthority, ReopenedObjects>(
     fs: &Fs<A, O>,

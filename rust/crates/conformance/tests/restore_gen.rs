@@ -1,12 +1,15 @@
 //! Restore a real generation and retain its full reference at the shipping command.
-use acyclic_fs::{
-    AuthoredMutation, CancellationToken, Fs, Lifecycle, LivePublicationObservation, LocalOptions,
-    OperationId, PublicationPermit, VolumeConfig, WorkBudget,
-    kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath},
-    model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
-};
 use acyclic_native_runtime::ProcessCommand;
 use std::{path::Path, time::Duration};
+use {
+    acyclic_fs::{
+        AuthoredMutation, CancellationToken, Fs, Lifecycle, LivePublicationObservation,
+        LocalOptions, OperationId, PublicationPermit, VolumeConfig,
+        kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath},
+        model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -82,8 +85,8 @@ fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_
                 WorkBudget::UNBOUNDED,
                 &cancel,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                        acyclic_fs::OperationReceipt {
+                    Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                        acyclic_fs_work::performance::OperationReceipt {
                             value: (),
                             work: Default::default(),
                         },

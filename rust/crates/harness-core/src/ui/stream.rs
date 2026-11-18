@@ -9,14 +9,6 @@ use crate::{
     conversation::ContentResidencyVerifier,
     filesystem::PreparationIo,
 };
-use acyclic_fs::{
-    NativeMaterializationWork, WorkCounters, WorkError,
-    demand::*,
-    kernel::{
-        KernelAccounting, MetadataDecodeError, NativeAccounting, OwnedSourceChunk, Retained,
-        RetainedAllocation,
-    },
-};
 use acyclic_stream::{
     ChildrenPageRequest, HeadProjection, HeadSet, Heads, HeadsRequest, NativeStreamOutput,
     NativeStreamProvider, ReadRequest, Revision, RevisionCut, RevisionScope, StreamError,
@@ -24,6 +16,17 @@ use acyclic_stream::{
 };
 use futures::StreamExt;
 use std::{borrow::Cow, ops::Range, sync::Arc};
+use {
+    acyclic_fs::{
+        NativeMaterializationWork,
+        demand::*,
+        kernel::{
+            KernelAccounting, MetadataDecodeError, NativeAccounting, OwnedSourceChunk, Retained,
+            RetainedAllocation,
+        },
+    },
+    acyclic_fs_work::performance::{WorkCounters, WorkError},
+};
 
 /// Read-only UI inputs from an authenticated stream provider and the existing
 /// pinned-content reader. Construction starts no IO, follow or background work.

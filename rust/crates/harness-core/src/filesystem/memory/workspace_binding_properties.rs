@@ -18,7 +18,7 @@ async fn read_workspace(storage: &MemoryHarnessStorage, path: &str) -> Option<Ve
         .filesystem
         .open_workspace(
             storage.volume.storage_name(&mut None).unwrap(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -29,7 +29,7 @@ async fn read_workspace(storage: &MemoryHarnessStorage, path: &str) -> Option<Ve
         .read(
             &absolute,
             65536,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await

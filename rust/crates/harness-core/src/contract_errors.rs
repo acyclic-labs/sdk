@@ -337,7 +337,7 @@ pub enum Error {
         #[source]
         cause: acyclic_fs::NativeTreeMaterializationError,
         /// The actual constructor work prefix.
-        work: Box<acyclic_fs::WorkCounters>,
+        work: Box<acyclic_fs_work::performance::WorkCounters>,
     },
     /// A fixed native boundary rejection that needs no diagnostic allocation.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1658,8 +1658,8 @@ impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
 }
 
 /// Moves the complete filesystem cause and its intrinsic custody without formatting.
-impl From<acyclic_fs::WorkObservationError> for Error {
-    fn from(source: acyclic_fs::WorkObservationError) -> Self {
+impl From<acyclic_fs_work::performance::WorkObservationError> for Error {
+    fn from(source: acyclic_fs_work::performance::WorkObservationError) -> Self {
         Self::from(acyclic_fs::FsError::from(source))
     }
 }
@@ -1994,7 +1994,7 @@ mod cleanup_tests {
         for (source, code, settles) in [
             (Path::Cancelled, ErrorCode::Cancelled, false),
             (
-                Path::Work(acyclic_fs::WorkError::Overflow),
+                Path::Work(acyclic_fs_work::performance::WorkError::Overflow),
                 ErrorCode::Storage,
                 false,
             ),
@@ -2040,7 +2040,7 @@ mod cleanup_tests {
         )));
         assert!(!workspace.settles_tool_call());
         let work = Error::from(Lazy::WorkspaceCause(Workspace::Work(
-            acyclic_fs::WorkError::Overflow,
+            acyclic_fs_work::performance::WorkError::Overflow,
         )));
         assert_eq!(work.code(), ErrorCode::Storage);
         assert!(!work.settles_tool_call());
@@ -2154,7 +2154,7 @@ mod boundary_tests {
         let reason = "the caller's original reason";
         #[cfg(not(target_arch = "wasm32"))]
         let original = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(16_384, 16 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap();

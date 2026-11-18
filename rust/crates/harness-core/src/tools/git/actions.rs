@@ -53,7 +53,7 @@ where
             || self
                 .current
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -94,7 +94,7 @@ where
             .authenticated_proof(
                 operation_id,
                 &WorkspaceGraph::new(self.store.clone()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -122,7 +122,7 @@ where
                     && self
                         .current
                         .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                             &acyclic_fs::CancellationToken::new(),
                         )
                         .await
@@ -151,7 +151,7 @@ where
             .lazy_current
             .workspace()
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -168,7 +168,7 @@ where
                 self.lazy_current.workspace(),
                 workspace.workspace(),
                 fork_generation,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -313,7 +313,7 @@ where
         let current = self
             .current
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -469,7 +469,7 @@ where
             .current
             .begin_transaction(
                 IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -480,7 +480,7 @@ where
             transaction
                 .remove(
                     &format!("/{path}"),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -493,15 +493,18 @@ where
                 .commit(
                     None,
                     self.permit,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                     |_| async {
-                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                            acyclic_fs::OperationReceipt {
-                                value: (),
-                                work: acyclic_fs::WorkCounters::default(),
-                            },
-                        )
+                        Ok::<
+                            _,
+                            acyclic_fs_work::performance::OperationFailure<
+                                acyclic_fs::WorkspaceError,
+                            >,
+                        >(acyclic_fs_work::performance::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs_work::performance::WorkCounters::default(),
+                        })
                     },
                 )
                 .await
@@ -522,7 +525,7 @@ where
             || self
                 .current
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -558,7 +561,11 @@ where
         let shown = format!("/{path}");
         let cancellation = acyclic_fs::CancellationToken::new();
         let stat = generation
-            .stat(&shown, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .stat(
+                &shown,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| Error::from(failure.error))?;
@@ -572,7 +579,7 @@ where
                 &shown,
                 offset.min(total),
                 length,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await

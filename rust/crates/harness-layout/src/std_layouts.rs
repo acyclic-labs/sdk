@@ -308,7 +308,7 @@ copy_layouts!(
     acyclic_fs::access::GenerationRange,
     acyclic_fs::access::Generations,
     acyclic_fs::JoinCommitWitness,
-    acyclic_fs::WorkCounters,
+    acyclic_fs_work::performance::WorkCounters,
 );
 /// `OwnedBytes` decodes a byte vector and shares it under one header.
 impl HeapLayout for acyclic_stream::OwnedBytes {
@@ -424,11 +424,14 @@ macro_rules! variants {
 /// nothing.
 mod materializer {
     use super::{Alloc, HeapLayout, JsonLayout};
-    use acyclic_fs::{
-        GenerationId, MaterializationEdit, MaterializationIntent, MaterializationJournal,
-        MaterializationPhase, MaterializationPlan, MaterializationPreimage,
-        MaterializationPreparationIdentity, MaterializationPreparationProgress,
-        MaterializationPreparationSelection, OperationId, VolumeId, WorkCounters,
+    use {
+        acyclic_fs::{
+            GenerationId, MaterializationEdit, MaterializationIntent, MaterializationJournal,
+            MaterializationPhase, MaterializationPlan, MaterializationPreimage,
+            MaterializationPreparationIdentity, MaterializationPreparationProgress,
+            MaterializationPreparationSelection, OperationId, VolumeId,
+        },
+        acyclic_fs_work::performance::WorkCounters,
     };
 
     const BYTES: &JsonLayout = <Vec<u8> as HeapLayout>::LAYOUT;

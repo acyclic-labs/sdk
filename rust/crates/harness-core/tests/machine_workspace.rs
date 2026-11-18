@@ -211,11 +211,14 @@ mod device_runner;
 #[cfg(target_os = "linux")]
 async fn copied_workspace_round_trips_binary_edits_deletions_and_original_turn()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    use acyclic_fs::{CancellationToken, Fs, WorkBudget};
     use acyclic_harness_core::{
         conversation::{VolumeClass, VolumeOwner, VolumeRef},
         filesystem::FilesystemHost,
         tool::ToolExecutor,
+    };
+    use {
+        acyclic_fs::{CancellationToken, Fs},
+        acyclic_fs_work::performance::WorkBudget,
     };
     let volume = VolumeRef::new(
         ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,

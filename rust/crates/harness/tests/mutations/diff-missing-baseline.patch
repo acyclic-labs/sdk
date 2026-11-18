@@ -7,7 +7,7 @@ index e74e4569e29..edd15cf1385 100644
              .workspace();
          let cancellation = acyclic_fs::CancellationToken::new();
 +        let current = selected
-+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
++            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancellation)
 +            .await
 +            .map_err(storage)?
 +            .value
@@ -24,7 +24,7 @@ index e74e4569e29..edd15cf1385 100644
 -            })?
 -            .id();
 -        let current = selected
--            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+-            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancellation)
 -            .await
 -            .map_err(storage)?
 -            .value

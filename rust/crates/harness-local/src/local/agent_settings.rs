@@ -633,7 +633,7 @@ mod tests {
             .filesystem
             .open_workspace(
                 &harness.scratch.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -658,7 +658,7 @@ mod tests {
             .checkout(
                 acyclic_fs::model::GenerationSelector::Head,
                 acyclic_fs::model::CheckoutMode::tracking_transaction(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -668,7 +668,7 @@ mod tests {
             .write_access_policy(
                 &serde_json::to_vec(&policy).map_err(storage)?,
                 acyclic_fs::NamedAttributeWriteMode::Replace,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -680,12 +680,12 @@ mod tests {
                 None,
                 None,
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     }))
                 },
             )
@@ -724,7 +724,7 @@ mod tests {
             shell: Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
             catalog: crate::tool::ToolRegistry::default(),
         };
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
         let control = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
         let loaded = source.load("budget", Some(&control))?.await?.unwrap();
         assert!(Arc::ptr_eq(
@@ -754,10 +754,10 @@ mod tests {
         );
         assert!(limited.receipt().output_bytes <= allowance.output_bytes);
         let native = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes:
                     acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &cancellation,
         )
@@ -805,7 +805,7 @@ mod tests {
             cut: &str,
         ) -> Result<Option<crate::config::Admission>> {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -816,9 +816,9 @@ mod tests {
         }
         let cancel = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: 16 * 1024 * 1024,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &cancel,
         )
@@ -854,7 +854,7 @@ mod tests {
         let occupied = work.claim(
             work.remaining()?.peak_allocation_bytes,
             1,
-            acyclic_fs::WorkCounters::UNCHARGED,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
         )?;
         let result = record(
             &volumes,
@@ -868,7 +868,7 @@ mod tests {
             result,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded {
+                    acyclic_fs_work::performance::WorkError::BudgetExceeded {
                         counter: "peak_allocation_bytes",
                         ..
                     }
@@ -1002,9 +1002,9 @@ mod tests {
         for prefix in ["", "allowed"] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget {
+                acyclic_fs_work::performance::WorkBudget {
                     peak_allocation_bytes: 16 * 1024 * 1024,
-                    ..acyclic_fs::WorkBudget::UNBOUNDED
+                    ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
                 },
                 &cancellation,
             )

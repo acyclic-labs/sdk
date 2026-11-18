@@ -32,7 +32,7 @@ fn extent_replace(bencher: Bencher, patches: usize) {
     let provider = MemoryObjects::memory();
     let store = LogicalObjectStore::new(Arc::new(provider));
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let page = ExtentPage::Leaf(vec![Extent {
         offset: 0,
         length: 64,

@@ -176,7 +176,7 @@ impl Drop for DecodeReservation<'_> {
                     // A poisoned ledger cannot admit further work; the next call returns the fault.
                     work.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .1 = Err(acyclic_fs::WorkError::Overflow);
+                        .1 = Err(acyclic_fs_work::performance::WorkError::Overflow);
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]

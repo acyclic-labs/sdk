@@ -122,7 +122,7 @@ impl HttpTransport for Bounded {
             let custody = work.claim(
                 std::mem::size_of::<Guarded>() as u64,
                 1,
-                acyclic_fs::WorkCounters::UNCHARGED,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
             )?;
             let mut guarded = Guarded::new(response.body, deadline);
             guarded.custody = Some(custody);

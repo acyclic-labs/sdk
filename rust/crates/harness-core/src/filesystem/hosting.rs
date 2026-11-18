@@ -27,11 +27,14 @@ use crate::{
     resources::ProviderRef,
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
-use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, FilesystemCommit, FilesystemCommitOutcome, Fs,
-    StreamAuthorityStore, WorkBudget, distributed::AuthorityProvider,
-};
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        AsyncObjectStore, CancellationToken, FilesystemCommit, FilesystemCommitOutcome, Fs,
+        StreamAuthorityStore, distributed::AuthorityProvider,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 enum StagedInput<'a> {
     Text {

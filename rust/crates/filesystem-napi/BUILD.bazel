@@ -62,6 +62,8 @@ rust_shared_library(
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -97,6 +99,8 @@ rust_library(
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",

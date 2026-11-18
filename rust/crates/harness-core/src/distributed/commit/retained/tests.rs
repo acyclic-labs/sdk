@@ -13,7 +13,7 @@ async fn original_native_publication_survives_preparation_and_refuses_foreign_co
 
 async fn check(mode: u8) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 4 * 1024 * 1024);
     let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = original.live_allocation_bytes();

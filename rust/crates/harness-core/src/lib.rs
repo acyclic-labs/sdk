@@ -140,7 +140,7 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
         let _ = (self.0, items);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.0 {
-            original.charge(acyclic_fs::WorkCounters {
+            original.charge(acyclic_fs_work::performance::WorkCounters {
                 items_examined: items,
                 ..Default::default()
             })?;
@@ -153,7 +153,11 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.0 {
             return original
-                .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
+                .claim(
+                    bytes,
+                    1,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )
                 .map(Some)
                 .map_err(Into::into);
         }

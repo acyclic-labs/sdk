@@ -85,7 +85,7 @@ impl LocalHarness {
         let view = selected.as_ref().unwrap_or_else(|| workspace.view());
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -139,7 +139,7 @@ impl LocalHarness {
         let view = selected.as_ref().unwrap_or_else(|| workspace.view());
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -210,7 +210,7 @@ impl LocalHarness {
         let view = selected.as_ref().unwrap_or_else(|| workspace.view());
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -447,7 +447,7 @@ mod tests {
         bindings[0].mode = crate::agent::WorkspaceMode::ReadOnly;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -709,7 +709,7 @@ mod tests {
         let verifier = issuer.verifier(&mut None)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -827,7 +827,7 @@ mod tests {
                 .checkout(
                     acyclic_fs::model::GenerationSelector::Head,
                     acyclic_fs::model::CheckoutMode::tracking_transaction(),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await
@@ -852,7 +852,7 @@ mod tests {
                         bytes: bytes::Bytes::from_static(b"advanced").into(),
                         metadata: acyclic_fs::kernel::FileMetadata::default(),
                     },
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await
@@ -864,17 +864,18 @@ mod tests {
                     None,
                     None,
                     acyclic_fs::PublicationPermit::Unrestricted,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                     |_| {
-                        std::future::ready(
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                                acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                                },
-                            ),
-                        )
+                        std::future::ready(Ok::<
+                            _,
+                            acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>,
+                        >(
+                            acyclic_fs_work::performance::OperationReceipt {
+                                value: (),
+                                work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                            },
+                        ))
                     },
                 )
                 .await
@@ -895,14 +896,18 @@ mod tests {
             .checkout(
                 acyclic_fs::model::GenerationSelector::Head,
                 acyclic_fs::model::CheckoutMode::read_only_pinned(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
             .map_err(storage)?
             .value;
         Ok(head
-            .generation_position(generation, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .generation_position(
+                generation,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value
@@ -935,7 +940,7 @@ mod tests {
             .clone();
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

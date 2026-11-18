@@ -1,5 +1,8 @@
 use acyclic_fs::native_mount::{MountDirectoryCursor, MountDirectoryPage};
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 // This module is compiled outside the library: custom sources must not need
 // crate-private cursor fields to retain independent listings and their credit.

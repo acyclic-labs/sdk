@@ -2,11 +2,13 @@
 #![cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 
 use acyclic_fs::facade::FsWork as _;
-use acyclic_fs::{
-    CancellationToken, LazyWorkspaceState, LazyWorkspaceStore, LocalCoreStateStore, WorkBudget,
-    WorkspaceId,
-};
 use acyclic_native_runtime::testing::{DurableFault, Schedule};
+use {
+    acyclic_fs::{
+        CancellationToken, LazyWorkspaceState, LazyWorkspaceStore, LocalCoreStateStore, WorkspaceId,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 fn state(id: WorkspaceId) -> Result<LazyWorkspaceState, serde_json::Error> {
     Ok(LazyWorkspaceState::new(

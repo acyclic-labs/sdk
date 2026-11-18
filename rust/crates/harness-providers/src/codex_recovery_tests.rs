@@ -17,7 +17,7 @@ async fn credential_read_failures_never_become_terminal_model_refusals() -> Resu
                 Vec::new()
             })?;
             let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -155,7 +155,7 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
             ])?;
             *server.refresh_failure.lock().unwrap() = refresh_failure;
             let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -293,7 +293,7 @@ async fn cancellation_during_authentication_recovery_releases_the_guard_and_all_
     let (_root, login, _, _) = fixture(Vec::new())?;
     let cancel = CancellationToken::new();
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

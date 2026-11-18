@@ -99,7 +99,7 @@ pub(crate) async fn retained_model_step<'a>(
     let mut journal_cut = None;
     for record in records {
         if let Some(io) = io {
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 items_examined: 1,
                 ..Default::default()
             })?;

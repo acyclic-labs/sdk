@@ -3,16 +3,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::kernel::FileKind;
-use acyclic_fs::{
-    ApplyOptions, CancellationToken, Generation, GitCommand, GitCommandOutput, GitCompatRepository,
-    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitIgnorePolicy, GitTreeRef,
-    IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache, MergeDriverRegistry, OperationId,
-    OperationWindowCoordinator, OperationWindowLease, PublicationPermit, TransactionCommit,
-    WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
-    apply_git_patch, blame_git_generations, capture_git_compatible_generation,
-    capture_git_compatible_generation_incremental, git_compatible_diff, git_restore_paths,
-    grep_git_generation, walk_git_tree,
-};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend};
 use serde_json::json;
@@ -22,6 +12,19 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::Mutex as AsyncMutex;
+use {
+    acyclic_fs::{
+        ApplyOptions, CancellationToken, Generation, GitCommand, GitCommandOutput,
+        GitCompatRepository, GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult,
+        GitIgnorePolicy, GitTreeRef, IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache,
+        MergeDriverRegistry, OperationId, OperationWindowCoordinator, OperationWindowLease,
+        PublicationPermit, TransactionCommit, Workspace as FsWorkspace, WorkspaceError,
+        WorkspaceGraph, WorkspacePathApply, apply_git_patch, blame_git_generations,
+        capture_git_compatible_generation, capture_git_compatible_generation_incremental,
+        git_compatible_diff, git_restore_paths, grep_git_generation, walk_git_tree,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 /// Default command provider for a native checkout composition.
 #[cfg(not(target_arch = "wasm32"))]

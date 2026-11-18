@@ -49,8 +49,11 @@ impl Bindings {
     }
 
     pub(super) fn new(cancellation: &acyclic_fs::CancellationToken) -> Result<RetainedArc<Self>> {
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         RetainedArc::new(
             Self::default(),
             &mut KernelAccounting::native(&work, cancellation),
@@ -201,8 +204,11 @@ mod tests {
     #[test]
     fn original_preparation_has_finite_generation_and_credit() -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let index = Bindings::new(&cancellation)?;
         let baseline = work.live_allocation_bytes();
         let key = *blake3::hash(b"original binding").as_bytes();

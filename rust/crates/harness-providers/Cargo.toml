@@ -19,6 +19,7 @@ fuzzing = ["acyclic-harness-core/test-support"]
 model-checking = ["dep:loom"]
 
 [dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 acyclic-harness-provider-protocol = { path = "../harness-provider-protocol", version = "=0.2.0" }
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }

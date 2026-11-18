@@ -68,7 +68,7 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
                     return this.failed(error.into());
                 }
             }
-            match work.reserve_work(acyclic_fs::WorkCounters {
+            match work.reserve_work(acyclic_fs_work::performance::WorkCounters {
                 source_bytes_read: maximum as u64,
                 ..Default::default()
             }) {
@@ -82,7 +82,7 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
         let zeroed = maximum.saturating_sub(initialized);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = this.work
-            && let Err(error) = work.charge(acyclic_fs::WorkCounters {
+            && let Err(error) = work.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_copied: zeroed as u64,
                 ..Default::default()
             })
@@ -97,10 +97,11 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
         this.received += count as u64;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(reserved) = reserved
-            && let Err(error) = reserved.record_completed(acyclic_fs::WorkCounters {
-                source_bytes_read: count as u64,
-                ..Default::default()
-            })
+            && let Err(error) =
+                reserved.record_completed(acyclic_fs_work::performance::WorkCounters {
+                    source_bytes_read: count as u64,
+                    ..Default::default()
+                })
         {
             return this.failed(error.into());
         }

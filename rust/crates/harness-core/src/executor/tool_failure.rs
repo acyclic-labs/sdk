@@ -386,10 +386,10 @@ mod tests {
             let message = format!("{prefix}{tail}");
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &cancellation,
             ).map_err(|(cause, _)| TestCaseError::fail(format!("{cause:?}")))?;
-            let custody = work.claim(message.capacity() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
+            let custody = work.claim(message.capacity() as u64, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED).unwrap();
             let error = Error::NativeDiagnostic {
                 code: crate::wire::ErrorCode::Conflict,
                 message,
@@ -421,7 +421,7 @@ mod tests {
                 prop_assert_eq!(work.live_allocation_bytes(), baseline);
             }
             // No copy capacity refuses rather than silently clipping to an admitted prefix.
-            let mut budget = acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024);
+            let mut budget = acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024);
             budget.bytes_copied = 0;
             let exhausted = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, _)| TestCaseError::fail(format!("{cause:?}")))?;

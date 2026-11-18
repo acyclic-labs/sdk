@@ -48,7 +48,7 @@ async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     let mut custody = io
         .original_native_work()
         .ok_or_else(|| io.invalid("native access lost its original ledger"))?
-        .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        .claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
     for hold in holds.into_iter().flatten() {
         let (_, mut held) = crate::filesystem::native_decoded(((), hold))?;
         custody.absorb(&mut held)?;
@@ -338,8 +338,11 @@ mod workload_tests {
     async fn retained_mount_owner_rejects_revocation_on_refresh_and_selection()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
         let fs = acyclic_fs::Fs::memory();
         let workspace = fs
             .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
@@ -390,7 +393,7 @@ mod workload_tests {
             generation: Some(generation),
             writable: false,
             view: options.require_access_view()?.clone(),
-            _custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?,
+            _custody: work.claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?,
         };
         refresh.check(&work)?.await?;
         issuer.revoke_workload(&scope)?;

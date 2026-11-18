@@ -893,8 +893,11 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         offset: 65530,
         length: 16,
     };
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let read = journal.load_range(&file, range, Some(&io))?;
     let setup_bytes = work.live_allocation_bytes();
@@ -904,9 +907,9 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         // Fund the actual ledger and read frame, then leave less credit than
         // the output requires, independently of provider chunks or caching.
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: setup_bytes + range.length - 1,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &stop,
         )
@@ -930,7 +933,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         assert!(
             matches!(
                 cause,
-                Some(acyclic_fs::WorkError::BudgetExceeded {
+                Some(acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 })

@@ -26,7 +26,8 @@ fn scope_finish_cancellation_preserves_output_custody_until_destruction() -> Res
     for native in [false, true] {
         for detached_control in [false, true] {
             let cancellation = CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
@@ -84,7 +85,7 @@ fn scope_finish_cancellation_preserves_output_custody_until_destruction() -> Res
 fn scope_finish_moves_only_live_output_and_releases_scratch() -> Result<()> {
     for native in [false, true] {
         let cancellation = CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
@@ -114,7 +115,7 @@ fn scope_finish_moves_only_live_output_and_releases_scratch() -> Result<()> {
 #[test]
 fn scope_transfer_preserves_parent_and_sibling_custody_on_one_ledger() -> Result<()> {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let parent = PreparationIo::from_budget(budget, &cancellation)?;
     parent.retain_owned(41)?;
     let sibling = parent.scoped()?;
@@ -148,7 +149,7 @@ fn scope_transfer_preserves_parent_and_sibling_custody_on_one_ledger() -> Result
 #[test]
 fn standalone_transfer_rejects_another_ledger_without_releasing_either_owner() -> Result<()> {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let source = PreparationIo::from_budget(budget, &cancellation)?;
     let target = PreparationIo::from_budget(budget, &cancellation)?;
     source.retain_owned(31)?;

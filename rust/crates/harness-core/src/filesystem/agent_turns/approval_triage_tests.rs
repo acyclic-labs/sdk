@@ -147,13 +147,17 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
     let mut initial = private
         .begin_transaction(
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
         .value;
     initial
-        .create_dir_all("/policy", acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .create_dir_all(
+            "/policy",
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     initial
         .write_text("/policy/attention.md", "ORIGINAL_TRUSTED_POLICY")
@@ -162,12 +166,12 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         .commit::<acyclic_fs::WorkspaceError, _, _>(
             None,
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )

@@ -6,11 +6,14 @@ use acyclic_fs::workspace::{
     ApplyOptions, DrivenJoinError, ForkOptions, MergeConflictFile, MergeConflictFileKind,
     MergeDirectorySection,
 };
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, LocalOptions,
-    OperationReceipt, PublicationPermit, Transaction, WorkBudget, WorkCounters, WorkspaceError,
-};
 use std::{error::Error, num::NonZeroU32};
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, LocalOptions,
+        PublicationPermit, Transaction, WorkspaceError,
+    },
+    acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters},
+};
 
 async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,

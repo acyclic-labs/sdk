@@ -66,7 +66,7 @@ async fn admitted_request_append_reads_only_the_manifest_as_history_grows() -> R
         );
         if [1, 100, 1000].contains(&step) {
             let io = PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
                 &acyclic_fs::CancellationToken::new(),
             )?;
             let event = ExecutionEvent::ModelStarted {
@@ -165,7 +165,7 @@ where
             context: None,
         };
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )?;
         let result = journal

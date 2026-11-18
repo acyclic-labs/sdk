@@ -228,7 +228,7 @@ pub(in crate::bindings) async fn browser_join_generation<
             workspace
                 .generation(
                     decode_generation_id(id)?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -236,7 +236,7 @@ pub(in crate::bindings) async fn browser_join_generation<
         None => {
             workspace
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await

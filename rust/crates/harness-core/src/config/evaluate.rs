@@ -153,7 +153,7 @@ impl Refusal {
                 work.claim(
                     (std::mem::size_of::<String>() + reason.capacity()) as u64,
                     1,
-                    acyclic_fs::WorkCounters::UNCHARGED,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 )
             })
             .transpose()?;

@@ -46,7 +46,7 @@ fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
     let reference = reference(&bytes);
     let resolver = Resolver(bytes);
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(2_000_000, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(2_000_000, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )
     .unwrap();
@@ -146,7 +146,7 @@ proptest! {
     #[test]
     fn guarded_joins_conserve_the_original_ledger(bytes in 0u64..8192, additional in 0u64..8192) {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4*1024*1024),
+            acyclic_fs_work::performance::work_budget(100_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         let io = PreparationIo::from_native_work(&work).unwrap();
@@ -170,7 +170,7 @@ fn premature_retention_negative_control_is_visible_before_io_scope_drop() {
     let file = reference(bytes);
     let resolver = Resolver(bytes.to_vec());
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(100_000, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )
     .unwrap();

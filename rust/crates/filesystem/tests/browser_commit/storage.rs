@@ -1,12 +1,6 @@
 use super::*;
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
-    AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CreateAuthorityOutcome,
-    Digest, DurableCommit, Epoch, FenceOutcome, GuardedAppend, Head, ObjectKind, OperationId,
-    ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
-    Sequence, WorkError, WorkspaceForkCommit, WorkspaceForkOutcome,
-};
-use acyclic_fs::{
     AuthorityStoreError, ObjectId, ObjectReadRetention, ObjectStoreError, object_digest,
 };
 use acyclic_stream::OwnedBytes;
@@ -16,6 +10,15 @@ use indexed_db_futures::transaction::TransactionMode;
 use js_sys::Uint8Array;
 use std::mem::size_of;
 use wasm_bindgen::JsCast;
+use {
+    acyclic_fs::{
+        AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CreateAuthorityOutcome,
+        Digest, DurableCommit, Epoch, FenceOutcome, GuardedAppend, Head, ObjectKind, OperationId,
+        ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+        Sequence, WorkspaceForkCommit, WorkspaceForkOutcome,
+    },
+    acyclic_fs_work::performance::WorkError,
+};
 type BrowserAuthority = acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>;
 async fn open_authority(
     name: &str,

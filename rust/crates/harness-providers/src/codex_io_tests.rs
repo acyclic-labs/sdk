@@ -1,6 +1,9 @@
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use futures::{StreamExt as _, future::Either};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 /// Exercise the original OAuth decoder with the native body producer held at
 /// its terminal boundary. No filesystem publication or endpoint is involved.
@@ -23,7 +26,7 @@ async fn refresh_body_control(
     terminal: u8,
 ) -> Result<()> {
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 8_000_000),
+        acyclic_fs_work::performance::work_budget(100_000, 8_000_000),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
@@ -125,7 +128,7 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     let (root, login, transport) = fixture(&jwt(now + 3600), 200)?;
     let path = root.path().join("auth.json");
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;

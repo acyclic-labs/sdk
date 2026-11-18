@@ -91,7 +91,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
         VolumeLimits::default(),
         None,
         None,
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .await

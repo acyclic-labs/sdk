@@ -1,6 +1,6 @@
-diff --git a/rust/crates/filesystem/src/performance.rs b/rust/crates/filesystem/src/performance.rs
---- a/rust/crates/filesystem/src/performance.rs
-+++ b/rust/crates/filesystem/src/performance.rs
+diff --git a/rust/crates/filesystem-work/src/performance.rs b/rust/crates/filesystem-work/src/performance.rs
+--- a/rust/crates/filesystem-work/src/performance.rs
++++ b/rust/crates/filesystem-work/src/performance.rs
 @@ -349,6 +349,11 @@ impl WorkCounters {
          if overflow {
              return Err(WorkError::Overflow);

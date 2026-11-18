@@ -13,7 +13,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
     let workspace = filesystem
         .create_workspace(
             "adapter-test",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -22,7 +22,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
         .map_err(map_error)?;
     let expected = workspace
         .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -317,7 +317,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         options: NativeViewOptions {
             root: root.clone(),
             maximum_volumes: 1,
-            work_per_volume: acyclic_fs::performance::work_budget(1, 1024),
+            work_per_volume: acyclic_fs_work::performance::work_budget(1, 1024),
         },
         volumes: vec![NativeVolumeMapping {
             volume: volume.copy(&mut None)?,

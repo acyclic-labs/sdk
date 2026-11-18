@@ -239,13 +239,17 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
     #[cfg(not(target_arch = "wasm32"))]
     let native_accounting: fn() -> Error = || {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(16_384, 16 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap();
-        work.claim(u64::MAX, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .unwrap_err()
-            .into()
+        work.claim(
+            u64::MAX,
+            0,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+        )
+        .unwrap_err()
+        .into()
     };
     for stage in [Stage::Authorize, Stage::Execute] {
         for (error, expected) in [

@@ -145,7 +145,7 @@ where
                 let from = view
                     .workspace()
                     .head(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new(),
                     )
                     .await
@@ -287,7 +287,7 @@ where
             .workspace()
             .generation(
                 source.generation,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -295,7 +295,10 @@ where
             .value;
         let to = view
             .workspace()
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(storage)?
             .value;

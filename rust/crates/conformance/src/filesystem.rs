@@ -1950,7 +1950,7 @@ pub fn dependency_vectors_json() -> Result<String, Box<dyn std::error::Error>> {
     for (name, bytes) in cases {
         let receipt = acyclic_fs::kernel::capture_content_range_bytes(
             &bytes,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         )?;
         let acyclic_fs::kernel::DependencyState::Present(digest) = receipt.value else {
             return Err("content range evidence was unexpectedly absent".into());

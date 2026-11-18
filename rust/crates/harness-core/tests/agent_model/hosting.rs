@@ -84,7 +84,7 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
     )?;
     let local = Bound::local_root(issuer, placement(&stream)?, turns()?)?;
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, _)| cause)?;

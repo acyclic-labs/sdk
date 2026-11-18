@@ -8,8 +8,13 @@ impl CheckoutPublisher {
         operation: OperationId,
         file: FileRef,
     ) -> Result<FileRef> {
-        self.observed_with_budget(view, operation, file, acyclic_fs::WorkBudget::UNBOUNDED)
-            .await
+        self.observed_with_budget(
+            view,
+            operation,
+            file,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        )
+        .await
     }
 
     pub(super) async fn observed_with_budget(
@@ -17,7 +22,7 @@ impl CheckoutPublisher {
         view: &workspace::View,
         operation: OperationId,
         file: FileRef,
-        budget: acyclic_fs::WorkBudget,
+        budget: acyclic_fs_work::performance::WorkBudget,
     ) -> Result<FileRef> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let key = acyclic_fs::IdempotencyKey::from_bytes(
@@ -73,7 +78,7 @@ impl CheckoutPublisher {
         view: &workspace::View,
         capture: &acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
         file: &FileRef,
-        budget: acyclic_fs::WorkBudget,
+        budget: acyclic_fs_work::performance::WorkBudget,
     ) -> Result<bool> {
         #[cfg(all(test, not(loom)))]
         if tests::REREAD_MATCHING_PAYLOAD.get() {
@@ -136,7 +141,7 @@ impl CheckoutPublisher {
         &self,
         capture: &acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
         file: &FileRef,
-        budget: acyclic_fs::WorkBudget,
+        budget: acyclic_fs_work::performance::WorkBudget,
     ) -> Result<bool> {
         let cancellation = acyclic_fs::CancellationToken::new();
         match capture

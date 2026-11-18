@@ -56,7 +56,7 @@ fn notification_and_initialization_share_the_closed_policy() {
 #[cfg(not(target_arch = "wasm32"))]
 fn native_work(bytes: u64, items: u64) -> acyclic_fs::NativeMaterializationWork {
     acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: bytes,
             items_examined: items,
             allocation_operations: 32,
@@ -98,7 +98,7 @@ fn closed_dto_quota_denial_precedes_serde_and_does_not_report_allocator_calls() 
 fn malformed_typed_cause_keeps_original_quota_until_error_drop() {
     let work = native_work(1 << 20, 1000);
     let original = work
-        .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+        .claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)
         .expect("original ledger witness");
     let baseline = work.remaining().expect("remaining").peak_allocation_bytes;
     let live_before = work.live_allocation_bytes();

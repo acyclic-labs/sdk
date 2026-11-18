@@ -20,7 +20,7 @@ impl ArcWake for WakeCount {
 
 fn stalled_source(end: u8, omit_cancellation_event: bool) {
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 4_000_000),
+        acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
         &acyclic_fs::CancellationToken::new(),
     )
     .expect("original work");
@@ -120,7 +120,7 @@ fn negative_control_rejects_the_former_poll_only_cancellation_check() {
 #[test]
 fn unfunded_cancellation_refuses_before_constructing_the_stream() {
     let work = NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             allocation_operations: 1,
             peak_allocation_bytes: 4096,
             ..Default::default()
@@ -172,7 +172,7 @@ fn native_span_decode_admits_tagged_records_and_retires_retained_paths() -> Resu
         let original = ModelEvent::Trace { record };
         let bytes = crate::contract::canonical_json_bytes(&original)?;
         let work = NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &acyclic_fs::CancellationToken::new(),
         )
         .expect("original work");

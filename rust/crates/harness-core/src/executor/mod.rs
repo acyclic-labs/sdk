@@ -304,7 +304,7 @@ impl ModelPurpose {
         execution: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<OperationId> {
-        let charge = acyclic_fs::WorkCounters {
+        let charge = acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: if matches!(self, Self::Summary | Self::SummaryPart(_)) {
                 b"harness:summary-attempt:v1".len() as u64
                     + 16

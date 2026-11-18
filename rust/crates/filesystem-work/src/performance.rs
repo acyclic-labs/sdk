@@ -242,7 +242,7 @@ macro_rules! additive_counters {
 impl WorkCounters {
     /// Native I/O operations charged when physical work starts.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) const fn native_io_operations(self) -> Self {
+    pub const fn native_io_operations(self) -> Self {
         Self {
             backend_read_operations: self.backend_read_operations,
             backend_write_operations: self.backend_write_operations,
@@ -280,7 +280,7 @@ impl WorkCounters {
     /// `self` stays unbounded; any other overflow is an error. The peak allocation keeps
     /// `self`'s value.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn checked_add_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
+    pub fn checked_add_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
         self.exact_cumulative(other, self, u64::checked_add)
     }
 
@@ -288,11 +288,7 @@ impl WorkCounters {
     /// leaves unbounded (`u64::MAX`) keeps `self`'s value, since nothing is ever charged
     /// against it. Any other overflow is an error. The peak allocation keeps `self`'s value.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn checked_add_bounded(
-        &self,
-        other: &Self,
-        limit: &Self,
-    ) -> Result<Self, WorkError> {
+    pub fn checked_add_bounded(&self, other: &Self, limit: &Self) -> Result<Self, WorkError> {
         self.exact_cumulative(other, limit, u64::checked_add)
     }
 
@@ -421,13 +417,13 @@ impl WorkCounters {
 
     /// Checks, without changing `self`, that adding `delta` neither overflows nor exceeds `budget`: exactly the outcome of `self.checked_add(*delta)` followed by [`Self::verify`] of that sum.
     #[inline]
-    pub(crate) fn admit(&self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
+    pub fn admit(&self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
         let mut overflow = false;
         let mut within = true;
         macro_rules! check {
             ($($field:ident),*) => {
                 $({
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
                     let (value, overflowed) = self.$field.overflowing_add(delta.$field);
                     overflow |= overflowed;
@@ -448,11 +444,7 @@ impl WorkCounters {
     }
 
     /// Adds a backend receipt spent while this operation held `live_bytes`: the backend's peak allocation coexisted with them, so the combined peak is their sum rather than the larger of the two.
-    pub(crate) fn with_backend(
-        self,
-        mut backend: Self,
-        live_bytes: u64,
-    ) -> Result<Self, WorkError> {
+    pub fn with_backend(self, mut backend: Self, live_bytes: u64) -> Result<Self, WorkError> {
         let simultaneous_peak = add(live_bytes, backend.peak_allocation_bytes)?;
         backend.peak_allocation_bytes = 0;
         let mut merged = self.checked_add(backend)?;
@@ -471,7 +463,7 @@ impl WorkCounters {
 
     /// Adds `delta` in place: exactly `*self = self.checked_add(*delta)?`, without copying either counter set.
     #[inline]
-    pub(crate) fn try_add_assign(&mut self, delta: &Self) -> Result<(), WorkError> {
+    pub fn try_add_assign(&mut self, delta: &Self) -> Result<(), WorkError> {
         let mut overflow = false;
         macro_rules! check {
             ($($field:ident),*) => {
@@ -492,7 +484,7 @@ impl WorkCounters {
         macro_rules! add_in_place {
             ($($field:ident),*) => {
                 $({
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
                     self.$field = self.$field.wrapping_add(delta.$field);
                 })*
@@ -511,7 +503,7 @@ impl WorkCounters {
     /// Charges `count` examined items in place.
     #[inline]
     pub fn charge_items(&mut self, count: u64, budget: &WorkBudget) -> Result<(), WorkError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
         let prior = self.items_examined;
         self.items_examined = add(prior, count)?;
@@ -538,9 +530,10 @@ impl WorkCounters {
         })
     }
 
+    /// Verifies every counter against the borrowed budget.
     #[inline]
-    pub(crate) fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
-        #[cfg(test)]
+    pub fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
+        #[cfg(any(test, feature = "test-support"))]
         {
             VERIFICATION_PASSES.with(|count| count.set(count.get() + 1));
             VERIFICATION_BUDGET.with(|address| address.set(std::ptr::from_ref(budget) as usize));
@@ -752,11 +745,12 @@ pub enum WorkError {
 #[path = "tests/performance.rs"]
 mod tests;
 
-#[cfg(test)]
-std::thread_local! { pub(crate) static VERIFICATION_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-
-#[cfg(test)]
-std::thread_local! { pub(crate) static ADDITIVE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-
-#[cfg(test)]
-std::thread_local! { pub(crate) static VERIFICATION_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(any(test, feature = "test-support"))]
+std::thread_local! {
+    /// Number of budget verifications on this thread.
+    pub static VERIFICATION_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Number of additive counter steps on this thread.
+    pub static ADDITIVE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Address of the last budget observed by verification on this thread.
+    pub static VERIFICATION_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}

@@ -91,8 +91,11 @@ fn funded(
     bytes: &[u8],
     ordinary: &acyclic_harness_core::Result<Vec<c::Attachment>>,
 ) {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     use acyclic_harness_core::{filesystem::PreparationIo, wire::ErrorCode};
+    use {
+        acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        acyclic_fs_work::performance::WorkBudget,
+    };
 
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();

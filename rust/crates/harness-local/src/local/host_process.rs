@@ -507,7 +507,7 @@ fn remove_absent(root: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
 
 fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
     acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 65_536),
+        acyclic_fs_work::performance::work_budget(65_536, 65_536),
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
@@ -875,7 +875,7 @@ mod tests {
         let task = test_agent();
         let view = root.path().canonicalize().map_err(storage)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -920,7 +920,7 @@ mod tests {
         }
         let view = root.path().canonicalize().map_err(storage)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

@@ -7,8 +7,11 @@ thread_local! {
 mod native {
     use super::*;
     use crate::executor::json::canonical_json_digest;
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters, WorkError};
     use proptest::prelude::*;
+    use {
+        acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        acyclic_fs_work::performance::{WorkCounters, WorkError},
+    };
 
     const LIMIT: u64 = 65_536;
     // One array and one string, examined by serialization and index construction.
@@ -24,7 +27,7 @@ mod native {
         }
         let _reset = Reset(old);
         let native = NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(LIMIT, 4 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(LIMIT, 4 * 1024 * 1024),
             &CancellationToken::new(),
         )
         .unwrap();

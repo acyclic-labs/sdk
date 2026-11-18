@@ -537,7 +537,7 @@ mod tests {
         };
         let digest = super::commit_digest(&request)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(error, _)| error.to_string())?;
@@ -587,7 +587,7 @@ mod tests {
             idempotency_key: IdempotencyKey::new(b"prepared".to_vec())?,
         };
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(error, _)| error.to_string())?;
