@@ -1,12 +1,12 @@
 //! Public client admission, preserving the operation each client actually sends.
-use acyclic_auth::{
-    action::{Action, FsAction, StreamsAction},
+use acyclic_auth_action::{
+    Action, FsAction, StreamsAction,
     method::{MethodAuth, Resources, Rule, Scope},
 };
 
 /// Compiler-linked unary service admission. Raw RPC Read and the public bounded
 /// Session Follow are distinct operations with distinct admission.
-use acyclic_stream_wire::rpc;
+use crate::rpc;
 
 const FOLLOW: MethodAuth<()> = MethodAuth {
     method: (),
@@ -28,14 +28,19 @@ pub const HOSTED_FOLLOW: MethodAuth<StreamMethod> = MethodAuth {
     ..FOLLOW.for_method(StreamMethod::Follow, Scope::Follow)
 };
 
-pub(crate) const FOLLOW_ACTION: Action = Action::Streams(StreamsAction::Follow);
-pub(crate) const RESOURCE_FOLLOW_ACTION: Action = Action::Fs(FsAction::List);
+/// Action for bounded record follows.
+pub const FOLLOW_ACTION: Action = Action::Streams(StreamsAction::Follow);
+/// Action for indexed filesystem resource observations.
+pub const RESOURCE_FOLLOW_ACTION: Action = Action::Fs(FsAction::List);
 
 // A Session observation stores one action in its retained authorization. A
 // contract adding another action must change that representation at compile time.
-pub(crate) const HEAD_ACTION: Action = observation_action(StreamMethod::Head);
-pub(crate) const TAIL_ACTION: Action = observation_action(StreamMethod::Tail);
-pub(crate) const CHILDREN_ACTION: Action = observation_action(StreamMethod::ChildrenPage);
+/// Action retained by a head observation.
+pub const HEAD_ACTION: Action = observation_action(StreamMethod::Head);
+/// Action retained by a tail observation.
+pub const TAIL_ACTION: Action = observation_action(StreamMethod::Tail);
+/// Action retained by a children-page observation.
+pub const CHILDREN_ACTION: Action = observation_action(StreamMethod::ChildrenPage);
 
 const fn observation_action(method: StreamMethod) -> Action {
     let action = method.authorization().single_action();

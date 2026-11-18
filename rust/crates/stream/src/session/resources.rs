@@ -29,7 +29,7 @@ impl ResourceAuthorization {
                 prefix: true,
             }),
             capability: Arc::new(SyncMutex::new(capability)),
-            action: crate::authorization::RESOURCE_FOLLOW_ACTION.as_str(),
+            action: acyclic_stream_wire::authorization::RESOURCE_FOLLOW_ACTION.as_str(),
             call: None,
         }
     }

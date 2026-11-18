@@ -284,8 +284,8 @@ fn credential_capacity_counts_live_entries_not_slot_numbers() {
 
 #[test]
 fn declared_method_credentials_match_session_admission() {
-    use crate::StreamMethod;
     use acyclic_auth::action::Action;
+    use acyclic_stream_wire::authorization::StreamMethod;
 
     #[cfg(feature = "test-support")]
     for operation in crate::TokenOperation::ALL {
