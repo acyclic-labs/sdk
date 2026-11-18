@@ -7,6 +7,25 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
 
+pub(crate) fn list_index<V>(
+    index: &BTreeMap<String, V>,
+    prefix: &str,
+    after: Option<&str>,
+    limit: usize,
+    size: impl Fn(&V) -> u64,
+) -> Vec<(String, u64)> {
+    use std::ops::Bound;
+    let start = after
+        .filter(|&key| key >= prefix)
+        .map_or(Bound::Included(prefix), Bound::Excluded);
+    index
+        .range::<str, _>((start, Bound::Unbounded))
+        .take_while(|(key, _)| key.starts_with(prefix))
+        .take(limit)
+        .map(|(key, value)| (key.clone(), size(value)))
+        .collect()
+}
+
 /// The SDK-owned meaning of an account-relative medium key.
 ///
 /// Adapters can select physical payload I/O without maintaining a second
@@ -488,19 +507,13 @@ impl Medium for MemoryMedium {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError> {
-        use std::ops::Bound;
-        let start = match after {
-            Some(after) if after >= prefix => Bound::Excluded(after),
-            _ => Bound::Included(prefix),
-        };
-        Ok(self
-            .keys()
-            .keys
-            .range::<str, _>((start, Bound::Unbounded))
-            .take_while(|(key, _)| key.starts_with(prefix))
-            .take(limit)
-            .map(|(key, value)| (key.clone(), value.bytes.len() as u64))
-            .collect())
+        Ok(list_index(
+            &self.keys().keys,
+            prefix,
+            after,
+            limit,
+            |value| value.bytes.len() as u64,
+        ))
     }
 
     async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {
