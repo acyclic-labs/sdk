@@ -277,6 +277,21 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
     let entry = fixture.stage_archive(&revision, "", false);
+    let embedded = [
+        "descriptor.bin",
+        "input.json",
+        "schema.proto",
+        "build.rs",
+        ".cargo/config.toml",
+    ];
+    let original = b"original archived input";
+    for root in [fixture.path(), entry.as_path()] {
+        for name in embedded {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, original).unwrap();
+        }
+    }
     let (release, archive) = fixture.pack_archive(&entry);
     let verify = |revision: &str, release: &RegistryVersion, archive: &Path| {
         verify_archive(&metadata, fixture.path(), revision, release, archive)
@@ -287,7 +302,10 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
         accepted.1.get("src/lib.rs"),
         Some(&crate::sha256_file(&fixture.path().join("src/lib.rs")).unwrap())
     );
-    for source in ["src/lib.rs", "Cargo.toml"] {
+    for name in embedded {
+        assert!(accepted.1.contains_key(name), "{name}");
+    }
+    for source in ["src/lib.rs", "Cargo.toml"].into_iter().chain(embedded) {
         assert_rejects_changed_source(fixture.path(), source, || {
             verify(&revision, &release, &archive)
         });
@@ -430,38 +448,6 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     .unwrap_err()
     .contains("absent"));
 }
-#[test]
-fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
-    let fixture = Fixture::new();
-    let metadata = fixture.metadata();
-    let revision = "a".repeat(40);
-    let names = [
-        "descriptor.bin",
-        "input.json",
-        "schema.proto",
-        "build.rs",
-        ".cargo/config.toml",
-    ];
-    let entry = fixture.stage_archive(&revision, "", false);
-    let original = b"original archived input";
-    for root in [fixture.path(), entry.as_path()] {
-        for name in names {
-            let path = root.join(name);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, original).unwrap();
-        }
-    }
-    let (release, archive) = fixture.pack_archive(&entry);
-    let (_, files) =
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
-    for name in names {
-        assert!(files.contains_key(name));
-        assert_rejects_changed_source(fixture.path(), name, || {
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-        });
-    }
-}
-
 #[test]
 fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutations() {
     let fixture = Fixture::new();
