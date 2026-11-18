@@ -92,37 +92,34 @@ impl Before {
         command: &WriteRequest,
         publications: &notifications::Publications,
     ) -> Result<Self, StreamError> {
-        let destinations = match command {
-            WriteRequest::Append(request) => vec![(request.path.clone(), false)],
-            WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
-            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
-                .mutations()
-                .map(|mutation| match mutation {
-                    CommitMutation::Append { path, .. } => (path.clone(), false),
-                    CommitMutation::Fork { destination, .. } => (destination.clone(), true),
-                })
-                .collect(),
-        };
         let mut paths = BTreeSet::new();
-        for (path, fork) in destinations {
+        let mut capture = |path: &StreamPath, fork| -> Result<(), StreamError> {
             // A fork can create a followed descendant without appending to it.
             // Consult active subscriptions, never enumerate the forked subtree.
             if fork {
-                let lower = format!("{}/", path.as_str());
-                let upper = format!("{}0", path.as_str());
-                let range = (
-                    std::ops::Bound::Included(lower.as_str()),
-                    std::ops::Bound::Excluded(upper.as_str()),
-                );
-                for Key::Records(path) in publications.interests.keys_in::<str, _>(range)? {
+                let descendants = path.descendants();
+                for Key::Records(path) in publications.interests.keys_in(descendants.bounds())? {
                     paths.insert(path);
                 }
-                paths.extend(publications.follows.keys_in::<str, _>(range)?);
+                paths.extend(publications.follows.keys_in(descendants.bounds())?);
             }
-            let mut next = Some(path);
+            let mut next = Some(path.clone());
             while let Some(path) = next {
                 next = path.parent();
                 paths.insert(path);
+            }
+            Ok(())
+        };
+        match command {
+            WriteRequest::Append(request) => capture(&request.path, false)?,
+            WriteRequest::Fork(request) => capture(&request.destination, true)?,
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                for mutation in request.mutations() {
+                    capture(
+                        mutation.path(),
+                        matches!(mutation, CommitMutation::Fork { .. }),
+                    )?;
+                }
             }
         }
         let mut before = BTreeMap::new();
@@ -139,44 +136,41 @@ impl Before {
     ) -> Result<(), StreamError> {
         for (path, before) in self.0 {
             let after = tail(provider, path.clone()).await?;
-            if after != before {
-                keys.keys.insert(Key::Records(path.clone()));
-                let followed = publications.follows.get(&path)?.is_some();
-                if before.is_none()
-                    && let Some(after) = after
-                    && followed
-                {
-                    keys.created.insert(path.clone(), after);
+            if after == before {
+                continue;
+            }
+            keys.keys.insert(Key::Records(path.clone()));
+            let followed = publications.follows.get(&path)?.is_some();
+            let Some(after) = after.filter(|_| followed) else {
+                continue;
+            };
+            if before.is_none() {
+                keys.created.insert(path.clone(), after);
+            }
+            let records = keys.records.entry(path.clone()).or_default();
+            records.1 = after;
+            let mut next = before.unwrap_or(0);
+            while next < after {
+                let mut batch = provider
+                    .read(ReadRequest {
+                        key: None,
+                        path: path.clone(),
+                        from: next,
+                        limit: acyclic_stream_wire::wire::StreamLimit::MaxItems as u32,
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                let initial = next;
+                while let Some(record) = batch.next().await {
+                    let record = record?;
+                    next = record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(StreamError::OutOfRange)?;
+                    records.0.push(record);
                 }
-                if let Some(after) = after
-                    && followed
-                {
-                    let records = keys.records.entry(path.clone()).or_default();
-                    records.1 = after;
-                    let mut next = before.unwrap_or(0);
-                    while next < after {
-                        let mut batch = provider
-                            .read(ReadRequest {
-                                key: None,
-                                path: path.clone(),
-                                from: next,
-                                limit: acyclic_stream_wire::wire::StreamLimit::MaxItems as u32,
-                                at_least: Default::default(),
-                            })
-                            .await?;
-                        let initial = next;
-                        while let Some(record) = batch.next().await {
-                            let record = record?;
-                            next = record
-                                .sequence
-                                .checked_add(1)
-                                .ok_or(StreamError::OutOfRange)?;
-                            records.0.push(record);
-                        }
-                        if next <= initial {
-                            return Err(StreamError::Unavailable);
-                        }
-                    }
+                if next <= initial {
+                    return Err(StreamError::Unavailable);
                 }
             }
         }

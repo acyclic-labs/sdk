@@ -584,12 +584,15 @@ pub struct ChildrenPageRequest {
 }
 
 impl ChildrenPageRequest {
+    fn contains_child(&self, path: &StreamPath) -> bool {
+        StreamPath::parent_text(path.as_str()) == self.parent.as_ref().map(StreamPath::as_str)
+    }
+
     pub(crate) fn validate(&self) -> Result<(), StreamError> {
         crate::memory::validate_limit(self.limit)?;
-        if self.after.as_ref().is_some_and(|after| {
-            after.as_str().rsplit_once('/').map(|(parent, _)| parent)
-                != self.parent.as_ref().map(StreamPath::as_str)
-        }) {
+        if let Some(after) = &self.after
+            && !self.contains_child(after)
+        {
             return Err(StreamError::InvalidArgument);
         }
         Ok(())
@@ -615,10 +618,6 @@ impl ChildrenPage {
     /// the original selection. A continuation may name a child hidden by the
     /// caller's authorization, including when the visible page is empty.
     pub fn validate_for(&self, request: &ChildrenPageRequest) -> Result<(), StreamError> {
-        let direct = |path: &StreamPath| {
-            path.as_str().rsplit_once('/').map(|(parent, _)| parent)
-                == request.parent.as_ref().map(StreamPath::as_str)
-        };
         if self.children.len() > self.scanned as usize
             || self.scanned > request.limit
             || (self.next_after.is_some() && self.scanned == 0)
@@ -631,7 +630,7 @@ impl ChildrenPage {
         let mut previous = request.after.as_ref();
         for child in &self.children {
             child.validate_tail()?;
-            if !direct(&child.path)
+            if !request.contains_child(&child.path)
                 || previous.is_some_and(|path| path >= &child.path)
                 || (request.tail_stream.is_none() && child.tail.is_some())
             {
@@ -640,7 +639,7 @@ impl ChildrenPage {
             previous = Some(&child.path);
         }
         if self.next_after.as_ref().is_some_and(|next| {
-            !direct(next)
+            !request.contains_child(next)
                 || request.after.as_ref().is_some_and(|after| next <= after)
                 || previous.is_some_and(|last| next < last)
         }) {

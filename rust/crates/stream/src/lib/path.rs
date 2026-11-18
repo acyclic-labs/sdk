@@ -237,12 +237,57 @@ impl StreamPath {
     /// Immediate parent, if any.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
-        self.as_str().rfind('/').map(|index| self.prefix(index))
+        Self::parent_text(self.as_str()).map(|parent| self.prefix(parent.len()))
+    }
+
+    pub(crate) fn parent_text(path: &str) -> Option<&str> {
+        path.rsplit_once('/').map(|(parent, _)| parent)
+    }
+
+    pub(crate) fn ancestors_including_self(&self) -> impl Iterator<Item = &str> {
+        std::iter::successors(Some(self.as_str()), |&path| Self::parent_text(path))
+    }
+
+    /// Walks through parents while they match, owning only the final path.
+    pub(crate) fn ascend_while(&self, mut matches: impl FnMut(&str) -> bool) -> Self {
+        self.prefix(
+            self.ancestors_including_self()
+                .skip(1)
+                .take_while(|&parent| matches(parent))
+                .last()
+                .map_or(self.length, str::len),
+        )
+    }
+
+    pub(crate) fn root_prefixes(path: &str) -> impl Iterator<Item = &str> {
+        path.match_indices('/')
+            .filter_map(|(end, _)| path.get(..end))
+            .chain(std::iter::once(path))
+    }
+
+    pub(crate) fn descendants(&self) -> Descendants {
+        // ASCII '0' immediately follows '/', so this interval selects only descendants.
+        Descendants {
+            prefix: format!("{self}/"),
+            end: format!("{self}0"),
+        }
+    }
+}
+
+pub(crate) struct Descendants {
+    prefix: String,
+    end: String,
+}
+
+impl Descendants {
+    pub(crate) fn bounds(&self) -> impl std::ops::RangeBounds<str> + '_ {
+        use std::ops::Bound::{Excluded, Included};
+        (Included(self.prefix.as_str()), Excluded(self.end.as_str()))
     }
 }
 
 // Borrow canonical path components without allocating another path or matcher.
-fn relative_suffix<'a>(path: &'a str, ancestor: &str) -> Option<&'a str> {
+pub(crate) fn relative_suffix<'a>(path: &'a str, ancestor: &str) -> Option<&'a str> {
     if ancestor.is_empty()
         || ancestor.len() > path.len()
         || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))

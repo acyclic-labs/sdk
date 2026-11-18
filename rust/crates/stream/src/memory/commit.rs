@@ -1108,27 +1108,21 @@ fn install_namespace(
     for fact in &envelope.mutations {
         let path = crate::request::fact_path(fact);
         state.ephemeral.adopt(scope, &previous, path);
-        if previous.get(path).is_some() {
+        let mut created_ancestors = path
+            .ancestors_including_self()
+            .take_while(|&ancestor| !previous.contains_key(ancestor))
+            .peekable();
+        if created_ancestors.peek().is_none() {
             continue;
         }
-        let mut ancestor = Some(path.clone());
-        while let Some(path) = ancestor {
-            if previous.get(&path).is_some() {
-                break;
-            }
-            ancestor = path.parent();
-            if let Some(signals) = state.signals.get(&path)? {
+        for ancestor in created_ancestors {
+            if let Some(signals) = state.signals.get(ancestor)? {
                 let _ = signals.changed.notify();
                 crate::follow_index::FollowIndex::created(&signals.follows);
             }
         }
         if matches!(fact, CommittedMutation::Fork(_)) {
-            let prefix = format!("{}/", path.as_str());
-            let upper = format!("{}0", path.as_str());
-            let created = state.signals.keys_in::<str, _>((
-                std::ops::Bound::Included(prefix.as_str()),
-                std::ops::Bound::Excluded(upper.as_str()),
-            ))?;
+            let created = state.signals.keys_in(path.descendants().bounds())?;
             for path in created {
                 if state.paths.get(&path).is_none() {
                     continue;

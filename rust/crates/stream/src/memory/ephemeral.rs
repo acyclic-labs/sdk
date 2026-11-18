@@ -43,15 +43,12 @@ type Replayed<'a> = (&'a [u8; 32], &'a IdempotencyOutcome, u64, bool);
 
 impl Ephemeral {
     /// The root of the lease owning `path`: through the path itself or its
-    /// nearest owned ancestor.
+    /// outermost owned ancestor.
     fn root_of(&self, path: &str) -> Option<&StreamPath> {
         if self.owned.is_empty() {
             return None;
         }
-        path.match_indices('/')
-            .map(|(end, _)| end)
-            .chain(std::iter::once(path.len()))
-            .find_map(|end| self.owned.get(path.get(..end)?))
+        StreamPath::root_prefixes(path).find_map(|prefix| self.owned.get(prefix))
     }
 
     /// Owned subtrees strictly beneath `path`, relative to it.
@@ -60,17 +57,12 @@ impl Ephemeral {
         if self.owned.is_empty() {
             return Ok(Vec::new());
         }
-        let lower = format!("{}/", path.as_str());
-        let upper = format!("{}0", path.as_str());
+        let descendants = path.descendants();
         self.owned
-            .range::<str, _>((
-                std::ops::Bound::Included(lower.as_str()),
-                std::ops::Bound::Excluded(upper.as_str()),
-            ))
+            .range(descendants.bounds())
             .map(|(top, _)| {
                 StreamPath::new(
-                    top.as_str()
-                        .strip_prefix(lower.as_str())
+                    crate::path::relative_suffix(top.as_str(), path.as_str())
                         .ok_or(StreamError::InvalidPath)?,
                 )
             })
@@ -115,6 +107,7 @@ impl Ephemeral {
             };
         };
         let all = published.clone();
+        let mut pending = None;
         for path in published {
             if self.root_of(path.as_str()).is_some() {
                 continue;
@@ -122,9 +115,16 @@ impl Ephemeral {
             if paths.contains_key(path) {
                 return Err(StreamError::InvalidArgument);
             }
-            if path.parent().is_some_and(|parent| {
-                !paths.contains_key(&parent)
-                    && !all.clone().into_iter().any(|other| *other == parent)
+            if StreamPath::parent_text(path.as_str()).is_some_and(|parent| {
+                !paths.contains_key(parent)
+                    && !pending
+                        .get_or_insert_with(|| {
+                            all.clone()
+                                .into_iter()
+                                .map(StreamPath::as_str)
+                                .collect::<std::collections::HashSet<_>>()
+                        })
+                        .contains(parent)
             }) {
                 return Err(StreamError::NotFound);
             }
@@ -156,10 +156,7 @@ impl Ephemeral {
         let Some(lease) = self.roots.get_mut(root) else {
             return;
         };
-        let mut top = published.clone();
-        while let Some(parent) = top.parent().filter(|parent| !previous.contains_key(parent)) {
-            top = parent;
-        }
+        let top = published.ascend_while(|parent| !previous.contains_key(parent));
         lease.adopted.push(top.clone());
         self.owned.insert(top, root.clone());
     }
@@ -250,9 +247,8 @@ impl MemoryStream {
         {
             return Err(StreamError::AlreadyExists);
         }
-        if root
-            .parent()
-            .is_some_and(|parent| !state.paths.contains_key(&parent))
+        if StreamPath::parent_text(root.as_str())
+            .is_some_and(|parent| !state.paths.contains_key(parent))
         {
             return Err(StreamError::NotFound);
         }
@@ -311,12 +307,7 @@ impl MemoryStream {
                 continue;
             }
             next.remove(top, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
-            let lower = format!("{}/", top.as_str());
-            let upper = format!("{}0", top.as_str());
-            gone.extend(state.signals.keys_in::<str, _>((
-                std::ops::Bound::Included(lower.as_str()),
-                std::ops::Bound::Excluded(upper.as_str()),
-            ))?);
+            gone.extend(state.signals.keys_in(top.descendants().bounds())?);
             gone.push(top.clone());
         }
         let (mut notify, _notification_claim) = self.vector(gone.len())?;

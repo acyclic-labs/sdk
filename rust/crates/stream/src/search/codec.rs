@@ -56,16 +56,14 @@ impl<P> CursorState<P> {
                     && (frame.tail.is_some() || frame.sequence == 0)
                     && frame.after.as_ref().is_none_or(|after| {
                         StreamPath::validate(path(after)).is_ok()
-                            && path(after).rsplit_once('/').map(|(parent, _)| parent)
-                                == Some(path(&frame.path))
+                            && StreamPath::parent_text(path(after)) == Some(path(&frame.path))
                     })
             })
             && self.frontier.windows(2).all(|frames| {
                 let [parent, child] = frames else {
                     return false;
                 };
-                path(&child.path).rsplit_once('/').map(|(parent, _)| parent)
-                    == Some(path(&parent.path))
+                StreamPath::parent_text(path(&child.path)) == Some(path(&parent.path))
                     && parent.after.as_ref().map(path) == Some(path(&child.path))
             })
     }
