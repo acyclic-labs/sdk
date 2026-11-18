@@ -347,7 +347,11 @@ fn declared_method_credentials_match_session_admission() {
                         paths: [path].into(),
                         retained: Default::default(),
                         durable_through: None,
-                        projection: Default::default(),
+                        projection: if method == StreamMethod::Tail {
+                            crate::HeadProjection::Tail
+                        } else {
+                            crate::HeadProjection::History
+                        },
                         children: None,
                         limit: 1,
                         at_least: Default::default(),
