@@ -165,7 +165,7 @@ tools. Hosted clients can compose `acyclic_fs::StreamAuthorityStore` with
 ```rust,no_run
 //! Creates a durable local filesystem volume under the configured root.
 
-use acyclic_fs::model::{Lifecycle, VolumeConfig};
+use acyclic_fs_format::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{CancellationToken, Fs, LocalOptions, WorkBudget};
 
 #[tokio::main]
