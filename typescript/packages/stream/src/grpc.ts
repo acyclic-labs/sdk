@@ -274,14 +274,14 @@ export class GrpcStreamProvider implements StreamProvider {
     const input = await validateAppend(path, values, options);
     const request = fromBinary(wire.AppendRequestSchema, input);
     const response = await this.#call("append", () => this.#client.append(request));
-    const result = decodeUnaryResponse<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));
+    const result = decodeUnaryResponse("append", toBinary(wire.AppendResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);
     return result;
   }
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
     const input = await validateForkRequest(source, destination, options);
     const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, input)));
-    const receipt = decodeUnaryResponse<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));
+    const receipt = decodeUnaryResponse("fork", toBinary(wire.ForkReceiptSchema, response));
     this.#sessions.observe(receipt.revision);
     return receipt;
   }
@@ -308,7 +308,7 @@ export class GrpcStreamProvider implements StreamProvider {
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
     const input = await normalizeWireCommitBytes(request, options);
     const response = await this.#call("commit", () => this.#client.commit(fromBinary(wire.CommitRequestSchema, input)));
-    const result = decodeUnaryResponse<CommitResult>("commit", toBinary(wire.CommitResponseSchema, response));
+    const result = decodeUnaryResponse("commit", toBinary(wire.CommitResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);
     return result;
   }

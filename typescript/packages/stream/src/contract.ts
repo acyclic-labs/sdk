@@ -218,8 +218,18 @@ function invalidResponse(operation: string, error: unknown): StreamError {
   return new StreamError("invalid_response", `invalid ${operation} response${message ? `: ${message}` : ""}`);
 }
 
-export function decodeUnaryResponse<T>(operation: string, input: Uint8Array): T {
-  try { return projectMemoryResponse(operation, input) as T; }
+type UnaryRoute = {
+  inspect_idempotency: "idempotency/inspect";
+  read_commit: "commits/read";
+  children_page: "children/page";
+};
+export type UnaryOperation = keyof UnaryRoute | "head" | "heads" | "append" | "fork" | "commit";
+export type UnaryResponse<Operation extends UnaryOperation> = HttpResponseFor<
+  Operation extends keyof UnaryRoute ? UnaryRoute[Operation] : Exclude<Operation, keyof UnaryRoute>
+>;
+
+export function decodeUnaryResponse<Operation extends UnaryOperation>(operation: Operation, input: Uint8Array): UnaryResponse<Operation> {
+  try { return projectMemoryResponse(operation, input) as UnaryResponse<Operation>; }
   catch (error) { throw invalidResponse(operation, error); }
 }
 
