@@ -86,9 +86,9 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     copy_tree_inner(&original.output, &relocated.output, false, &|path| {
         replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains(path)
     });
+    let mut rebased_bytes = Vec::new();
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
         let mut changed = BTreeMap::new();
-        let mut rebased_bytes = Vec::new();
         for original_file in inventory {
             let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
             let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
@@ -122,9 +122,10 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         original_digest.as_bytes(),
         "the original release sidecar must attest the original manifest"
     );
-    let rebased_release = serde_json::to_vec_pretty(&release).unwrap();
-    let rebased_digest = hash_bytes(&rebased_release);
-    fs::write(relocated.output.join(&release_path), rebased_release).unwrap();
+    rebased_bytes.clear();
+    serde_json::to_writer_pretty(&mut rebased_bytes, &release).unwrap();
+    let rebased_digest = hash_bytes(&rebased_bytes);
+    fs::write(relocated.output.join(&release_path), rebased_bytes).unwrap();
     fs::write(
         relocated.output.join(&digest_path),
         rebased_digest.as_bytes(),
