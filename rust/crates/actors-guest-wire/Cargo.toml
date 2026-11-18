@@ -8,17 +8,22 @@ repository.workspace = true
 description = "Portable Actors guest messages and HTTP body adapters"
 
 [dependencies]
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 bytes = { workspace = true, features = ["serde"] }
 http.workspace = true
 http-body = "1.1.0"
+prost.workspace = true
 prost-reflect.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 ts-rs = "=12.0.1"
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 
 [lints]
 workspace = true

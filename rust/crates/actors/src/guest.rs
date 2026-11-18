@@ -19,7 +19,6 @@ mod update;
 pub use update::*;
 mod socket_host;
 pub use socket_host::{decode_socket_reply, dispatch_socket_request, encode_socket_request};
-mod body;
 mod state;
 pub use state::GuestState;
 mod state_transaction;

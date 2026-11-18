@@ -1,10 +1,10 @@
 //! Actors contract and admission.
-use crate::wire;
-pub use acyclic_actors_guest_wire::admission::ContractError;
-pub(super) use acyclic_actors_guest_wire::admission::{
+pub use crate::admission::ContractError;
+pub(super) use crate::admission::{
     valid_idempotency_key, valid_jurisdiction, validate_fork_identity, validate_idempotency_key,
     validate_subscription_identity,
 };
+use crate::wire;
 use std::collections::HashSet;
 
 fn valid_actor_scope(namespace: Option<&str>, id: &str) -> bool {
@@ -65,8 +65,8 @@ pub fn validate_deployment_operation(
 /// Validates an explicit namespace or named script deployment before admission.
 pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), ContractError> {
     if !request.publication.is_empty() {
-        let publication: acyclic_actors_guest_wire::live_update::Publication =
-            acyclic_actors_guest_wire::live_selection::decode(&request.publication)
+        let publication: crate::live_update::Publication =
+            crate::live_selection::decode(&request.publication)
                 .map_err(|_| ContractError::InvalidArgument)?;
         if (!request.account_id.is_empty()
             && publication.deployment().account != request.account_id)

@@ -30,7 +30,7 @@ pub mod call;
 pub mod client;
 
 /// Rust-owned Actors contract declarations and schema renderer.
-pub mod contract;
+pub use acyclic_actors_guest_wire::contract;
 
 /// One conformance suite for local and hosted Actors runtimes.
 #[cfg(any(test, feature = "conformance"))]

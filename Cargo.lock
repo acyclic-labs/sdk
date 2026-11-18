@@ -23,7 +23,6 @@ dependencies = [
  "acyclic-actors-inventory",
  "acyclic-auth",
  "acyclic-auth-action",
- "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-native-runtime",
@@ -81,10 +80,13 @@ name = "acyclic-actors-guest-wire"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-stream-body",
+ "acyclic-test-support",
  "bytes",
  "http",
  "http-body",
+ "prost",
  "prost-reflect",
  "serde",
  "serde_json",

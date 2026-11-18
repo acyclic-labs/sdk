@@ -1134,7 +1134,7 @@ const claims = {
     { fuzz: { bin: "stream_error", corpus: "fuzz/corpus/stream_error", runs: 1024 } },
   ],
   "invocation-header-admission": [
-    "rust/crates/actors/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
+    "rust/crates/actors-guest-wire/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],

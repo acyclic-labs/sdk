@@ -57,9 +57,7 @@ rust_library(
     name = "acyclic_actors",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
-    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -110,18 +108,12 @@ rust_library(
         "@sdk_crates//ts-rs-12.0.1",
         "@sdk_crates//uuid-1.29.0",
     ],
-    proc_macro_deps = [
-        "//rust/crates/contract-derive:acyclic_contract_derive",
-    ],
     visibility = ["//visibility:public"],
 )
 
 rust_test(
     name = "acyclic_actors_test_cases",
     crate = ":acyclic_actors",
-    compile_data = [
-        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
-    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -260,7 +252,6 @@ rust_test(
         "@sdk_crates//uuid-1.29.0",
     ],
     proc_macro_deps = [
-        "//rust/crates/contract-derive:acyclic_contract_derive",
         "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -337,7 +328,6 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
-        ":acyclic_actors",
         ":build_script",
     ] + [
         "//rust/crates/actors-diagnostics:acyclic_actors_diagnostics",
@@ -441,7 +431,6 @@ rust_binary(
         "@sdk_crates//uuid-1.29.0",
     ],
     proc_macro_deps = [
-        "//rust/crates/contract-derive:acyclic_contract_derive",
         "@sdk_crates//async-trait-0.1.92",
     ],
 )
@@ -513,7 +502,6 @@ rust_binary(
         "@sdk_crates//uuid-1.29.0",
     ],
     proc_macro_deps = [
-        "//rust/crates/contract-derive:acyclic_contract_derive",
         "@sdk_crates//async-trait-0.1.92",
     ],
 )
@@ -585,7 +573,6 @@ rust_binary(
         "@sdk_crates//uuid-1.29.0",
     ],
     proc_macro_deps = [
-        "//rust/crates/contract-derive:acyclic_contract_derive",
         "@sdk_crates//async-trait-0.1.92",
     ],
 )
@@ -628,9 +615,7 @@ rust_library(
     crate_name = "acyclic_actors",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
-    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,
@@ -676,9 +661,6 @@ rust_library(
         "@wasm_crates//ts-rs-12.0.1",
         "@wasm_crates//url-2.5.8",
         "@wasm_crates//uuid-1.29.0",
-    ],
-    proc_macro_deps = [
-        "//rust/crates/contract-derive:acyclic_contract_derive",
     ],
     visibility = ["//visibility:public"],
 )

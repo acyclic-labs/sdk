@@ -1,5 +1,5 @@
---- a/rust/crates/actors/src/domain/invocation.rs
-+++ b/rust/crates/actors/src/domain/invocation.rs
+--- a/rust/crates/actors-guest-wire/src/domain/invocation.rs
++++ b/rust/crates/actors-guest-wire/src/domain/invocation.rs
 @@ -322,7 +322,7 @@
  
              fn validate_envelope(&self) -> Result<(), DomainError> {

@@ -39,12 +39,16 @@ rust_library(
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//http-1.5.0",
         "@sdk_crates//http-body-1.1.0",
+        "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//ts-rs-12.0.1",
+    ],
+    proc_macro_deps = [
+        "//rust/crates/contract-derive:acyclic_contract_derive",
     ],
     visibility = ["//visibility:public"],
 )
@@ -54,6 +58,7 @@ rust_test(
     crate = ":acyclic_actors_guest_wire",
     compile_data = [
         "//compatibility:descriptors/actors-v1.bin",
+        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -67,6 +72,9 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    deps = [
+        "//rust/crates/test-support:acyclic_test_support",
+    ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )
@@ -117,12 +125,16 @@ rust_library(
         "@wasm_crates//bytes-1.12.1",
         "@wasm_crates//http-1.5.0",
         "@wasm_crates//http-body-1.1.0",
+        "@wasm_crates//prost-0.14.4",
         "@wasm_crates//prost-reflect-0.16.5",
         "@wasm_crates//serde-1.0.229",
         "@wasm_crates//serde_json-1.0.154",
         "@wasm_crates//sha2-0.11.1",
         "@wasm_crates//thiserror-2.0.21",
         "@wasm_crates//ts-rs-12.0.1",
+    ],
+    proc_macro_deps = [
+        "//rust/crates/contract-derive:acyclic_contract_derive",
     ],
     visibility = ["//visibility:public"],
 )

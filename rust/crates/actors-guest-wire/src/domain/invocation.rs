@@ -308,16 +308,16 @@ macro_rules! deployment_provenance {
         impl $ty {
             /// Retain original host-bound provenance through forwarding and replies.
             /// The host authenticates it; this setter conveys no execution grant.
-            pub fn with_deployment_envelope(mut self, envelope: &acyclic_actors_guest_wire::compatibility::CallEnvelope) -> Result<Self, acyclic_actors_guest_wire::live_selection::Error> {
+            pub fn with_deployment_envelope(mut self, envelope: &crate::compatibility::CallEnvelope) -> Result<Self, crate::live_selection::Error> {
                 envelope.validate()?;
-                self.deployment_envelope = acyclic_actors_guest_wire::live_selection::encode(envelope)?;
+                self.deployment_envelope = crate::live_selection::encode(envelope)?;
                 Ok(self)
             }
             /// Decode the SDK-owned canonical caller contract; absence identifies
             /// a caller outside an Actor deployment, not an implicit epoch zero.
-            pub fn deployment_envelope(&self) -> Result<Option<acyclic_actors_guest_wire::compatibility::CallEnvelope>, acyclic_actors_guest_wire::live_selection::Error> {
+            pub fn deployment_envelope(&self) -> Result<Option<crate::compatibility::CallEnvelope>, crate::live_selection::Error> {
                 if self.deployment_envelope.is_empty() { Ok(None) }
-                else { acyclic_actors_guest_wire::compatibility::decode_envelope(&self.deployment_envelope).map(Some) }
+                else { crate::compatibility::decode_envelope(&self.deployment_envelope).map(Some) }
             }
 
             fn validate_envelope(&self) -> Result<(), DomainError> {

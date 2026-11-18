@@ -1,6 +1,5 @@
 //! Project the already-admitted invocation fields into the portable HTTP body.
-use super::{GuestBody, GuestStreamingRequest};
-use acyclic_actors_guest_wire::streaming_request;
+use crate::{GuestBody, GuestStreamingRequest, streaming_request};
 
 macro_rules! invocation_fetch {
     ($($header:ident),+ $(,)?) => {$(
