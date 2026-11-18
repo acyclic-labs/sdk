@@ -7,6 +7,7 @@ use acyclic_fs::{
 use acyclic_fs_work::performance::WorkBudget;
 use std::{error::Error, path::Path};
 
+use crate::selected_budget::selected_transaction_budget;
 use crate::transaction::commit;
 
 #[tokio::test]

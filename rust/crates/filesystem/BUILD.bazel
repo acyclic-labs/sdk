@@ -2225,6 +2225,7 @@ rust_test(
     crate_root = "tests/workspace_materialization.rs",
     srcs = [
         "tests/support/allow_publication.rs",
+        "tests/support/selected_budget.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/workspace_materialization.rs",
