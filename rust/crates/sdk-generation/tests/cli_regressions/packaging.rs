@@ -66,14 +66,16 @@ pub(super) fn source_fixture() -> (Fixture, PathBuf) {
 pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) -> PathBuf {
     let template = shared_package();
     let source = support.join(format!("cargo-packaged-source/{package_name}-1.0.0"));
-    for (name, bytes) in &template.1 {
+    super::replay::copy_tree(package, &source);
+    for (name, bytes) in template
+        .1
+        .iter()
+        .filter(|(name, _)| !package.join(name).try_exists().unwrap())
+    {
         let file = source.join(name);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(file, bytes).unwrap();
     }
-    // Every case keeps its actual source, original manifest, build scripts and
-    // examples. Only Cargo's immutable normalization scaffold is shared.
-    super::replay::copy_tree(package, &source);
     let original = fs::read(package.join("Cargo.toml")).unwrap();
     let normalized =
         super::package_manifest::normalize(&template.1["Cargo.toml"], &original).unwrap();
