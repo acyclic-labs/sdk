@@ -169,10 +169,10 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
         fs::read(relocated.path().join("Cargo.lock")).unwrap(),
         original
     );
-    let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
-    let imported_lock = fixture.path().join(directory).join("Cargo.lock");
+    let entry = fixture.stage_archive(&"a".repeat(40), "", false);
+    let imported_lock = entry.join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
-    release.checksum = pack_registry_archive(&fixture.path().join(directory), &archive);
+    let (release, archive) = fixture.pack_archive(&entry);
     let mut identity = ArchiveSource {
         package: release.package.clone(),
         version: release.num.clone(),
