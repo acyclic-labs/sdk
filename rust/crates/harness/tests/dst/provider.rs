@@ -239,10 +239,14 @@ fn manager_rewrite(request: &ModelRequest) -> ScriptedTurn {
     ScriptedTurn::Text(manager_rewrite_text(request))
 }
 
-fn length_stopped_rewrite(request: &ModelRequest) -> ScriptedTurn {
+fn valid_review_decision_text() -> String {
+    json!({"version":1,"summary":"compacted history","review_at_input_tokens":1000}).to_string()
+}
+
+fn length_stopped_rewrite(_request: &ModelRequest) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::Content {
-            delta: manager_rewrite_text(request),
+            delta: valid_review_decision_text(),
         }),
         ScriptedEvent::Event(ModelEvent::Completed {
             metadata: json!({"finish_reason":"length","usage":{"completion_tokens":8192}}),
@@ -261,7 +265,7 @@ fn review_decision() -> ScriptedTurn {
 fn length_stopped_review() -> ScriptedTurn {
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::Content {
-            delta: review_decision_text(),
+            delta: valid_review_decision_text(),
         }),
         ScriptedEvent::Event(ModelEvent::Completed {
             metadata: json!({"finish_reason":"length","usage":{"completion_tokens":8192}}),
@@ -751,9 +755,9 @@ fn d4_service(
 fn d4_after_service() -> ScriptedModelProvider {
     ScriptedModelProvider::responding(|request| {
         if request.summary {
-            return Ok(manager_rewrite(request));
+            return Ok(review_decision());
         }
-        Ok(ScriptedTurn::Text(done("d4-after")))
+        Ok(text_with_usage(done("d4-after"), 100))
     })
 }
 
@@ -894,6 +898,9 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     {
                         return fail("the worker did not settle after its cut summary");
                     }
+                    if !reopened.requests.iter().any(|request| request.summary) {
+                        return fail("the rejected cut review was not re-asked");
+                    }
                 }
                 "context_review" => {
                     if summary_requests.is_empty() {
@@ -933,6 +940,15 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                         .map_err(oracle::failed)?;
                     if cut.requests.iter().any(has_file) {
                         return fail("a valid cut review published a rewrite");
+                    }
+                    world.service = d4_after_service();
+                    let after = vec![vec![("d4-after", tag("d4-after"))]];
+                    let reopened = world
+                        .incarnation(None, &after)
+                        .await
+                        .map_err(oracle::failed)?;
+                    if !reopened.requests.iter().any(|request| request.summary) {
+                        return fail("the rejected cut review was not re-asked");
                     }
                 }
                 _ => {
