@@ -175,7 +175,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .allocate(references.len() as u64 * 32)
             .map_err(medium)?;
         let batch = encode_batch(&references);
-        let name = format!("{fence:016x}.{}.{}", Digest::of(&batch), nonce()?);
+        let name = format!(
+            "{fence:016x}.{}.{:032x}",
+            Digest::of(&batch),
+            u128::from_be_bytes(version()?)
+        );
         let tag = Self::batch_tag("f", root_hash, &name);
         let key = self.retention_key('f', root_hash, &name);
         self.commit_retention(&references, &tag, &key, batch, 2)

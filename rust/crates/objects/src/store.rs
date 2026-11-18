@@ -530,11 +530,6 @@ fn medium(error: MediumError) -> Error {
     Error::caused(ErrorCode::Unavailable, Cause::new("objects.medium", reason)).with_source(error)
 }
 
-/// A fresh owner nonce.
-fn nonce() -> Result<String, Error> {
-    Ok(hex::encode(version()?))
-}
-
 /// A conditional write's unknown outcome means this actor's work may no
 /// longer be its own.
 fn moved(error: MediumError) -> Error {
@@ -612,7 +607,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Ac
 
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
-        self.sharded_key('p', digest, format_args!(".{}", hex::encode(version)))
+        self.sharded_key(
+            'p',
+            digest,
+            format_args!(".{:032x}", u128::from_be_bytes(*version)),
+        )
     }
 
     /// This account's revisions, opening them on first use.
@@ -869,7 +868,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 
     /// The `i/` holder tag of an envelope.
     fn envelope_tag(parent: &Digest, version: &[u8; 16]) -> String {
-        format!("e{parent}.{}", hex::encode(version))
+        format!("e{parent}.{:032x}", u128::from_be_bytes(*version))
     }
 
     /// The `i/` holder tag of the root batch named `batch`.
@@ -1616,7 +1615,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let batch = encode_batch(&references);
                 // Each retain owns its batch and keys, so a concurrent release of an
                 // equal batch never removes them.
-                let name = format!("{}.{}", Digest::of(&batch), nonce()?);
+                let name = format!(
+                    "{}.{:032x}",
+                    Digest::of(&batch),
+                    u128::from_be_bytes(version()?)
+                );
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
                 let tag = Self::batch_tag("r", root_hash, &name);
