@@ -226,11 +226,36 @@ fn validate_profile_target(
         })
 }
 
-fn declared_features(package: &Package) -> impl Iterator<Item = &String> {
+type LocalFeature<'a> = (&'a String, &'a Vec<String>);
+
+fn local_feature<'a>(
+    package: &'a Package,
+    feature: &str,
+) -> Result<LocalFeature<'a>, ProfileError> {
     package
         .features
-        .keys()
-        .filter(|name| name.as_str() != "default")
+        .get_key_value(feature)
+        .ok_or_else(|| ProfileError::InvalidFeature {
+            package: package.name.to_string(),
+            feature: feature.to_owned(),
+        })
+}
+
+/// Cargo resolves qualified dependency and workspace feature requests itself.
+fn requested_local_feature<'a>(
+    package: &'a Package,
+    feature: &str,
+) -> Result<Option<LocalFeature<'a>>, ProfileError> {
+    (!feature.contains('/'))
+        .then(|| local_feature(package, feature))
+        .transpose()
+}
+
+fn declared_features(package: &Package) -> impl Iterator<Item = LocalFeature<'_>> {
+    package
+        .features
+        .iter()
+        .filter(|(name, _)| name.as_str() != "default")
 }
 
 fn insert_profile(ordered: &mut BTreeMap<ProfileId, ProfileSpec>, profile: ProfileSpec) {
@@ -280,7 +305,7 @@ fn current_package_profiles<'a>(
         let mut closure = BTreeSet::new();
         extend_feature_closure(&package_metadata.features, feature, &mut closure);
         add(false, closure);
-        declared.insert(feature.clone());
+        declared.insert(feature.0.clone());
     }
     if !declared.is_empty() {
         add(true, declared);
@@ -316,13 +341,11 @@ pub fn browser_profile_for_package(
                 let feature = value.as_str().ok_or_else(|| {
                     ProfileError::InvalidRustdoc("wasm-features must contain strings".into())
                 })?;
-                if !package.features.contains_key(feature) {
-                    return Err(ProfileError::InvalidFeature {
-                        package: package.name.to_string(),
-                        feature: feature.into(),
-                    });
-                }
-                extend_feature_closure(&package.features, feature, &mut features);
+                extend_feature_closure(
+                    &package.features,
+                    local_feature(package, feature)?,
+                    &mut features,
+                );
             }
         }
         default_features = !match napi.get("wasm-no-default-features") {
@@ -331,8 +354,8 @@ pub fn browser_profile_for_package(
             })?,
             None => false,
         };
-    } else if package.features.contains_key("wasm") {
-        extend_feature_closure(&package.features, "wasm", &mut features);
+    } else if let Some(feature) = package.features.get_key_value("wasm") {
+        extend_feature_closure(&package.features, feature, &mut features);
     } else if !has_browser_target_dependencies {
         return Ok(None);
     }
@@ -349,22 +372,22 @@ pub fn browser_profile_for_package(
 /// Extend a set whose existing local features already include their dependencies.
 fn extend_feature_closure(
     features: &BTreeMap<String, Vec<String>>,
-    root: &str,
+    root: LocalFeature<'_>,
     result: &mut BTreeSet<String>,
 ) {
-    let mut pending = vec![(root, features.get(root))];
+    let mut pending = vec![root];
     while let Some((feature, dependencies)) = pending.pop() {
         if result.contains(feature) {
             continue;
         }
-        result.insert(feature.to_owned());
-        for dependency in dependencies.into_iter().flatten() {
+        result.insert(feature.clone());
+        for dependency in dependencies {
             let local = dependency.strip_prefix("?").unwrap_or(dependency);
             if local.starts_with("dep:") || local.contains('/') || result.contains(local) {
                 continue;
             }
-            if let Some(children) = features.get(local) {
-                pending.push((local, Some(children)));
+            if let Some(child) = features.get_key_value(local) {
+                pending.push(child);
             }
         }
     }
@@ -401,21 +424,14 @@ pub fn historical_profiles_for_package(
         })?;
         let mut features = BTreeSet::new();
         for feature in policy.features {
-            if feature.contains('/') {
-                // The existing Cargo invocation validates qualified feature expressions.
+            if let Some(local) = requested_local_feature(owner, feature)? {
+                extend_feature_closure(&owner.features, local, &mut features);
+            } else {
                 features.insert(feature.to_owned());
-                continue;
             }
-            if !owner.features.contains_key(feature) {
-                return Err(ProfileError::InvalidFeature {
-                    package: package.to_owned(),
-                    feature: feature.to_owned(),
-                });
-            }
-            extend_feature_closure(&owner.features, feature, &mut features);
         }
         if policy.all_features {
-            features.extend(declared_features(owner).cloned());
+            features.extend(declared_features(owner).map(|(name, _)| name.clone()));
         }
         insert_profile(
             &mut profiles,

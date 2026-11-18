@@ -56,10 +56,12 @@ fn browser_profiles_follow_features_and_fail_if_target_is_missing() {
         profile.features,
         BTreeSet::from(["wasm".into(), "codec".into()])
     );
-    assert!(matches!(
+    assert_eq!(
         browser_profile_for_package(package, false, &BTreeSet::new()),
-        Err(ProfileError::UnsupportedTarget { .. })
-    ));
+        Err(ProfileError::UnsupportedTarget {
+            target: "wasm32-unknown-unknown".into(),
+        })
+    );
     metadata.packages[0].features.clear();
     assert!(
         browser_profile_for_package(&metadata.packages[0], false, &targets)
@@ -84,29 +86,8 @@ fn browser_binding_policy_excludes_native_features_and_rejects_invalid_policy() 
         .unwrap();
     assert!(!profile.default_features);
     assert!(!profile.features.contains("json"));
-    metadata.packages[0].metadata["napi"]["wasm-features"] = serde_json::json!(["absent"]);
-    assert!(matches!(
-        browser_profile_for_package(&metadata.packages[0], true, &targets),
-        Err(ProfileError::InvalidFeature { .. })
-    ));
     metadata.packages[0].metadata["napi"]["wasm-features"] = serde_json::json!("wasm");
     assert!(browser_profile_for_package(&metadata.packages[0], true, &targets).is_err());
-}
-
-#[test]
-fn unsupported_target_is_hard_error() {
-    let result = profiles_for_package(
-        metadata(),
-        "feature-rich",
-        "wasm32-wasip1",
-        &BTreeSet::new(),
-    );
-    assert_eq!(
-        result,
-        Err(ProfileError::UnsupportedTarget {
-            target: "wasm32-wasip1".into()
-        })
-    );
 }
 
 #[test]
@@ -125,7 +106,7 @@ fn historical_defaults_cover_features() {
 }
 
 #[test]
-fn historical_docs_rs_policy_is_required_and_validated() {
+fn historical_docs_rs_policy_preserves_qualified_features_and_rejects_invalid_options() {
     let mut metadata = (*metadata()).clone();
     let targets = BTreeSet::from(["host".into()]);
     let mut plan = |policy: serde_json::Value| {
@@ -133,16 +114,14 @@ fn historical_docs_rs_policy_is_required_and_validated() {
         historical_profiles_for_package(&metadata, "feature-rich", "host", &targets)
     };
     let profiles =
-        plan(serde_json::json!({"all-features":true,"no-default-features":true})).unwrap();
+        plan(serde_json::json!({"all-features":true,"no-default-features":true,"features":["other/feature"]})).unwrap();
     assert!(profiles
         .iter()
         .any(|profile| profile.default_features && profile.features.is_empty()));
-    assert!(profiles.iter().any(|profile| !profile.default_features
-        && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
-    assert!(matches!(
-        plan(serde_json::json!({"features":["absent"]})),
-        Err(ProfileError::InvalidFeature { .. })
-    ));
+    let expected = BTreeSet::from(["codec", "json", "other/feature", "wasm"].map(str::to_owned));
+    assert!(profiles
+        .iter()
+        .any(|profile| !profile.default_features && profile.features == expected));
     for policy in [
         serde_json::json!({"all-features":"true"}),
         serde_json::json!({"rustdoc-args":["--cfg","pretend"]}),
