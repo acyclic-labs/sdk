@@ -5,7 +5,7 @@ pub(crate) fn contains(bytes: &[u8]) -> bool {
             .iter()
             .rposition(|&byte| byte != b'\r')
             .map_or(0, |last| last + 1);
-        &line[..end] == b"======="
+        line.get(..end) == Some(b"=======".as_slice())
             || [b"<<<<<<<", b"|||||||", b">>>>>>>"].iter().any(|marker| {
                 line.starts_with(*marker) && matches!(line.get(marker.len()), Some(b' ' | b'\t'))
             })

@@ -25,7 +25,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
@@ -44,7 +44,7 @@ where
                 },
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         if !matches!(first, TransactionCommit::Conflict { .. }) {
             return Ok(Response::new(commit_message(first)));
@@ -56,7 +56,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
         {
             TransactionRebase::Rebased(_) => Ok(Response::new(commit_message(
@@ -76,7 +76,7 @@ where
                         },
                     )
                     .await
-                    .map_err(|failure| status(&failure.error))?
+                    .map_err(|failure| Status::from(&failure.error))?
                     .value,
             ))),
             // Nothing moved: the conflict lies outside this head, so a

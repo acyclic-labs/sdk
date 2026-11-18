@@ -1,4 +1,5 @@
 use super::*;
+use futures::stream;
 
 #[tokio::test]
 async fn admitted_import_prefix_preserves_closure_and_rejects_changed_scope()

@@ -27,7 +27,7 @@ fn root(budget: WorkBudget) -> NativeMaterializationWork {
 #[test]
 fn publication_lifetime_preserves_original_windows_resources_and_cancellation() {
     use crate::kernel::allocation::{KernelAccounting, retained::AuthorityLifetime};
-    for windowed in [false, true] {
+    for (windowed, poisoned) in [(false, false), (false, true), (true, false), (true, true)] {
         let cancel = crate::CancellationToken::new();
         let original = NativeMaterializationWork::new(
             WorkBudget {
@@ -86,13 +86,20 @@ fn publication_lifetime_preserves_original_windows_resources_and_cancellation() 
                 .is_err(),
             "sealed lifetime granted a fresh resource budget"
         );
-        // The retained view must keep enforcing the ledger's fail-closed state.
-        durable.state(|state| state.poison_native_original_work());
-        assert!(durable.admit(crate::WorkCounters::UNCHARGED).is_err());
+        if poisoned {
+            // The retained view must keep enforcing the ledger's fail-closed state.
+            durable.state(|state| state.poison_native_original_work());
+            assert!(durable.admit(crate::WorkCounters::UNCHARGED).is_err());
+        }
         drop(meter);
         drop(durable);
         drop(lifetime);
-        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        let expected = if poisoned {
+            Err(crate::WorkObservationError::Poisoned)
+        } else {
+            Ok(baseline)
+        };
+        assert_eq!(original.live_allocation_bytes(), expected);
     }
 }
 

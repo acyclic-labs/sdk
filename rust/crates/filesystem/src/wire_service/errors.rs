@@ -8,8 +8,10 @@ use kernel::kernel_code;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 
-pub(super) fn status(error: &WorkspaceError) -> Status {
-    Status::new(workspace_code(error), error.to_string())
+impl From<&WorkspaceError> for Status {
+    fn from(error: &WorkspaceError) -> Self {
+        Self::new(workspace_code(error), error.to_string())
+    }
 }
 
 fn workspace_code(error: &WorkspaceError) -> Code {

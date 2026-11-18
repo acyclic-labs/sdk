@@ -27,49 +27,9 @@ mod unbounded;
 
 use crate as acyclic_fs;
 
-fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<crate::MeasuredResult<crate::OperationReceipt<()>, E>> {
-    std::future::ready(Ok(crate::OperationReceipt {
-        value: (),
-        work: crate::WorkCounters::UNCHARGED,
-    }))
-}
-
-async fn fork_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    source: &Workspace<A, O>,
-    name: &str,
-    options: ForkOptions<A, O>,
-) -> Result<Workspace<A, O>, WorkspaceError> {
-    value!(
-        source
-            .fork::<_, _, WorkspaceError>(
-                name,
-                options,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                &mut allow::<FsError>
-            )
-            .await
-    )
-}
-
-async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    transaction: &mut Transaction<A, O>,
-) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-    value!(
-        transaction
-            .commit::<WorkspaceError, _, _>(
-                None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                allow
-            )
-            .await
-    )
-}
+#[path = "../../../tests/support/workspace.rs"]
+mod fixtures;
+use fixtures::{allow, commit, fork_workspace};
 
 mod access_policy;
 mod append_segments;
@@ -92,7 +52,6 @@ mod materialization;
 mod merge_drivers;
 
 mod composition;
-mod conditions;
 
 mod creation_race;
 
@@ -111,8 +70,6 @@ mod reads;
 mod rebase;
 
 mod restore;
-
-mod sibling_directories;
 
 mod sibling_files;
 

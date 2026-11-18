@@ -212,7 +212,16 @@ fn fold_unit_results(
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
             }
             Err(failure) => {
-                window = combine_parallel_window(window, *failure.work)
+                let observed = match failure.work() {
+                    Ok(work) => *work,
+                    Err(observation) => {
+                        return Err(ObjectFailure::without_receipt(
+                            first_error.unwrap_or(failure.error),
+                            observation,
+                        ));
+                    }
+                };
+                window = combine_parallel_window(window, observed)
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
                 if first_error.is_none() {
                     first_error = Some(failure.error);

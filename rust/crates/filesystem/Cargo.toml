@@ -16,6 +16,28 @@ categories = ["filesystem", "data-structures"]
 # Tests that reach the FUSE mounts run outside Bazel's linux-sandbox.
 [package.metadata.bazel]
 mounts-fuse = true
+share-separate-deps = true
+unit-test-only-sources = [
+    "src/git_compat/tests/**",
+    "src/multi_root/tests/**",
+    "src/native_mount/fixture_access.rs",
+    "src/tests/**",
+    "src/wire_service/access_tests.rs",
+    "src/wire_service/errors/tests.rs",
+    "src/wire_service/metadata_tests.rs",
+    "src/wire_service/mount_fixture.rs",
+    "src/wire_service/mount_tests.rs",
+    "src/wire_service/tests.rs",
+    "tests/support/**",
+]
+build-script-inputs = [
+    "src/native_mount/darwin_mount_bridge.c",
+    "src/native_mount/darwin_mount_retirement.c",
+    "src/native_mount/darwin_mount/tests/retirement_model.c",
+    "vendor/darwinfuse",
+]
+
+test-build-script = ["operation_claim_model"]
 
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]
@@ -29,6 +51,28 @@ mounts-fuse = true
 
 [package.metadata.bazel.unit-test-dependency-variants]
 acyclic-fs-work = "observations"
+
+[package.metadata.bazel.test-tools.acyclic_fs_test]
+rustc = "//:rustc"
+
+[package.metadata.bazel.test-dependencies]
+operation_claim_model = ["acyclic_stream", "loom"]
+git_history = ["acyclic_fs", "acyclic_stream", "thiserror", "tokio"]
+git_marker_contracts = ["proptest"]
+merge_driver_contracts = ["acyclic_fs", "acyclic_fs_base"]
+native_root_identity = ["acyclic_fs_native_contract"]
+native_view_table = []
+native_checkpoint = ["acyclic_auth", "acyclic_fs_native_contract", "thiserror"]
+wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
+wire_error_contracts = ["acyclic_fs", "acyclic_auth", "acyclic_fs_native_contract", "acyclic_fs_wire", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "bytes", "prost_reflect", "tokio", "tonic"]
+wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
+source_lifecycle = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tempfile", "tokio"]
+s3_contracts = ["acyclic_fs", "acyclic_fs_work", "bytes", "tokio"]
+workspace_append = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "futures", "proptest", "tokio"]
+workspace_context_contracts = ["acyclic_fs", "tokio"]
+workspace_contracts = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "sha2", "tokio"]
+workspace_join_history = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
+workspace_merge = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
 
 [[test]]
 name = "main"
@@ -55,6 +99,75 @@ required-features = ["browser"]
 name = "browser_blob_custody"
 path = "tests/browser_blob_custody.rs"
 required-features = ["browser"]
+
+[[test]]
+name = "wire_contracts"
+path = "tests/wire_contracts.rs"
+
+[[test]]
+name = "git_history"
+path = "tests/git_history.rs"
+
+[[test]]
+name = "git_marker_contracts"
+path = "tests/git_marker_contracts.rs"
+
+[[test]]
+name = "merge_driver_contracts"
+path = "tests/merge_driver_contracts.rs"
+
+[[test]]
+name = "source_lifecycle"
+path = "tests/source_lifecycle.rs"
+
+[[test]]
+name = "s3_contracts"
+path = "tests/s3_contracts.rs"
+
+[[test]]
+name = "workspace_append"
+path = "tests/workspace_append.rs"
+
+[[test]]
+name = "workspace_contracts"
+path = "tests/workspace_contracts.rs"
+
+[[test]]
+name = "workspace_join_history"
+path = "tests/workspace_join_history.rs"
+
+[[test]]
+name = "workspace_merge"
+path = "tests/workspace_merge.rs"
+
+[[test]]
+name = "workspace_context_contracts"
+path = "tests/workspace_context_contracts.rs"
+
+[[test]]
+name = "wire_error_contracts"
+path = "tests/wire_error_contracts.rs"
+
+[[test]]
+name = "wire_rpc"
+path = "tests/wire_rpc.rs"
+
+[[test]]
+name = "native_checkpoint"
+path = "tests/native_checkpoint.rs"
+
+[[test]]
+name = "native_root_identity"
+path = "tests/native_root_identity.rs"
+
+[[test]]
+name = "native_view_table"
+path = "tests/native_view_table.rs"
+
+[[test]]
+name = "operation_claim_model"
+path = "tests/operation_claim_model.rs"
+required-features = ["model-checking"]
 
 [[bench]]
 name = "lease_paths"

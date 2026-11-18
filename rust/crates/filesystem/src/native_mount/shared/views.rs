@@ -7,14 +7,14 @@
 
 use super::view_table::{RetiringView, ViewLease, ViewOwner, ViewTable};
 use crate::NativeMountError;
-use crate::sync::native::RwLock;
+use crate::native_sync::RwLock;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::sync::{Arc, PoisonError};
 
 pub(crate) struct NamedViews<K, C> {
-    table: crate::sync::native::Arc<ViewTable<C>>,
+    table: crate::native_sync::Arc<ViewTable<C>>,
     names: RwLock<Names<K>>,
 }
 
@@ -28,7 +28,7 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
     /// Views with serials `1..=max_serial`.
     pub(crate) fn new(max_serial: u64) -> Self {
         Self {
-            table: crate::sync::native::Arc::new(ViewTable::new(max_serial)),
+            table: crate::native_sync::Arc::new(ViewTable::new(max_serial)),
             names: RwLock::new(Names {
                 by_name: HashMap::new(),
                 by_serial: BTreeMap::new(),

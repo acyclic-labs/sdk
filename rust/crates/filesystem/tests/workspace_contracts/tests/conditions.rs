@@ -1,6 +1,12 @@
 //! Conditional writes and removals.
-use super::*;
-use crate::FileCondition;
+use acyclic_fs::{
+    FileCondition, FileId, Fs, IdempotencyKey, MemoryAuthorityBackend, MemoryObjectBackend,
+    TransactionCommit, Workspace, WorkspaceError,
+};
+use acyclic_stream::OwnedBytes;
+use std::error::Error;
+
+use crate::fixtures::commit;
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     sha2::Digest::finalize(sha2::Digest::chain_update(
@@ -12,7 +18,7 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 
 async fn seeded(
     name: &str,
-) -> Result<Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>, Box<dyn Error>> {
+) -> Result<Workspace<MemoryAuthorityBackend, MemoryObjectBackend>, Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace(name))?;
     let mut create = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
@@ -29,7 +35,8 @@ async fn write_if_checks_absence_identity_and_digest() -> Result<(), Box<dyn Err
     let workspace = seeded("conditional-write").await?;
     let actual = unbounded!(workspace, stat("/file.txt"))?.file_id;
     let mut stale = actual.into_bytes();
-    stale[0] ^= 1;
+    let [first, ..] = &mut stale;
+    *first ^= 1;
     let stale = FileId::from_bytes(stale);
     let mut write = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
     for refused in [

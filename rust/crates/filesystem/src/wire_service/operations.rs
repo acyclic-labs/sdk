@@ -89,7 +89,7 @@ where
                 None,
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
             .workspace();
         Ok(Response::new(wire::WorkspaceResponse {
@@ -122,7 +122,7 @@ where
         let outcome = workspace
             .delete(operation(request.operation)?)
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|error| Status::from(&error))?;
         let status = match outcome {
             WorkspaceDelete::Deleted => wire::MutationStatus::Committed,
             WorkspaceDelete::AlreadyDeleted => wire::MutationStatus::AlreadyCommitted,
@@ -141,7 +141,7 @@ where
         let generation = workspace
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         Ok(Response::new(generation_message(&generation).await?))
     }
@@ -183,7 +183,7 @@ where
                         &cancellation,
                     )
                     .await
-                    .map_err(|failure| status(&failure.error))?
+                    .map_err(|failure| Status::from(&failure.error))?
                     .value
                     .bytes
             }
@@ -196,7 +196,7 @@ where
                         &cancellation,
                     )
                     .await
-                    .map_err(|failure| status(&failure.error))?
+                    .map_err(|failure| Status::from(&failure.error))?
                     .value
             }
         };
@@ -220,7 +220,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         Ok(Response::new(wire::StatResponse {
             stat: Some(stat_message(&value)),
@@ -248,7 +248,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
             .0;
         let next = listed
@@ -270,7 +270,7 @@ where
             let stat = generation
                 .stat(&child, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(|failure| status(&failure.error))?
+                .map_err(|failure| Status::from(&failure.error))?
                 .value;
             if stat.file_id != entry.file_id || stat.kind != entry.kind {
                 return Err(Status::data_loss(
@@ -302,7 +302,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
             .bytes;
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > request.maximum_bytes
@@ -340,7 +340,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
             .0;
         let truncated =
@@ -390,7 +390,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
@@ -402,7 +402,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
         {
             TransactionRebase::Rebased(generation) | TransactionRebase::Current(generation) => {
@@ -470,11 +470,11 @@ where
                         },
                     )
                     .await
-                    .map_err(|failure| status(&failure.error))
+                    .map_err(|failure| Status::from(&failure.error))
                     .map(|receipt| receipt.value)
             })
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&destination).await?),
@@ -503,7 +503,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         Ok(Response::new(wire::DiffResponse {
             from: Some(generation_ref(changes.from())),
@@ -548,7 +548,7 @@ where
                 &crate::CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         Ok(Response::new(rebase_message(outcome)))
     }
@@ -691,7 +691,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&WorkspaceError::from(failure.error)))?;
+            .map_err(|failure| Status::from(&WorkspaceError::from(failure.error)))?;
         let response = match observed.value {
             Some(commit) => wire::ObserveResponse {
                 state: "completed".to_owned(),

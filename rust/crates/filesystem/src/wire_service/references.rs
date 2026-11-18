@@ -90,7 +90,7 @@ async fn workspace_message<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
     let head = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map_err(|failure| status(&failure.error))?
+        .map_err(|failure| Status::from(&failure.error))?
         .value;
     Ok(wire::Workspace {
         workspace: Some(workspace_ref(workspace)),
@@ -109,7 +109,7 @@ async fn generation_message<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     let (parents, _allocation) = generation
         .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map_err(|failure| status(&failure.error))?
+        .map_err(|failure| Status::from(&failure.error))?
         .value;
     let parents = parents
         .into_iter()

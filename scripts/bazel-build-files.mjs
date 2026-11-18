@@ -518,14 +518,13 @@ const repositorySources = [...members].some(id => readsRepository(packages.get(i
 const sourcesRule = repositorySources.length
   ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
   : "";
-// Files a build script reads beyond its package, from [package.metadata.bazel]
-// build-script-data = ["relative/path", ...]: each path names one tracked file or every tracked
-// file under a directory, relative to the package. A path that names nothing fails generation.
-function scriptData(p) {
-  return (p.metadata?.bazel?.["build-script-data"] ?? []).flatMap(relative => {
+// Build script paths name tracked files or directories relative to the package.
+// build-script-inputs replaces the package-wide defaults. build-script-data adds inputs.
+function scriptData(p, key) {
+  return (p.metadata?.bazel?.[key] ?? []).flatMap(relative => {
     const named = path.posix.normalize(path.posix.join(dir(p), relative));
     const files = tracked.filter(file => file === named || file.startsWith(`${named}/`)).sort();
-    if (!files.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} build-script-data names ${relative}, which holds no tracked file`);
+    if (!files.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} ${key} names ${relative}, which holds no tracked file`);
     return files.map(file => (ownerOf(file) === dir(p) ? within(dir(p), file) : fileLabel(file)));
   });
 }
@@ -639,11 +638,11 @@ const wasmGraph = wasm && {nodes:[wasmNodes], roots:wasm.roots, suffix:"_wasm",
 // and every renamed dependency's alias. crate_universe's all_crate_deps() and aliases() are not
 // used: they follow its default-features resolution, and aliases() drops the conditional aliases
 // of a package with more than one cfg condition.
-function edges(p, kinds, graph, variants = {}) {
+function edges(p, kinds, graph, variants = {}, names) {
   return (graph?.nodes ?? nodes).map(byId => {
     const deps = [], procMacros = [], aliases = {};
     for (const dep of byId.get(p.id)?.deps ?? []) {
-      if (!dep.dep_kinds.some(k => kinds.includes(k.kind))) continue;
+      if (!dep.dep_kinds.some(k => kinds.includes(k.kind)) || (names && !names.includes(dep.name))) continue;
       const target = packages.get(dep.pkg);
       const lib = libOf(target);
       const targetGraph = kinds.includes("build") || lib.kind.includes("proc-macro") ? undefined : graph;
@@ -694,10 +693,11 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
   const libInputs = (target, unitTest = false) => {
     const extra = extras(target, libCovered);
+    const testOnly = file => !unitTest && testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
     return [
       ["srcs", plus(
         glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
-        list(extra.srcs.filter(file => !platformSourcePatterns.includes(file))),
+        list(extra.srcs.filter(file => !platformSourcePatterns.includes(file) && !testOnly(file))),
         configuredSources,
       )],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
@@ -716,8 +716,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : undefined],
   ];
   // Rendered dependencies of one target.
-  const deps = (kinds, extra = [], extraMacros = [], variants = {}) => {
-    const first = edges(p, kinds, graph, variants);
+  const deps = (kinds, extra = [], extraMacros = [], variants = {}, names) => {
+    const first = edges(p, kinds, graph, variants, names);
     return [
       ["deps", plus(list(extra), configured(first, e => list(e.deps)))],
       ["proc_macro_deps", plus(list(extraMacros), configured(first, e => list(e.procMacros)))],
@@ -742,15 +742,22 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // Cases run in the package directory, as under Cargo, and read its files there.
   // What a test of `target` reads at run time beyond its package's non-Rust files: the literal
   // reads of its own closure, of this package's library, and of its first-party dev-dependencies.
+  const directTestDependencies = target => p.metadata?.bazel?.["test-dependencies"]?.[target.name];
+  const standaloneTest = target => {
+    const direct = directTestDependencies(target);
+    return direct !== undefined && !direct.includes(lib && crateName(lib));
+  };
   const runtimeData = target => {
-    const all = [readsOf(dir(p), repoRelative(target)), ...[...(lib ? [p] : []), ...devLibraries(p)].map(other => readsOf(dir(other), repoRelative(libOf(other))))];
+    const standalone = standaloneTest(target);
+    const libraries = standalone ? [] : [...(lib ? [p] : []), ...devLibraries(p)];
+    const all = [readsOf(dir(p), repoRelative(target)), ...libraries.map(other => readsOf(dir(other), repoRelative(libOf(other))))];
     const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
     if (files.has(".cargo/config.toml")) for (const file of cargoConfigInputs) files.add(file);
     const labels = new Set([...dirs].flatMap(treeLabels));
     for (const file of files) {
       const owner = ownerOf(file);
       if (owner !== dir(p)) labels.add(fileLabel(file));
-      else if (file.endsWith(".rs")) labels.add(within(owner, file));
+      else if (standalone || file.endsWith(".rs")) labels.add(within(owner, file));
     }
     return [...labels].sort();
   };
@@ -768,7 +775,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // A suite whose cases each start Cargo runs fewer at once, so they do not contend for the same
   // cores and exceed the per-case limit.
   const workers = p.metadata?.bazel?.["test-workers"];
-  const test = (wanted, attrs, reads, binaries, id) => {
+  const test = (wanted, attrs, reads, binaries, id, standalone = false) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
     reads = [...new Set([...reads, ...testData(p, wanted)])];
     let name = wanted;
@@ -784,21 +791,20 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     };
     rules.push(
-      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
+      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(standalone ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
       isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
       ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => isolated(`${name}_${profile}`, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined]], ["manual"], wrapper ? { "@nodejs//:node": "node" } : {})),
     );
   };
   if (script) {
-    // A build script compiles from its own module closure and runs over every package file.
-    // Its non-Rust package files are already in the compile_data glob.
-    const extra = extras(script, file => !file.endsWith(".rs") && !TEST_DIRS.test(file));
+    const defaultInputs = p.metadata?.bazel?.["build-script-inputs"] === undefined;
+    const extra = extras(script, file => defaultInputs && !file.endsWith(".rs") && !TEST_DIRS.test(file));
     rules.push(["cargo_build_script", [
       ["name", q(`build_script${suffix}`)],
       ["crate_root", q(local(script.src_path))],
       ["srcs", list(extra.srcs)],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list(extra.data))],
-      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p)]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
+      ["compile_data", plus(defaultInputs ? glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]) : undefined, list(extra.data))],
+      ["data", plus(defaultInputs ? glob(["**"], ["BUILD.bazel", ...NOT_LIB]) : undefined, list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p, "build-script-inputs"), ...scriptData(p, "build-script-data")]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script).filter(([k]) => k !== "clippy_config"),
@@ -889,7 +895,16 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // Integration tests, examples and benches compile from their own directory and the package's
   // library, with dev-dependencies. Cargo builds every example and runs those with `test = true`;
   // it builds a bench only when its `test = true`.
+  const separateDeps = () => deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro);
+  const sharedDeps = !graph && p.metadata?.bazel?.["share-separate-deps"]
+    ? separateDeps().filter(([, value]) => value !== undefined && value !== "[]")
+    : [];
+  const depVariable = key => `SEPARATE_${key.toUpperCase()}`;
   const separate = target => {
+    const names = directTestDependencies(target);
+    const includeOwn = !standaloneTest(target);
+    const needsBuildScript = includeOwn || p.metadata?.bazel?.["test-build-script"]?.includes(target.name);
+    const extraDeps = [...(includeOwn ? ownLib : []), ...(needsBuildScript ? ownDeps : [])];
     const crateRoot = local(target.src_path);
     const extra = extras(target, () => false);
     return [
@@ -897,7 +912,9 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["srcs", list(extra.srcs)],
       ["compile_data", list(extra.data)],
       ...common(target),
-      ...deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro),
+      ...(names ? deps([null, "dev"], extraDeps,
+        includeOwn ? ownMacro : [], {}, names)
+        : sharedDeps.length ? sharedDeps.map(([key]) => [key, depVariable(key)]) : separateDeps()),
     ];
   };
   for (const target of executables.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
@@ -909,7 +926,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     const reads = runtimeData(target);
     const consumer = wasm?.testConsumers?.[p.name];
     if (consumer) reads.push(wasmNodeModulesTarget(consumer));
-    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
+    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`, standaloneTest(target));
   }
   for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;
@@ -919,7 +936,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     rules.push(["rust_binary", [["name", q(name)], ...separate(example),
       ["visibility", harnessTools.has(`${label(p)}:${name}`) ? q(["//visibility:public"]) : undefined]]]);
   }
-  return {rules, features:configured(features, list), env};
+  return {rules, features:configured(features, list), env,
+    bindings: sharedDeps.map(([key, value]) => [depVariable(key), value])};
 }
 function renderBuild(native, wasm) {
   const rules = [...native.rules, ...(wasm?.rules ?? [])];
@@ -931,6 +949,7 @@ function renderBuild(native, wasm) {
     `FEATURES = ${native.features}\n\n`,
     ...(wasm ? [`WASM_FEATURES = ${wasm.features}\n\n`] : []),
     `PACKAGE_ENV = ${q(native.env)}\n`,
+    ...native.bindings.map(([name, value]) => `\n${name} = ${value}\n`),
   ];
   return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
 }

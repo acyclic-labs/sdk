@@ -765,9 +765,9 @@ fn physical_cleanup_joins_last_lease(
             source.capture_retired(),
             "recording refusal cannot undo physical source quiescence"
         );
-        let completed = root.receipt().unwrap();
+        assert_eq!(root.receipt(), Err(crate::WorkObservationError::Poisoned));
         assert!(!source.shutdown_physical_cleanup()?.into_result()?);
-        assert_eq!(root.receipt().unwrap(), completed);
+        assert_eq!(root.receipt(), Err(crate::WorkObservationError::Poisoned));
         drop(source);
     } else {
         assert!(
@@ -775,14 +775,14 @@ fn physical_cleanup_joins_last_lease(
             "physical cleanup refused its last lease completion: {result:?}"
         );
         assert!(result?);
+        let after = root.receipt()?;
+        assert_eq!(after.items_examined, before.items_examined + 1);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
     }
     assert!(
         weak.upgrade().is_none(),
         "original physical source custody did not retire"
     );
-    let after = root.receipt().unwrap();
-    assert_eq!(after.items_examined, before.items_examined + 1);
-    assert_eq!(after.allocation_operations, before.allocation_operations);
     Ok(())
 }
 

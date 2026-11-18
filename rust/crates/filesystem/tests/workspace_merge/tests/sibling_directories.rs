@@ -1,4 +1,12 @@
-use super::*;
+use acyclic_fs::{
+    ApplyOptions, ConflictKind, ForkOptions, Fs, Generation, IdempotencyKey, JoinOutcome,
+    PublicationPermit,
+    kernel::{FileMetadata, MetadataField},
+};
+use acyclic_stream::OwnedBytes;
+use std::error::Error;
+
+use crate::fixtures::{commit, fork_workspace};
 
 #[tokio::test]
 async fn sibling_directories_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
@@ -31,16 +39,16 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
                     idempotency_key: IdempotencyKey::new(),
                 },
                 std::collections::BTreeMap::new(),
-                crate::PublicationPermit::Unrestricted,
+                PublicationPermit::Unrestricted,
             )
             .await?
         {
             JoinOutcome::Applied(_) => {}
             JoinOutcome::Conflicted { conflicts, .. } => {
                 let described = plan.describe_conflicts(conflicts, false).await?;
-                panic!("join conflicted: {:?}", described.conflicts);
+                return Err(format!("join conflicted: {:?}", described.conflicts).into());
             }
-            _ => panic!("join did not apply"),
+            _ => return Err("join did not apply".into()),
         }
     }
     for path in [
@@ -61,8 +69,6 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
 #[tokio::test]
 async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
 -> Result<(), Box<dyn Error>> {
-    use crate::kernel::MetadataField;
-
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("sibling-times-main"))?;
     main.write_text("/README.md", "base\n").await?;
@@ -106,12 +112,12 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
                     idempotency_key: IdempotencyKey::new(),
                 },
                 std::collections::BTreeMap::new(),
-                crate::PublicationPermit::Unrestricted,
+                PublicationPermit::Unrestricted,
             )
             .await?;
         if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
             let described = plan.describe_conflicts(conflicts, false).await?;
-            panic!("sibling join conflicted: {:?}", described.conflicts);
+            return Err(format!("sibling join conflicted: {:?}", described.conflicts).into());
         }
     }
     assert_eq!(
@@ -146,7 +152,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
                 idempotency_key: IdempotencyKey::new(),
             },
             std::collections::BTreeMap::new(),
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
         )
         .await?
     else {
@@ -154,6 +160,9 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     };
     let described = plan.describe_conflicts(conflicts, truncated).await?;
     assert_eq!(described.conflicts.len(), 1);
-    assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Metadata);
+    assert_eq!(
+        described.conflicts.first().map(|conflict| conflict.kind),
+        Some(ConflictKind::Metadata)
+    );
     Ok(())
 }

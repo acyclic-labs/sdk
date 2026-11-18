@@ -1,4 +1,4 @@
-use crate::sync::native::{Condvar, Mutex};
+use crate::native_sync::{Condvar, Mutex};
 use rustix::fs::{AtFlags, Statx};
 use std::collections::HashMap;
 use std::fs::File;

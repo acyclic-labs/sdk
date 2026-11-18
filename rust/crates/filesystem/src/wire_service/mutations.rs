@@ -40,7 +40,7 @@ async fn create_entry<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 's
             transaction
                 .create_directory(&value.path, WorkBudget::UNBOUNDED, cancellation)
                 .await
-                .map_err(|failure| status(&failure.error))?;
+                .map_err(|failure| Status::from(&failure.error))?;
             transaction
                 .set_metadata(
                     &value.path,
@@ -59,7 +59,7 @@ async fn create_entry<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 's
                     cancellation,
                 )
                 .await
-                .map_err(|failure| status(&failure.error))?;
+                .map_err(|failure| Status::from(&failure.error))?;
             transaction
                 .set_metadata(
                     &value.path,
@@ -72,7 +72,7 @@ async fn create_entry<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 's
         _ => return Err(Status::invalid_argument("invalid mutation family")),
     }
     .map(|_| ())
-    .map_err(|failure| status(&failure.error))
+    .map_err(|failure| Status::from(&failure.error))
 }
 
 async fn change_range<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
@@ -129,7 +129,7 @@ async fn change_range<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 's
         _ => return Err(Status::invalid_argument("invalid mutation family")),
     }
     .map(|_| ())
-    .map_err(|failure| status(&failure.error))
+    .map_err(|failure| Status::from(&failure.error))
 }
 
 async fn replace_metadata<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
@@ -143,12 +143,12 @@ async fn replace_metadata<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore 
             let mut updated = metadata(value.metadata)?;
             let path =
                 crate::workspace::customer_path(&value.path, transaction.checkout.volume_config())
-                    .map_err(|error| status(&error))?;
+                    .map_err(|error| Status::from(&error))?;
             let current = transaction
                 .checkout
                 .read_metadata(&path, WorkBudget::UNBOUNDED, cancellation)
                 .await
-                .map_err(|failure| status(&WorkspaceError::from(failure.error)))?
+                .map_err(|failure| Status::from(&WorkspaceError::from(failure.error)))?
                 .value;
             // Wire metadata has no authority to replace named attributes,
             // including the root's persisted policy.
@@ -162,7 +162,7 @@ async fn replace_metadata<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore 
         _ => return Err(Status::invalid_argument("invalid mutation family")),
     }
     .map(|_| ())
-    .map_err(|failure| status(&failure.error))
+    .map_err(|failure| Status::from(&failure.error))
 }
 
 async fn change_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
@@ -247,5 +247,5 @@ async fn change_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         _ => return Err(Status::invalid_argument("invalid mutation family")),
     }
     .map(|_| ())
-    .map_err(|failure| status(&failure.error))
+    .map_err(|failure| Status::from(&failure.error))
 }

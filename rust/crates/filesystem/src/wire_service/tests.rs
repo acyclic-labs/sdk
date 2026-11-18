@@ -3,12 +3,8 @@ use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::Filesystem
 use futures::StreamExt;
 
 include!("access_tests.rs");
-#[path = "authority_error_tests.rs"]
-mod authority_error_tests;
 #[path = "metadata_tests.rs"]
 mod metadata_tests;
-#[path = "transfer_tests.rs"]
-mod transfer_tests;
 
 struct TestIssuer;
 
@@ -108,68 +104,9 @@ impl FilesystemCredentialIssuer for TestIssuer {
     }
 }
 
-fn operation(value: u8) -> Option<wire::OperationOptions> {
-    Some(wire::OperationOptions {
-        idempotency_key: operation_bytes(value),
-    })
-}
-
-fn operation_bytes(value: u8) -> Vec<u8> {
-    let mut id = [0_u8; 16];
-    id[15] = value;
-    id.to_vec()
-}
-
-fn mutation(value: wire::mutation::Mutation) -> wire::Mutation {
-    wire::Mutation {
-        mutation: Some(value),
-    }
-}
-
-#[tokio::test]
-async fn handshake_and_creation_expose_every_canonical_profile()
--> Result<(), Box<dyn std::error::Error>> {
-    let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
-    let advertised = service
-        .handshake(Request::new(wire::HandshakeRequest { protocol: None }))
-        .await?
-        .into_inner()
-        .capabilities
-        .ok_or("missing capabilities")?;
-    let profiles = [
-        wire::FilesystemProfile::Portable,
-        wire::FilesystemProfile::Posix,
-        wire::FilesystemProfile::Windows,
-        wire::FilesystemProfile::Browser,
-    ];
-    assert_eq!(advertised.profiles, profiles.map(|profile| profile as i32));
-    for (index, selected) in profiles.into_iter().enumerate() {
-        let created = service
-            .create_workspace(Request::new(wire::CreateWorkspaceRequest {
-                name: format!("profile-{index}"),
-                profile: selected as i32,
-                operation: operation(u8::try_from(index + 1)?),
-            }))
-            .await?
-            .into_inner()
-            .workspace
-            .ok_or("missing workspace")?;
-        assert_eq!(created.profile, selected as i32);
-        let observed = service
-            .observe(Request::new(wire::ObserveRequest {
-                workspace: created.workspace.clone(),
-                operation_id: operation_bytes(u8::try_from(index + 1)?),
-            }))
-            .await?
-            .into_inner();
-        assert_eq!(observed.state, "completed");
-        assert_eq!(
-            observed.outcome.and_then(|outcome| outcome.generation),
-            created.head
-        );
-    }
-    Ok(())
-}
+#[path = "../../tests/support/wire_requests.rs"]
+mod requests;
+use requests::{mutation, operation, operation_bytes};
 
 #[tokio::test]
 async fn source_provider_controls_capability_and_all_lifecycle_rpcs()
@@ -777,6 +714,3 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
     assert_eq!(deleted.status, wire::MutationStatus::Committed as i32);
     Ok(())
 }
-
-#[path = "status_tests.rs"]
-mod status_tests;
