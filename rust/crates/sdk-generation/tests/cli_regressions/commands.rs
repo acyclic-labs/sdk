@@ -290,8 +290,11 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             let relative = source["relative"].as_str().unwrap();
             let source = source["file"].as_str().unwrap();
             let expected = fs::read(acyclic_test_support::source_path(source))?;
-            if fs::read(root.join(relative)).ok().as_deref() != Some(expected.as_slice()) {
-                continue 'fixture;
+            match fs::read(root.join(relative)) {
+                Ok(actual) if actual == expected => {}
+                Ok(_) => continue 'fixture,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue 'fixture,
+                Err(error) => return Err(error),
             }
             if Path::new(relative)
                 .file_name()
@@ -302,7 +305,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                     && sources.iter().any(|source| {
                         source["relative"].as_str().map(Path::new) == Some(build.as_path())
                     });
-                if !covered && root.join(&build).exists() {
+                if !covered && root.join(&build).try_exists()? {
                     continue 'fixture;
                 }
             }
