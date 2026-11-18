@@ -77,8 +77,8 @@ rust_library(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -148,8 +148,8 @@ rust_library(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -218,8 +218,8 @@ rust_library(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -311,7 +311,6 @@ rust_test(
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem:acyclic_fs",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-local:acyclic_harness_local",
         "//rust/crates/harness-search:acyclic_harness_search",
@@ -388,8 +387,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -459,8 +458,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -529,8 +528,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -631,8 +630,8 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -711,8 +710,8 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -790,8 +789,8 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1079,8 +1078,8 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1159,8 +1158,8 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1238,8 +1237,8 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1388,8 +1387,8 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1468,8 +1467,8 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1547,8 +1546,8 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1680,8 +1679,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1760,8 +1759,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1839,8 +1838,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -1948,8 +1947,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2028,8 +2027,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2107,8 +2106,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2216,8 +2215,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2296,8 +2295,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2375,8 +2374,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2484,8 +2483,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2564,8 +2563,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2643,8 +2642,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2752,8 +2751,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2832,8 +2831,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -2911,8 +2910,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3021,8 +3020,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3101,8 +3100,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3180,8 +3179,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3290,8 +3289,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3370,8 +3369,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3449,8 +3448,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3558,8 +3557,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3638,8 +3637,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3717,8 +3716,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3827,8 +3826,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3907,8 +3906,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -3986,8 +3985,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -4095,8 +4094,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -4175,8 +4174,8 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -4254,8 +4253,8 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
@@ -4388,8 +4387,8 @@ rust_library(
     ] + [
         "//rust/crates/actors:acyclic_actors_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
-        "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
+        "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/harness-client:acyclic_harness_client_wasm",
         "//rust/crates/harness-core:acyclic_harness_core_wasm",
         "//rust/crates/harness-hosting:acyclic_harness_hosting_wasm",

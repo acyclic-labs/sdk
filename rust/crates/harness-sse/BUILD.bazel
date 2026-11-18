@@ -36,8 +36,8 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",
@@ -110,6 +110,7 @@ rust_library(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
+        "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/stream:acyclic_stream_wasm",
         "@wasm_crates//bytes-1.12.1",
         "@wasm_crates//futures-0.3.34",

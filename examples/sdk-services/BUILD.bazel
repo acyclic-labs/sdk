@@ -34,8 +34,8 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/actors:acyclic_actors",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
@@ -69,8 +69,8 @@ rust_binary(
         ":sdk_service_examples",
     ] + [
         "//rust/crates/actors:acyclic_actors",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
@@ -103,8 +103,8 @@ rust_binary(
         ":sdk_service_examples",
     ] + [
         "//rust/crates/actors:acyclic_actors",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
@@ -137,8 +137,8 @@ rust_binary(
         ":sdk_service_examples",
     ] + [
         "//rust/crates/actors:acyclic_actors",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
@@ -171,8 +171,8 @@ rust_binary(
         ":sdk_service_examples",
     ] + [
         "//rust/crates/actors:acyclic_actors",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
@@ -205,8 +205,8 @@ rust_binary(
         ":sdk_service_examples",
     ] + [
         "//rust/crates/actors:acyclic_actors",
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",

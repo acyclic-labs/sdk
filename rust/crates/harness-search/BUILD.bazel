@@ -37,8 +37,8 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
-        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-layout:acyclic_harness_layout",
         "//rust/crates/stream:acyclic_stream",
@@ -135,8 +135,8 @@ rust_library(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
-        "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
+        "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/harness-core:acyclic_harness_core_wasm",
         "//rust/crates/harness-layout:acyclic_harness_layout_wasm",
         "//rust/crates/stream:acyclic_stream_wasm",
