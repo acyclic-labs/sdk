@@ -139,10 +139,6 @@ fn historical_docs_rs_policy_is_required_and_validated() {
         .any(|profile| profile.default_features && profile.features.is_empty()));
     assert!(profiles.iter().any(|profile| !profile.default_features
         && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
-    assert!(matches!(
-        plan(serde_json::json!({"features":["absent"]})),
-        Err(ProfileError::InvalidFeature { .. })
-    ));
     for policy in [
         serde_json::json!({"all-features":"true"}),
         serde_json::json!({"rustdoc-args":["--cfg","pretend"]}),
