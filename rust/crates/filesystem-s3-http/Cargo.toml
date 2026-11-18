@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 description = "S3 HTTP translation over Acyclic filesystem workspaces"
 
 [package.metadata.bazel]
