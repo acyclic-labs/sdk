@@ -54,22 +54,11 @@ fn main() {
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
 }
 
-fn source_edit_baseline(include_plugin: bool) -> Fixture {
-    let fixture = fixture(include_plugin);
-    let first = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "source-closure-baseline",
-        "preview",
-        true,
-    );
-    assert!(first.status.success(), "{}", output_message(&first));
-
-    fixture
-}
-
-fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, changed: &str) {
+fn assert_source_edit_invalidates_output(
+    fixture: &Fixture,
+    relative: &str,
+    changed: &str,
+) -> String {
     let source = fixture.root.join(relative);
     let original = fs::read(&source).unwrap();
     let original_hash = hash_bytes(&original);
@@ -114,9 +103,49 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
     let drift = run_drift(fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));
 
-    let refreshed_output = fixture
-        .root
-        .join(format!("refreshed-after-source-restore-{suffix}"));
+    original_hash
+}
+
+#[test]
+fn crate_workspace_and_plugin_source_edits_invalidate_output() {
+    runtime::time_control();
+    let fixture = fixture(true);
+    let first = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "source-closure-baseline",
+        "preview",
+        true,
+    );
+    assert!(first.status.success(), "{}", output_message(&first));
+
+    let restored = [
+        (
+            "rust/crates/demo/src/lib.rs",
+            "pub fn demo() -> u64 { 7 }\n// changed crate comment\n",
+        ),
+        (
+            "rust/crates/demo/README.md",
+            "# Demo crate\n\nChanged crate guide.\n",
+        ),
+        (
+            "docs/guide.md",
+            "# Fixture guide\n\nChanged workspace guide.\n",
+        ),
+        (
+            "plugin/src/main.rs",
+            "fn main() {}\n// changed plugin source\n",
+        ),
+    ]
+    .map(|(path, changed)| {
+        (
+            path,
+            assert_source_edit_invalidates_output(&fixture, path, changed),
+        )
+    });
+
+    let refreshed_output = fixture.root.join("refreshed-after-source-restore");
     let refreshed = run_generate(
         &fixture.root,
         &fixture.rustdoc,
@@ -130,39 +159,9 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
         &fs::read(refreshed_output.join("generation-manifest.v1.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(manifest["sourceFiles"][relative], original_hash);
-}
-
-#[test]
-fn crate_rust_comment_and_markdown_guide_edits_invalidate_output() {
-    runtime::time_control();
-    let fixture = source_edit_baseline(false);
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "rust/crates/demo/src/lib.rs",
-        "pub fn demo() -> u64 { 7 }\n// changed crate comment\n",
-    );
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "rust/crates/demo/README.md",
-        "# Demo crate\n\nChanged crate guide.\n",
-    );
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "docs/guide.md",
-        "# Fixture guide\n\nChanged workspace guide.\n",
-    );
-}
-
-#[test]
-fn plugin_rust_edits_invalidate_output() {
-    runtime::time_control();
-    let fixture = source_edit_baseline(true);
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "plugin/src/main.rs",
-        "fn main() {}\n// changed plugin source\n",
-    );
+    for (path, hash) in restored {
+        assert_eq!(manifest["sourceFiles"][path], hash);
+    }
 }
 
 #[test]
