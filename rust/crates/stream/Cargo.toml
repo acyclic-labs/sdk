@@ -19,6 +19,8 @@ build-script-inputs = []
 
 [package.metadata.bazel.test-dependencies]
 follow-contracts = ["acyclic_stream", "acyclic_stream_wire", "futures", "tempfile", "tokio"]
+provider-contracts = ["acyclic_stream", "tempfile", "tokio"]
+session-contracts = ["acyclic_stream", "acyclic_stream_wire", "bytes", "futures", "proptest", "prost", "tokio"]
 
 [package.metadata.acyclic]
 consumer-features = [
