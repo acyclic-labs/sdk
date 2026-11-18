@@ -965,7 +965,7 @@ async fn parent_read_work(
                 .await
                 .unwrap();
         }
-        spent = ctx.spent().unwrap();
+        spent = ctx.spent()?;
     }
     Ok(spent)
 }

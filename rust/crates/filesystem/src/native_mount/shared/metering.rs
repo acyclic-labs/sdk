@@ -37,11 +37,11 @@ impl CallbackWork {
         }
     }
 
-    pub(crate) fn add(&mut self, work: WorkCounters) -> Result<(), crate::WorkError> {
-        if let Ok(total) = &mut self.0
-            && let Err(error) = total.try_add_assign(&work)
-        {
-            self.invalidate(error.into());
+    pub(crate) fn add(&mut self, work: WorkCounters) -> Result<(), crate::WorkObservationError> {
+        let total = self.0.as_mut().map_err(|error| *error)?;
+        if let Err(error) = total.try_add_assign(&work) {
+            let error = error.into();
+            self.invalidate(error);
             return Err(error);
         }
         Ok(())

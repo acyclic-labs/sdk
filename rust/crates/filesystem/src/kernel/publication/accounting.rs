@@ -71,4 +71,5 @@ fn unavailable_child_receipt_preserves_cause_and_fences_parent() {
     ));
     assert_eq!(accounting.spent(), Err(observation));
     assert!(accounting.check().is_err());
+    assert!(accounting.accept_backend(WorkCounters::UNCHARGED).is_err());
 }

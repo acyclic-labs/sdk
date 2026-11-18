@@ -224,11 +224,11 @@ impl DarwinMountContext {
         } else {
             Ok(())
         };
-        if let Err(overflow) = recorded {
+        if let Err(observation) = recorded {
             match &result {
-                Ok(_) => return Err(self.record_failure(overflow.into(), Err(overflow.into()))),
+                Ok(_) => return Err(self.record_failure(observation.into(), Err(observation))),
                 Err(cause) if !fatal(cause) => {
-                    self.record_failure(overflow.into(), Err(overflow.into()));
+                    self.record_failure(observation.into(), Err(observation));
                 }
                 Err(_) => {}
             }

@@ -288,5 +288,4 @@ fn workspace_name_admission_uses_the_complete_arc_boundary() {
         drop(result);
         assert_eq!(original.live_allocation_bytes().unwrap(), root_bytes);
     }
-    Ok(())
 }

@@ -15,6 +15,12 @@ fn callback_projection_reports_an_unobservable_receipt() {
             crate::NativeTreeMaterializationError::OriginalWorkPoisoned
         )
     ));
+    assert!(matches!(
+        observed_error((cause(), Err(crate::WorkError::Overflow.into()))),
+        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::Overflow
+        ))
+    ));
 }
 
 fn check_callback(error: &NativeMountError, expected: CallbackFailure) {

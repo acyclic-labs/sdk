@@ -363,7 +363,8 @@ impl ProjectionCore {
             .completed_future_request_work
             .add(prefix);
         if let Err(error) = recorded {
-            self.retain_handler_failure((error.into(), Err(error.into())));
+            self.retain_handler_failure((error.into(), Err(error)));
+            return result.and(Err((error.into(), Err(error))));
         }
         result.map(|receipt| receipt.value)
     }

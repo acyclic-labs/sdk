@@ -73,7 +73,7 @@ fn observation_code(error: &crate::WorkObservationError) -> Code {
 fn filesystem_code(error: &FsError) -> Code {
     use FsError as E;
     match error {
-        E::WorkObservation(_) => Code::Internal,
+        E::WorkObservation(error) => observation_code(error),
         E::InvalidAccessPolicy => Code::PermissionDenied,
         E::UnauthenticatedAccessFacts => Code::Unauthenticated,
         E::Cancelled(_) => Code::Cancelled,
@@ -169,7 +169,7 @@ fn filesystem_code(error: &FsError) -> Code {
 fn authority_code(error: &AuthorityStoreError) -> Code {
     use AuthorityStoreError as E;
     match error {
-        E::WorkObservation(_) => Code::Internal,
+        E::WorkObservation(error) => observation_code(error),
         E::Missing | E::Retired => Code::NotFound,
         E::Cancelled => Code::Cancelled,
         E::NativeStream(error) => stream_code(error),
@@ -213,7 +213,7 @@ fn authority_code(error: &AuthorityStoreError) -> Code {
 fn object_code(error: &ObjectStoreError) -> Code {
     use ObjectStoreError as E;
     match error {
-        E::WorkObservation(_) => Code::Internal,
+        E::WorkObservation(error) => observation_code(error),
         E::Cancelled => Code::Cancelled,
         E::Missing => Code::NotFound,
         E::DigestMismatch | E::EmptyWriteBatch | E::EmptyReadBatch | E::InvalidRange => {

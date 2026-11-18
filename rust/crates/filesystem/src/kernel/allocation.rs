@@ -339,6 +339,8 @@ impl AllocationLedger {
         }
     }
 
+    /// Refuses allocation on an unusable ledger; `spent` retains the exact
+    /// observation error for the enclosing measured result.
     pub(crate) fn claim_elements<T>(
         &mut self,
         count: usize,
