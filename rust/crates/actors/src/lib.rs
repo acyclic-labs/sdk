@@ -2,6 +2,7 @@
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
+pub use acyclic_actors_call::{call, escrow};
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 
@@ -24,8 +25,6 @@ pub use contract::{
     validate_fork, validate_remove_subscription, validate_resume_subscription, validate_update,
 };
 
-/// The one invocation protocol: a caller-owned call journal.
-pub mod call;
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 
@@ -35,8 +34,6 @@ pub mod contract;
 /// One conformance suite for local and hosted Actors runtimes.
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
-/// Per-agent spend balances staged in the original actor step transaction.
-pub mod escrow;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
 /// Event-owned hosting of an arbitrary Handler over injected storage.

@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors-call",
  "acyclic-actors-inventory",
  "acyclic-auth",
  "acyclic-auth-action",
@@ -63,6 +64,20 @@ dependencies = [
  "url",
  "uuid",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "acyclic-actors-call"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "bytes",
+ "futures",
+ "prost",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

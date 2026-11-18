@@ -6,7 +6,8 @@ use acyclic_stream::CommitId;
 use bytes::Bytes;
 
 const FORMAT: &[u8] = b"\xffAES\x01";
-pub(crate) const MAX_RECORD_LEN: usize = FORMAT.len() + 2 + 32 + 8;
+/// Upper bound on the encoded balance for a checkpoint containing an escrow.
+pub const MAX_RECORD_LEN: usize = FORMAT.len() + 2 + 32 + 8;
 
 /// The amount this agent can still spend. `None` is explicitly unbounded;
 /// absence of an escrow record is a missing prerequisite, never unbounded.
@@ -134,12 +135,14 @@ impl Escrow {
         Ok(escrow)
     }
 
-    pub(crate) fn in_branch(mut self, branch: Option<CommitId>) -> Self {
+    /// Bind host-admitted funding to the branch that owns it.
+    pub fn in_branch(mut self, branch: Option<CommitId>) -> Self {
         self.branch = branch;
         self
     }
 
-    pub(crate) fn require_branch(self, branch: Option<CommitId>) -> Result<Self, Error> {
+    /// Reject funding inherited from a different branch.
+    pub fn require_branch(self, branch: Option<CommitId>) -> Result<Self, Error> {
         if self.branch != branch {
             return Err(Error::ForeignBranch);
         }

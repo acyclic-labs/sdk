@@ -103,6 +103,7 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//compatibility:tree/descriptors",
         "//compatibility:tree/proto",
+        "//rust/crates/actors-call:tree",
         "//rust/crates/actors-inventory:tree",
         "//rust/crates/actors-napi:tree",
         "//rust/crates/actors-wasm:tree",
