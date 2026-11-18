@@ -122,9 +122,12 @@ impl Ephemeral {
             if paths.contains_key(path) {
                 return Err(StreamError::InvalidArgument);
             }
-            if path.parent().is_some_and(|parent| {
-                !paths.contains_key(&parent)
-                    && !all.clone().into_iter().any(|other| *other == parent)
+            if StreamPath::parent_text(path.as_str()).is_some_and(|parent| {
+                !paths.contains_key(parent)
+                    && !all
+                        .clone()
+                        .into_iter()
+                        .any(|other| other.as_str() == parent)
             }) {
                 return Err(StreamError::NotFound);
             }
@@ -250,9 +253,8 @@ impl MemoryStream {
         {
             return Err(StreamError::AlreadyExists);
         }
-        if root
-            .parent()
-            .is_some_and(|parent| !state.paths.contains_key(&parent))
+        if StreamPath::parent_text(root.as_str())
+            .is_some_and(|parent| !state.paths.contains_key(parent))
         {
             return Err(StreamError::NotFound);
         }
