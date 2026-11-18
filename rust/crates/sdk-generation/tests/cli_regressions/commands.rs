@@ -203,12 +203,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     if command.get_args().next() != Some(OsStr::new("rustdoc")) {
         return Ok(None);
     }
-    if !command
-        .get_args()
-        .any(|arg| arg == "--lib" || arg == "--bin")
-    {
-        return Ok(None);
-    }
     let value = |name: &str| argument_value(command.get_args(), name).and_then(OsStr::to_str);
     let Some(manifest) = value("--manifest-path") else {
         return Ok(None);
