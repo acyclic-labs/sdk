@@ -442,15 +442,7 @@ impl StreamProvider for HttpStream {
                 async move {
                     let source = request.source.clone();
                     let destination = request.destination.clone();
-                    let wire = wire::ForkRequest {
-                        exclude: request.exclude.iter().map(ToString::to_string).collect(),
-                        source: source.to_string(),
-                        destination: destination.to_string(),
-                        at_tail: request.at_tail,
-                        idempotency_key: bytes::Bytes::copy_from_slice(
-                            request.idempotency_key.as_bytes(),
-                        ),
-                    };
+                    let wire = wire_codec::fork_to_wire(&request);
                     self.request("fork", wire.encode_to_vec(), |value| {
                         let result = parse_fork(&value)?;
                         if result.source != source || result.destination != destination {

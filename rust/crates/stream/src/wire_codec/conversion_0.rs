@@ -245,6 +245,17 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
     })
 }
 
+/// Encodes a fork request for any Stream transport.
+pub fn fork_to_wire(request: &crate::ForkRequest) -> wire::ForkRequest {
+    wire::ForkRequest {
+        exclude: request.exclude.iter().map(ToString::to_string).collect(),
+        source: request.source.to_string(),
+        destination: request.destination.to_string(),
+        at_tail: request.at_tail,
+        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+    }
+}
+
 /// Decodes a read request from its generated wire representation. Like
 /// [`follow_from_wire`], it is transport-free: every host of the shared
 /// provider cursor compiles it on every target.

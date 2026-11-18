@@ -175,17 +175,7 @@ impl StreamProvider for Client {
             )),
             crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let body = wire::ForkRequest {
-                        exclude: request
-                            .exclude
-                            .into_iter()
-                            .map(|path| path.to_string())
-                            .collect(),
-                        source: request.source.to_string(),
-                        destination: request.destination.to_string(),
-                        at_tail: request.at_tail,
-                        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-                    };
+                    let body = crate::wire_codec::fork_to_wire(&request);
                     let response = self
                         .unary(body, |mut service, request| {
                             Box::pin(async move { service.fork(request).await })

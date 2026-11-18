@@ -382,15 +382,7 @@ impl StreamProvider for InjectedStream {
             )),
             crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let input = wire::ForkRequest {
-                        source: request.source.to_string(),
-                        destination: request.destination.to_string(),
-                        at_tail: request.at_tail,
-                        idempotency_key: bytes::Bytes::copy_from_slice(
-                            request.idempotency_key.as_bytes(),
-                        ),
-                        exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
-                    };
+                    let input = wire_codec::fork_to_wire(&request);
                     let result: wire::ForkReceipt = self.call("fork", input).await?;
                     wire_codec::fork_receipt_from_wire(result)
                 },
