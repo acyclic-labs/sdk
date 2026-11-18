@@ -1,15 +1,15 @@
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
-    http_validation::string(value).map_err(|_| StreamError::Unavailable)
+    acyclic_stream_wire::http_fields::string(value).map_err(|_| StreamError::Unavailable)
 }
 fn parse_u64(value: &Value) -> Result<u64, StreamError> {
-    http_validation::u64_string(value).map_err(|_| StreamError::Unavailable)
+    acyclic_stream_wire::http_fields::u64_string(value).map_err(|_| StreamError::Unavailable)
 }
 fn parse_path(value: &Value) -> Result<StreamPath, StreamError> {
     StreamPath::new(parse_string(value)?)
         .map_err(|error| StreamError::Unavailable.with_source(error))
 }
 fn parse_bytes(value: &Value) -> Result<Bytes, StreamError> {
-    http_validation::bytes(value)
+    acyclic_stream_wire::http_fields::bytes(value)
         .map(Bytes::from)
         .map_err(|_| StreamError::Unavailable)
 }
