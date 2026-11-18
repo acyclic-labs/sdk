@@ -1,42 +1,34 @@
 #!/usr/bin/env node
-// A successful Cargo exit with no matching tests cannot discharge a main debt.
-import { spawn } from 'node:child_process';
+// A successful test exit with no matching tests cannot discharge a main debt.
+import { execFileSync, spawn } from 'node:child_process';
+import { isAbsolute, resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { verifyExactTests } from './test-support/libtest.mjs';
 
-export function cargoArguments(entry) {
-  if (!/^acyclic-[a-z0-9-]+$/.test(entry.package)) throw new Error('invalid package');
-  if (typeof entry.target !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(entry.target)) throw new Error('invalid test target');
+export function testArguments(entry) {
+  if (typeof entry.target !== 'string' || !/^\/\/rust\/crates\/[a-z0-9-]+:[a-zA-Z0-9_-]+_test_cases$/.test(entry.target)) {
+    throw new Error('invalid test target');
+  }
   if (!entry.regression || !Array.isArray(entry.controls) || !entry.controls.length) throw new Error('regression and negative control required');
   const names = [...new Set([entry.regression, ...entry.controls])];
   if (names.some(name => typeof name !== 'string' || !/^[a-zA-Z0-9_:]+$/.test(name))) throw new Error('invalid exact test name');
-  const target = entry.target === 'lib' ? ['--lib'] : ['--test', entry.target];
-  return ['test', '--locked', '-p', entry.package, '--all-features', ...target,
-    '--', ...names, '--exact', '--test-threads=4', '--color=never'];
+  return [...names, '--exact', '--test-threads=4', '--color=never'];
 }
 
 export function verify(entry, status, output) {
-  cargoArguments(entry);
+  testArguments(entry);
   const expected = [...new Set([entry.regression, ...entry.controls])];
   const result = verifyExactTests(expected, { status, stdout: output });
   return { regression: entry.regression, ...result };
 }
 
-export function testExecutable(entry, output) {
-  cargoArguments(entry);
-  const libraryKinds = new Set(['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro']);
-  const selectedKind = kinds => Array.isArray(kinds) && kinds.length > 0
-    && (entry.target === 'lib' ? kinds.every(kind => libraryKinds.has(kind))
-      : kinds.length === 1 && kinds.includes('test'));
-  const name = entry.target === 'lib' ? entry.package.replaceAll('-', '_') : entry.target;
-  const artifacts = output.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
-    .filter(message => message.reason === 'compiler-artifact' && message.profile?.test
-      && message.target?.name === name && selectedKind(message.target.kind) && message.executable);
-  if (artifacts.length !== 1 || typeof artifacts[0].executable !== 'string') {
+export function testExecutable(root, output) {
+  const files = output.trim().split(/\r?\n/u);
+  if (!isAbsolute(root) || files.length !== 1 || !files[0].startsWith('bazel-out/') || files[0].split('/').includes('..')) {
     throw new Error('exactly one selected test executable required');
   }
-  return artifacts[0].executable;
+  return resolve(root, files[0]);
 }
 
 // The original leader exit retires its process group before inherited output
@@ -102,22 +94,13 @@ export function executeTest(executable, args, {
 }
 
 async function run(entry) {
-  const args = cargoArguments(entry);
-  const separator = args.indexOf('--');
-  const build = [...args.slice(0, separator), '--no-run', '--message-format=json-render-diagnostics'];
-  console.log(`MAIN_GREEN_BUILD cargo ${build.join(' ')}`);
-  const child = spawn('cargo', build, { stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', chunk => { output += chunk; });
-  child.stderr.pipe(process.stderr);
-  const status = await new Promise((accept, reject) => {
-    child.on('error', reject);
-    child.on('close', accept);
-  });
-  if (status !== 0) throw new Error(`Cargo build failed: ${status}`);
-  const executable = testExecutable(entry, output);
-  const testArgs = args.slice(separator + 1);
+  const testArgs = testArguments(entry);
+  const download = '--remote_download_toplevel';
+  console.log(`MAIN_GREEN_BUILD bazel build ${download} ${entry.target}`);
+  execFileSync('bazel', ['build', download, entry.target], { stdio: 'inherit' });
+  const query = (...args) => execFileSync('bazel', args, { encoding: 'utf8' }).trim();
+  const executable = testExecutable(query('info', 'execution_root'),
+    query('cquery', download, '--output=files', entry.target));
   console.log(`MAIN_GREEN_EXECUTE ${executable} ${testArgs.join(' ')}`);
   const execution = await executeTest(executable, testArgs);
   const result = verify(entry, execution.status, execution.output);
@@ -133,7 +116,7 @@ export async function main(selected = process.argv.slice(2)) {
   if (names.size !== entries.length) throw new Error('duplicate debt');
   for (const name of selected) if (!names.has(name)) throw new Error(`unknown debt: ${name}`);
   // Validate the complete plan before starting any build.
-  for (const entry of entries) cargoArguments(entry);
+  for (const entry of entries) testArguments(entry);
   const results = [];
   const failures = [];
   for (const entry of entries) {
