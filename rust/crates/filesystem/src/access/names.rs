@@ -1,6 +1,7 @@
 use super::InvalidPolicy;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::{CaseSensitivity, UnicodePolicy, VolumeConfig};
+use acyclic_fs_access_glob::glob;
 use std::borrow::Cow;
 
 pub(super) fn encoding(config: VolumeConfig) -> NameEncoding {
@@ -23,7 +24,7 @@ pub(super) fn key(path: &str, config: VolumeConfig) -> Result<Cow<'_, str>, Inva
 
 pub(super) fn validate(path: &str, config: VolumeConfig) -> Result<(), InvalidPolicy> {
     let encoding = encoding(config);
-    if !acyclic_fs_access_glob::glob::valid_path(path)
+    if !glob::valid_path(path)
         || (encoding == NameEncoding::Utf8
             && config.unicode == UnicodePolicy::RequireNfc
             && !unicode_normalization::is_nfc(path))

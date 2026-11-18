@@ -29,6 +29,7 @@ mod view;
 pub use view::AccessView;
 mod trie;
 
+use acyclic_fs_access_glob::glob;
 pub use capability::{
     ActionSet, Capability, ContentRead, ContentReadLabel, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX,
     Grant, SCOPE_PREFIX, UnversionedContentRead, VolumeOperation, is_filesystem_capability,
@@ -311,7 +312,7 @@ impl ResourcePattern {
         {
             return Err(InvalidPolicy("generation range is reversed"));
         }
-        acyclic_fs_access_glob::glob::validate(&self.path).map_err(InvalidPolicy::from)
+        glob::validate(&self.path).map_err(InvalidPolicy::from)
     }
 
     pub(super) fn matches_view(&self, resource: Resource<'_>) -> bool {

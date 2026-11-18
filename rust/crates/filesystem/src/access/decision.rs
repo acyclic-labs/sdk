@@ -1,6 +1,7 @@
 use super::{
     Action, Capability, Context, Effect, Policy, Principal, PrincipalKind, Resource, Rule,
 };
+use acyclic_fs_access_glob::glob;
 
 /// Reason access was refused, including implicit and capability denials.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -266,7 +267,7 @@ pub fn decide<'a>(
         resource.generation != resource.head,
         |rule| {
             rule_matches(rule, principal, resource, context)
-                && acyclic_fs_access_glob::glob::matches(
+                && glob::matches(
                     &super::names::fold(&rule.resource.path, resource.config),
                     &path,
                     super::names::folds_unicode(resource.config),
@@ -274,7 +275,7 @@ pub fn decide<'a>(
         },
         |grant| {
             grant.resource.matches_view(resource)
-                && acyclic_fs_access_glob::glob::matches(
+                && glob::matches(
                     &super::names::fold(&grant.resource.path, resource.config),
                     &path,
                     super::names::folds_unicode(resource.config),

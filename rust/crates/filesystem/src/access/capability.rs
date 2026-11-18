@@ -1,4 +1,5 @@
 use super::{Action, InvalidPolicy, ResourcePattern};
+use acyclic_fs_access_glob::glob;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -231,7 +232,7 @@ impl Capability {
     ) -> Result<Self, InvalidPolicy> {
         let mut grant = Self::whole_volume(volume, actions);
         if !root.is_empty() {
-            grant.layers[0][0].resource.path = acyclic_fs_access_glob::glob::literal_subtree(root)?;
+            grant.layers[0][0].resource.path = glob::literal_subtree(root)?;
         }
         Ok(grant)
     }
