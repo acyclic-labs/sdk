@@ -41,7 +41,7 @@ path = "tests/computed_ui_records.rs"
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
-test-support = ["acyclic-harness-control/test-support", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
 model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
@@ -144,8 +144,7 @@ acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support
 acyclic-test-support = { path = "../test-support" }
 # Hooks record under cfg(test) too, so lib tests observe them without test-support.
 acyclic-differential = { version = "=0.2.0", path = "../differential" }
-proc-macro2 = "=1.0.107"
-syn = { version = "=3.0.9", features = ["full", "visit"] }
+acyclic-harness-control-checks = { path = "../harness-control-checks" }
 proptest.workspace = true
 diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }

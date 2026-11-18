@@ -725,6 +725,15 @@ name = "acyclic-harness-control"
 version = "0.2.0"
 
 [[package]]
+name = "acyclic-harness-control-checks"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness-control",
+ "acyclic-test-support",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
@@ -738,6 +747,7 @@ dependencies = [
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness-control",
+ "acyclic-harness-control-checks",
  "acyclic-harness-json",
  "acyclic-harness-layout",
  "acyclic-harness-modules",
@@ -777,7 +787,6 @@ dependencies = [
  "once_cell",
  "p256",
  "pin-project-lite",
- "proc-macro2",
  "proptest",
  "prost",
  "prost-build",
@@ -798,7 +807,6 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.11.1",
- "syn 3.0.9",
  "tar",
  "tempfile",
  "thiserror 2.0.21",

@@ -1,5 +1,9 @@
+#![deny(unsafe_code)]
+#![cfg(any(test, feature = "repository-checks"))]
 //! Structural drift check; execution traces must separately check shell effects.
-use acyclic_test_support::correspondence::{self, Inventory, Mapping};
+#[cfg(test)]
+use acyclic_test_support::correspondence;
+use acyclic_test_support::correspondence::{Inventory, Mapping};
 use std::collections::{BTreeMap, BTreeSet};
 use syn::{Expr, Item, Member, visit::Visit};
 
@@ -155,8 +159,10 @@ fn extract(
     let shipping: BTreeSet<_> = calls
         .paths
         .iter()
-        .filter(|p| p.len() == 2 && p[0] == "kernel")
-        .map(|p| p[1].clone())
+        .filter_map(|path| match path.as_slice() {
+            [kernel, action] if kernel == "kernel" => Some(action.clone()),
+            _ => None,
+        })
         .collect();
     if shipping != public {
         return Err("shipping kernel calls and model transition coverage differ".into());
@@ -166,8 +172,10 @@ fn extract(
         .map(|(name, paths)| {
             let internal = paths
                 .iter()
-                .filter(|path| path.len() == 1 && functions.contains_key(&path[0]))
-                .map(|path| path[0].clone())
+                .filter_map(|path| match path.as_slice() {
+                    [function] if functions.contains_key(function) => Some(function.clone()),
+                    _ => None,
+                })
                 .collect();
             (name.clone(), internal)
         })
@@ -186,6 +194,7 @@ fn extract(
     ))
 }
 
+#[cfg(test)]
 fn mapping(kernel: &str, model: &str, shell: &str, harness: &str) -> Result<(), String> {
     let (inventory, mapping) = extract(kernel, model, shell, harness)?;
     correspondence::validate(&inventory, &mapping)
@@ -198,16 +207,25 @@ fn mapping(kernel: &str, model: &str, shell: &str, harness: &str) -> Result<(), 
         })
 }
 
-#[cfg(feature = "test-support")]
-pub(crate) fn original() -> Result<(Inventory, Mapping), String> {
+/// Validates the original production, solver and trace sources together.
+///
+/// # Errors
+/// Returns the first missing or mismatched correspondence edge.
+pub fn original() -> Result<(Inventory, Mapping), String> {
     let (inventory, mapping) = extract(
         acyclic_harness_control::AGENT_SOURCE,
-        include_str!("formal/agent_control_model.rs"),
-        include_str!("../src/agent/machine.rs"),
-        include_str!("formal/agent_control.rs"),
+        include_str!("../../harness-core/tests/formal/agent_control_model.rs"),
+        include_str!("../../harness-core/src/agent/machine.rs"),
+        include_str!("../../harness-core/tests/formal/agent_control.rs"),
     )?;
-    trace_mapping(include_str!("../src/agent/control_trace.rs"), &inventory)?;
-    trace_call_sites(include_str!("../src/agent/machine.rs"), &inventory)?;
+    trace_mapping(
+        include_str!("../../harness-core/src/agent/control_trace.rs"),
+        &inventory,
+    )?;
+    trace_call_sites(
+        include_str!("../../harness-core/src/agent/machine.rs"),
+        &inventory,
+    )?;
     Ok((inventory, mapping))
 }
 
@@ -361,7 +379,7 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
     impl<'ast> Visit<'ast> for Sites {
         fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
             let names = call_path(call);
-            if names.len() == 2 && names[0] == "kernel" {
+            if matches!(names.as_slice(), [kernel, _] if kernel == "kernel") {
                 self.calls += 1;
             } else if names == ["control_trace", "record"] {
                 self.records += 1;
@@ -381,10 +399,12 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                     continue;
                 };
                 let names = call_path(call);
-                if names.len() != 2 || names[0] != "kernel" {
+                let [kernel, action] = names.as_slice() else {
+                    continue;
+                };
+                if kernel != "kernel" {
                     continue;
                 }
-                let action = &names[1];
                 let paired = (|| {
                     let syn::Stmt::Expr(Expr::Call(record), _) = block.stmts.get(index + 1)? else {
                         return None;
@@ -417,10 +437,10 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                         return None;
                     };
                     let recorded = call_path(decision);
-                    if recorded.len() != 2
-                        || recorded[0] != "Decision"
-                        || recorded[1].to_lowercase() != *action
-                    {
+                    let [owner, recorded_action] = recorded.as_slice() else {
+                        return None;
+                    };
+                    if owner != "Decision" || recorded_action.to_lowercase() != *action {
                         return None;
                     }
                     if decision.args.len() != call.args.len() + 1 {
@@ -499,9 +519,9 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
 #[test]
 fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     let kernel = acyclic_harness_control::AGENT_SOURCE;
-    let model = include_str!("formal/agent_control_model.rs");
-    let shell = include_str!("../src/agent/machine.rs");
-    let harness = include_str!("formal/agent_control.rs");
+    let model = include_str!("../../harness-core/tests/formal/agent_control_model.rs");
+    let shell = include_str!("../../harness-core/src/agent/machine.rs");
+    let harness = include_str!("../../harness-core/tests/formal/agent_control.rs");
     mapping(kernel, model, shell, harness)?;
     // Mutate actual source, independently breaking each mapping edge. These
     // are structural negatives, not fabricated execution or tool fixtures.
@@ -547,7 +567,7 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     // Exercise the shared checker with mutations of the independently extracted
     // shipping graph, rather than a second handwritten model of that graph.
     let (inventory, mapped) = extract(kernel, model, shell, harness)?;
-    let trace = include_str!("../src/agent/control_trace.rs");
+    let trace = include_str!("../../harness-core/src/agent/control_trace.rs");
     trace_mapping(trace, &inventory)?;
     trace_call_sites(shell, &inventory)?;
     for (before, after, action) in [
