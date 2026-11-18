@@ -1,4 +1,14 @@
-use super::*;
+use acyclic_fs::kernel::{FileMetadata, MetadataField};
+use acyclic_fs::{
+    CancellationToken, ConflictKind, ForkOptions, Fs, FsError, IdempotencyKey, PublicationPermit,
+    TransactionCommit, WorkspacePathApply,
+};
+use acyclic_fs_work::performance::WorkBudget;
+use acyclic_stream::OwnedBytes;
+use std::error::Error;
+
+use crate::fixtures::{allow, commit, fork_workspace};
+use crate::selected_budget::selected_transaction_budget;
 
 #[tokio::test]
 async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
@@ -46,7 +56,7 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
             &["tree/tracked".to_owned()],
             dirty.id(),
             IdempotencyKey::from_bytes([0x62; 16]),
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             allow::<FsError>,
@@ -97,7 +107,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
                 &["file".to_owned()],
                 current.id(),
                 IdempotencyKey::from_bytes([0x64; 16]),
-                crate::PublicationPermit::Unrestricted
+                PublicationPermit::Unrestricted
             )
             .await?,
         WorkspacePathApply::Applied(_)
@@ -130,7 +140,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
             &["file".to_owned()],
             conflict_current.id(),
             IdempotencyKey::from_bytes([0x66; 16]),
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
         )
         .await?
     else {
@@ -168,7 +178,7 @@ async fn directory_record_restore_preserves_unselected_descendants() -> Result<(
             &["tree".to_owned()],
             current.id(),
             IdempotencyKey::new(),
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
             selected_transaction_budget(),
             &CancellationToken::new(),
             allow::<FsError>,
