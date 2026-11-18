@@ -15,7 +15,9 @@ workspace checks leave it unselected; explicit model checks still require the
 Loom compiler routing above. Publication models follow the same rule:
 
 ```sh
-ACYCLIC_LOOM=1 cargo test --locked -p acyclic-stream-publication-models --features model-checking --test publication
+bazel test \
+  --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream/publication-models:@--cfg=loom \
+  //rust/crates/stream/publication-models:publication
 ```
 
 The workspace consolidation exposed stale consumers of removed production APIs.
