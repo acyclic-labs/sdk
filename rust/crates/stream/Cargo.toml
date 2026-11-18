@@ -17,6 +17,9 @@ build = "build.rs"
 [package.metadata.bazel]
 build-script-inputs = []
 
+[package.metadata.bazel.test-dependencies]
+follow-contracts = ["acyclic_stream", "acyclic_stream_wire", "futures", "tempfile", "tokio"]
+
 [package.metadata.acyclic]
 consumer-features = [
     { features = ["serde"], target = "x86_64-unknown-linux-gnu" },
@@ -162,3 +165,7 @@ path = "tests/session_contracts.rs"
 name = "provider-contracts"
 path = "tests/provider_contracts.rs"
 required-features = ["conformance"]
+
+[[test]]
+name = "follow-contracts"
+path = "tests/follow_contracts.rs"
