@@ -148,6 +148,7 @@ filegroup(
         "//rust/crates/harness-local:Cargo.toml",
         "//rust/crates/harness-metrics:Cargo.toml",
         "//rust/crates/harness-mock-model:Cargo.toml",
+        "//rust/crates/harness-model-cache:Cargo.toml",
         "//rust/crates/harness-modules:Cargo.toml",
         "//rust/crates/harness-provider-protocol:Cargo.toml",
         "//rust/crates/harness-provider-response:Cargo.toml",

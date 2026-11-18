@@ -144,6 +144,7 @@ rust_test(
         "//rust/crates/harness-local:tree",
         "//rust/crates/harness-metrics:tree",
         "//rust/crates/harness-mock-model:tree",
+        "//rust/crates/harness-model-cache:tree",
         "//rust/crates/harness-modules:tree",
         "//rust/crates/harness-provider-protocol:tree",
         "//rust/crates/harness-provider-response:tree",

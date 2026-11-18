@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-harness-model-cache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model cache observations and residency projections for the harness"
+documentation = "https://docs.rs/acyclic-harness-model-cache"
+
+[features]
+wasm = ["dep:tsify", "dep:wasm-bindgen"]
+
+[dependencies]
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
+acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+proptest.workspace = true
+
+[lints]
+workspace = true

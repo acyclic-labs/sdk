@@ -2,7 +2,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Requested cache lifetime. Provider-managed residency has no inferred deadline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_contract_derive::HeapLayout,
+)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelCacheTtl {
@@ -19,7 +21,9 @@ pub enum ModelCacheTtl {
 /// bound to its resolved provider family, endpoint base and model.
 /// Generation settings preceding the input are included conservatively: equality
 /// proves equal projected prefixes, but inequality does not prove a cache miss.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_contract_derive::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelCacheBreakpoint {
@@ -34,7 +38,9 @@ pub struct ModelCacheBreakpoint {
 /// Original request cache policy, distinct from reported cache token usage.
 /// The current projector records one final input cut, including implicit caching.
 /// It does not claim that the provider cached or hit that exact cut.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_contract_derive::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelCacheObservation {
@@ -425,29 +431,31 @@ mod tests {
             start in 1u64..1_000_000_000, seconds in 1u64..100_000,
             clock_domain in any::<[u8; 16]>(),
         ) {
+            let unexpected = |error: ModelCacheError| TestCaseError::fail(error.to_string());
             let key = ModelCacheKey { credential_scope: [1; 32], prefix_digest: [2; 32] };
             let ttl = ModelCacheTtl::Explicit { seconds };
             let expiry = start + seconds * 1_000_000_000;
-            let written = ModelCacheResidency::observe(key, None, clock_domain, start, ModelCacheAccess::Write(ttl)).unwrap();
+            let written = ModelCacheResidency::observe(key, None, clock_domain, start, ModelCacheAccess::Write(ttl)).map_err(unexpected)?;
             prop_assert_eq!(written.estimated_resident_at(clock_domain, start), Some(true));
             prop_assert_eq!(written.estimated_resident_at(clock_domain, expiry), Some(false));
             prop_assert_eq!(written.estimated_resident_at(clock_domain, start - 1), None);
             let mut foreign_domain = clock_domain;
-            foreign_domain[0] ^= 1;
+            let [first, ..] = &mut foreign_domain;
+            *first ^= 1;
             prop_assert_eq!(written.estimated_resident_at(foreign_domain, start), None);
             prop_assert_eq!(ModelCacheResidency::observe(key, Some(written), foreign_domain, start,
                 ModelCacheAccess::Miss), Err(ModelCacheError::ClockMismatch));
             let hit = ModelCacheResidency::observe(key, Some(written), clock_domain, start + 1,
-                ModelCacheAccess::Hit { refresh: None }).unwrap();
+                ModelCacheAccess::Hit { refresh: None }).map_err(unexpected)?;
             prop_assert_eq!(hit.expires_at_ns, written.expires_at_ns);
             prop_assert_eq!(hit.last_hit_at_ns, Some(start + 1));
             let refreshed = ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
-                ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap();
+                ModelCacheAccess::Hit { refresh: Some(ttl) }).map_err(unexpected)?;
             prop_assert_eq!(refreshed.expires_at_ns, Some(expiry + 2));
-            let miss = ModelCacheResidency::observe(key, Some(refreshed), clock_domain, start + 3, ModelCacheAccess::Miss).unwrap();
+            let miss = ModelCacheResidency::observe(key, Some(refreshed), clock_domain, start + 3, ModelCacheAccess::Miss).map_err(unexpected)?;
             prop_assert_eq!(miss.estimated_resident_at(clock_domain, start + 3), Some(false));
             let unknown = ModelCacheResidency::observe(key, Some(miss), clock_domain, start + 4,
-                ModelCacheAccess::Write(ModelCacheTtl::ProviderManaged)).unwrap();
+                ModelCacheAccess::Write(ModelCacheTtl::ProviderManaged)).map_err(unexpected)?;
             prop_assert_eq!(unknown.estimated_resident_at(clock_domain, start + 4), None);
             prop_assert_eq!(ModelCacheResidency::observe(key, Some(hit), clock_domain, start,
                 ModelCacheAccess::Miss), Err(ModelCacheError::TimeReversed));
@@ -458,7 +466,7 @@ mod tests {
             prop_assert_eq!(ModelCacheResidency::observe(foreign, Some(hit), clock_domain, start + 2,
                 ModelCacheAccess::Miss), Err(ModelCacheError::KeyMismatch));
             let late_hit = ModelCacheResidency::observe(key, Some(written), clock_domain, expiry,
-                ModelCacheAccess::Hit { refresh: None }).unwrap();
+                ModelCacheAccess::Hit { refresh: None }).map_err(unexpected)?;
             prop_assert_eq!(late_hit.estimated_resident_at(clock_domain, expiry), None);
             prop_assert_eq!(ModelCacheResidency::observe(key, Some(hit), clock_domain, u64::MAX,
                 ModelCacheAccess::Write(ttl)), Err(ModelCacheError::DeadlineOverflow));
@@ -470,8 +478,9 @@ mod tests {
             }
             let measured = acyclic_test_support::measure(|| {
                 std::hint::black_box(ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
-                    ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap());
+                    ModelCacheAccess::Hit { refresh: Some(ttl) }))
             });
+            measured.output.map_err(unexpected)?;
             prop_assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
             let control = acyclic_test_support::measure(|| {
                 std::hint::black_box(Box::new(hit));

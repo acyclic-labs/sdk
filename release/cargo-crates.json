@@ -35,6 +35,7 @@
   "acyclic-model-render",
   "acyclic-mcp",
   "acyclic-harness-layout",
+  "acyclic-harness-model-cache",
   "acyclic-harness-modules",
   "acyclic-harness-json",
   "acyclic-harness-sse",
