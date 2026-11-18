@@ -833,7 +833,7 @@ mod tests {
             .stderr(acyclic_native_runtime::ProcessStdio::piped());
         process.spawn(&mut command, OperationId::new(), None)?;
         let before = work.remaining().map_err(storage)?;
-        let live = work.live_allocation_bytes();
+        let live = work.live_allocation_bytes()?;
         let mut progressed = false;
         // Each poll is metered; run past one invocation budget. Pipes at EOF
         // are released, so a reaped child's polls cost one exit observation.
@@ -854,7 +854,7 @@ mod tests {
                 before.backend_read_operations,
                 "polling spent the original process allowance"
             );
-            assert_eq!(work.live_allocation_bytes(), live);
+            assert_eq!(work.live_allocation_bytes()?, live);
         }
         assert!(
             work.receipt()?.backend_read_operations > 65_536,

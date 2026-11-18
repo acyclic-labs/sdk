@@ -734,7 +734,7 @@ mod tests {
         drop(loaded);
         let mut allowance = budget;
         allowance.output_bytes = control
-            .receipt()
+            .receipt()?
             .output_bytes
             .checked_sub(1)
             .ok_or_else(|| Error::Invalid("program reads produced no accounting".into()))?;
@@ -752,7 +752,7 @@ mod tests {
             refused.is_err(),
             "a source must not reopen an unmeasured ledger for its imports"
         );
-        assert!(limited.receipt().output_bytes <= allowance.output_bytes);
+        assert!(limited.receipt()?.output_bytes <= allowance.output_bytes);
         let native = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes:
@@ -763,13 +763,13 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::executor::PreparationIo::from_native_work(&native)?;
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes()?;
         match source.load("budget", Some(&io)) {
             Err(Error::NativeWork { .. }) => {}
             Err(error) => return Err(error),
             Ok(_) => panic!("program source future allocated before original admission"),
         }
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
         Ok(())
     }
 
@@ -834,19 +834,19 @@ mod tests {
                 Tree::new(&volumes, config::AGENT, Some(&io)).await?
             };
             drop(warm);
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let tree = if pinned {
                 Tree::pinned(&volumes, generation.clone(), Some(&io))?
             } else {
                 Tree::new(&volumes, config::AGENT, Some(&io)).await?
             };
             assert!(
-                work.live_allocation_bytes() > baseline,
+                work.live_allocation_bytes()? > baseline,
                 "a live settings tree must retain its original grant storage"
             );
             drop(tree);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 baseline,
                 "dropping a settings tree must retire its original preparation metadata"
             );
@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(outcome.path, config::AGENT);
         assert_eq!(outcome.version, "original");
         assert!(work.receipt()?.allocation_operations > 0);
-        let retained = work.live_allocation_bytes();
+        let retained = work.live_allocation_bytes()?;
         record(
             &volumes,
             Some(&io),
@@ -909,7 +909,7 @@ mod tests {
         )
         .await?;
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             retained,
             "replaying the same record must retire temporary publication storage"
         );
