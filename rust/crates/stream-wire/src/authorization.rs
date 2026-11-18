@@ -4,7 +4,7 @@ use acyclic_auth_action::{
     method::{MethodAuth, Resources, Rule, Scope},
 };
 
-/// Compiler-linked unary service admission. Raw RPC Read and the public bounded
+/// Compiler-linked service admission. Raw RPC Read and the public bounded
 /// Session Follow are distinct operations with distinct admission.
 use crate::rpc;
 
@@ -171,5 +171,21 @@ mod rpc_admission_tests {
             StreamRpc::from_route("/acyclic.stream.v1.StreamService/Unmapped"),
             None
         );
+    }
+
+    #[test]
+    fn each_generated_rpc_has_one_hosted_http_route() {
+        for &method in StreamRpc::ALL {
+            assert_eq!(
+                crate::HTTP_RESPONSE_CONTRACT
+                    .iter()
+                    .filter(|(path, _)| crate::hosted_http_rpc(path) == Some((*path, method)))
+                    .count(),
+                1,
+                "{method:?}"
+            );
+        }
+        assert_eq!(crate::hosted_http_rpc("tokens/create"), None);
+        assert_eq!(crate::hosted_http_rpc("unmapped"), None);
     }
 }

@@ -20,23 +20,41 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
 
-/// Compiler-linked admission for the unary Stream service.
+/// Compiler-linked admission for generated Stream service methods.
 pub mod rpc {
     use acyclic_auth_action as auth_action;
     include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
 }
 
-/// Route-to-response families for the hosted HTTP projection.
-pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
-    ("head", "head"),
-    ("heads", "heads"),
-    ("idempotency/inspect", "observation"),
-    ("tail", "tail"),
-    ("append", "append"),
-    ("fork", "fork"),
-    ("read", "read"),
-    ("children/page", "children_page"),
-    ("commit", "commit"),
-    ("commits/read", "envelope"),
-    ("tokens/create", "token"),
-];
+macro_rules! hosted_http_routes {
+    ($(($path:literal, $response:literal, $method:ident)),+ $(,)?) => {
+        /// Route-to-response families for the hosted HTTP projection.
+        pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
+            $(($path, $response),)+
+            ("tokens/create", "token"),
+        ];
+
+        /// Resolves a hosted HTTP path to its canonical path and generated RPC identity.
+        /// Use the protobuf descriptor for the transport shape of methods such as server-streaming Read.
+        /// Token issuance is a hosted operation outside the generated Stream service.
+        pub fn hosted_http_rpc(path: &str) -> Option<(&'static str, rpc::StreamRpc)> {
+            match path {
+                $($path => Some(($path, rpc::StreamRpc::$method)),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+hosted_http_routes! {
+    ("head", "head", Head),
+    ("heads", "heads", Heads),
+    ("idempotency/inspect", "observation", InspectIdempotency),
+    ("tail", "tail", Tail),
+    ("append", "append", Append),
+    ("fork", "fork", Fork),
+    ("read", "read", Read),
+    ("children/page", "children_page", ChildrenPage),
+    ("commit", "commit", Commit),
+    ("commits/read", "envelope", ReadCommit),
+}
