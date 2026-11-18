@@ -358,8 +358,10 @@ isolated_test(
 rust_binary(
     name = "acyclic-virtiofsd",
     crate_root = "src/bin/virtiofsd.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "src/bin/virtiofsd.rs",
+    ],
+    compile_data = [
         "//rust/crates/filesystem:fixtures/fuse/linux-kernel-packets.json",
     ],
     clippy_config = "clippy.toml",
@@ -592,8 +594,10 @@ rust_binary(
 rust_test(
     name = "acyclic_virtiofsd_test_cases",
     crate_root = "src/bin/virtiofsd.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = [
+        "src/bin/virtiofsd.rs",
+    ],
+    compile_data = [
         "//rust/crates/filesystem:fixtures/fuse/linux-kernel-packets.json",
     ],
     clippy_config = "clippy.toml",
