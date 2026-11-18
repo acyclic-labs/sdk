@@ -736,7 +736,7 @@ proptest! {
         for (_, name) in schema {
             prop_assert_eq!(&actual[name], &json!({"field": name, "nested": nested}));
         }
-        let mut sorted = keys.clone();
+        let mut sorted = keys;
         sorted.sort();
         sorted.dedup();
         let order: Vec<_> = sorted.iter().map(|key| text.find(&format!("\"k_{key}\"")).unwrap()).collect();
