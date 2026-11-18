@@ -6,9 +6,10 @@ use {
     acyclic_fs::{
         CancellationToken, GitCompatRepository, GitPublicationRecord, GitTreeRef,
         LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
-        MultiRootMergeRoot, MultiRootPublication, OperationId, Workspace, WorkspaceError,
-        WorkspaceGraph, WorkspaceId, WorkspaceRootId, capture_git_compatible_generation_at,
+        MultiRootMergeRoot, MultiRootPublication, Workspace, WorkspaceError, WorkspaceGraph,
+        WorkspaceId, WorkspaceRootId, capture_git_compatible_generation_at,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::WorkBudget,
 };
 

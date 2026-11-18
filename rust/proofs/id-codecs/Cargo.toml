@@ -6,6 +6,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../../crates/filesystem-format" }
 acyclic-auth = { path = "../../crates/auth" }
 acyclic-fs = { path = "../../crates/filesystem", default-features = false, features = ["test-support"] }
 acyclic-log-frame = { path = "../../crates/log-frame" }

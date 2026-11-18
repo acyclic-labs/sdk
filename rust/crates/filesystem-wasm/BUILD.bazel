@@ -35,6 +35,7 @@ rust_shared_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
@@ -70,6 +71,7 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/objects:acyclic_objects",
@@ -147,6 +149,7 @@ rust_shared_library(
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base_wasm",
+        "//rust/crates/filesystem-format:acyclic_fs_format_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",
@@ -190,6 +193,7 @@ rust_library(
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/filesystem-base:acyclic_fs_base_wasm",
+        "//rust/crates/filesystem-format:acyclic_fs_format_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",

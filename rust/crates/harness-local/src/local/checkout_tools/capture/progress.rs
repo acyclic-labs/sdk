@@ -63,7 +63,7 @@ impl CheckoutTools {
                         (context.operation_id(), 1),
                         PublicationPermit::Unrestricted,
                         &verify,
-                        Some(acyclic_fs::Digest::from_bytes(
+                        Some(acyclic_fs_format::identity::Digest::from_bytes(
                             *blake3::hash(b"acyclic.native-content-measurement/v1\0").as_bytes(),
                         )),
                     )

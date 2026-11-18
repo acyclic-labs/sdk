@@ -26,6 +26,7 @@ s3-fixture = ["local-runner", "dep:async-trait", "dep:axum", "dep:s3s"]
 graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:acyclic-plugin", "acyclic-native-runtime/test-support"]
 
 [dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
 acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }

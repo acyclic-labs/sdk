@@ -23,6 +23,7 @@
   "acyclic-manifest",
   "acyclic-workers",
   "acyclic-fs-base",
+  "acyclic-fs-format",
   "acyclic-fs-wire",
   "acyclic-fs-native-contract",
   "acyclic-fs-work",

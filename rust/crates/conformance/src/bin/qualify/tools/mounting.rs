@@ -53,7 +53,7 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
     let started = Instant::now();
     let mut session = mount_native(
         NativeMountRequest {
-            mount_id: acyclic_fs::MountId::new(),
+            mount_id: acyclic_fs_format::identity::MountId::new(),
             volume_id,
             destination: mount_dir.clone(),
             writable: true,
@@ -220,7 +220,7 @@ pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
         Arc::new(CheckoutMountSource::new(shared, config).map_err(engine_err("mount source"))?);
     let mut session = mount_native(
         NativeMountRequest {
-            mount_id: acyclic_fs::MountId::new(),
+            mount_id: acyclic_fs_format::identity::MountId::new(),
             volume_id,
             destination: mount_dir.clone(),
             writable: true,
@@ -345,7 +345,7 @@ pub(super) fn mount_smoke2(args: &[String]) -> Result<(), Failure> {
         let started = Instant::now();
         let session = mount_native(
             NativeMountRequest {
-                mount_id: acyclic_fs::MountId::new(),
+                mount_id: acyclic_fs_format::identity::MountId::new(),
                 volume_id,
                 destination: mount_dir.clone(),
                 writable: true,

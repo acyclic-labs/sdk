@@ -9,7 +9,7 @@ pub enum NativeCaptureEvidence {
     /// An original authored DATA receipt and its actual serial predecessor.
     Authored {
         /// Original capture operation.
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
         /// Original workspace.
         workspace: acyclic_fs::WorkspaceId,
         /// Actual predecessor of that receipt.
@@ -29,12 +29,12 @@ pub enum NativeCaptureEvidence {
     /// The physical owner is still running after a background start.
     Pending {
         /// Original call's capture operation, not yet completed.
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
     },
     /// Original content evidence cannot establish a complete comparison.
     Unavailable {
         /// Original capture operation whose evidence was requested.
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
     },
 }
 

@@ -33,7 +33,7 @@ impl LocalWorkspace {
         &self,
         source: &str,
         destination: &str,
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
         generation: Option<acyclic_fs::GenerationId>,
     ) -> std::result::Result<Option<acyclic_fs::GenerationId>, crate::filesystem::ForkCutError>
     {
@@ -213,7 +213,7 @@ impl crate::filesystem::VolumeResources for LocalVolumeResources {
         &'a self,
         source: &'a str,
         destination: &'a str,
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
         generation: Option<acyclic_fs::GenerationId>,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,

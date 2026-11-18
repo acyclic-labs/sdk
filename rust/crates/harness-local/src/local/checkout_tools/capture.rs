@@ -357,7 +357,7 @@ std::thread_local! {
 async fn apply_owed_write(
     physical: &LocalWorkspace,
     view: &workspace::View,
-    operation: acyclic_fs::OperationId,
+    operation: acyclic_fs_format::identity::OperationId,
     staged: acyclic_fs::GenerationId,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
@@ -406,7 +406,7 @@ pub(in crate::local) async fn record_changes<F, Fut>(
     (operation, phase): (OperationId, u8),
     permit: PublicationPermit,
     before_effect: &F,
-    settlement: Option<acyclic_fs::Digest>,
+    settlement: Option<acyclic_fs_format::identity::Digest>,
 ) -> Result<()>
 where
     F: Fn() -> Fut + Send + Sync,
@@ -475,7 +475,7 @@ where
         // Even an empty initial checkout needs an immutable baseline receipt.
         let settlement = settlement.or_else(|| {
             first_baseline.then(|| {
-                acyclic_fs::Digest::from_bytes(
+                acyclic_fs_format::identity::Digest::from_bytes(
                     *blake3::hash(b"acyclic.local.checkout-baseline/v1\0").as_bytes(),
                 )
             })
@@ -545,7 +545,7 @@ pub(in crate::local) async fn record_paths<F, Fut>(
     (operation, phase): (OperationId, u8),
     permit: PublicationPermit,
     before_effect: &F,
-    settlement: Option<acyclic_fs::Digest>,
+    settlement: Option<acyclic_fs_format::identity::Digest>,
 ) -> Result<bool>
 where
     F: Fn() -> Fut + Send + Sync,
@@ -687,25 +687,25 @@ pub(super) fn needs_baseline(slot: &Option<Cursor>, physical: &LocalWorkspace) -
 /// The first source import, retained in the workspace's existing operation index.
 pub(in crate::local) fn baseline_operation(
     workspace: acyclic_fs::WorkspaceId,
-) -> acyclic_fs::OperationId {
+) -> acyclic_fs_format::identity::OperationId {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-baseline/v1");
     hash.update(&workspace.into_bytes());
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    acyclic_fs::OperationId::from_bytes(bytes)
+    acyclic_fs_format::identity::OperationId::from_bytes(bytes)
 }
 
 pub(in crate::local) fn capture_operation(
     operation: OperationId,
     phase: u8,
-) -> acyclic_fs::OperationId {
+) -> acyclic_fs_format::identity::OperationId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic.local.checkout-capture/v1\0");
     hasher.update(&operation.into_bytes());
     hasher.update(&[phase]);
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    acyclic_fs::OperationId::from_bytes(bytes)
+    acyclic_fs_format::identity::OperationId::from_bytes(bytes)
 }
 
 pub(in crate::local) fn configuration(

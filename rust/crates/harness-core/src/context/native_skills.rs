@@ -48,7 +48,7 @@ enum RetainedSource {
 struct ShadowSource {
     volume: VolumeRef,
     cut: acyclic_fs::LazySnapshotRef,
-    file_id: acyclic_fs::FileId,
+    file_id: acyclic_fs_format::identity::FileId,
 }
 
 mod retained;
@@ -1014,7 +1014,7 @@ mod binding_tests {
             Arc::new(native),
             store,
             acyclic_fs::VolumeInitialization::new(config, Some(acyclic_fs::access::INITIAL_POLICY)),
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
         )
         .await

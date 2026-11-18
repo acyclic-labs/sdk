@@ -859,7 +859,7 @@ mod tests {
                 .map_err(storage)?;
             checkout
                 .commit(
-                    acyclic_fs::OperationId::new(),
+                    acyclic_fs_format::identity::OperationId::new(),
                     None,
                     None,
                     None,

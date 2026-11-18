@@ -1,4 +1,4 @@
-use super::*;
+use crate::object_reference::{ObjectKind, ObjectKindError};
 
 #[test]
 fn object_kind_wire_tags_are_stable() {

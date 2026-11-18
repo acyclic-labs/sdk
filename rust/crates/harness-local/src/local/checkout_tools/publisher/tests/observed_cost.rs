@@ -280,7 +280,7 @@ async fn a_write_over_an_unobserved_rename_source_leaves_its_identity_to_the_mov
 async fn head_identity(
     publisher: &CheckoutPublisher,
     path: &str,
-) -> Result<Option<acyclic_fs::FileId>> {
+) -> Result<Option<acyclic_fs_format::identity::FileId>> {
     let workspace = publisher.tools.workspace.view().workspace();
     let config = workspace.volume_config();
     let portable = acyclic_fs::path::PortablePath::parse(&format!("/{path}"), config.limits)

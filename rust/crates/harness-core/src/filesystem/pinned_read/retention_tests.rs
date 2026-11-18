@@ -12,7 +12,7 @@ struct Fixture {
     workspace: Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
     file: FileRef,
     grant: ContentGrant,
-    pin: acyclic_fs::AuthorityId,
+    pin: acyclic_fs_format::identity::AuthorityId,
 }
 
 impl Fixture {

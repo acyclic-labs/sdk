@@ -6,9 +6,9 @@ use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use {
     acyclic_fs::{
         CancellationToken, LazyWorkspace, Lifecycle, LocalAuthorityBackend, LocalFs,
-        LocalObjectBackend, MemoryLazyWorkspaceStore, NativeMaterializationWork, OperationId,
-        VolumeConfig,
+        LocalObjectBackend, MemoryLazyWorkspaceStore, NativeMaterializationWork, VolumeConfig,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::WorkBudget,
 };
 pub(super) fn work(

@@ -9,13 +9,16 @@ mod observed;
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
 
-fn publication_operation(operation: OperationId, path: &str) -> acyclic_fs::OperationId {
+fn publication_operation(
+    operation: OperationId,
+    path: &str,
+) -> acyclic_fs_format::identity::OperationId {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-publication/v2");
     hash.update(&operation.into_bytes());
     hash.update(path.as_bytes());
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    acyclic_fs::OperationId::from_bytes(identity)
+    acyclic_fs_format::identity::OperationId::from_bytes(identity)
 }
 
 /// The operation that captures the physical write of `path` under

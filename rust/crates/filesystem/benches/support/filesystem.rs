@@ -153,7 +153,10 @@ fn authority_head_shared(bencher: Bencher) {
 }
 
 fn authority_head_bench(bencher: Bencher, native_accounting: bool, shared: bool) {
-    use acyclic_fs::{AsyncAuthorityStore, AuthorityId, AuthorityWork, Epoch};
+    use {
+        acyclic_fs::{AsyncAuthorityStore, AuthorityWork, Epoch},
+        acyclic_fs_format::identity::AuthorityId,
+    };
     let runtime = Runtime::new().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;

@@ -4,14 +4,15 @@ use acyclic_fs::kernel::{
     encode_file_metadata, encode_file_table_page, encode_generation_root, file_metadata_id,
     file_table_page_id, merge_generation_async,
 };
-use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, CancellationToken, FileId, LogicalObjectStore, ObjectId,
-    ObjectKind, VolumeId,
-};
 use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use {
+    acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, LogicalObjectStore},
+    acyclic_fs_format::identity::{FileId, VolumeId},
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
+};
 
 type Store = LogicalObjectStore<acyclic_objects::MemoryObjects>;
 

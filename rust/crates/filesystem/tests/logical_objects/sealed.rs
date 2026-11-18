@@ -7,9 +7,9 @@ use {
     acyclic_fs_work::performance::WorkCounters,
 };
 use {
-    acyclic_fs::{
-        Digest, FileId, GenerationId, HashedObject, NativeMaterializationWork, ObjectKind,
-    },
+    acyclic_fs::{GenerationId, HashedObject, NativeMaterializationWork},
+    acyclic_fs_format::identity::{Digest, FileId},
+    acyclic_fs_format::object_reference::ObjectKind,
     acyclic_fs_work::performance::WorkBudget,
 };
 
@@ -486,7 +486,7 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
         generation: GenerationId::new(Digest::from_bytes([19; 32])),
     });
     let mut root = GenerationRoot {
-        volume_id: acyclic_fs::VolumeId::from_bytes([20; 16]),
+        volume_id: acyclic_fs_format::identity::VolumeId::from_bytes([20; 16]),
         root_file_id: lineage,
         file_table: table_id,
         parents: Vec::new(),
@@ -758,10 +758,13 @@ fn blob(id: ObjectId) -> acyclic_objects::Digest {
 #[tokio::test]
 async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_fs::{
-        CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
-        MemoryAuthorityBackend, OperationId, PublicationPermit, TransactionCommit, VolumeConfig,
-        VolumeInitialization, WorkspaceError,
+    use {
+        acyclic_fs::{
+            CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
+            MemoryAuthorityBackend, PublicationPermit, TransactionCommit, VolumeConfig,
+            VolumeInitialization, WorkspaceError,
+        },
+        acyclic_fs_format::identity::OperationId,
     };
 
     use acyclic_fs::model::{CheckoutMode, GenerationSelector};

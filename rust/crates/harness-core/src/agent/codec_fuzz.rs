@@ -544,15 +544,23 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                             "project".into(),
                             volume.clone(),
                         ),
-                        generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
-                            kind: acyclic_fs::ObjectKind::GenerationRoot,
-                            digest: acyclic_fs::Digest::from_bytes([23; 32]),
-                            storage: Some(acyclic_fs::ObjectStorage {
-                                locator: acyclic_fs::Digest::from_bytes([29; 32]),
-                                root_file_id: acyclic_fs::FileId::from_bytes([31; 16]),
-                                origin_generation: acyclic_fs::Digest::from_bytes([37; 32]),
-                            }),
-                        }),
+                        generation: acyclic_fs::GenerationId::from_root(
+                            acyclic_fs_format::object_reference::ObjectId {
+                                kind:
+                                    acyclic_fs_format::object_reference::ObjectKind::GenerationRoot,
+                                digest: acyclic_fs_format::identity::Digest::from_bytes([23; 32]),
+                                storage: Some(acyclic_fs_format::object_reference::ObjectStorage {
+                                    locator: acyclic_fs_format::identity::Digest::from_bytes(
+                                        [29; 32],
+                                    ),
+                                    root_file_id: acyclic_fs_format::identity::FileId::from_bytes(
+                                        [31; 16],
+                                    ),
+                                    origin_generation:
+                                        acyclic_fs_format::identity::Digest::from_bytes([37; 32]),
+                                }),
+                            },
+                        ),
                     }]
                 } else {
                     Vec::new()
@@ -856,11 +864,13 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
                     &mut None,
                 )?,
             ),
-            generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32])),
+            generation: acyclic_fs::GenerationId::new(
+                acyclic_fs_format::identity::Digest::from_bytes([1; 32]),
+            ),
             retained_workspace: format!("retained-{index}"),
-            retained_generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
-                [2; 32],
-            )),
+            retained_generation: acyclic_fs::GenerationId::new(
+                acyclic_fs_format::identity::Digest::from_bytes([2; 32]),
+            ),
         });
         if index == 0 {
             seeds.push(("history-project", serde_json::to_vec(&checkpoint)?));

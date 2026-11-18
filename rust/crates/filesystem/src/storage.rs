@@ -4,6 +4,10 @@ use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
 use crate::performance::{MeasuredResult, OperationFailure};
+pub(crate) use acyclic_fs_format::object_reference::{
+    ObjectId, ObjectIdBytes, ObjectIdError, ObjectIdRead, ObjectKind, ObjectKindError,
+    ObjectStorage,
+};
 use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -653,10 +657,6 @@ pub enum ObjectStoreError {
     #[error(transparent)]
     Filesystem(Box<crate::FsError>),
 }
-
-#[cfg(test)]
-#[path = "tests/storage.rs"]
-mod tests;
 
 #[cfg(test)]
 mod object_id_codec_tests {

@@ -4,12 +4,13 @@
 #[path = "support/provider_receipt.rs"]
 mod provider_receipt;
 
-use acyclic_fs::storage::{
-    ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest,
-};
 use acyclic_objects::{Blobs, Delete, MemoryObjects};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
+use {
+    acyclic_fs::storage::{ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest},
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
+};
 use {
     acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore},
     acyclic_fs_work::performance::WorkBudget,

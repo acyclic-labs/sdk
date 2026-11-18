@@ -19,8 +19,9 @@ use {
     acyclic_fs::{
         CancellationToken, Fs, IdempotencyKey, LazyOverlay, LazyOverlayId, LazyShadow,
         LazyShadowId, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
-        MemoryLazyWorkspaceStore, OperationId, WorkspaceId,
+        MemoryLazyWorkspaceStore, WorkspaceId,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 

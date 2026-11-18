@@ -63,6 +63,7 @@ rust_shared_library(
         ":build_script",
     ] + [
         "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",
@@ -100,6 +101,7 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",

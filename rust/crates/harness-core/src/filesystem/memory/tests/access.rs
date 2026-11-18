@@ -96,7 +96,7 @@ async fn publish_volume_policy(
         .map_err(|failure| super::super::super::map_error(failure.error.into()))?;
     checkout
         .commit::<acyclic_fs::FsError, _, _>(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,

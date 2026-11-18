@@ -2,9 +2,9 @@
 #![cfg(loom)]
 use acyclic_fs::kernel;
 use {
-    acyclic_fs::{
-        CancellationToken, Digest, FsError, ObjectId, ObjectKind, OperationClaims, VolumeId,
-    },
+    acyclic_fs::{CancellationToken, FsError, OperationClaims},
+    acyclic_fs_format::identity::{Digest, VolumeId},
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
     acyclic_fs_work::performance::WorkError,
 };
 
@@ -115,9 +115,9 @@ fn admission_model(insert: fn(&cache::FoldedDirectoryCache<bool>, ObjectId, bool
             "cache admission lost"
         );
         let associated = ObjectId {
-            storage: Some(acyclic_fs::ObjectStorage {
+            storage: Some(acyclic_fs_format::object_reference::ObjectStorage {
                 locator: Digest::from_bytes([7; 32]),
-                root_file_id: acyclic_fs::FileId::from_bytes([11; 16]),
+                root_file_id: acyclic_fs_format::identity::FileId::from_bytes([11; 16]),
                 origin_generation: Digest::from_bytes([13; 32]),
             }),
             ..key(1)

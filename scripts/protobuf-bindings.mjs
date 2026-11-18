@@ -11,8 +11,8 @@ export const packagedTypeScriptBindings = [
   ["machines/v1/machines_pb", ["machines"]],
   ["harness/v2/resources_pb", ["machines", "actors"], "compatibility"],
   ["objects/v1/objects_pb", ["objects"]],
-  ["stream/v1/stream_pb", ["stream"]],
-  ["stream/v1/session_pb", ["stream"]],
+  ["stream/v1/stream_pb", ["stream"], "rust/crates/stream-wire"],
+  ["stream/v1/session_pb", ["stream"], "rust/crates/stream-wire"],
   ["actors/v1/actors_pb", ["actors"]],
 ];
 

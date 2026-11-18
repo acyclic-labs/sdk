@@ -4230,7 +4230,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         .map_err(|failure| agent(failure.error))?;
     writer
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,
@@ -4472,7 +4472,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments_wo
                 })?,
             ));
             let destination = format!("{source}-selected-cut");
-            let operation = acyclic_fs::OperationId::from_bytes([44; 16]);
+            let operation = acyclic_fs_format::identity::OperationId::from_bytes([44; 16]);
             let original = cuts
                 .cut(&source, &destination, operation, None)
                 .await

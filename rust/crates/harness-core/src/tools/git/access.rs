@@ -17,7 +17,7 @@ where
 {
     pub(crate) async fn request_result(
         &self,
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
     ) -> crate::Result<Option<GitCommandOutput>> {
         let state = self.state().await?;
         if state.request(operation).is_none() {

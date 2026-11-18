@@ -7,8 +7,8 @@ use acyclic_stream::OwnedBytes;
 use {
     acyclic_fs::{
         AuthoredMutation, ContentChange, ContentTimes, FsError, LivePublicationObservation,
-        OperationId,
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::OperationReceipt,
 };
 

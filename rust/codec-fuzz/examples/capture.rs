@@ -650,7 +650,10 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    use acyclic_fs::{Digest, ObjectId, ObjectKind, ObjectStorage};
+    use {
+        acyclic_fs_format::identity::Digest,
+        acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
+    };
     for tag in 1..=8 {
         for sealed in [false, true] {
             let value = ObjectId {
@@ -658,7 +661,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
                 digest: Digest::from_bytes([1; 32]),
                 storage: sealed.then_some(ObjectStorage {
                     locator: Digest::from_bytes([2; 32]),
-                    root_file_id: acyclic_fs::FileId::from_bytes([3; 16]),
+                    root_file_id: acyclic_fs_format::identity::FileId::from_bytes([3; 16]),
                     origin_generation: Digest::from_bytes([4; 32]),
                 }),
             };
@@ -1122,9 +1125,12 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         manifest,
     )?;
     capture_actors(manifest)?;
-    use acyclic_fs::{
-        Digest, DurableCommit, Epoch, OperationId, ProposedCommit, Sequence,
-        streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
+    use {
+        acyclic_fs::{
+            DurableCommit, Epoch, ProposedCommit, Sequence,
+            streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
+        },
+        acyclic_fs_format::identity::{Digest, OperationId},
     };
     let proposed = ProposedCommit {
         publication: None,

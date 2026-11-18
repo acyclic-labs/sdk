@@ -6,7 +6,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub async fn creation_generation(
         &self,
         volume: &VolumeRef,
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
     ) -> Result<Option<GenerationRef>> {
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
         let reference = bounded_io::content_workspace(&self.provider, volume, Some(&io))?;
@@ -310,7 +310,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) fn volume_creation(
         &self,
         volume: &VolumeRef,
-    ) -> Result<(String, acyclic_fs::OperationId)> {
+    ) -> Result<(String, acyclic_fs_format::identity::OperationId)> {
         volume.validate(&mut None)?;
         if volume.provider() != &self.provider {
             return Err(Error::Invalid(
@@ -326,7 +326,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let digest = blake3::derive_key(domain, name.as_bytes());
         let mut operation = [0; 16];
         operation.copy_from_slice(&digest[..16]);
-        Ok((name, acyclic_fs::OperationId::from_bytes(operation)))
+        Ok((
+            name,
+            acyclic_fs_format::identity::OperationId::from_bytes(operation),
+        ))
     }
 
     /// Contributes the same initial generation as standalone volume creation.

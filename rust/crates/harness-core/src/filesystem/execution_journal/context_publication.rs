@@ -102,7 +102,7 @@ where
     pub fn bind_context_source<'io>(
         &'io self,
         volume_ref: &VolumeRef,
-        volume_id: acyclic_fs::VolumeId,
+        volume_id: acyclic_fs_format::identity::VolumeId,
         initial: SourceCursor,
         io: &'io PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'io, ContextCheckpoint>> {

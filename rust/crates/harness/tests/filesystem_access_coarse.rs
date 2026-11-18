@@ -55,7 +55,8 @@ async fn racing_read(protected: bool, range: bool, revoke: bool) -> Result<(), B
         .generation(pinned.id(), WorkBudget::UNBOUNDED, &cancellation)
         .await?
         .value;
-    let (entered, release) = objects.pause(acyclic_fs::ObjectKind::BlobChunk)?;
+    let (entered, release) =
+        objects.pause(acyclic_fs_format::object_reference::ObjectKind::BlobChunk)?;
     let read = async {
         if !protected {
             // The former path authorized its selected checkout before storage

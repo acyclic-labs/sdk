@@ -3,15 +3,17 @@ use acyclic_fs_work::performance::WorkBudget;
 
 #[test]
 fn generation_reference_codec_preserves_sealed_association() -> Result<()> {
-    let plain = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32]));
-    let sealed = acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
-        storage: Some(acyclic_fs::ObjectStorage {
-            locator: acyclic_fs::Digest::from_bytes([2; 32]),
-            root_file_id: acyclic_fs::FileId::from_bytes([3; 16]),
-            origin_generation: acyclic_fs::Digest::from_bytes([4; 32]),
-        }),
-        ..plain.object_id()
-    });
+    let plain =
+        acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([1; 32]));
+    let sealed =
+        acyclic_fs::GenerationId::from_root(acyclic_fs_format::object_reference::ObjectId {
+            storage: Some(acyclic_fs_format::object_reference::ObjectStorage {
+                locator: acyclic_fs_format::identity::Digest::from_bytes([2; 32]),
+                root_file_id: acyclic_fs_format::identity::FileId::from_bytes([3; 16]),
+                origin_generation: acyclic_fs_format::identity::Digest::from_bytes([4; 32]),
+            }),
+            ..plain.object_id()
+        });
     for generation in [plain, sealed] {
         assert_eq!(decode_generation_id(&generation.to_bytes())?, generation);
     }

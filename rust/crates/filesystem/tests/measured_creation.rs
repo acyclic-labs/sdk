@@ -6,7 +6,8 @@ mod unbounded;
 
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use {
-    acyclic_fs::{CancellationToken, Fs, IdempotencyKey, OperationId, WorkspaceError},
+    acyclic_fs::{CancellationToken, Fs, IdempotencyKey, WorkspaceError},
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 

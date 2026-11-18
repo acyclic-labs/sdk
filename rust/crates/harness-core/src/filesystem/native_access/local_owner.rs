@@ -40,7 +40,7 @@ pub async fn local_owner_workspace<
                 config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
-            acyclic_fs::OperationId::from_bytes(operation),
+            acyclic_fs_format::identity::OperationId::from_bytes(operation),
             acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
             None,

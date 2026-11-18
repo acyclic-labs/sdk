@@ -29,7 +29,7 @@ impl RootPolicySeed {
     pub(in crate::filesystem) fn attributes(
         &self,
         volume: &crate::conversation::VolumeRef,
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
     ) -> Result<Vec<acyclic_fs::CreationAttribute>, Error> {
         let path = self.files[0].0.trim_start_matches('/');
         let version = hex::encode(operation.into_bytes());

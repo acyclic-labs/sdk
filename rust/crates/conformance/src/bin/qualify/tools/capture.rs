@@ -13,7 +13,7 @@ pub(super) fn restore_gen(args: &[String]) -> Result<(), Failure> {
         return Err(invalid("expected four arguments").into());
     };
     let volume = uuid::Uuid::parse_str(volume).map_err(|_| invalid("invalid volume UUID"))?;
-    let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+    let mut bytes = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
     let bytes = bytes
         .get_mut(..generation.len() / 2)
         .ok_or_else(|| invalid("invalid canonical generation reference"))?;

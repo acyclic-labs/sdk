@@ -6,10 +6,11 @@ use std::{borrow::Cow, sync::Arc};
 use {
     acyclic_fs::{
         CancellationToken, GitCommandOutput, IdempotencyKey, LazyWorkspace, LocalCoreStateStore,
-        LocalFs, LocalOptions, OperationId, PublicationPermit,
+        LocalFs, LocalOptions, PublicationPermit,
         demand::native::NativeDemandSource,
         model::{Lifecycle, VolumeConfig},
     },
+    acyclic_fs_format::identity::OperationId,
     acyclic_fs_work::performance::WorkBudget,
 };
 
@@ -27,9 +28,12 @@ type Lazy = LazyWorkspace<
 
 #[tokio::test]
 async fn branch_switch_accepts_only_the_destination_workspace() -> Result<()> {
-    use acyclic_fs::{
-        Digest, GenerationId, GitCommand, GitCompatError, GitCompatRepository, GitFilesystemResult,
-        GitTreeRef, MemoryGitCompatStore, WorkspaceId,
+    use {
+        acyclic_fs::{
+            GenerationId, GitCommand, GitCompatError, GitCompatRepository, GitFilesystemResult,
+            GitTreeRef, MemoryGitCompatStore, WorkspaceId,
+        },
+        acyclic_fs_format::identity::Digest,
     };
     let main = WorkspaceId::from_bytes([1; 16]);
     let child = WorkspaceId::from_bytes([2; 16]);

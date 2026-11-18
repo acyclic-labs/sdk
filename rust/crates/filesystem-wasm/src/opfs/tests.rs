@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::ObjectKind;
+use acyclic_fs_format::object_reference::ObjectKind;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);

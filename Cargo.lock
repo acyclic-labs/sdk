@@ -227,6 +227,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-wire",
  "acyclic-fs-work",
  "acyclic-harness-client",
@@ -278,6 +279,7 @@ dependencies = [
  "acyclic-agent-host-conformance",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness",
@@ -360,6 +362,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-collections",
  "acyclic-fs-base",
+ "acyclic-fs-format",
  "acyclic-fs-native-contract",
  "acyclic-fs-wire",
  "acyclic-fs-work",
@@ -456,11 +459,23 @@ name = "acyclic-fs-control-layout-proof"
 version = "0.0.0"
 
 [[package]]
+name = "acyclic-fs-format"
+version = "0.2.0"
+dependencies = [
+ "acyclic-native-runtime",
+ "hex",
+ "serde",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "acyclic-fs-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-lease-path-proof",
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
@@ -498,6 +513,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-fs-base",
+ "acyclic-fs-format",
  "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-native-runtime",
@@ -532,6 +548,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-fs-base",
+ "acyclic-fs-format",
  "acyclic-fs-work",
  "acyclic-objects",
  "acyclic-stream",
@@ -614,6 +631,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-executable-search",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness-client",
@@ -728,6 +746,7 @@ name = "acyclic-harness-conformance"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-harness-core",
@@ -779,6 +798,7 @@ dependencies = [
  "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-fs-base",
+ "acyclic-fs-format",
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness-control",
@@ -944,6 +964,7 @@ name = "acyclic-harness-layout"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-work",
  "acyclic-model-render",
  "acyclic-native-runtime",
@@ -962,6 +983,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-executable-search",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness-client",
@@ -1310,6 +1332,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-log-frame",
  "acyclic-objects",
  "acyclic-stream",

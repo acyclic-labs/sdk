@@ -42,7 +42,7 @@ fn publication_after_revocation(broken: bool, fork: bool) {
     };
     let lease = loom::future::block_on(Box::pin(windows.begin_with_lease_id(
         workspace,
-        acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32])),
+        acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([1; 32])),
         "task:reservation",
         1,
         10_000,
@@ -82,8 +82,8 @@ fn publication_after_revocation(broken: bool, fork: bool) {
             expected: head,
             commit: acyclic_fs::ProposedCommit {
                 publication: None,
-                operation_id: acyclic_fs::OperationId::from_bytes([3; 16]),
-                fingerprint: acyclic_fs::Digest::from_bytes([4; 32]),
+                operation_id: acyclic_fs_format::identity::OperationId::from_bytes([3; 16]),
+                fingerprint: acyclic_fs_format::identity::Digest::from_bytes([4; 32]),
                 payload: bytes::Bytes::from_static(b"model-publication"),
             },
             permit: if broken {
@@ -97,9 +97,9 @@ fn publication_after_revocation(broken: bool, fork: bool) {
             let fork = acyclic_fs::WorkspaceForkCommit {
                 lineage: Some(acyclic_fs::GenerationForkSource {
                     authority: authority_id,
-                    generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
-                        [1; 32],
-                    )),
+                    generation: acyclic_fs::GenerationId::new(
+                        acyclic_fs_format::identity::Digest::from_bytes([1; 32]),
+                    ),
                     lineage: acyclic_fs::GenerationFork::Independent,
                 }),
                 destination: acyclic_fs::kernel::volume_authority_id(

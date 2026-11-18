@@ -473,7 +473,10 @@ fn check_sites(
 /// Actual manifest and complete generation-reference writer outputs, preceded
 /// only by the generator's mutation/stage/fault/ordinal configuration.
 pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, acyclic_objects::Error> {
-    use acyclic_fs::{Digest, FileId, ObjectId, ObjectKind, ObjectStorage};
+    use {
+        acyclic_fs_format::identity::{Digest, FileId},
+        acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
+    };
     let payload = acyclic_objects::Manifest::default().encode()?;
     let mut seeds = Vec::new();
     for sealed in [false, true] {

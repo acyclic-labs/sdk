@@ -96,7 +96,7 @@ pub fn mount_source(
     std::fs::create_dir(&destination)?;
     let session = acyclic_fs::mount_native(
         acyclic_fs::NativeMountRequest {
-            mount_id: acyclic_fs::MountId::new(),
+            mount_id: acyclic_fs_format::identity::MountId::new(),
             volume_id: source.volume_id()?,
             destination: destination.clone(),
             writable: true,

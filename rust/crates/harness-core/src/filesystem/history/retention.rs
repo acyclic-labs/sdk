@@ -40,7 +40,7 @@ where
                 .storage_name(&mut None)
                 .map_err(guest)?,
             &retained_workspace,
-            acyclic_fs::OperationId::from_bytes(key),
+            acyclic_fs_format::identity::OperationId::from_bytes(key),
             Some(head.id()),
         )
         .await

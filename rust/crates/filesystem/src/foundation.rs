@@ -1,5 +1,8 @@
 //! Portable identities and authority contracts.
 
+pub(crate) use acyclic_fs_format::identity::{
+    AuthorityId, CheckoutId, Digest, FileId, MountId, OperationId, VolumeId, WatchId,
+};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +17,6 @@ pub(crate) fn usize_to_u64(value: usize) -> u64 {
 }
 use std::fmt;
 use thiserror::Error;
-use uuid::Uuid;
 
 /// Monotonic authority incarnation used to fence stale writers.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

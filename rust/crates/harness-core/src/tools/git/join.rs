@@ -396,7 +396,7 @@ where
 /// merge checks its resolution against.
 fn conflict_paths(
     typed: &acyclic_fs::MergePlan,
-) -> crate::Result<BTreeMap<String, Option<acyclic_fs::FileId>>> {
+) -> crate::Result<BTreeMap<String, Option<acyclic_fs_format::identity::FileId>>> {
     typed
         .conflicts
         .iter()

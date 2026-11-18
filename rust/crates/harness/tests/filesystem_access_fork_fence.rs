@@ -38,7 +38,8 @@ async fn racing_fork(protected: bool, action: Action) -> Result<(), Box<dyn Erro
         )
         .await?
         .value;
-    let (entered, release) = objects.pause_write(acyclic_fs::ObjectKind::GenerationRoot)?;
+    let (entered, release) =
+        objects.pause_write(acyclic_fs_format::object_reference::ObjectKind::GenerationRoot)?;
     let copy = async {
         if protected {
             fixture
@@ -201,7 +202,7 @@ proptest! {
 impl objects::CountingObjects {
     fn pause_write(
         &self,
-        kind: acyclic_fs::ObjectKind,
+        kind: acyclic_fs_format::object_reference::ObjectKind,
     ) -> Result<objects::PauseChannels, acyclic_fs::ObjectStoreError> {
         self.pause_io(kind, true)
     }

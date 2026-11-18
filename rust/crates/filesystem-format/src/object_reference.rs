@@ -1,5 +1,9 @@
 //! Canonical filesystem object references.
 
+use crate::identity::{Digest, FileId};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
 /// Immutable object class. Hashes are scoped by both kind and canonical bytes.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ObjectKind {
@@ -111,7 +115,10 @@ impl<'de> Deserialize<'de> for ObjectId {
                     *slot = byte;
                     length += 1;
                 }
-                self.visit_bytes(&bytes[..length])
+                let encoded = bytes
+                    .get(..length)
+                    .ok_or_else(|| serde::de::Error::custom("object reference is too long"))?;
+                self.visit_bytes(encoded)
             }
         }
         deserializer.deserialize_bytes(Reference)
@@ -127,7 +134,7 @@ pub struct ObjectStorage {
     /// BLAKE3 of the exact sealed CAS payload.
     pub locator: Digest,
     /// Root directory identity selecting the sealing lineage.
-    pub root_file_id: crate::FileId,
+    pub root_file_id: FileId,
     /// Original generation authenticated by the seal, preserved when reused.
     pub origin_generation: Digest,
 }
@@ -158,7 +165,8 @@ impl ObjectId {
         Ok((object, reader.bytes))
     }
 
-    pub(crate) fn read_from<R: ObjectIdRead>(reader: &mut R) -> Result<Self, R::Error> {
+    /// Reads a canonical reference through a caller-accounted reader.
+    pub fn read_from<R: ObjectIdRead>(reader: &mut R) -> Result<Self, R::Error> {
         let tag = reader.tag()?;
         let digest = Digest::from_bytes(reader.fixed::<32>()?);
         let kind = ObjectKind::from_canonical_tag(tag & 127).map_err(|_| R::unknown_kind(tag))?;
@@ -167,7 +175,7 @@ impl ObjectId {
         } else {
             Some(ObjectStorage {
                 locator: Digest::from_bytes(reader.fixed::<32>()?),
-                root_file_id: crate::FileId::from_bytes(reader.fixed::<16>()?),
+                root_file_id: FileId::from_bytes(reader.fixed::<16>()?),
                 origin_generation: Digest::from_bytes(reader.fixed::<32>()?),
             })
         };
@@ -196,7 +204,7 @@ impl ObjectId {
     }
 
     /// Fixed-width index key from the canonical encoding, padded with zeros.
-    pub(crate) fn index_key(self) -> [u8; Self::ENCODED_LEN] {
+    pub fn index_key(self) -> [u8; Self::ENCODED_LEN] {
         self.to_bytes().bytes
     }
 }
@@ -212,7 +220,9 @@ impl ObjectIdBytes {
     /// Borrows the initialized canonical encoding.
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
-        &self.bytes[..self.length]
+        self.bytes
+            .get(..self.length)
+            .unwrap_or_else(|| unreachable!("canonical object reference exceeds its backing array"))
     }
 }
 
@@ -237,13 +247,18 @@ impl TryFrom<&[u8]> for ObjectId {
 }
 
 /// Fixed-field admission belongs to the reader; identity framing belongs here.
-pub(crate) trait ObjectIdRead {
+pub trait ObjectIdRead {
+    /// Typed framing or reader error.
     type Error;
 
+    /// Reads the kind and sealed-reference tag.
     fn tag(&mut self) -> Result<u8, Self::Error> {
         self.fixed::<1>().map(|[tag]| tag)
     }
+    /// Reads an entire fixed-width field.
     fn fixed<const N: usize>(&mut self) -> Result<[u8; N], Self::Error>;
+    /// Constructs the reader's error for an unknown tag.
+    /// Reports an unrecognized kind from the raw tag byte, including its storage bit.
     fn unknown_kind(tag: u8) -> Self::Error;
 }
 

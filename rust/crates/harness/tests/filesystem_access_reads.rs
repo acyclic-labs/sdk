@@ -494,7 +494,8 @@ async fn expiry_crossing_between_authorization_and_read_confirmation_refuses()
         &mut None,
     )?;
     let reader = fixture.reader(&scope)?;
-    let (entered, release) = objects.pause(acyclic_fs::ObjectKind::BlobChunk)?;
+    let (entered, release) =
+        objects.pause(acyclic_fs_format::object_reference::ObjectKind::BlobChunk)?;
     let read = async { reader.read(&file, 65536, None, None)?.await };
     let advance = async {
         entered.await?;

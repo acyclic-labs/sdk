@@ -1,11 +1,11 @@
 //! Captures unchanged merge-directory writer output from a local deployment.
 
-use acyclic_fs::foundation::OperationId;
 use acyclic_fs::kernel::{FileMetadata, MergeConflict, MetadataField};
 use acyclic_fs::workspace::{
     ApplyOptions, DrivenJoinError, ForkOptions, MergeConflictFile, MergeConflictFileKind,
     MergeDirectorySection,
 };
+use acyclic_fs_format::identity::OperationId;
 use std::{error::Error, num::NonZeroU32};
 use {
     acyclic_fs::{

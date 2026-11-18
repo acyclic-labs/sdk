@@ -250,7 +250,7 @@ pub(in crate::filesystem) fn version_generation(
         return Err(invalid());
     }
     let Some(format) = format else {
-        let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+        let mut bytes = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
         let decoded = bytes.get_mut(..key.len() / 2).ok_or_else(invalid)?;
         hex::decode_to_slice(key, decoded).map_err(|_| invalid())?;
         let generation = GenerationId::from_bytes(decoded).ok_or_else(invalid)?;
@@ -294,7 +294,7 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     if let Some(io) = io {
         io.preflight(encoding).map_err(LazyError::Filesystem)?;
     }
-    let mut storage = [0_u8; 19 + 2 * acyclic_fs::ObjectId::ENCODED_LEN];
+    let mut storage = [0_u8; 19 + 2 * acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
     let label = &mut storage[..label_bytes];
     label[..19].copy_from_slice(b"harness-generation-");
     hex::encode_to_slice(reference.as_slice(), &mut label[19..])
