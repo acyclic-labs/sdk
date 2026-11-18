@@ -121,6 +121,7 @@ rust_test(
         "//rust/crates/filesystem-base:tree",
         "//rust/crates/filesystem-format:tree",
         "//rust/crates/filesystem-lock-order-tests:tree",
+        "//rust/crates/filesystem-merge:tree",
         "//rust/crates/filesystem-napi:tree",
         "//rust/crates/filesystem-native-contract:tree",
         "//rust/crates/filesystem-native-core-tests:tree",

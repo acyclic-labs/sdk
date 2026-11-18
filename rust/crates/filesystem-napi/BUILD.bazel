@@ -64,6 +64,7 @@ rust_shared_library(
     ] + [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-merge:acyclic_fs_merge",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -103,6 +104,7 @@ rust_library(
     ] + [
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-merge:acyclic_fs_merge",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",

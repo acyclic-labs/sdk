@@ -125,6 +125,7 @@ filegroup(
         "//rust/crates/filesystem-base:Cargo.toml",
         "//rust/crates/filesystem-format:Cargo.toml",
         "//rust/crates/filesystem-lock-order-tests:Cargo.toml",
+        "//rust/crates/filesystem-merge:Cargo.toml",
         "//rust/crates/filesystem-napi:Cargo.toml",
         "//rust/crates/filesystem-native-contract:Cargo.toml",
         "//rust/crates/filesystem-native-core-tests:Cargo.toml",
