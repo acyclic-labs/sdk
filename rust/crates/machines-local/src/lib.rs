@@ -2,6 +2,11 @@
 //! host retains workspace admission; no shell or output reader is inserted.
 use acyclic_machines::*;
 use async_trait::async_trait;
+use std::{
+    collections::BTreeMap,
+    num::NonZeroU32,
+    sync::Arc,
+};
 use acyclic_native_runtime::{CaptureHandler, CaptureStop, ProcessCaptureStream};
 use futures::Stream;
 use std::{

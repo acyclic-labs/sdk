@@ -89,14 +89,14 @@ impl LocalMachine {
         };
         let mut admission = StopOnDrop(Some(control.clone()));
         let options = &self.options;
-        let mut argv = command.argv.into_iter();
+        let mut argv = command.argv().iter().cloned();
         let mut process = ProcessCommand::new(argv.next().unwrap_or_default());
         process
             .env_clear()
             .args(argv)
             .current_dir(
                 command
-                    .cwd
+                    .cwd()
                     .map(|cwd| options.cwd.join(cwd))
                     .as_ref()
                     .unwrap_or(&options.cwd),
@@ -106,7 +106,7 @@ impl LocalMachine {
             command: process,
             custody: options.process_custody.clone(),
             execution_grant: None,
-            input: (!command.stdin.is_empty()).then_some(OwnedCaptureInput::Literal(command.stdin)),
+            input: (!command.stdin().is_empty()).then_some(OwnedCaptureInput::Literal(command.stdin().to_vec())),
             schedule: deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
             maximum_output_bytes: maximum,
         }.stream(control.bind(handler)).await.map_err(|failure| match failure {
@@ -135,9 +135,9 @@ impl LocalMachine {
 }
 
 fn admit(command: &ExecCommand) -> Result<(Option<usize>, ProcessControl), ProviderError> {
-    let maximum = command.maximum_output_bytes.map(usize::try_from).transpose()
+    let maximum = command.maximum_output_bytes().map(usize::try_from).transpose()
         .map_err(|_| ProviderError::Invalid("local output allowance is not representable; recovery: select an addressable byte allowance".into()))?;
-    let control = match command.expiry_unix_ms {
+    let control = match command.expiry_unix_ms() {
         Some(expiry) => ProcessControl::open(expiry),
         None => ProcessControl::unbounded(),
     }.map_err(|error| ProviderError::Rejected(format!("local control admission failed: {error}; recovery: restore native wake and expiry services before dispatch")))?;

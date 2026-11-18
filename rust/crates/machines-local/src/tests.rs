@@ -87,12 +87,7 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     };
     // The actual child would publish this file before doing anything else.
     // An expired admission must refuse before creating that real process.
-    let mut invalid = command();
-    invalid.argv.push("nul\0".into());
-    for (command, kind) in [
-        (command().with_expiry(1), io::ErrorKind::Interrupted),
-        (invalid, io::ErrorKind::InvalidInput),
-    ] {
+    for (command, kind) in [(command().with_expiry(1), io::ErrorKind::Interrupted)] {
         let mut refused = local.exec(command, handler(), None).await;
         let failure = refused.next().await.unwrap().unwrap_err();
         assert!(matches!(

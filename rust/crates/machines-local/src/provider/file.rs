@@ -31,7 +31,7 @@ impl LocalBackend {
                             .map_err(|_| ProviderError::FileIndeterminate(machine))?;
                         admission(&access)?;
                         let result = (|| {
-                            let file = open(&access.path, write)?;
+                            let file = open(access.path(), write)?;
                             // Never interpret a pipe/device as an offset-addressed file.
                             if !file.metadata()?.is_file() {
                                 return Err(io::ErrorKind::Unsupported.into());
@@ -83,8 +83,8 @@ fn admission(access: &FileAccess) -> Result<(), ProviderError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| ProviderError::Unavailable)?
         .as_millis();
-    if now >= u128::from(access.deadline_unix_ms)
-        || !std::path::Path::new(&access.path).is_absolute()
+    if now >= u128::from(access.deadline_unix_ms())
+        || !std::path::Path::new(access.path()).is_absolute()
     {
         return Err(ProviderError::Rejected("native file admission expired or its path is relative; recovery: retain an absolute host path and live original deadline".into()));
     }

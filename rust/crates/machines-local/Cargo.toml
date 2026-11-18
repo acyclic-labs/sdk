@@ -13,6 +13,7 @@ acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-trait.workspace = true
 futures.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 tokio = { workspace = true, features = ["sync", "time", "macros"] }
 
 [dev-dependencies]

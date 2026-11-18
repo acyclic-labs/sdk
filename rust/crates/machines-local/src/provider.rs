@@ -252,7 +252,7 @@ impl NativeMachine for LocalBackend {
             ));
         }
         access.validate_range(limit as usize)?;
-        let offset = access.offset;
+        let offset = access.offset();
         self.file(access, false, deadline, move |file| {
             let mut bytes = vec![0; limit as usize];
             let count = file::read_at(file, &mut bytes, offset)?;
@@ -273,10 +273,10 @@ impl NativeMachine for LocalBackend {
         deadline: &acyclic_machines::deadline::GuestDeadline,
     ) -> Result<FileWrite, ProviderError> {
         access.validate_range(data.len())?;
-        if truncate && access.offset != 0 {
+        if truncate && access.offset() != 0 {
             return Err(ProviderError::Invalid("truncation has a nonzero offset; recovery: truncate only the original offset-zero chunk".into()));
         }
-        let offset = access.offset;
+        let offset = access.offset();
         self.file(access, true, deadline, move |file| {
             if truncate {
                 file.set_len(0)?;
