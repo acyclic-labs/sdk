@@ -34,57 +34,12 @@ const WRITTEN: &str = "conformance write";
 /// The binary every backend runs: the plugin's `acyclic`, which the test
 /// declares as its tool, or the one `ACYCLIC_TEST_BINARY` selects.
 fn executable() -> PathBuf {
-    executable_from(
-        std::env::var_os("CARGO_BIN_EXE_acyclic"),
-        std::env::var_os("ACYCLIC_TEST_BINARY"),
-        &std::env::current_exe().unwrap(),
-    )
-}
-
-fn executable_from(
-    cargo: Option<std::ffi::OsString>,
-    selected: Option<std::ffi::OsString>,
-    current_exe: &Path,
-) -> PathBuf {
-    if let Some(path) = cargo {
-        return path.into();
-    }
-    if let Some(path) = selected {
-        return path.into();
-    }
-    // Cargo builds `acyclic` as part of another package, so it does not set
-    // this test's CARGO_BIN_EXE. The documented workflow builds the plugin
-    // into the shared target directory; Bazel always supplies the tool above.
-    let target = current_exe.parent().and_then(Path::parent).unwrap();
-    let path = target.join(format!("acyclic{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        path.exists(),
-        "build the acyclic binary first: cargo build -p acyclic-plugin --features acyclic-native-runtime/test-support ({})",
-        path.display()
-    );
-    path
-}
-
-#[test]
-fn cargo_workflow_finds_the_plugin_binary_in_the_shared_target_directory() {
-    let root = tempfile::tempdir().unwrap();
-    let deps = root.path().join("target/debug/deps");
-    std::fs::create_dir_all(&deps).unwrap();
-    let binary = root
-        .path()
-        .join("target/debug")
-        .join(format!("acyclic{}", std::env::consts::EXE_SUFFIX));
-    std::fs::write(&binary, b"").unwrap();
-    let current = deps.join("graphcoder_backends");
-    assert_eq!(executable_from(None, None, &current), binary);
-    assert_eq!(
-        executable_from(Some("cargo".into()), None, &current),
-        PathBuf::from("cargo")
-    );
-    assert_eq!(
-        executable_from(None, Some("selected".into()), &current),
-        PathBuf::from("selected")
-    );
+    std::env::var_os("CARGO_BIN_EXE_acyclic")
+        .or_else(|| std::env::var_os("ACYCLIC_TEST_BINARY"))
+        .map(PathBuf::from)
+        .expect(
+            "missing acyclic binary; run bazel test //rust/crates/conformance:graphcoder_backends",
+        )
 }
 
 /// A Server-Sent Events body of one Responses generation.

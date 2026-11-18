@@ -352,7 +352,7 @@ mod tests {
             assert_eq!(observed.first_os_errors[row], Some(code));
             assert_eq!(observed.missing[4], Some(0));
 
-            let recovery = "cargo test --locked -p acyclic-conformance --test main native_projection::tests::original_task_projection_preserves_inline_work_and_abandonment -- --exact";
+            let recovery = "bazel test //rust/crates/conformance:main --test_filter=native_projection::tests::original_task_projection_preserves_inline_work_and_abandonment --test_arg=--exact";
             let mut output = Vec::new();
             let original = retain_diagnostics::<(), _, _>(
                 Err(error),
