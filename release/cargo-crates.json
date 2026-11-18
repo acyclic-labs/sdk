@@ -25,6 +25,7 @@
   "acyclic-stream-trust",
   "acyclic-objects",
   "acyclic-actors",
+  "acyclic-machines-limits",
   "acyclic-machines",
   "acyclic-manifest",
   "acyclic-workers",
