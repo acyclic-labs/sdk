@@ -29,11 +29,12 @@ where
         agent: &AgentState,
         inbox: u64,
         cursor: u64,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> Result<ApprovalSelection> {
         let policy = if ended(agent) {
             None
         } else {
-            let (_, bindings, _) = self.parent_review_binding(agent, None).await?;
+            let (_, bindings, _) = self.parent_review_binding(agent, None, Some(stop)).await?;
             bindings
                 .content
                 .reader
@@ -63,6 +64,7 @@ where
         &self,
         agent: &AgentState,
         selection: &ApprovalSelection,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> Result<OpenTriage> {
         selection
             .validate(&agent.path, selection.range.start)
@@ -71,7 +73,7 @@ where
             None
         } else {
             Some(
-                self.parent_review_binding(agent, selection.policy.as_ref())
+                self.parent_review_binding(agent, selection.policy.as_ref(), Some(stop))
                     .await?,
             )
         };
