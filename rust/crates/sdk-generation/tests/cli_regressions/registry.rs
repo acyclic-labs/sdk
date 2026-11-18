@@ -96,9 +96,13 @@ fn archive_locks_override_foreign_cargo_authority() {
                     );
                     let mut manifest: Value =
                         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+                    let frontier = manifest
+                        .get_mut("registryCorpus")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|corpus| corpus.remove("frontier"))
+                        .expect("generation manifest must contain registryCorpus.frontier");
                     let frontier: Vec<sdk_generation::historical::RegistryOwnerSource> =
-                        serde_json::from_value(manifest["registryCorpus"]["frontier"].take())
-                            .expect("generation must publish a typed discovery frontier");
+                        serde_json::from_value(frontier).expect("invalid discovery frontier");
                     // Each case gets a new admission: its discovery context differs.
                     // Retain the exact source, receipts and compiler directory only.
                     fs::remove_file(&manifest_path).unwrap();
