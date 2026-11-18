@@ -88,10 +88,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .is_some())
     }
 
-    fn fenced_key(&self, root_hash: &str, name: &str) -> String {
-        format!("{}f/{root_hash}/{name}", self.state.prefix)
-    }
-
     async fn remove_fenced_batch(
         &self,
         key: &str,
@@ -175,7 +171,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let batch = encode_batch(&references);
         let name = format!("{fence:016x}.{}.{}", Digest::of(&batch), nonce()?);
         let tag = format!("f{root_hash}.{name}");
-        let key = self.fenced_key(root_hash, &name);
+        let key = self.retention_key('f', root_hash, &name);
         self.commit_retention(&references, &tag, &key, batch, 2)
             .await?;
         if !self.terminal_replace(observed, state.terminal).await? {
@@ -218,7 +214,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .flush(std::slice::from_ref(&terminal_key))
             .await
             .map_err(medium)?;
-        let mut pages = self.pages(self.fenced_key(root_hash, ""));
+        let mut pages = self.pages(self.retention_key('f', root_hash, ""));
         let mut existed = false;
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
