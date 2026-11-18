@@ -24,7 +24,7 @@ export class DefaultStreamProvider implements StreamProvider {
       endpoint,
       ...(token === undefined ? {} : { token }),
       ...(credential === undefined ? {} : { credential }),
-      ...(caCertificate === undefined ? {} : { caCertificate: caCertificate.slice() }),
+      ...(caCertificate === undefined ? {} : { caCertificate: snapshotBytes(caCertificate) }),
     };
   }
 

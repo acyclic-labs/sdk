@@ -22,8 +22,8 @@ export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [name:
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const bytesCodec: Codec<Uint8Array> = Object.freeze({
-  encode: (value: Uint8Array) => Uint8Array.from(value),
-  decode: (value: Uint8Array) => Uint8Array.from(value),
+  encode: snapshotBytes,
+  decode: snapshotBytes,
 });
 export function jsonCodec(): Codec<JsonValue>;
 export function jsonCodec<Value extends JsonValue>(parse: (value: JsonValue) => Value): Codec<Value>;
@@ -53,7 +53,7 @@ export class StreamClient {
       ...(callback === undefined
         ? { token: environment?.token ?? environmentValue("ACYCLIC_API_KEY") }
         : { credential: callback }),
-      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
+      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate }),
     }));
   }
   constructor(readonly provider: StreamProvider) {
