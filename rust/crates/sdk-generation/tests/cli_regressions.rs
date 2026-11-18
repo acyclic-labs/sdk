@@ -918,9 +918,6 @@ fn registry_archive_fixture_configured(
     }
     let archive = support.join(format!("registry/{package_name}-1.0.0.crate"));
     archives::pack(&source, &archive);
-    if package_name != "demo" && support.join("registry/demo-1.0.0.crate").exists() {
-        fs::remove_file(support.join("registry/demo-1.0.0.crate")).unwrap();
-    }
     write_registry_transport(&support);
     (fixture, support)
 }

@@ -369,7 +369,8 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     // One immutable initial history prevents incidental wall-clock differences
     // from creating redundant source frontiers. Each owner still packages and
     // compiles its own source and complete four-profile historical matrix.
-    let template = historical_fixture(None);
+    let template = historical_source_fixture(None);
+    init_git(&template.0.root, "historical docs fixture");
     let base_revision = git_revision(&template.0.root);
     let fixtures = std::thread::scope(|scope| {
         let template = &template;
