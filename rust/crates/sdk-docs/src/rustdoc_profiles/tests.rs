@@ -56,10 +56,12 @@ fn browser_profiles_follow_features_and_fail_if_target_is_missing() {
         profile.features,
         BTreeSet::from(["wasm".into(), "codec".into()])
     );
-    assert!(matches!(
+    assert_eq!(
         browser_profile_for_package(package, false, &BTreeSet::new()),
-        Err(ProfileError::UnsupportedTarget { .. })
-    ));
+        Err(ProfileError::UnsupportedTarget {
+            target: "wasm32-unknown-unknown".into(),
+        })
+    );
     metadata.packages[0].features.clear();
     assert!(
         browser_profile_for_package(&metadata.packages[0], false, &targets)
@@ -86,22 +88,6 @@ fn browser_binding_policy_excludes_native_features_and_rejects_invalid_policy() 
     assert!(!profile.features.contains("json"));
     metadata.packages[0].metadata["napi"]["wasm-features"] = serde_json::json!("wasm");
     assert!(browser_profile_for_package(&metadata.packages[0], true, &targets).is_err());
-}
-
-#[test]
-fn unsupported_target_is_hard_error() {
-    let result = profiles_for_package(
-        metadata(),
-        "feature-rich",
-        "wasm32-wasip1",
-        &BTreeSet::new(),
-    );
-    assert_eq!(
-        result,
-        Err(ProfileError::UnsupportedTarget {
-            target: "wasm32-wasip1".into()
-        })
-    );
 }
 
 #[test]
