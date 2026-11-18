@@ -637,11 +637,11 @@ mod tests {
             let work =
                 crate::NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
                     .expect("accounting state is admitted");
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             super::run_with_meter(Some(&work), || panic!("unadmitted callback ran"))
                 .expect_err("each exchange needs its own admitted custody");
             assert_eq!(
-                work.receipt(),
+                work.receipt().unwrap(),
                 before,
                 "denied exchange performed native work"
             );
@@ -667,7 +667,7 @@ mod resource_scope_tests {
                 })
                 .expect("resource metadata belongs to the original");
             let full = resource.clone();
-            let before = original.receipt();
+            let before = original.receipt().unwrap();
             let failure = super::run_with_meter(Some(&full), || {
                 panic!("denied exchange cannot enter callback")
             })
@@ -680,7 +680,7 @@ mod resource_scope_tests {
                 })
             ));
             assert_eq!(
-                original.receipt(),
+                original.receipt().unwrap(),
                 before,
                 "denied exchange enters neither allocator nor SDK"
             );

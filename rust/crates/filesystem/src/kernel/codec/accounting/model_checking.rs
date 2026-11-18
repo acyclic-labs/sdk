@@ -176,7 +176,7 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
                 assert_eq!(completed, maximum, "available encoding work must complete");
             }
         }
-        let receipt = original.receipt();
+        let receipt = original.receipt().unwrap();
         assert_eq!(
             if pages {
                 receipt.page_writes

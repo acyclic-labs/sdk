@@ -46,7 +46,7 @@ fn cleanup_after_contended_registry(
     // A distinct starter owns the registry before retirement begins. Closing
     // this actual descriptor wakes the same kernel wait queue used by cleanup.
     fence_io::try_lock(&registry).unwrap();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let retiring = loom::thread::spawn(move || {
         guard.release_cleanup(None).unwrap();
         assert!(guard.file.is_none());
