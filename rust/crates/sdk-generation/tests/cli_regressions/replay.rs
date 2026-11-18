@@ -112,8 +112,9 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     let mut release: Value = serde_json::from_slice(&original_release).unwrap();
     for row in release["artifacts"].as_array_mut().unwrap() {
         if let Some((old, new)) = changed.get(row["path"].as_str().unwrap()) {
-            assert_eq!(row["sha256"].as_str().unwrap(), old);
-            row["sha256"] = json!(new);
+            let digest = row.get_mut("sha256").unwrap();
+            assert_eq!(digest.as_str().unwrap(), old);
+            *digest = json!(new);
         }
     }
     let original_digest = hash_bytes(&original_release);
@@ -141,9 +142,11 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     ] {
         changed.insert(path.to_str().unwrap().replace('\\', "/"), hashes);
     }
+    let artifacts = manifest["artifacts"].as_object_mut().unwrap();
     for (path, (old, new)) in changed {
-        assert_eq!(manifest["artifacts"][&path].as_str().unwrap(), old);
-        manifest["artifacts"][&path] = json!(new);
+        let digest = artifacts.get_mut(&path).unwrap();
+        assert_eq!(digest.as_str().unwrap(), old);
+        *digest = json!(new);
     }
     rebased_bytes.clear();
     serde_json::to_writer_pretty(&mut rebased_bytes, &manifest).unwrap();
