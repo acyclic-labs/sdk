@@ -532,7 +532,6 @@ mod heterogeneous_mount;
 mod identity;
 mod live;
 mod local;
-mod merge;
 mod profiles;
 mod protocol_helpers;
 mod selection;

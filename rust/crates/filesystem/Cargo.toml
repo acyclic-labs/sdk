@@ -64,6 +64,7 @@ checkout_profiles = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyc
 checkout_tracking = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_publication = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "futures", "tokio"]
 checkout_read = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
+checkout_reconciliation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 local_facade = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_objects", "acyclic_stream", "tempfile", "tokio"]
 creation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tempfile", "tokio"]
 native_source = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tempfile", "tokio"]
@@ -207,6 +208,10 @@ path = "tests/checkout_profiles.rs"
 [[test]]
 name = "checkout_cancellation"
 path = "tests/checkout_cancellation.rs"
+
+[[test]]
+name = "checkout_reconciliation"
+path = "tests/checkout_reconciliation.rs"
 
 [[test]]
 name = "checkout_content"
