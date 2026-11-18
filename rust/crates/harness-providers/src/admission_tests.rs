@@ -1,7 +1,7 @@
 //! Shared model cooldowns, driven through real requests on a paused clock.
 use super::*;
 use crate::Adapter;
-use acyclic_harness_core::model::ModelProvider as _;
+use acyclic_harness_core::model::{ModelEvent, ModelProvider as _};
 use acyclic_stream::BoxProviderFuture;
 
 #[path = "admission_observation_tests.rs"]
@@ -94,17 +94,21 @@ impl HttpTransport for Capacity {
 struct RateRefusal {
     origin: tokio::time::Instant,
     refuse_at: usize,
+    retry_without_delay: bool,
     log: Mutex<Vec<(Duration, u16)>>,
 }
 
 impl HttpTransport for RateRefusal {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         let mut log = self.log.lock().unwrap();
-        let status = if log.len() == self.refuse_at {
+        let status = if log.len() == self.refuse_at
+            || (self.retry_without_delay && log.len() == self.refuse_at + 1)
+        {
             429
         } else {
             200
         };
+        let retry_after = (status == 429 && log.len() == self.refuse_at).then_some(RETRY_AFTER);
         log.push((self.now(), status));
         Box::pin(async move {
             Ok(HttpResponse {
@@ -113,7 +117,7 @@ impl HttpTransport for RateRefusal {
                 // for one of these bodies to complete after the cooldown.
                 body: Box::pin(futures::stream::pending()),
                 request_id: None,
-                retry_after: (status == 429).then_some(RETRY_AFTER),
+                retry_after,
             })
         })
     }
@@ -135,13 +139,15 @@ impl HttpTransport for RateRefusal {
 }
 
 #[test]
-fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open() -> Result<()> {
+fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
     use acyclic_harness_core::model::ModelEvent;
+    const WAITERS: u32 = 10;
     for accepted in [0, 3] {
         paused().block_on(async {
             let transport = Arc::new(RateRefusal {
                 origin: tokio::time::Instant::now(),
                 refuse_at: accepted,
+                retry_without_delay: false,
                 log: Mutex::default(),
             });
             let provider = crate::tests::provider_with(
@@ -161,7 +167,8 @@ fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open()
                 refused.next().now_or_never(),
                 Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
             ));
-            let mut queued: Vec<_> = (0..10)
+            assert!(refused.next().now_or_never().is_none());
+            let mut queued: Vec<_> = (0..WAITERS)
                 .map(|_| provider.generate(&request, dispatch))
                 .collect();
             for response in &mut queued {
@@ -178,26 +185,121 @@ fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open()
             }
             assert_eq!(transport.log.lock().unwrap().len(), accepted + 1);
             tokio::time::advance(Duration::from_nanos(1)).await;
-            for response in &mut queued {
-                assert!(matches!(response.next().now_or_never(), Some(Some(Ok(
-                    ModelEvent::Wait(ModelWait::AdmissionFinished { waited_for, .. })
-                ))) if waited_for == RETRY_AFTER));
-                assert!(response.next().now_or_never().is_none());
+            let event = loop {
+                match refused.next().now_or_never() {
+                    Some(Some(Ok(ModelEvent::Wait(
+                        ModelWait::AdmissionChanged { .. } | ModelWait::Finished { .. },
+                    )))) => continue,
+                    event => break event,
+                }
+            };
+            assert!(matches!(
+                event,
+                Some(Some(Ok(ModelEvent::Wait(ModelWait::AdmissionFinished { .. }))))
+            ));
+            let interval = RETRY_AFTER / WAITERS;
+            for index in 0..WAITERS {
+                if index > 0 {
+                    tokio::time::advance(interval).await;
+                }
+                for (position, response) in queued.iter_mut().enumerate() {
+                    if position < index as usize {
+                        continue;
+                    }
+                    let event = loop {
+                        match response.next().now_or_never() {
+                            Some(Some(Ok(ModelEvent::Wait(ModelWait::AdmissionChanged {
+                                ..
+                            })))) => continue,
+                            event => break event,
+                        }
+                    };
+                    if position == index as usize {
+                        let waited_for = RETRY_AFTER + interval * index;
+                        assert!(matches!(event, Some(Some(Ok(
+                            ModelEvent::Wait(ModelWait::AdmissionFinished { waited_for: actual, .. })
+                        ))) if actual == waited_for));
+                        assert!(response.next().now_or_never().is_none());
+                    } else {
+                        assert!(event.is_none());
+                    }
+                }
             }
             let log = transport.log.lock().unwrap();
-            assert_eq!(log.len(), accepted + 11);
-            assert!(
-                log[accepted + 1..]
-                    .iter()
-                    .all(|row| *row == (RETRY_AFTER, 200))
-            );
-            // The former accepted-at-429 credit admits only max(accepted, 1)
-            // requests here while their response bodies remain open.
+            assert_eq!(log.len(), accepted + 1 + WAITERS as usize);
+            for (index, row) in log[accepted + 1..].iter().enumerate() {
+                assert_eq!(*row, (RETRY_AFTER + interval * index as u32, 200));
+            }
             Ok::<_, acyclic_harness_core::Error>(())
         })?;
     }
     Ok(())
 }
+#[test]
+fn a_refusal_without_a_delay_keeps_the_paced_queue_spaced() -> Result<()> {
+    use acyclic_harness_core::model::ModelEvent;
+    paused().block_on(async {
+        let transport = Arc::new(RateRefusal {
+            origin: tokio::time::Instant::now(),
+            refuse_at: 0,
+            retry_without_delay: true,
+            log: Mutex::default(),
+        });
+        let provider = crate::tests::provider_with(
+            Adapter::Chat,
+            "https://provider.test/v1",
+            transport.clone(),
+        );
+        let (request, dispatch) = crate::tests::request(&provider)?;
+        let mut refused = provider.generate(&request, dispatch);
+        assert!(matches!(
+            refused.next().now_or_never(),
+            Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
+        ));
+        assert!(refused.next().now_or_never().is_none());
+        let mut queued: Vec<_> = (0..3)
+            .map(|_| provider.generate(&request, dispatch))
+            .collect();
+        for response in &mut queued {
+            assert!(matches!(
+                response.next().now_or_never(),
+                Some(Some(Ok(ModelEvent::Wait(ModelWait::AdmissionStarted {
+                    cause: ModelAdmissionCause::Cooldown { until }
+                })))) if until == RETRY_AFTER
+            ));
+        }
+        tokio::time::advance(RETRY_AFTER + Duration::from_nanos(1)).await;
+        let event = loop {
+            match refused.next().now_or_never() {
+                Some(Some(Ok(ModelEvent::Wait(
+                    ModelWait::AdmissionChanged { .. } | ModelWait::Finished { .. },
+                )))) => continue,
+                event => break event,
+            }
+        };
+        assert!(matches!(
+            event,
+            Some(Some(Ok(ModelEvent::Wait(
+                ModelWait::AdmissionFinished { .. }
+            ))))
+        ));
+        // The retry is refused again, this time without a replacement delay.
+        assert!(refused.next().now_or_never().is_some());
+        let first = queued[0].next().now_or_never();
+        assert!(matches!(
+            first,
+            Some(Some(Ok(ModelEvent::Wait(
+                ModelWait::AdmissionFinished { .. }
+            ))))
+        ));
+        for response in &mut queued[1..] {
+            assert!(response.next().now_or_never().is_none());
+        }
+        Ok::<_, acyclic_harness_core::Error>(())
+    })?;
+    Ok(())
+}
+
 fn paused() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -496,7 +598,7 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
             assert!(waiting.next().now_or_never().is_none());
             if at_finish {
                 tokio::time::advance(RETRY_AFTER).await;
-                held.waited();
+                held.waited(transport.now());
                 assert!(matches!(
                     waiting.next().await,
                     Some(Ok(Event::Wait(ModelWait::AdmissionFinished { .. })))
@@ -507,7 +609,7 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
                 drop(waiting);
                 assert_eq!(work.live_allocation_bytes(), baseline);
                 tokio::time::advance(RETRY_AFTER).await;
-                held.waited();
+                held.waited(transport.now());
             }
             assert_eq!(work.live_allocation_bytes(), baseline);
             assert!(gate.lock().waiters.is_empty());

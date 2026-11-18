@@ -228,6 +228,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
             timeouts: acyclic_harness_providers::TimeoutSpec {
                 total_ms: Some(100),
+                first_byte_ms: None,
             },
             prompt_cache: acyclic_harness_providers::PromptCache::Native,
         },

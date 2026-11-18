@@ -376,7 +376,10 @@ fn registry(
             }),
             max_event_bytes: Some(1 << 16),
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
-            timeouts: acyclic_harness_providers::TimeoutSpec { total_ms: None },
+            timeouts: acyclic_harness_providers::TimeoutSpec {
+                total_ms: None,
+                first_byte_ms: None,
+            },
             prompt_cache,
         },
     )?;

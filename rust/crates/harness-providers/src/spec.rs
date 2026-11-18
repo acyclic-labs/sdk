@@ -125,9 +125,9 @@ impl PromptCache {
     }
 }
 
-/// Caller-selected request deadline, shared by response headers and the body.
-/// Requests are unbounded when no deadline is provided. A deadline never
-/// restarts when another body chunk arrives.
+/// Caller-selected request deadlines. The first-byte deadline bounds the wait
+/// for response headers; the total deadline bounds the whole exchange. A
+/// deadline never restarts when another body chunk arrives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
@@ -137,13 +137,35 @@ pub struct TimeoutSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub total_ms: Option<u64>,
+    /// Base wait for response headers in milliseconds. The effective deadline
+    /// grows with the request's input, so a large prefill is never mistaken for
+    /// a dead connection. `None` leaves the header wait unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub first_byte_ms: Option<u64>,
 }
 
 impl TimeoutSpec {
-    /// Requests have no implicit deadline.
-    pub const DEFAULT: Self = Self { total_ms: None };
+    /// Requests have no implicit deadline; a host selects the first-byte policy.
+    pub const DEFAULT: Self = Self {
+        total_ms: None,
+        first_byte_ms: None,
+    };
+    /// Thirty seconds for the first byte, plus one millisecond per input token
+    /// (four request bytes), and no total deadline.
+    pub const FIRST_BYTE: Self = Self {
+        total_ms: None,
+        first_byte_ms: Some(30_000),
+    };
     fn is_default(&self) -> bool {
         *self == Self::DEFAULT
+    }
+
+    /// The one first-byte policy: the configured base plus one millisecond per
+    /// input token, approximated by four request bytes per token.
+    pub(crate) fn first_byte_deadline_ms(&self, input_bytes: u64) -> Option<u64> {
+        self.first_byte_ms
+            .map(|base| base.saturating_add(input_bytes / 4))
     }
 }
 

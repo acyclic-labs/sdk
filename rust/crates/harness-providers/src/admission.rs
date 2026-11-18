@@ -1,8 +1,10 @@
 //! One admission per model at each provider endpoint, shared by one registry.
 //!
 //! A 429 with a provider delay closes that model's bucket until exactly that
-//! instant. Every waiter can resume when it opens: a rate refusal says nothing
-//! about the provider's concurrency capacity. Request bytes are never changed.
+//! instant. When it opens, the waiters that accumulated during the cooldown are
+//! admitted one per share of the provider's window, so a shared refusal never
+//! releases a herd into the first second of the next window. Request bytes are
+//! never changed.
 use crate::{HttpRequest, HttpResponse, HttpTransport, ResolvedModel};
 use acyclic_harness_core::{
     Result,
@@ -23,7 +25,7 @@ use std::{
 pub(crate) struct Endpoints(Mutex<HashMap<[u8; 32], Arc<Gate>>>);
 
 impl Endpoints {
-    fn gate(&self, provider: &ResolvedModel) -> Arc<Gate> {
+    pub(crate) fn gate(&self, provider: &ResolvedModel) -> Arc<Gate> {
         let mut identity = blake3::Hasher::new();
         identity.update(b"acyclic.provider-admission.v1\0");
         for part in [
@@ -75,7 +77,7 @@ pub(crate) fn send<'a>(
     held: &'a mut Option<Permit>,
 ) -> impl futures::Stream<Item = Result<Event<HttpResponse>>> + acyclic_stream::ProviderTask + 'a {
     async_stream::try_stream! {
-        if let Some(permit) = held.take() { permit.waited(); }
+        if let Some(permit) = held.take() { permit.waited(provider.transport.now()); }
         let transport = provider.transport.as_ref();
         let admission = provider.admission.gate(provider).admit(transport, work);
         let mut admission = core::pin::pin!(admission);
@@ -114,9 +116,18 @@ pub(crate) struct Gate(Mutex<State>);
 struct State {
     /// The provider's instant on the transport clock, while closed.
     closed_until: Option<Duration>,
+    /// The provider's last delay, which paces the waiters it accumulated.
+    window: Option<Duration>,
+    /// One admission per interval while the cooldown's waiters drain.
+    pace: Option<Pace>,
     next_ticket: u64,
     /// Waiters in arrival (ticket) order.
     waiters: VecDeque<(u64, Waiter)>,
+}
+
+struct Pace {
+    next: Duration,
+    interval: Duration,
 }
 
 struct Waiter {
@@ -138,6 +149,12 @@ impl State {
 
     fn remove(&mut self, ticket: u64) -> Option<Waiter> {
         let waiter = self.waiters.remove(self.position(ticket)?)?.1;
+        if self.waiters.is_empty() {
+            self.pace = None;
+            if self.closed_until.is_none() {
+                self.window = None;
+            }
+        }
         if self.waiters.len() * 4 <= self.waiters.capacity() {
             self.waiters.shrink_to(self.waiters.len() * 2);
         }
@@ -148,24 +165,66 @@ impl State {
     /// revokes grants whose waiter has not resumed, and every
     /// waiter re-evaluates (arming the provider's instant when closed).
     fn revoke(&mut self) {
+        self.pace = None;
         for (_, waiter) in &mut self.waiters {
             waiter.admitted = false;
             if let Some(waker) = waiter.waker.take() {
                 waker.wake();
             }
         }
-        self.wake();
     }
 
     fn cause(&self) -> Option<ModelAdmissionCause> {
         self.closed_until
             .map(|until| ModelAdmissionCause::Cooldown { until })
+            .or_else(|| self.pace.as_ref().map(|_| ModelAdmissionCause::Credit))
     }
 
-    /// Releases every waiter, in arrival order, only while open.
-    fn wake(&mut self) {
-        if self.closed_until.is_some() {
-            return;
+    /// Opens the gate at `now`, admitting at most one waiter per pacing interval.
+    /// Returns the next instant this gate needs a wake-up, if any.
+    fn open(&mut self, now: Duration) -> Option<Duration> {
+        if let Some(until) = self.closed_until {
+            if until > now {
+                return Some(until);
+            }
+            self.closed_until = None;
+            let pending = self
+                .waiters
+                .iter()
+                .filter(|(_, waiter)| !waiter.admitted)
+                .count();
+            if pending > 1 {
+                let interval =
+                    self.window.unwrap_or_default() / u32::try_from(pending).unwrap_or(u32::MAX);
+                if !interval.is_zero() {
+                    self.pace = Some(Pace {
+                        next: now,
+                        interval,
+                    });
+                }
+            }
+        }
+        if let Some(pace) = &mut self.pace {
+            if now < pace.next {
+                return Some(pace.next);
+            }
+            if let Some((_, waiter)) = self.waiters.iter_mut().find(|(_, waiter)| !waiter.admitted)
+            {
+                waiter.admitted = true;
+                if let Some(waker) = waiter.waker.take() {
+                    waker.wake();
+                }
+                if self.waiters.iter().all(|(_, waiter)| waiter.admitted) {
+                    self.pace = None;
+                    self.window = None;
+                    return None;
+                }
+                pace.next = now.saturating_add(pace.interval);
+                return Some(pace.next);
+            }
+            self.pace = None;
+            self.window = None;
+            return None;
         }
         for (_, waiter) in self
             .waiters
@@ -177,12 +236,30 @@ impl State {
                 waker.wake();
             }
         }
+        None
     }
 }
 
 impl Gate {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// How long this bucket withholds admission at `now`, if it does.
+    pub(crate) fn saturation(&self, now: Duration) -> Option<Duration> {
+        let state = self.lock();
+        let closed = state
+            .closed_until
+            .filter(|until| *until > now)
+            .map(|until| until.saturating_sub(now));
+        let paced = state
+            .pace
+            .as_ref()
+            .map(|pace| pace.next.saturating_sub(now));
+        match (closed, paced) {
+            (Some(closed), Some(paced)) => Some(closed.max(paced)),
+            (closed, paced) => closed.or(paced),
+        }
     }
 
     /// Queue funding is synchronous: an admission failure must release the
@@ -200,13 +277,7 @@ impl Gate {
         )>,
     > {
         let mut state = self.lock();
-        if state
-            .closed_until
-            .is_some_and(|until| until <= transport.now())
-        {
-            state.closed_until = None;
-            state.wake();
-        }
+        state.open(transport.now());
         let Some(cause) = state.cause() else {
             return Ok(None);
         };
@@ -235,7 +306,6 @@ impl Gate {
                 waker: None,
             },
         ));
-        state.wake();
         Ok(Some((ticket, cause, started, custody)))
     }
 
@@ -262,22 +332,23 @@ impl Gate {
                 let (changed, at) = futures::future::poll_fn(|context| -> Poll<Result<_>> {
                     loop {
                         let mut state = self.lock();
+                        let now = transport.now();
+                        let next = state.open(now);
                         let Some(index) = state.position(ticket) else {
                             return Poll::Ready(Err(crate::invalid("admission waiter disappeared")));
                         };
                         if state.waiters[index].1.admitted {
                             state.remove(ticket);
-                            return Poll::Ready(Ok((None, transport.now())));
+                            return Poll::Ready(Ok((None, now)));
                         }
                         let Some(current) = state.cause() else {
-                            state.wake();
                             continue;
                         };
                         if current != cause {
-                            return Poll::Ready(Ok((Some(current), transport.now())));
+                            return Poll::Ready(Ok((Some(current), now)));
                         }
                         state.waiters[index].1.waker = Some(context.waker().clone());
-                        let Some(until) = state.closed_until else {
+                        let Some(until) = next else {
                             timer = None;
                             return Poll::Pending;
                         };
@@ -291,11 +362,6 @@ impl Gate {
                         };
                         if wake.poll_unpin(context)?.is_pending() { return Poll::Pending; }
                         timer = None;
-                        let mut state = self.lock();
-                        if state.closed_until == Some(until) {
-                            state.closed_until = None;
-                            state.wake();
-                        }
                     }
                 }).await?;
                 let waited_for = at.saturating_sub(started);
@@ -350,13 +416,9 @@ impl Permit {
     }
 
     /// The refused caller has waited out the provider's delay.
-    fn waited(self) {
-        if let Some(until) = self.opens {
-            let mut state = self.gate.lock();
-            if state.closed_until == Some(until) {
-                state.closed_until = None;
-                state.wake();
-            }
+    fn waited(self, now: Duration) {
+        if self.opens.is_some() {
+            self.gate.lock().open(now);
         }
     }
 
@@ -373,9 +435,11 @@ impl Permit {
                 if state.closed_until.is_none_or(|closed| closed < until) {
                     state.closed_until = Some(until);
                 }
+                state.window = Some(wait);
+                state.pace = None;
+                state.revoke();
                 self.opens = Some(until);
             }
-            state.revoke();
             return self.opens.is_some();
         }
         false

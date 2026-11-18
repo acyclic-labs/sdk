@@ -122,7 +122,7 @@ async fn generation_and_count_publish_original_admission_on_both_provider_paths(
             assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
             assert!(events.next().now_or_never().is_none());
             transport.millis.store(5_000, Ordering::SeqCst);
-            held.waited();
+            held.waited(transport.now());
             assert!(
                 matches!(events.next().await.transpose()?, Some(ModelEvent::Wait(
                 ModelWait::AdmissionFinished { waited_for, admitted_at: 1_005_000 }
@@ -241,7 +241,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
             if maximum.is_some() {
                 transport.millis.store(5_000, Ordering::SeqCst);
-                held.waited();
+                held.waited(transport.now());
                 let outcome = turn.await?;
                 assert!(
                     matches!(&outcome,
@@ -272,7 +272,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             assert_eq!(usage.waits().completed, 0);
             assert_eq!(usage.waits().elapsed_ns(), None);
             transport.millis.store(5_000, Ordering::SeqCst);
-            extending.waited();
+            extending.waited(transport.now());
             assert!(matches!(
                 turn.await?,
                 acyclic_harness_local::test_support::PromptOutcome::Settled(_, _)

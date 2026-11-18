@@ -20,10 +20,10 @@ type Work = acyclic_fs::NativeMaterializationWork;
 #[cfg(target_arch = "wasm32")]
 type Work = ();
 
-/// Applies the caller-selected deadline to each request.
+/// Applies the caller-selected deadlines to each request.
 pub(crate) struct Bounded {
     inner: Arc<dyn HttpTransport>,
-    total_ms: u64,
+    timeouts: TimeoutSpec,
 }
 
 impl Bounded {
@@ -31,32 +31,70 @@ impl Bounded {
         inner: Arc<dyn HttpTransport>,
         timeouts: TimeoutSpec,
     ) -> Arc<dyn HttpTransport> {
-        match timeouts.total_ms {
-            Some(total_ms) => Arc::new(Self { inner, total_ms }),
-            None => inner,
+        if timeouts.total_ms.is_none() && timeouts.first_byte_ms.is_none() {
+            return inner;
         }
+        Arc::new(Self { inner, timeouts })
     }
 
-    /// Starts the deadline once; the response body retains that same event.
+    /// Starts the header deadline once; the response body keeps only the total
+    /// deadline, measured from the same send.
     async fn exchange<F: Future<Output = Result<HttpResponse>>>(
         &self,
         send: impl FnOnce() -> Result<F>,
         work: Option<&Work>,
-    ) -> Result<(HttpResponse, Deadline)> {
-        let mut deadline = Deadline::start(self.inner.clone(), self.total_ms, work.is_some());
+        input_bytes: u64,
+    ) -> Result<(HttpResponse, Option<Deadline>)> {
+        let now = self.inner.now();
+        let first = self.timeouts.first_byte_deadline_ms(input_bytes);
+        let total = self.timeouts.total_ms;
+        let (due, first_byte, millis) = match (first, total) {
+            (Some(first), Some(total)) => {
+                let first_due = now.saturating_add(Duration::from_millis(first));
+                let total_due = now.saturating_add(Duration::from_millis(total));
+                if first_due <= total_due {
+                    (Some(first_due), true, first)
+                } else {
+                    (Some(total_due), false, total)
+                }
+            }
+            (Some(first), None) => (
+                Some(now.saturating_add(Duration::from_millis(first))),
+                true,
+                first,
+            ),
+            (None, Some(total)) => (
+                Some(now.saturating_add(Duration::from_millis(total))),
+                false,
+                total,
+            ),
+            (None, None) => (None, false, 0),
+        };
+        let mut deadline = due.map(|due| Deadline {
+            transport: self.inner.clone(),
+            due,
+            millis,
+            first_byte,
+            native: work.is_some(),
+            wake: None,
+        });
         let mut send = pin!(async { send()?.await });
         let response = futures::future::poll_fn(|context| {
             // The deadline is checked before the producer, so readiness never bypasses it.
-            if deadline.expired() {
+            if let Some(deadline) = &deadline
+                && deadline.expired()
+            {
                 return Poll::Ready(Err(deadline.timeout()));
             }
             if let Poll::Ready(response) = send.as_mut().poll(context) {
-                return Poll::Ready(if deadline.expired() {
-                    Err(deadline.timeout())
-                } else {
-                    response
+                return Poll::Ready(match &deadline {
+                    Some(deadline) if deadline.expired() => Err(deadline.timeout()),
+                    _ => response,
                 });
             }
+            let Some(deadline) = &mut deadline else {
+                return Poll::Pending;
+            };
             match deadline.poll_wake(context, work) {
                 Poll::Ready(Ok(())) => Poll::Ready(Err(deadline.timeout())),
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
@@ -64,16 +102,32 @@ impl Bounded {
             }
         })
         .await?;
-        Ok((response, deadline))
+        let total = if first_byte {
+            total.map(|millis| Deadline {
+                transport: self.inner.clone(),
+                due: now.saturating_add(Duration::from_millis(millis)),
+                millis,
+                first_byte: false,
+                native: work.is_some(),
+                wake: None,
+            })
+        } else {
+            deadline
+        };
+        Ok((response, total))
     }
 }
 
 impl HttpTransport for Bounded {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            let (mut response, deadline) =
-                self.exchange(|| Ok(self.inner.send(request)), None).await?;
-            response.body = Box::pin(Guarded::new(response.body, deadline));
+            let input_bytes = request.body.len() as u64;
+            let (mut response, deadline) = self
+                .exchange(|| Ok(self.inner.send(request)), None, input_bytes)
+                .await?;
+            if let Some(deadline) = deadline {
+                response.body = Box::pin(Guarded::new(response.body, deadline));
+            }
             Ok(response)
         })
     }
@@ -111,34 +165,46 @@ impl HttpTransport for Bounded {
         work: &'a Work,
     ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
         acyclic_fs::NativeFutureBundle::new(work, || async move {
+            let input_bytes = request.body.len() as u64;
             let (mut response, deadline) = self
                 .exchange(
                     || self.inner.send_with_native_work(request, work),
                     Some(work),
+                    input_bytes,
                 )
                 .await?;
-            // The guard is funded on the original ledger before it exists, and its custody
-            // funds the body's wake-up timers.
-            let custody = work.claim(
-                std::mem::size_of::<Guarded>() as u64,
-                1,
-                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
-            )?;
-            let mut guarded = Guarded::new(response.body, deadline);
-            guarded.custody = Some(custody);
-            response.body = Box::pin(guarded);
+            if let Some(deadline) = deadline {
+                // The guard is funded on the original ledger before it exists, and its custody
+                // funds the body's wake-up timers.
+                let custody = work.claim(
+                    std::mem::size_of::<Guarded>() as u64,
+                    1,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )?;
+                let mut guarded = Guarded::new(response.body, deadline);
+                guarded.custody = Some(custody);
+                response.body = Box::pin(guarded);
+            }
             Ok(response)
         })
     }
 }
 
 /// The typed failure of an explicitly selected request deadline.
-fn timeout(native: bool, total_ms: u64) -> Error {
-    acyclic_harness_provider_response::transport_failure(
-        native,
-        ModelTransportFailure::Timeout,
-        format_args!("exchange exceeded {total_ms} ms"),
-    )
+fn timeout(native: bool, millis: u64, first_byte: bool) -> Error {
+    if first_byte {
+        acyclic_harness_provider_response::transport_failure(
+            native,
+            ModelTransportFailure::Timeout,
+            format_args!("no response headers within {millis} ms"),
+        )
+    } else {
+        acyclic_harness_provider_response::transport_failure(
+            native,
+            ModelTransportFailure::Timeout,
+            format_args!("exchange exceeded {millis} ms"),
+        )
+    }
 }
 
 /// A platform timer: portable, or admitted on the native ledger.
@@ -180,20 +246,22 @@ pub(crate) fn timer(
 /// One request's fixed deadline on the transport's monotonic clock.
 struct Deadline {
     transport: Arc<dyn HttpTransport>,
-    total_ms: u64,
+    millis: u64,
+    first_byte: bool,
     native: bool,
     due: Duration,
     wake: Option<Wake>,
 }
 
 impl Deadline {
-    fn start(transport: Arc<dyn HttpTransport>, total_ms: u64, native: bool) -> Self {
+    fn start(transport: Arc<dyn HttpTransport>, millis: u64, native: bool) -> Self {
         Self {
             due: transport
                 .now()
-                .saturating_add(Duration::from_millis(total_ms)),
+                .saturating_add(Duration::from_millis(millis)),
             transport,
-            total_ms,
+            millis,
+            first_byte: false,
             native,
             wake: None,
         }
@@ -204,7 +272,7 @@ impl Deadline {
     }
 
     fn timeout(&self) -> Error {
-        timeout(self.native, self.total_ms)
+        timeout(self.native, self.millis, self.first_byte)
     }
 
     /// Arms one event, retained across headers and every body chunk. A broken

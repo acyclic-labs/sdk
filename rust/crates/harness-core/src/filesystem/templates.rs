@@ -285,6 +285,7 @@ mod tests {
             writer.clone(),
             Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             (&["spawn".into()], Some(templates.clone())),
+            None,
         )?;
         let tool = registry
             .get("spawn", None, None)?

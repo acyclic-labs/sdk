@@ -1840,6 +1840,9 @@ impl ModelProvider for RecordedModel {
         let live = self.live.bind_content(reader, maximum_bytes)?;
         Some(Arc::new(self.with_live(live)))
     }
+    fn provider_saturation(&self) -> Option<std::time::Duration> {
+        self.live.provider_saturation()
+    }
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.live.model_profile(model)
     }

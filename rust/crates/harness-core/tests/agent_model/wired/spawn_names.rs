@@ -134,6 +134,7 @@ impl acyclic_harness_core::filesystem::TurnContext for ProjectTasks {
                         ],
                         authority.templates.clone(),
                     ),
+                    None,
                 )?;
                 acyclic_harness_core::executor::StockExecutor::new(
                     Model::new("test".into(), "text".into(), "1".into())?,
