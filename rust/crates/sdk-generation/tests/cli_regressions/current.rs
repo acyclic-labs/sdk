@@ -693,13 +693,12 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         .unwrap(),
         vec!["demo", "relocation-helper"]
     );
-    super::replay::copy_profile_output(&fixture.output, &relocated.output);
     let generated = "target/sdk-generation-generated-sources";
     super::replay::copy_tree(
         &fixture.root.join(generated),
         &relocated.root.join(generated),
     );
-    super::replay::relocate_receipts(&fixture, &relocated);
+    super::replay::relocate_profile_output(&fixture, &relocated);
     std::thread::scope(|scope| {
         for checkout in [&fixture, &relocated] {
             scope.spawn(move || {

@@ -2,18 +2,15 @@ use super::*;
 use sdk_docs::rustdoc_profiles::{self as profiles, ProfileSpec};
 
 pub(super) fn copy_tree(source: &Path, destination: &Path) {
-    copy_tree_inner(source, destination, false);
+    copy_tree_inner(source, destination, &|_| false);
 }
 
-pub(super) fn copy_profile_output(source: &Path, destination: &Path) {
-    copy_tree_inner(source, destination, true);
-}
-
-fn copy_tree_inner(source: &Path, destination: &Path, skip_profile_build: bool) {
+fn copy_tree_inner(source: &Path, destination: &Path, skip: &impl Fn(&Path) -> bool) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();
-        if skip_profile_build && entry.file_name() == ".profile-build" {
+        let path = entry.path();
+        if skip(&path) {
             continue;
         }
         let target = destination.join(entry.file_name());
@@ -21,11 +18,11 @@ fn copy_tree_inner(source: &Path, destination: &Path, skip_profile_build: bool) 
             && entry.file_name() == "objects"
         {
             // Git objects are immutable; refs, index and configuration stay private.
-            copy_git_objects(&entry.path(), &target);
+            copy_git_objects(&path, &target);
         } else if entry.file_type().unwrap().is_dir() {
-            copy_tree_inner(&entry.path(), &target, false);
+            copy_tree_inner(&path, &target, skip);
         } else {
-            fs::copy(entry.path(), target).unwrap();
+            fs::copy(path, target).unwrap();
         }
     }
 }
@@ -36,7 +33,7 @@ pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
         let entry = entry.unwrap();
         let target = destination.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
-            copy_git_objects(&entry.path(), &target);
+            copy_git_objects(&path, &target);
         } else if target.exists() {
             assert_eq!(fs::read(entry.path()).unwrap(), fs::read(target).unwrap());
         } else {
@@ -45,7 +42,7 @@ pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
     }
 }
 
-pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
+pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     fn rebase(value: &mut Value, original: &Fixture, relocated: &Fixture) {
         let scratch = relocated.output.join(".profile-build");
         let cargo_target = relocated.root.join("target");
@@ -74,12 +71,27 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
             }
         });
     }
-    let manifest_path = relocated.output.join("generation-manifest.v1.json");
-    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let manifest_name = "generation-manifest.v1.json";
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(original.output.join(manifest_name)).unwrap()).unwrap();
+    let inventory = manifest["rustdocFiles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(key, digest)| {
+            (
+                original.rustdoc.join(key.strip_prefix("rustdoc/").unwrap()),
+                digest,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let scratch = original.output.join(".profile-build");
+    copy_tree_inner(&original.output, &relocated.output, &|path| {
+        path == scratch.as_path() || inventory.contains_key(path)
+    });
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
         let mut changed = BTreeMap::new();
-        for (key, digest) in manifest["rustdocFiles"].as_object().unwrap() {
-            let original_file = original.rustdoc.join(key.strip_prefix("rustdoc/").unwrap());
+        for (original_file, digest) in inventory {
             let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
             let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
             let relative = original_file.strip_prefix(&original.output).unwrap();
