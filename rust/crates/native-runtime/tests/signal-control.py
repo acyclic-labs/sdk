@@ -84,6 +84,7 @@ def main():
     originals = {path: path.read_bytes() for path in (*sources, oracle, qualifier)}
     digest = lambda data: hashlib.sha256(data).hexdigest()
     command = ["node", "scripts/qualify-mcp-loom.mjs", selection]
+    tests = []
     if selection is None:
         test = {
             "--process-admission": "process_tree::external_host::tests::unavailable_control_retains_its_admission_failure_before_root_launch",
@@ -99,27 +100,12 @@ def main():
             "--private-publication": "private_file::tests::every_publication_cut_exposes_only_complete_private_records",
             "--executor-retirement": "testing::executor::tests::unjoined_original_output_keeps_its_task_accounted_through_release",
         }[mode]
-        command = [
-            "cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--lib",
-            test, "--", "--exact", "--nocapture",
-        ]
-    if mode in ("--exit-owner", "--capture-bound", "--drain-conformance", "--file-fail-stop"):
-        command.insert(5, "--all-features")
-    if mode in ("--drain-conformance", "--file-fail-stop", "--private-publication", "--executor-retirement", "--storage-ready"):
-        command = [
-            "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
-            "--lib", "--all-features", "-E", f"test(={test})", "--test-threads", "1",
-        ]
+        tests = [test]
     if mode == "--capture-readiness":
-        tests = (
+        tests = [f"process_tree::tests::{test}" for test in (
             "streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup",
             "stopped_capture_preserves_output_prefix_and_cleanup_observation",
-        )
-        command = [
-            "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
-            "--lib", "--all-features", "-E",
-            " | ".join(f"test(=process_tree::tests::{test})" for test in tests),
-        ]
+        )]
     if mode == "--descendant-retirement":
         tests = (
             "cleanup_is_idempotent_and_drop_contains_descendants",
@@ -141,10 +127,10 @@ def main():
         tests.append("process_tree::storage::tests::dropping_cancelled_original_owner_stops_and_reaps_before_releasing_credit")
         if sys.platform == "win32":
             tests.append("process_tree::platform::denied_job_cleanup_retains_child_and_reports_failure")
+    if tests:
         command = [
-            "cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime",
-            "--lib", "--all-features", "-E",
-            " | ".join(f"test(={test})" for test in tests),
+            "bazel", "run", "//rust/crates/native-runtime:acyclic_native_runtime_test_cases",
+            "--", "--exact", "--nocapture", "--test-threads=1", *tests,
         ]
     report = {"inputs": {str(path.relative_to(root)): digest(data) for path, data in originals.items()}, "steps": []}
 
@@ -170,6 +156,8 @@ qualificationMain([process.argv[1]], (command, args, options) => spawnSync(comma
         sys.stdout.buffer.write(result.stdout)
         sys.stdout.buffer.flush()
         valid = (result.returncode != 0 and "panicked at" in text and failure in text) if failure else result.returncode == 0
+        if tests and not failure:
+            valid = valid and f"test result: ok. {len(tests)} passed; 0 failed;" in text
         if failure and mode == "--host":
             valid = valid and "thread 'testing::host::models::physical_occupants_outside_the_schedule_cannot_block_the_driver' " in text
         if not valid:
