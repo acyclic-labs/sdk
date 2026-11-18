@@ -1,3 +1,4 @@
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { wasmSource, wasmSourceSync } from "@acyclic-labs/core/wasm";
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -93,7 +94,7 @@ type WireRequest =
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
-  | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly offset?: bigint; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
+  | { readonly kind: "children_page"; readonly tailStream?: string | undefined; readonly parent?: string | undefined; readonly after?: string | undefined; readonly offset?: bigint | undefined; readonly hierarchyVersion?: Uint8Array | undefined; readonly limit: number };
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
@@ -200,6 +201,11 @@ export function wireRequest(request: WireRequest): Uint8Array {
   }
 }
 
+export function validateChildrenPageRequest(request: import("./types.js").ChildrenPageRequest): Promise<Uint8Array> {
+  const { offset, tailStream, parent, after, hierarchyVersion, limit } = request;
+  return validateWireRequest({ kind: "children_page", offset, tailStream, parent, after, hierarchyVersion, limit });
+}
+
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
@@ -228,6 +234,10 @@ function requireLimitType(value: unknown): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new StreamError("invalid_argument", "stream limit must be a safe integer");
 }
 
+function wireAppendRecords(values: readonly Uint8Array[]) {
+  return values.map(value => create(AppendRecordSchema, { value }));
+}
+
 export function wireAppendRequest(path: string, records: readonly Uint8Array[], options?: AppendOptions): Uint8Array {
   requirePathType(path);
   if (!Array.isArray(records)) throw new StreamError("invalid_argument", "append records must be an array");
@@ -235,7 +245,7 @@ export function wireAppendRequest(path: string, records: readonly Uint8Array[], 
   if (options?.ifTail !== undefined) requireSequenceType(options.ifTail);
   if (options?.idempotencyKey !== undefined) requireBytesType(options.idempotencyKey);
   return toBinary(AppendRequestSchema, create(AppendRequestSchema, {
-    path, records: records.map(value => create(AppendRecordSchema, { value })),
+    path, records: wireAppendRecords(records),
     ...(options?.ifTail === undefined ? {} : { ifTail: options.ifTail }),
     ...(options?.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
   }));
@@ -263,6 +273,7 @@ export async function encodeHttpRequest(route: HttpRoute, input: Uint8Array): Pr
   catch (error) { validationError(error, "request"); }
 }
 
+// Serialize caller-owned fields before the first await.
 export async function normalizeWireCommitBytes(request: ProviderCommitRequest, options: CommitOptions): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
@@ -304,7 +315,7 @@ function wireConditions(conditions: ProviderCommitEffect["conditions"]) {
 function wireMutations(mutations: ProviderCommitEffect["mutations"]) {
   return mutations.map(mutation => {
     if ("append" in mutation) return create(CommitMutationSchema, {
-      mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: mutation.append.values.map(value => create(AppendRecordSchema, { value })) }) },
+      mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: wireAppendRecords(mutation.append.values) }) },
     });
     if ("fork" in mutation) return create(CommitMutationSchema, {
       mutation: { case: "fork", value: create(ForkMutationSchema, {
@@ -312,7 +323,7 @@ function wireMutations(mutations: ProviderCommitEffect["mutations"]) {
         destination: mutation.fork.destination,
         atTail: mutation.fork.atTail,
         exclude: [...(mutation.fork.exclude ?? [])],
-        records: mutation.fork.values.map(value => create(AppendRecordSchema, { value: value.slice() })),
+        records: wireAppendRecords(mutation.fork.values),
       }) },
     });
     throw new StreamError("invalid_argument", "commit mutation is invalid");
@@ -338,12 +349,12 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
           case "append": return {
             append: {
               path: mutation.mutation.value.path,
-              values: mutation.mutation.value.records.map(record => record.value.slice()),
+              values: mutation.mutation.value.records.map(record => snapshotBytes(record.value)),
             },
           };
           case "fork": {
             const value = mutation.mutation.value;
-            return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => record.value.slice()) } };
+            return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => snapshotBytes(record.value)) } };
           }
           default: throw new StreamError("invalid_argument", "normalized mutation is missing its kind");
         }

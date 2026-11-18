@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { describe, expect, test } from "bun:test";
 import { SessionSocket } from "./session-socket.js";
 import { checkpoint } from "./session-node.js";
@@ -8,7 +9,7 @@ import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendRe
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
-import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
+import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, commitId, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
@@ -128,6 +129,27 @@ describe("website Stream contract", () => {
     expect((await quiet.opened).snapshot).toMatchObject(second.revision);
     await quiet.close();
     expect((await quiet.next()).done).toBe(true);
+  });
+
+  test("stream identity constructors capture Node Buffer bytes", () => {
+    const bytes = Buffer.alloc(32, 7);
+    const identities = [commitId(bytes), idempotencyKey(bytes)];
+    bytes.fill(9);
+    for (const identity of identities) expect(identity).toEqual(new Uint8Array(32).fill(7));
+  });
+
+  test("append captures Node Buffer bytes before yielding", async () => {
+    const provider = new MemoryStreamProvider();
+    const record = Buffer.from([7]);
+    const append = provider.append("capture/buffer", [record], { idempotencyKey: key("capture-buffer") });
+    record[0] = 9;
+    expect((await append).ok).toBe(true);
+    const read = provider.read("capture/buffer", { from: 0n, limit: 1 });
+    try {
+      expect(await read.next()).toMatchObject({ done: false, value: { value: new Uint8Array([7]) } });
+    } finally {
+      await read.close();
+    }
   });
 
   test("local streams do not issue unused hosted access tokens", async () => {

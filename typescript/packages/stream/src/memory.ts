@@ -5,11 +5,11 @@ import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_str
 import {
   TailResponseSchema, FollowRequestSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
-import type { Opened } from "./opened.js";
+import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -54,31 +54,25 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
-    const request = { kind: "heads" as const, ...structuredClone(options) };
-    await validateWireRequest(request);
-    return this.#project("heads", wireRequest(request));
+    const input = await validateWireRequest({ kind: "heads" as const, ...structuredClone(options) });
+    return this.#project("heads", input);
   }
   async head(path: string): Promise<import("./types.js").PathHead> {
-    const request = { kind: "head" as const, path };
-    await validateWireRequest(request);
-    return this.#project("head", wireRequest(request));
+    const input = await validateWireRequest({ kind: "head" as const, path });
+    return this.#project("head", input);
   }
   async tail(path: string): Promise<Sequence> {
-    const request = { kind: "tail" as const, path };
-    await validateWireRequest(request);
-    return fromBinary(TailResponseSchema, await this.#dispatch("tail", wireRequest(request))).tail;
+    const input = await validateWireRequest({ kind: "tail" as const, path });
+    return fromBinary(TailResponseSchema, await this.#dispatch("tail", input)).tail;
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
-    const records = values.map(value => value.slice());
-    const authored = structuredClone(options);
-    const request = await validateAppend(path, records, authored);
+    const request = await validateAppend(path, values, options);
     return this.#project<AppendResult>("append", request);
   }
 
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
     const authored = structuredClone(options);
-    await validateWireRequest({ kind: "fork", source, destination, options: authored });
-    const request = wireRequest({ kind: "fork", source, destination, options: authored });
+    const request = await validateWireRequest({ kind: "fork", source, destination, options: authored });
     return this.#project<ForkReceipt>("fork", request);
   }
 
@@ -88,7 +82,7 @@ class RustStreamProvider implements StreamProvider {
   }
 
   follow(path: string, options: FollowOptions): Opened {
-    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    const authored = captureFollow(options);
     return this.#records("follow", path, authored, options.signal);
   }
 
@@ -110,24 +104,13 @@ class RustStreamProvider implements StreamProvider {
     if (request === null || typeof request !== "object") {
       throw new StreamError("invalid_argument", "children page request must be an object");
     }
-    const authored = { kind: "children_page" as const,
-      ...(request.offset === undefined ? {} : { offset: request.offset }),
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
-      limit: request.limit,
-    };
-    await validateWireRequest(authored);
-    const input = wireRequest(authored);
+    const input = await validateChildrenPageRequest(request);
     return this.#project<ChildrenPage>("children_page", input);
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const authored = structuredClone(request);
-    const retainedOptions = structuredClone(options);
-    idempotencyKey(retainedOptions.idempotencyKey);
-    const input = await normalizeWireCommitBytes(authored, retainedOptions);
+    idempotencyKey(options.idempotencyKey);
+    const input = await normalizeWireCommitBytes(request, options);
     return this.#project<CommitResult>("commit", input);
   }
 

@@ -1,5 +1,5 @@
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
-import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
+import { Opened, captureFollow, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
@@ -10,7 +10,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -151,37 +151,31 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
-    const request = { kind: "heads" as const, ...structuredClone(options) };
-    await validateWireRequest(request);
-    const value = await this.operation("heads", this.request(client => client.headsResult(Buffer.from(wireRequest(request)))));
+    const input = await validateWireRequest({ kind: "heads" as const, ...structuredClone(options) });
+    const value = await this.operation("heads", this.request(client => client.headsResult(Buffer.from(input))));
     return this.project("heads", value) as import("./types.js").Heads;
   }
   async head(path: string): Promise<import("./types.js").PathHead> {
-    const request = { kind: "head" as const, path };
-    await validateWireRequest(request);
-    const value = await this.operation("head", this.request(client => client.headResult(Buffer.from(wireRequest(request)))));
+    const input = await validateWireRequest({ kind: "head" as const, path });
+    const value = await this.operation("head", this.request(client => client.headResult(Buffer.from(input))));
     return this.project("head", value) as import("./types.js").PathHead;
   }
   async tail(path: string): Promise<Sequence> {
-    const request = { kind: "tail" as const, path };
-    await validateWireRequest(request);
-    const value = await this.operation("tail", this.request(client => client.tailResult(Buffer.from(wireRequest(request)))));
+    const input = await validateWireRequest({ kind: "tail" as const, path });
+    const value = await this.operation("tail", this.request(client => client.tailResult(Buffer.from(input))));
     try { return fromBinary(wire.TailResponseSchema, value).tail; }
     catch (error) { throw invalidResponse("tail", error); }
   }
 
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
-    const records = values.map(value => value.slice());
-    const authored = structuredClone(options);
-    const input = await validateAppend(path, records, authored);
+    const input = await validateAppend(path, values, options);
     const value = await this.operation("append", this.request(client => client.appendResult(Buffer.from(input))));
     return this.project("append", value) as AppendResult;
   }
 
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
-    const request = { kind: "fork" as const, source, destination, options: structuredClone(options) };
-    await validateWireRequest(request);
-    const value = await this.operation("fork", this.request(client => client.forkResult(Buffer.from(wireRequest(request)))));
+    const input = await validateWireRequest({ kind: "fork" as const, source, destination, options: structuredClone(options) });
+    const value = await this.operation("fork", this.request(client => client.forkResult(Buffer.from(input))));
     return this.project("fork", value) as ForkReceipt;
   }
 
@@ -190,7 +184,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   follow(path: string, options: FollowOptions): Opened {
-    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    const authored = captureFollow(options);
     return this.records("follow", path, authored, options.signal);
   }
 
@@ -246,20 +240,13 @@ export class NativeStreamProvider implements StreamProvider {
     }, signal);
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const authored = { kind: "children_page" as const,
-      ...(request.offset === undefined ? {} : { offset: request.offset }),
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
-    };
-    await validateWireRequest(authored);
-    const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(wireRequest(authored)))));
+    const input = await validateChildrenPageRequest(request);
+    const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(input))));
     return this.project("children_page", value) as ChildrenPage;
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const bytes = Buffer.from(await normalizeWireCommitBytes(structuredClone(request), structuredClone(options)));
+    const bytes = Buffer.from(await normalizeWireCommitBytes(request, options));
     const value = await this.operation("commit", this.request(client => client.commitResult(bytes)));
     return this.project("commit", value) as CommitResult;
   }

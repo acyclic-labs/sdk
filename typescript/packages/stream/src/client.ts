@@ -1,5 +1,7 @@
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
+import { isDirectChild, validateChildCursor } from "./child.js";
 import { DefaultStreamProvider } from "./default.js";
-import { Opened } from "./opened.js";
+import { Opened, captureFollow } from "./opened.js";
 import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
@@ -20,8 +22,8 @@ export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [name:
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const bytesCodec: Codec<Uint8Array> = Object.freeze({
-  encode: (value: Uint8Array) => Uint8Array.from(value),
-  decode: (value: Uint8Array) => Uint8Array.from(value),
+  encode: snapshotBytes,
+  decode: snapshotBytes,
 });
 export function jsonCodec(): Codec<JsonValue>;
 export function jsonCodec<Value extends JsonValue>(parse: (value: JsonValue) => Value): Codec<Value>;
@@ -51,7 +53,7 @@ export class StreamClient {
       ...(callback === undefined
         ? { token: environment?.token ?? environmentValue("ACYCLIC_API_KEY") }
         : { credential: callback }),
-      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
+      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate }),
     }));
   }
   constructor(readonly provider: StreamProvider) {
@@ -71,23 +73,14 @@ export class StreamClient {
   }
   bytes(path: string): Stream<Uint8Array> { return new Stream(this.provider, path, bytesCodec); }
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
-    return this.provider.inspectIdempotency(key.slice() as IdempotencyKey);
+    return this.provider.inspectIdempotency(snapshotBytes(key) as IdempotencyKey);
   }
   heads(request: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> { return this.provider.heads(structuredClone(request)); }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const { parent, after, offset, hierarchyVersion, limit } = request;
     const origin = { limit, ...(offset === undefined ? {} : { offset }), ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
-    const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
-    if (authored.parent !== undefined) validatePathValue(authored.parent);
-    if (authored.after !== undefined) {
-      validatePathValue(authored.after);
-      if (directParent(authored.after) !== (authored.parent ?? "")) {
-        throw new StreamError("invalid_cursor", "child continuation must name a direct child");
-      }
-    }
-    if (authored.hierarchyVersion !== undefined && authored.hierarchyVersion.byteLength !== 32) {
-      throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
-    }
+    const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: snapshotBytes(hierarchyVersion) as CommitId }) };
+    validateChildCursor(authored);
     positiveInteger(authored.limit, "limit");
     const page = await this.provider.childrenPage(authored);
     if (page.hierarchyVersion.byteLength !== 32) throw new StreamError("invalid_page", "provider returned an invalid hierarchy version");
@@ -102,7 +95,7 @@ export class StreamClient {
     let previous = authored.after;
     for (const child of page.children) {
       validatePathValue(child.path);
-      if (directParent(child.path) !== (authored.parent ?? "") ||
+      if (!isDirectChild(child.path, authored.parent) ||
           (previous !== undefined && compareStreamPaths(previous, child.path) >= 0)) {
         throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
       }
@@ -110,7 +103,7 @@ export class StreamClient {
     }
     if (page.nextAfter !== undefined) {
       validatePathValue(page.nextAfter);
-      if (directParent(page.nextAfter) !== (authored.parent ?? "") ||
+      if (!isDirectChild(page.nextAfter, authored.parent) ||
           (authored.after !== undefined && compareStreamPaths(authored.after, page.nextAfter) >= 0) ||
           (previous !== undefined && compareStreamPaths(previous, page.nextAfter) > 0)) {
         throw new StreamError("invalid_page", "provider returned an invalid child continuation");
@@ -161,7 +154,7 @@ export class StreamClient {
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
   }
-  readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId.slice() as CommitId); }
+  readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(snapshotBytes(commitId) as CommitId); }
 }
 
 /** One exact keyed submission. Waiters share one Promise and never replay it. */
@@ -203,7 +196,10 @@ export class Stream<Value = Uint8Array> {
     if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
     const authored = structuredClone(options);
     if (authored?.idempotencyKey === undefined) throw new StreamError("invalid_argument", "an explicit idempotency key is required");
-    return this.provider.append(this.path, values.map(value => this.codec.encode(value).slice()), authored);
+    const encode = Object.is(this.codec, bytesCodec)
+      ? (value: Value) => this.codec.encode(value)
+      : (value: Value) => snapshotBytes(this.codec.encode(value));
+    return this.provider.append(this.path, values.map(encode), authored);
   }
   async fork(destination: string, options: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
     validatePathValue(destination);
@@ -222,12 +218,7 @@ export class Stream<Value = Uint8Array> {
     }).map(item => ({ ...item, value: this.codec.decode(item.value) }));
   }
   follow(options: FollowOptions): Opened<Value> {
-    const authored = {
-      from: options.from,
-      ...(options.whenAbsent === undefined ? {} : { whenAbsent: options.whenAbsent }),
-      ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    };
+    const authored = captureFollow(options);
     return Opened.defer(async signal => {
       validateSequenceValue(authored.from);
       return this.provider.follow(this.path, { ...authored, signal });
@@ -238,16 +229,17 @@ export class Stream<Value = Uint8Array> {
 function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
   if (stream.provider !== provider) throw new StreamError("provider_mismatch", "coordinated commit streams must use one provider");
 }
-function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
 }
 export async function validateAppend(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<Uint8Array> {
+  const records = values.map(snapshotBytes);
+  const authored = structuredClone(options);
   // Validate path before optional fields so the canonical path error wins.
   await ensureStreamWasm();
   validatePathValue(path);
-  if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
-  return validateWireAppend(path, values, options);
+  if (authored?.ifTail !== undefined) validateSequenceValue(authored.ifTail);
+  return validateWireAppend(path, records, authored);
 }
 function environmentValue(name: string): string {
   const runtime = globalThis as typeof globalThis & { process?: { env?: Readonly<{ [key: string]: string | undefined }> } };

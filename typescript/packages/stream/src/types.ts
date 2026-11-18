@@ -1,3 +1,4 @@
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import type { CredentialOptions } from "@acyclic-labs/auth/credential";
 import type {
   AppendReceipt as WireAppendReceipt, AppendRequest as WireAppendRequest,
@@ -57,11 +58,11 @@ export type IdempotencyKey = Uint8Array & { readonly [streamIdentityBrand]: "Ide
 
 export function commitId(value: Uint8Array): CommitId {
   if (!(value instanceof Uint8Array) || value.byteLength !== 32) throw new RangeError("commit ID must contain exactly 32 bytes");
-  return value.slice() as CommitId;
+  return snapshotBytes(value) as CommitId;
 }
 export function idempotencyKey(value: Uint8Array): IdempotencyKey {
   if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > StreamLimit.MAX_IDEMPOTENCY_KEY_BYTES) throw new RangeError(`idempotency key must contain 1..${StreamLimit.MAX_IDEMPOTENCY_KEY_BYTES} bytes`);
-  return value.slice() as IdempotencyKey;
+  return snapshotBytes(value) as IdempotencyKey;
 }
 /** Rust-compatible UTF-8 path ordering for pages and cursors. */
 export function compareStreamPaths(left: string, right: string): number {

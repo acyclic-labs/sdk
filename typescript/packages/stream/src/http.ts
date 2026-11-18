@@ -1,7 +1,8 @@
+import { validateChildCursor } from "./child.js";
 import { isTransportEndpoint, validateByteLimit } from "@acyclic-labs/core";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
-import type { Opened } from "./opened.js";
+import { captureFollow, type Opened } from "./opened.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
 import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { validateAppend } from "./client.js";
@@ -11,7 +12,7 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/core/observe";
-import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {
   readonly endpoint: string; readonly fetcher?: typeof fetch;
@@ -48,7 +49,7 @@ export class HttpStreamProvider implements StreamProvider {
     return observation;
   }
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
-  async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = structuredClone(options); const input = await validateAppend(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
+  async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> { const input = await validateAppend(path, values, options); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> { const authored = structuredClone(options); const input = await validateWireRequest({ kind: "fork", source, destination, options: authored }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
   read(path: string, options: ReadOptions): Opened {
     return this.#sessions.read(path, options, this.#maximum).through(records => observedIterable(this.#observer, "stream", "read", records));
@@ -61,38 +62,21 @@ export class HttpStreamProvider implements StreamProvider {
     yield* this.#sessions.followData(authored, options);
   }
   follow(path: string, options: FollowOptions): Opened {
-    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    const authored = captureFollow(options);
     return this.#sessions.follow(path, authored);
   }
 
 
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
-    if (request.parent !== undefined) validatePathValue(request.parent);
-    if (request.after !== undefined) {
-      validatePathValue(request.after);
-      if (directParent(request.after) !== (request.parent ?? "")) {
-        throw new StreamError("invalid_cursor", "child continuation must name a direct child");
-      }
-    }
-    if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
-      throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
-    }
+    validateChildCursor(request);
     if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
       throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
     }
-    const input = await validateWireRequest({
-      kind: "children_page",
-      ...(request.offset === undefined ? {} : { offset: request.offset }),
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
-      limit: request.limit,
-    });
+    const input = await validateChildrenPageRequest(request);
     return this.#request("children/page", await encodeHttpRequest("children/page", input));
   }
-  async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { const authored = structuredClone(request); const retained = structuredClone(options); const input = await normalizeWireCommitBytes(authored, retained); const result = await this.#request("commit", await encodeHttpRequest("commit", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
+  async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { const input = await normalizeWireCommitBytes(request, options); const result = await this.#request("commit", await encodeHttpRequest("commit", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
   async readCommit(value: CommitId): Promise<CommittedEnvelope> { const input = wireReadCommitRequest(value); return this.#request("commits/read", await encodeHttpRequest("commits/read", input)); }
   async createToken(request: CreateTokenRequest): Promise<AccessToken> {
     const input = wireCreateTokenRequest(request);
@@ -108,9 +92,8 @@ export class HttpStreamProvider implements StreamProvider {
     return this.#request("head", await encodeHttpRequest("head", input));
   }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
-    await validateWireRequest({ kind: "tail", path });
-    const atLeast = this.#sessions.revisionFloor();
-    const input = wireRequest({ kind: "tail", path, atLeast });
+    const validated = await validateWireRequest({ kind: "tail", path });
+    const { input, atLeast } = this.#sessions.tailRequest(path, validated);
     const { tail, applied } = await this.#request("tail", await encodeHttpRequest("tail", input), signal);
     this.#sessions.served(atLeast, applied);
     return tail;
@@ -200,4 +183,3 @@ async function boundedText(response: Response, maximum: number | undefined, size
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return decoder.decode(bytes);
 }
-function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }

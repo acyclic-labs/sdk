@@ -1,7 +1,7 @@
 import { isTransportEndpoint, validateByteLimit } from "@acyclic-labs/core";
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { refusalFromGrpcHeaders } from "@acyclic-labs/auth/grpc-refusal";
-import type { Opened } from "./opened.js";
+import { captureFollow, type Opened } from "./opened.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { StreamSessions } from "./session.js";
@@ -17,7 +17,7 @@ import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/p
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { StreamError, type StreamRefusal } from "./types.js";
 import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
@@ -267,17 +267,14 @@ export class GrpcStreamProvider implements StreamProvider {
     return this.#project("head", toBinary(wire.PathHeadSchema, response));
   }
   async tail(path: string): Promise<bigint> {
-    await validateWireRequest({ kind: "tail", path });
-    const atLeast = this.#sessions.revisionFloor();
-    const request = wireRequest({ kind: "tail", path, atLeast });
-    const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, request)));
+    const validated = await validateWireRequest({ kind: "tail", path });
+    const { input, atLeast } = this.#sessions.tailRequest(path, validated);
+    const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, input)));
     this.#sessions.served(atLeast, response.applied);
     return response.tail;
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
-    const records = values.map(value => value.slice());
-    const authored = structuredClone(options);
-    const input = await validateAppend(path, records, authored);
+    const input = await validateAppend(path, values, options);
     const request = fromBinary(wire.AppendRequestSchema, input);
     const response = await this.#call("append", () => this.#client.append(request));
     const result = this.#project<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));
@@ -303,24 +300,17 @@ export class GrpcStreamProvider implements StreamProvider {
     yield* this.#sessions.followData(authored, options);
   }
   follow(path: string, options: FollowOptions): Opened {
-    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    const authored = captureFollow(options);
     return this.#sessions.follow(path, authored);
   }
 
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const authored = { kind: "children_page" as const,
-      ...(request.offset === undefined ? {} : { offset: request.offset }),
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
-    };
-    const input = await validateWireRequest(authored);
+    const input = await validateChildrenPageRequest(request);
     const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, input)));
     return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const input = await normalizeWireCommitBytes(structuredClone(request), structuredClone(options));
+    const input = await normalizeWireCommitBytes(request, options);
     const response = await this.#call("commit", () => this.#client.commit(fromBinary(wire.CommitRequestSchema, input)));
     const result = this.#project<CommitResult>("commit", toBinary(wire.CommitResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);

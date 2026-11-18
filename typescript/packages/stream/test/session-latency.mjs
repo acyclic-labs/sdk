@@ -4,7 +4,7 @@ import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-no
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { MemoryStreamProvider } from "../dist/memory.js";
 import { GrpcStreamProvider } from "../dist/grpc.js";
-import { readResponseRecords, wireAppendRequest } from "../dist/contract.js";
+import { readResponseRecords } from "../dist/contract.js";
 import { validateAppend } from "../dist/client.js";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema, AppendResponseSchema } from "../generated/proto/stream/v1/stream_pb.js";
@@ -17,10 +17,8 @@ export async function measureLatency(options) {
     for await (const response of raw.follow({ path, from }, { signal, headers: { authorization: `Bearer ${options.token}` } })) yield* readResponseRecords(response);
   };
   const legacyProvider = { async append(path, values, appendOptions) {
-    const records = values.map(value => value.slice());
-    const authored = structuredClone(appendOptions);
-    await validateAppend(path, records, authored);
-    const response = await raw.append(fromBinary(AppendRequestSchema, wireAppendRequest(path, records, authored)), { headers: { authorization: `Bearer ${options.token}` } });
+    const input = await validateAppend(path, values, appendOptions);
+    const response = await raw.append(fromBinary(AppendRequestSchema, input), { headers: { authorization: `Bearer ${options.token}` } });
     return projectMemoryResponse("append", toBinary(AppendResponseSchema, response));
   } };
   try {
