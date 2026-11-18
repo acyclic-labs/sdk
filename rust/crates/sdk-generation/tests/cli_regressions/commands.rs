@@ -293,9 +293,11 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let mut relative_sources = Vec::new();
         for source in sources {
             let relative = source["relative"].as_str().unwrap();
+            let Some(actual) = optional_io(fs::read(root.join(relative)))? else {
+                continue 'fixture;
+            };
             let source = source["file"].as_str().unwrap();
-            let expected = fs::read(acyclic_test_support::source_path(source))?;
-            if optional_io(fs::read(root.join(relative)))? != Some(expected) {
+            if actual != fs::read(acyclic_test_support::source_path(source))? {
                 continue 'fixture;
             }
             if Path::new(relative)
