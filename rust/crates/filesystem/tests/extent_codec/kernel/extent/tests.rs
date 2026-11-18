@@ -198,3 +198,129 @@ fn every_invalid_extent_page_shape_rejects_before_identity() {
         .is_err()
     );
 }
+
+#[test]
+fn malformed_extent_tags_and_item_bounds_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+    const PAGE_KIND_OFFSET: usize = 8 + 2;
+    const FIRST_EXTENT_KIND_OFFSET: usize = PAGE_KIND_OFFSET + 1 + 4 + 8 + 8;
+
+    let page = ExtentPage::Leaf(vec![Extent {
+        offset: 0,
+        length: 1,
+        kind: ExtentKind::Hole,
+    }]);
+    let encoded = encode_extent_page(
+        &page,
+        1,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
+    let tight = DecodeLimits {
+        maximum_page_items: 0,
+        ..DecodeLimits::default()
+    };
+    {
+        let result =
+            decode_extent_page(&encoded, tight, &mut |_| Ok::<_, CanonicalDecodeError>(()))
+                .map(|_| ());
+        assert!(matches!(
+            result,
+            Err(CanonicalDecodeError::FieldTooLarge {
+                observed: 1,
+                maximum: 0,
+            })
+        ));
+    }
+
+    let mut unknown_page = encoded.clone();
+    *unknown_page
+        .get_mut(PAGE_KIND_OFFSET)
+        .ok_or("missing page kind")? = 9;
+    {
+        let result = decode_extent_page(&unknown_page, DecodeLimits::default(), &mut |_| {
+            Ok::<_, CanonicalDecodeError>(())
+        })
+        .map(|_| ());
+        assert!(matches!(
+            result,
+            Err(CanonicalDecodeError::UnknownTag {
+                field: "extent_page",
+                tag: 9,
+            })
+        ));
+    }
+
+    let mut unknown_kind = encoded;
+    *unknown_kind
+        .get_mut(FIRST_EXTENT_KIND_OFFSET)
+        .ok_or("missing extent kind")? = 9;
+    {
+        let result = decode_extent_page(&unknown_kind, DecodeLimits::default(), &mut |_| {
+            Ok::<_, CanonicalDecodeError>(())
+        })
+        .map(|_| ());
+        assert!(matches!(
+            result,
+            Err(CanonicalDecodeError::UnknownTag {
+                field: "extent_kind",
+                tag: 9,
+            })
+        ));
+    }
+    Ok(())
+}
+
+/// Unknown versions refuse before decoding the strict v1 page layout.
+#[test]
+fn unknown_extent_versions_refuse_before_page_allocation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let child = |first, byte| ExtentChild {
+        first,
+        page: ObjectId {
+            storage: None,
+            kind: ObjectKind::ExtentPage,
+            digest: Digest::from_bytes([byte; 32]),
+        },
+    };
+    let pages = [
+        ExtentPage::Internal(vec![child(0, 1), child(8, 2)]),
+        ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 8,
+            kind: ExtentKind::Hole,
+        }]),
+    ];
+    for page in pages {
+        let mut stored = encode_extent_page(
+            &page,
+            2,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed,
+        )?;
+        assert_eq!(
+            decode_extent_page(&stored, DecodeLimits::default(), &mut |_| Ok::<
+                _,
+                CanonicalDecodeError,
+            >(()))?,
+            page
+        );
+        stored
+            .get_mut(8..10)
+            .ok_or("missing extent page version")?
+            .copy_from_slice(&2_u16.to_le_bytes());
+        let mut allocations = 0;
+        let result = decode_extent_page(&stored, DecodeLimits::default(), &mut |_| {
+            allocations += 1;
+            Ok::<_, CanonicalDecodeError>(())
+        });
+        assert_eq!(
+            result,
+            Err(CanonicalDecodeError::UnsupportedVersion {
+                found: 2,
+                expected: 1
+            })
+        );
+        assert_eq!(allocations, 0);
+    }
+    Ok(())
+}
