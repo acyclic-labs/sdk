@@ -8,7 +8,7 @@ FEATURES = [
         "std",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"rquickjs-core","CARGO_PKG_DESCRIPTION":"High level bindings to the QuickJS JavaScript engine","CARGO_PKG_REPOSITORY":"https://github.com/DelSkayn/rquickjs.git","CARGO_PKG_LICENSE":"MIT"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"rquickjs-core","CARGO_PKG_DESCRIPTION":"High level bindings to the QuickJS JavaScript engine","CARGO_PKG_REPOSITORY":"https://github.com/DelSkayn/rquickjs.git","CARGO_PKG_LICENSE":"MIT"}
 
 extract_cargo_lints(
     name = "lints",
