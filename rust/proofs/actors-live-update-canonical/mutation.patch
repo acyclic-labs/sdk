@@ -1,6 +1,6 @@
-diff --git a/rust/crates/actors/src/live_update.rs b/rust/crates/actors/src/live_update.rs
---- a/rust/crates/actors/src/live_update.rs
-+++ b/rust/crates/actors/src/live_update.rs
+diff --git a/rust/crates/actors-contract/src/live_update.rs b/rust/crates/actors-contract/src/live_update.rs
+--- a/rust/crates/actors-contract/src/live_update.rs
++++ b/rust/crates/actors-contract/src/live_update.rs
 @@ -803,5 +803,5 @@
      let document: Document<T> = serde_json::from_slice(bytes)?;
 -    if document.v != 1 || encode(&document.value)? != bytes {

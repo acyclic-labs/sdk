@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
-PRODUCTION = ROOT.parent / "crates/actors/src/invocation.rs"
+PRODUCTION = ROOT.parent / "crates/actors-contract/src/invocation.rs"
 ORACLE = ROOT / "src/lib.rs"
 COMMAND = ["cargo", "run", "--locked", "--example", "replay", "--", "actor_codecs"]
 
@@ -96,7 +96,7 @@ def main():
 
 
 def guest_wire():
-    production = ROOT.parent / "crates/actors/src/guest/wire.rs"
+    production = ROOT.parent / "crates/actors-contract/src/guest/wire.rs"
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
     admission = writer_admission(oracle)
@@ -133,7 +133,7 @@ def guest_wire():
 
 
 def alarms():
-    production = ROOT.parent / "crates/actors/src/guest/wire.rs"
+    production = ROOT.parent / "crates/actors-contract/src/guest/wire.rs"
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
     plants = (
@@ -337,7 +337,7 @@ def replay_diagnostics():
 
 
 def sockets():
-    production = ROOT.parent / "crates/actors/src/sockets.rs"
+    production = ROOT.parent / "crates/actors-contract/src/sockets.rs"
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
     plants = (
@@ -381,7 +381,7 @@ def sockets():
 
 
 def socket_inputs():
-    production = ROOT.parent / "crates/actors/src/sockets.rs"
+    production = ROOT.parent / "crates/actors-contract/src/sockets.rs"
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
     anchor = b"pub fn socket(&self) -> Result<Option<SocketDelivery>, GuestError> {"
@@ -405,7 +405,7 @@ def socket_inputs():
 
 
 def socket_metadata():
-    production = ROOT.parent / "crates/actors/src/sockets.rs"
+    production = ROOT.parent / "crates/actors-contract/src/sockets.rs"
     original = {path: path.read_bytes() for path in (production, ORACLE)}
     source, oracle = original[production], original[ORACLE]
     admission = b"        actor_socket_input_refusals(&delivery)?;"

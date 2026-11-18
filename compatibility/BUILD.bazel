@@ -104,6 +104,7 @@ rust_test(
         "//compatibility:tree/descriptors",
         "//compatibility:tree/proto",
         "//rust/crates/actors-call:tree",
+        "//rust/crates/actors-contract:tree",
         "//rust/crates/actors-inventory:tree",
         "//rust/crates/actors-napi:tree",
         "//rust/crates/actors-wasm:tree",

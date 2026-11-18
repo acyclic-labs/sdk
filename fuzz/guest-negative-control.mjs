@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
-const source = new URL("../rust/crates/actors/src/guest/runtime.rs", import.meta.url);
+const source = new URL("../rust/crates/actors-contract/src/guest/runtime.rs", import.meta.url);
 const original = readFileSync(source);
 const text = original.toString("utf8");
 const recovery = "node fuzz/guest-negative-control.mjs";

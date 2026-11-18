@@ -150,7 +150,8 @@ impl Invocation {
         Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))
     }
 
-    pub(crate) fn decode_bound(record: &Record) -> Result<Option<(StreamPath, Self)>, GuestError> {
+    /// Decode the target's state path with an invocation marked on the inbox record.
+    pub fn decode_bound(record: &Record) -> Result<Option<(StreamPath, Self)>, GuestError> {
         let attributes = record.headers.attributes();
         if attributes
             .binary_search_by(|attribute| attribute.name.cmp("acyclic.actors.invoke"))
@@ -181,7 +182,8 @@ impl Invocation {
         Ok(Some((path, invocation)))
     }
 
-    pub(crate) fn identity(&self, state_path: &str) -> [u8; 32] {
+    /// The stable invocation identity for the target state path.
+    pub fn identity(&self, state_path: &str) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(b"acyclic.actor.invoke.v1");
         let actor = self.actor.encode();

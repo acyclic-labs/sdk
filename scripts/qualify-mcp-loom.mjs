@@ -299,9 +299,7 @@ export function qualifyStreamRetryLoom(run = runCommand) {
 }
 
 export function qualifyGuestLoom(run = runCommand) {
-  return qualifyLoom("acyclic-actors", "main", [], run, {
-    env: loomEnvironment(), suites: ["guest_loom::"],
-  });
+  return qualifyLoom("acyclic-actors-contract", "guest_loom", [], run, { env: loomEnvironment() });
 }
 
 // Reuse the production-source mutation runner and unchanged Actors oracles.

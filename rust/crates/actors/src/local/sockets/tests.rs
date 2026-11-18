@@ -560,7 +560,7 @@ async fn native_socket_admission_rechecks_the_retained_target_before_installing(
 
 #[tokio::test]
 async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> TestResult {
-    let decode_work = || crate::sockets::OPEN_DECODE_WORK.with(std::cell::Cell::get);
+    use crate::sockets::open_decode_work as decode_work;
     let provider = Arc::new(MemoryStream::default());
     let sockets = Sockets::open(
         Store::new(Arc::clone(&provider), root()?),

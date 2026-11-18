@@ -6,51 +6,28 @@ pub use acyclic_actors_call::{call, escrow};
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 
-/// Compiler-linked public method admission.
-pub mod authorization {
-    use acyclic_auth::action as auth_action;
-    include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
-}
-pub use authorization::{AUTHORIZATION, ActorsMethod};
-
-/// Worker methods served by the same canonical Actors service.
-pub mod workers_authorization {
-    use acyclic_auth::action as auth_action;
-    include!(concat!(env!("OUT_DIR"), "/workers_authorization.rs"));
-}
-
-/// Rust-owned semantic projections for generated SDK metadata.
-pub use contract::{
-    ContractError, domain, validate_add_subscription, validate_delete, validate_deployment,
-    validate_fork, validate_remove_subscription, validate_resume_subscription, validate_update,
+pub use acyclic_actors_contract::{
+    AUTHORIZATION, ActorsMethod, ContractError, FILE_DESCRIPTOR_SET, authorization, contract,
+    domain, guest, invocation, live_update, sockets, validate_add_subscription, validate_delete,
+    validate_deployment, validate_fork, validate_remove_subscription, validate_resume_subscription,
+    validate_update, wire, workers_authorization,
 };
 
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 
-/// Rust-owned Actors contract declarations and schema renderer.
-pub mod contract;
-
 /// One conformance suite for local and hosted Actors runtimes.
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
-/// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
-pub mod guest;
 /// Event-owned hosting of an arbitrary Handler over injected storage.
 pub mod hosting;
 mod identity;
-/// Inbox invocation protocol shared by native and hosted actors.
-pub mod invocation;
-/// Deployment versions, cohort selection, call provenance and durable handoff.
-pub mod live_update;
 /// Provider-backed actor storage and the single-node `local::Runtime`.
 pub mod local;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.
 pub mod namespace;
 /// Reusable fenced reservations over the actor's original checkpoint/alarm.
 pub mod reservation;
-/// Actor sockets v1: session channel frames and inbox socket events.
-pub mod sockets;
 
 /// Native gRPC client for the canonical Actors v1 service.
 #[cfg(not(target_arch = "wasm32"))]
@@ -59,24 +36,31 @@ pub mod grpc;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 
-/// Rust-owned Actors v1 wire types and schema metadata.
-#[allow(
-    clippy::allow_attributes_without_reason,
-    dead_code,
-    missing_docs,
-    reason = "tonic emits this module and its generated server dispatch code"
-)]
-pub mod wire;
-
-/// Canonical version-one descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
-
 pub use acyclic_actors_inventory::HTTP_ROUTES;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupt_filters_round_trip_and_refuse_empty_or_undeclared_prefixes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use bytes::Bytes;
+        use guest::wire::{decode_manifest, encode_manifest};
+
+        let package = conformance::Package::new()?;
+        let mut manifest = decode_manifest(&encode_manifest(package.manifest()))?;
+        let encoded = encode_manifest(&manifest);
+        assert_eq!(encode_manifest(&decode_manifest(&encoded)?), encoded);
+        let interrupt = manifest.interrupts.first_mut().ok_or("missing interrupt")?;
+        interrupt.value_prefix = Bytes::new();
+        assert!(decode_manifest(&encode_manifest(&manifest)).is_err());
+        let interrupt = manifest.interrupts.first_mut().ok_or("missing interrupt")?;
+        interrupt.value_prefix = Bytes::from_static(b"stop");
+        interrupt.subscription = "another-subscription".into();
+        assert!(decode_manifest(&encode_manifest(&manifest)).is_err());
+        Ok(())
+    }
 
     #[test]
     fn subscription_start_is_exactly_one_choice() -> Result<(), ContractError> {

@@ -138,14 +138,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .iter()
             .any(crate::domain::Binding::is_actor_state)
             .then(|| {
-                let (commands, receiver) = tokio::sync::mpsc::channel(1);
-                self.requests.bind_state(
-                    request.id(),
-                    crate::guest::ActorStateHost {
-                        commands,
-                        stopped: stopped.clone(),
-                    },
-                );
+                let (host, receiver) = crate::guest::ActorStateHost::channel(stopped.clone());
+                self.requests.bind_state(request.id(), host);
                 StateOwner {
                     store: self.store.clone(),
                     snapshot: Arc::clone(cut),

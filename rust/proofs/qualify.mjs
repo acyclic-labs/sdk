@@ -26,7 +26,7 @@ const claims = {
         label: "noncanonical-lineage-name", diagnostic: "noncanonical lineage registration was accepted" }] },
   ],
   "actors-live-update-canonical": [
-    "rust/crates/actors/src/live_update.rs", "acyclic-codec-fuzz", "",
+    "rust/crates/actors-contract/src/live_update.rs", "acyclic-codec-fuzz", "",
     "live-update document admission differs from canonical writer", [],
     { oracle: "rust/codec-fuzz/src/lib.rs",
       command: ["run", "--locked", "-p", "acyclic-codec-fuzz", "--example", "replay", "--", "actor_codecs"],
@@ -1134,7 +1134,7 @@ const claims = {
     { fuzz: { bin: "stream_error", corpus: "fuzz/corpus/stream_error", runs: 1024 } },
   ],
   "invocation-header-admission": [
-    "rust/crates/actors/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
+    "rust/crates/actors-contract/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
@@ -1306,10 +1306,10 @@ const claims = {
     "scalar charge performed unrelated counter arithmetic", ["--no-default-features", ],
   ],
   "guest-refusal": [
-    "rust/crates/actors/src/guest/state.rs", "acyclic-actors",
-    "guest_loom::state::tests::lock_order_checker_rejects_same_and_different_state_nesting",
+    "rust/crates/actors-contract/src/guest/state.rs", "acyclic-actors-contract",
+    "tests::lock_order_checker_rejects_same_and_different_state_nesting",
     "nested mutation lost its typed refusal", ["--features", "model-checking"],
-    { target: ["--test", "main"], loom: true },
+    { target: ["--test", "guest_loom"], loom: true },
   ],
   "work-arithmetic": [
     "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs-work",

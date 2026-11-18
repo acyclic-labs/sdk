@@ -2,10 +2,9 @@
 
 Run `node rust/proofs/qualify.mjs guest-refusal` from the repository root.
 
-The existing Actors Loom entry point includes the shipped `guest/state.rs`
-module. The existing compiler wrapper selects Loom synchronization only for
-workspace crates opting into `model-checking`; upstream runtimes retain their
-normal configuration. No separate state machine implements the guest behavior.
+The Actors Loom target links the contract library and exercises its shipped
+`GuestState` implementation. The build script selects Loom synchronization when
+the contract opts into `model-checking` and `ACYCLIC_LOOM` is set.
 
 The retained property calls `GuestState::with` recursively on the same state and
 on another state. Each call must return `GuestError::NestedMutation` before

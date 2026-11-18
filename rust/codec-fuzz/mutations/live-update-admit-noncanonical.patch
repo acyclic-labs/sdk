@@ -1,6 +1,6 @@
-diff --git a/rust/crates/actors/src/live_update.rs b/rust/crates/actors/src/live_update.rs
---- a/rust/crates/actors/src/live_update.rs
-+++ b/rust/crates/actors/src/live_update.rs
+diff --git a/rust/crates/actors-contract/src/live_update.rs b/rust/crates/actors-contract/src/live_update.rs
+--- a/rust/crates/actors-contract/src/live_update.rs
++++ b/rust/crates/actors-contract/src/live_update.rs
 @@ -801,7 +801,7 @@
  /// no migration path and no silently ignored deployment provenance.
  pub fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T, Error> {

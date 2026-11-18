@@ -32,7 +32,7 @@ try {
       step = "compile independent Actors Buf descriptor";
       const buf = join(root, "node_modules/.bin", process.platform === "win32" ? "buf.exe" : "buf");
       const image = join(temporary, "actors-buf.bin");
-      execFileSync(buf, ["build", "--path", "rust/crates/actors/proto/actors", "--exclude-source-info", "-o", image],
+      execFileSync(buf, ["build", "--path", "rust/crates/actors-contract/proto/actors", "--exclude-source-info", "-o", image],
         { cwd: root, stdio: "inherit", windowsHide: true });
       generate(["canonicalize", "actors", image, image], { stdio: "inherit" });
       writeChanged(join(root, "rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin"), readFileSync(image));
