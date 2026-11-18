@@ -185,7 +185,8 @@ fn project_inner(
     let digests = manifest["rustdocFiles"].as_object_mut().unwrap();
     let mut specs = BTreeMap::new();
     let mut items = Vec::new();
-    let mut prepared = Vec::new();
+    let mut base = Vec::new();
+    let mut variants = Vec::new();
     for row in rows {
         let spec = ProfileSpec {
             package: row["package"].as_str().unwrap().to_owned(),
@@ -234,18 +235,22 @@ fn project_inner(
             crate_name: observation.crate_name,
             version: package.version.to_string(),
         };
-        let base = spec.default_features && spec.features.is_empty();
+        let group = if spec.default_features && spec.features.is_empty() {
+            &mut base
+        } else {
+            &mut variants
+        };
+        group.push(package_metadata);
         assert!(specs.insert(id, spec).is_none());
-        prepared.push((base, package_metadata));
     }
     assert!(
         digests.is_empty(),
         "every declared Rustdoc receipt must have a profile row"
     );
-    let build = |selected: Vec<&(bool, sdk_docs::PackageMetadata)>| {
-        let receipts = selected
+    let build = |package_metadata: Vec<sdk_docs::PackageMetadata>| {
+        let receipts = package_metadata
             .iter()
-            .map(|(_, metadata)| metadata.rustdoc_file.clone())
+            .map(|metadata| metadata.rustdoc_file.clone())
             .collect::<Vec<_>>();
         sdk_docs::build_data(
             &sdk_docs::BuildInput {
@@ -261,18 +266,15 @@ fn project_inner(
                 )
                 .unwrap(),
                 rustdoc_files: receipts,
-                package_metadata: selected
-                    .iter()
-                    .map(|(_, metadata)| metadata.clone())
-                    .collect(),
+                package_metadata,
                 mark_latest: false,
             },
             &[],
         )
         .unwrap()
     };
-    let mut data = build(prepared.iter().filter(|(base, _)| *base).collect());
-    for variant in prepared.iter().filter(|(base, _)| !*base) {
+    let mut data = build(base);
+    for variant in variants {
         sdk_docs::merge_profile_catalog(&mut data, build(vec![variant])).unwrap();
     }
     let availability = profiles::project_into_docs(&data, metadata, items, &specs).unwrap();
