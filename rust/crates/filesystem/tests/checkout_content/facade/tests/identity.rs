@@ -1,6 +1,7 @@
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, FileKind, FileRangeReadError, RebaseDecision,
 };
+use acyclic_fs::model::CheckoutMode;
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, DependencyRegion,
     ExtentSeekTarget, FilesystemProfile, FsError, NamedAttributeWriteMode, OperationFailure,
@@ -10,7 +11,6 @@ use acyclic_stream::OwnedBytes;
 
 use super::B;
 use super::checkout_fixture::{config, path, writable_pinned};
-use super::checkout_writable_tracking::writable_tracking;
 use super::fixtures::{TestResult, create, fixture, open_checkout};
 use super::volume_commit::commit;
 use super::volume_read::read;
@@ -23,7 +23,8 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
     let id = create(&mut seed, "identity", vec![b'a'; 128].into(), &cancel).await?;
     commit(&mut seed, &cancel).await?;
     for (local_offset, remote_offset, safe) in [(0, 64, true), (10, 12, false)] {
-        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut local =
+            open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
         let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
         local
             .change_content(
@@ -78,7 +79,8 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             );
         }
     }
-    let mut extending = open_checkout(&volume, writable_tracking(), &cancel).await?;
+    let mut extending =
+        open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
     for change in [
         ContentChange::Write {
             offset: 128,

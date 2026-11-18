@@ -11,7 +11,6 @@ use acyclic_stream::OwnedBytes;
 use super::B;
 use super::checkout_fixture::{config, path, path_parts};
 use super::checkout_tracking::tracking;
-use super::checkout_writable_tracking::writable_tracking;
 use super::fixtures::{TestResult, create, fixture};
 use super::volume_read::read;
 
@@ -511,7 +510,12 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     let cancel = CancellationToken::new();
     let (volume, _) = fixture(config(), &cancel).await?;
     let mut checkout = volume
-        .checkout(GenerationSelector::Head, writable_tracking(), B, &cancel)
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            B,
+            &cancel,
+        )
         .await?
         .value;
     let id = create(

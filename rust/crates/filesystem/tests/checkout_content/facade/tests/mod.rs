@@ -4,8 +4,6 @@ use acyclic_fs_work::performance::WorkBudget;
 mod allow_publication;
 #[path = "../../../support/checkout_fixture.rs"]
 mod checkout_fixture;
-#[path = "../../../support/checkout_writable_tracking.rs"]
-mod checkout_writable_tracking;
 mod content;
 mod detached;
 #[path = "../../../support/volume_fixture.rs"]

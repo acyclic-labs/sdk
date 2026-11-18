@@ -17,9 +17,6 @@ use checkout_manual::{manual, writable_manual};
 #[path = "../../../tests/support/checkout_tracking.rs"]
 mod checkout_tracking;
 use checkout_tracking::tracking;
-#[path = "../../../tests/support/checkout_writable_tracking.rs"]
-mod checkout_writable_tracking;
-use checkout_writable_tracking::writable_tracking;
 
 #[path = "../../../tests/support/checkout_live_fixture.rs"]
 mod live_fixture;
