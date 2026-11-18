@@ -34,6 +34,9 @@ const [gitSource, sourceRoot, repositoryName] = sourceRepository ?? [];
 if (sourceRepository && (!gitSource?.startsWith("git+") || !sourceRoot || !/^@[A-Za-z_][A-Za-z0-9_.-]*$/.test(repositoryName ?? ""))) {
   throw new Error("STEP_FAILED bazel-build-files: expected --source-repository GIT_SOURCE DIRECTORY @REPOSITORY");
 }
+if (sourceRepository && !toml(root, "Cargo.lock").package?.some(pkg => pkg.source === gitSource)) {
+  throw new Error("STEP_FAILED bazel-build-files: --source-repository must name an exact locked Git source");
+}
 const sourceDirectory = sourceRoot ? path.resolve(sourceRoot) : null;
 const sourceRoots = sourceDirectory ? {[gitSource]: sourceDirectory} : {};
 // A generation job declares one output manifest instead of changing its source checkout.

@@ -49,6 +49,24 @@ function fixture({ module = false } = {}) {
   return { root, run };
 }
 
+test("a source repository rejects a bare Git URL", () => {
+  const {root} = fixture();
+  try {
+    const lock = join(root, "Cargo.lock");
+    const url = "git+https://github.com/acyclic-labs/sdk";
+    const pin = "a".repeat(40);
+    writeFileSync(lock, readFileSync(lock, "utf8") +
+      `\n[[package]]\nname = "acyclic-example"\nversion = "0.1.0"\nsource = "${url}?rev=${pin}#${pin}"\n`);
+    const result = spawnSync(process.execPath, [
+      "scripts/bazel-build-files.mjs", "--source-repository", url, root, "@sdk_source", "write",
+    ], {cwd: root, encoding: "utf8"});
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must name an exact locked Git source/);
+  } finally {
+    rmSync(root, {recursive: true, force: true});
+  }
+});
+
 test("check accepts the generated files and fails on a stale BUILD file", () => {
   const { root, run } = fixture();
   try {
