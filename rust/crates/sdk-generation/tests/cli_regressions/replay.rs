@@ -130,26 +130,31 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             row["sha256"] = json!(new);
         }
     }
+    let original_digest = hash_bytes(&original_release);
+    assert_eq!(
+        fs::read(original.output.join(&digest_path)).unwrap(),
+        original_digest.as_bytes(),
+        "the original release sidecar must attest the original manifest"
+    );
     let rebased_release = serde_json::to_vec_pretty(&release).unwrap();
     let rebased_digest = hash_bytes(&rebased_release);
-    for (path, old, new) in [
+    fs::write(relocated.output.join(&release_path), rebased_release).unwrap();
+    fs::write(
+        relocated.output.join(&digest_path),
+        rebased_digest.as_bytes(),
+    )
+    .unwrap();
+    changed.insert(
+        release_path.to_str().unwrap().replace('\\', "/"),
+        (original_digest.clone(), rebased_digest.clone()),
+    );
+    changed.insert(
+        digest_path.to_str().unwrap().replace('\\', "/"),
         (
-            release_path,
-            hash_bytes(&original_release),
-            rebased_release.as_slice(),
+            hash_bytes(original_digest.as_bytes()),
+            hash_bytes(rebased_digest.as_bytes()),
         ),
-        (
-            digest_path.clone(),
-            hash_file(&original.output.join(&digest_path)),
-            rebased_digest.as_bytes(),
-        ),
-    ] {
-        fs::write(relocated.output.join(&path), new).unwrap();
-        changed.insert(
-            path.to_str().unwrap().replace('\\', "/"),
-            (old, hash_bytes(new)),
-        );
-    }
+    );
     for (path, (old, new)) in changed {
         assert_eq!(manifest["artifacts"][&path].as_str().unwrap(), old);
         manifest["artifacts"][&path] = json!(new);
