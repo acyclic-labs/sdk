@@ -1,3 +1,4 @@
+import { bazelExecutable } from "../../../../scripts/bazel-executables.mjs";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import { sessionService } from "./session-service-fixture.mjs";
 import assert from "node:assert/strict";
@@ -170,8 +171,9 @@ if (process.argv.includes("--client")) {
 
 await ensureStreamWasm();
 const memory = new WasmStream();
-const certificate = process.env.ACYCLIC_CONFORMANCE_CERTIFICATE;
-const identity = spawnSync(certificate ?? "cargo", certificate === undefined ? ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"] : [], { cwd: root, encoding: "utf8" });
+const certificate = process.env.ACYCLIC_CONFORMANCE_CERTIFICATE
+  ?? bazelExecutable(root, "//rust/crates/actors:conformance-certificate_example");
+const identity = spawnSync(certificate, [], { cwd: root, encoding: "utf8" });
 assert.ifError(identity.error);
 assert.equal(identity.status, 0, identity.stderr);
 const tls = JSON.parse(identity.stdout);
