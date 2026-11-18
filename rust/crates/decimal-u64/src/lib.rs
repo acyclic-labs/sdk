@@ -10,13 +10,18 @@ pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::
 /// Admit canonical unsigned decimal strings only.
 pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
     let text = String::deserialize(deserializer)?;
-    if text.is_empty()
-        || (text.len() > 1 && text.starts_with('0'))
-        || !text.bytes().all(|byte| byte.is_ascii_digit())
-    {
+    if !is_canonical(&text) {
         return Err(D::Error::custom("expected canonical decimal uint64 string"));
     }
     text.parse().map_err(D::Error::custom)
+}
+
+/// Whether the text uses canonical unsigned decimal spelling, independently of range.
+#[must_use]
+pub fn is_canonical(text: &str) -> bool {
+    !text.is_empty()
+        && (text.len() == 1 || !text.starts_with('0'))
+        && text.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[derive(Serialize, Deserialize)]

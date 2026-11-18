@@ -26,9 +26,7 @@ fn encoded_bytes(value: &Value) -> Result<&str> {
 
 pub(crate) fn u64_string(value: &Value) -> Result<u64> {
     let value = string(value)?;
-    if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
-        || (value.len() > 1 && value.starts_with('0'))
-    {
+    if !acyclic_decimal_u64::is_canonical(value) {
         return Err("expected decimal uint64 string");
     }
     value.parse().map_err(|_| "expected decimal uint64 string")
