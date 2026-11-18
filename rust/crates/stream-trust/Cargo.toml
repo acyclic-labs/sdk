@@ -11,10 +11,10 @@ description = "Follows signed trust records through Stream providers"
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 futures.workspace = true
+tokio = { version = "1.48.0", features = ["macros", "rt", "sync"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 ed25519-dalek = "=3.0.0"
-tokio = { version = "1.48.0", features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true
