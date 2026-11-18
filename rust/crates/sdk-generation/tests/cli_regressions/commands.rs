@@ -323,11 +323,10 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         }
         let output_path = &metadata.output;
         let receipt = acyclic_test_support::source_path(output_path);
-        let json = sdk_docs::read_rustdoc_json(&receipt).map_err(std::io::Error::other)?;
+        let mut json: Value = serde_json::from_slice(&fs::read(receipt)?)?;
         if json["target"]["triple"].as_str() != Some(target) {
             continue;
         }
-        let mut json = Rc::unwrap_or_clone(json);
         let target_dir = Path::new(env("CARGO_TARGET_DIR").unwrap());
         let mut referenced = BTreeMap::new();
         let artifact_target = target_dir.join(output_path.file_stem().unwrap());
