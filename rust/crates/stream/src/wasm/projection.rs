@@ -97,11 +97,12 @@ pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), Js
 pub fn decode_http_response(
     route: &str,
     response_json: &str,
-    followed: Option<&str>,
+    followed: Option<js_sys::JsString>,
 ) -> Result<JsValue, JsValue> {
     let value: Value = serde_json::from_str(response_json)
         .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
-    http::decode(route, &value, followed).map_err(JsValue::from_str)
+    let followed = followed.map(String::from);
+    http::decode(route, &value, followed.as_deref()).map_err(JsValue::from_str)
 }
 
 /// Decode one unary memory-provider response from canonical protobuf bytes
