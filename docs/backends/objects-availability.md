@@ -51,8 +51,9 @@ notifies its active observers. Neither path scans object history or unrelated
 accounts. The new observation adds no storage read, write or durability barrier.
 
 Run the shared provider suite and physical repair controls with
-`cargo test --locked -p acyclic-objects --all-features --lib`. The disposable S3
-control uses `STORAGE_S3_*` and runs with `--include-ignored`. Physical controls
+`bazel test //rust/crates/objects:acyclic_objects_test`. The disposable S3
+control uses `STORAGE_S3_*` with
+`bazel test //rust/crates/objects:acyclic_objects_test_s3`. Physical controls
 pause real payload writes before acknowledgment, subscribe during repair,
 verify unchanged catalog revisions, and cancel sent repairs to check terminal
 failure. The catalog-only negative control observes the actual unchanged
