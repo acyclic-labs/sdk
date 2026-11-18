@@ -732,8 +732,6 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let relocated_receipts =
         assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
     let (data, availability) = super::replay::project(&relocated, &metadata, &relocated_receipts);
-    super::replay::assert_catalog_matches(&relocated, &data);
-    sdk_docs::write_bundle_files(&data, &relocated.output, false).unwrap();
     assert_eq!(
         serde_json::to_vec_pretty(&availability).unwrap(),
         fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
@@ -813,13 +811,15 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
     }
     let path = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
-    assert_eq!(
-        fs::read(fixture.output.join(path)).unwrap(),
-        fs::read(relocated.output.join(path)).unwrap(),
-        "relocated profile outputs must publish identical content identities and bytes"
-    );
-    let data: Value =
-        serde_json::from_slice(&fs::read(fixture.output.join(path)).unwrap()).unwrap();
+    let replayed_bytes = serde_json::to_vec_pretty(&data).unwrap();
+    for checkout in [&fixture, &relocated] {
+        assert_eq!(
+            fs::read(checkout.output.join(path)).unwrap(),
+            replayed_bytes,
+            "both published catalogs must match the independent replay"
+        );
+    }
+    let data: Value = serde_json::to_value(data).unwrap();
     let mut spans = BTreeSet::new();
     fn source_paths(value: &Value, paths: &mut BTreeSet<String>) {
         if let Some(object) = value.as_object() {

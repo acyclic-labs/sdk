@@ -1,19 +1,6 @@
 use super::*;
 use sdk_docs::rustdoc_profiles::{self as profiles, ProfileSpec};
 
-pub(super) fn assert_catalog_matches(fixture: &Fixture, data: &sdk_docs::DocsData) {
-    let previous: Value = serde_json::from_slice(
-        &fs::read(
-            fixture
-                .output
-                .join("preview/feature-profile-catalog/sdk-docs-data.v1.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(serde_json::to_value(data).unwrap(), previous);
-}
-
 pub(super) fn copy_tree(source: &Path, destination: &Path) {
     copy_tree_inner(source, destination, false);
 }
