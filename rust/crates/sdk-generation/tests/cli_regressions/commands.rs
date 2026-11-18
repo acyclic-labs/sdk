@@ -3,6 +3,7 @@ use super::*;
 use std::{
     cell::{Cell, RefCell},
     ffi::{OsStr, OsString},
+    io::{BufWriter, Write},
     process::Output,
     rc::Rc,
 };
@@ -376,7 +377,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let output_dir = rustdoc_directory(target_dir, target);
         let output = output_dir.join(format!("{}.json", metadata.receipt_name));
         fs::create_dir_all(&output_dir)?;
-        fs::write(output, serde_json::to_vec(&json)?)?;
+        let mut receipt = BufWriter::new(fs::File::create(output)?);
+        serde_json::to_writer(&mut receipt, &json)?;
+        receipt.flush()?;
         #[cfg(unix)]
         use std::os::unix::process::ExitStatusExt;
         #[cfg(windows)]
