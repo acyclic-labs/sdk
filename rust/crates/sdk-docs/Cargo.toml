@@ -19,6 +19,7 @@ rustup = "@sdk_compilers//:rustup"
 
 [package.metadata.bazel.test-data.sdk_docs_test]
 workspace-manifests = "//:workspace-manifests"
+workspace-metadata = "//workspace-metadata:workspace-metadata.json"
 
 [features]
 model-checking = []
