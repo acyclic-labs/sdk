@@ -505,6 +505,8 @@ rust_test(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
         "tests/support/allow_publication.rs",
         "tests/support/append.rs",
+        "tests/support/attribute_entries.rs",
+        "tests/support/attribute_objects.rs",
         "tests/support/blob_objects.rs",
         "tests/support/blob_source.rs",
         "tests/support/checkout_defaults.rs",
@@ -3207,6 +3209,8 @@ rust_test(
     name = "directory_tree_cases",
     crate_root = "tests/directory_tree.rs",
     srcs = [
+        "tests/support/attribute_entries.rs",
+        "tests/support/attribute_objects.rs",
         "tests/support/file_table_objects.rs",
         "tests/support/listing_tree.rs",
         "tests/support/packed_tree.rs",
@@ -3215,6 +3219,8 @@ rust_test(
         "tests/support/tree_objects.rs",
         "tests/support/two_leaf_tree.rs",
         "tests/directory_tree.rs",
+        "tests/directory_tree/kernel/attribute_list/mod.rs",
+        "tests/directory_tree/kernel/attribute_list/tests.rs",
         "tests/directory_tree/kernel/file_table/mod.rs",
         "tests/directory_tree/kernel/file_table/tests.rs",
         "tests/directory_tree/kernel/list/mod.rs",

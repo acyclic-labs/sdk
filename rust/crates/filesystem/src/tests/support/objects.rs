@@ -1,7 +1,3 @@
-use crate::async_storage::AsyncObjectStore;
-use crate::kernel::*;
-use crate::storage::{ObjectId, ObjectKind};
-
 #[path = "../../../tests/support/extent_objects.rs"]
 mod extent_objects;
 pub(crate) use extent_objects::{put_extent_page, put_object};
@@ -18,19 +14,9 @@ pub(crate) use file_table_objects::put_file_table_page;
 mod tree_objects;
 pub(crate) use tree_objects::put_tree_page;
 
-pub(crate) async fn put_attribute_page<S: AsyncObjectStore>(
-    store: &S,
-    value: &AttributePage,
-    maximum_items: u32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let bytes = encode_attribute_page(
-        value,
-        maximum_items,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )?;
-    put_object(store, ObjectKind::AttributePage, bytes).await
-}
+#[path = "../../../tests/support/attribute_objects.rs"]
+mod attribute_objects;
+pub(crate) use attribute_objects::put_attribute_page;
 
 #[path = "../../../tests/support/blob_objects.rs"]
 mod blob_objects;
