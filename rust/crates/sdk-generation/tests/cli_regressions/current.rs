@@ -470,6 +470,13 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
             "the compilation reuse key must preserve every cfg feature: {path}"
         );
     }
+    let has_extra = |profile: &Value| {
+        profile["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature == "extra")
+    };
     let feature_entry = entries
         .iter()
         .find(|entry| entry["path"] == "demo::FeatureOnly")
@@ -478,34 +485,26 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|profile| {
-            profile["features"]
-                .as_array()
-                .is_some_and(|features| features.iter().any(|feature| feature == "extra"))
-        })
+        .find(|profile| has_extra(profile))
         .expect("FeatureOnly must be attributed to the extra profile");
 
-    let variant_entries = entries
+    let mut signatures = BTreeSet::new();
+    let mut extra_variant = false;
+    for entry in entries
         .iter()
         .filter(|entry| entry["path"] == "demo::overloaded")
-        .collect::<Vec<_>>();
-    let signatures = variant_entries
-        .iter()
-        .filter_map(|entry| entry["signature"].as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+    {
+        signatures.insert(entry["signature"].as_str().unwrap());
+        extra_variant |= entry["profiles"].as_array().unwrap().iter().any(has_extra);
+    }
     assert!(
         signatures.len() >= 2,
         "same-path profile variants must remain signature-distinct"
     );
-    assert!(variant_entries.iter().any(|entry| {
-        entry["profiles"].as_array().is_some_and(|profiles| {
-            profiles.iter().any(|profile| {
-                profile["features"]
-                    .as_array()
-                    .is_some_and(|features| features.iter().any(|feature| feature == "extra"))
-            })
-        })
-    }));
+    assert!(
+        extra_variant,
+        "overloaded must have an extra-feature variant"
+    );
 
     let receipts = assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
     let effective = receipts
@@ -513,11 +512,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .map(|receipt| {
             (
                 receipt["defaultFeatures"].as_bool().unwrap(),
-                receipt["features"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|feature| feature == "extra"),
+                has_extra(receipt),
             )
         })
         .collect::<std::collections::BTreeSet<_>>();
