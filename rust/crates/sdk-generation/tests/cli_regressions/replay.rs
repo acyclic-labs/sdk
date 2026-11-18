@@ -87,25 +87,21 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains(path)
     });
     let mut rebased_bytes = Vec::new();
-    let mut changed = sdk_docs::with_rustdoc_cache(|| {
-        let mut changed = BTreeMap::new();
-        for original_file in inventory {
-            let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
-            let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
-            let relative = original_file.strip_prefix(&original.output).unwrap();
-            let file = relocated.output.join(relative);
-            let mut value = std::rc::Rc::unwrap_or_clone(value);
-            rebase(&mut value);
-            rebased_bytes.clear();
-            serde_json::to_writer(&mut rebased_bytes, &value).unwrap();
-            fs::write(&file, &rebased_bytes).unwrap();
-            changed.insert(
-                relative.to_str().unwrap().replace('\\', "/"),
-                (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
-            );
-        }
-        changed
-    });
+    let mut changed = BTreeMap::new();
+    for original_file in inventory {
+        let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
+        let mut value: Value = serde_json::from_slice(&original_bytes).unwrap();
+        let relative = original_file.strip_prefix(&original.output).unwrap();
+        let file = relocated.output.join(relative);
+        rebase(&mut value);
+        rebased_bytes.clear();
+        serde_json::to_writer(&mut rebased_bytes, &value).unwrap();
+        fs::write(&file, &rebased_bytes).unwrap();
+        changed.insert(
+            relative.to_str().unwrap().replace('\\', "/"),
+            (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
+        );
+    }
     // Relocation changes physical receipt bytes. Re-attest only those verified
     // rewrites. Drift checks both checkouts against the unchanged logical digests.
     let original_release = fs::read(original.output.join(&release_path)).unwrap();
