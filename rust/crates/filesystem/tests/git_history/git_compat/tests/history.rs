@@ -1085,7 +1085,9 @@ async fn state_changing_filesystem_actions_are_prepared_then_completed() {
     assert_eq!(status.branch, "feature");
 }
 
-async fn merge_reachable_branch(advance_head: bool) -> (GitCommit, GitCommit) {
+async fn merge_reachable_branch(
+    advance_head: bool,
+) -> Result<(GitCommit, GitCommit), Box<dyn std::error::Error>> {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Committed(initial) = repository
         .record_commit(
@@ -1096,16 +1098,14 @@ async fn merge_reachable_branch(advance_head: bool) -> (GitCommit, GitCommit) {
             "parent",
             1,
         )
-        .await
-        .expect("initial commit")
+        .await?
     else {
-        panic!("expected initial commit");
+        return Err("expected initial commit".into());
     };
     let source = WorkspaceId::from_bytes([27; 16]);
     repository
         .register_branch_workspace("agents/kid", source, Some(initial.id), false)
-        .await
-        .expect("source branch");
+        .await?;
     let head = if advance_head {
         let GitCommandOutput::Committed(advanced) = repository
             .record_commit(
@@ -1116,10 +1116,9 @@ async fn merge_reachable_branch(advance_head: bool) -> (GitCommit, GitCommit) {
                 "parent",
                 2,
             )
-            .await
-            .expect("advanced commit")
+            .await?
         else {
-            panic!("expected advanced commit");
+            return Err("expected advanced commit".into());
         };
         advanced
     } else {
@@ -1137,23 +1136,24 @@ async fn merge_reachable_branch(advance_head: bool) -> (GitCommit, GitCommit) {
                 tracked_paths: Some(tracked.clone()),
             }),
         )
-        .await
-        .expect("merge")
+        .await?
     else {
-        panic!("expected a merge commit");
+        return Err("expected a merge commit".into());
     };
     assert_eq!(merged.tracked_paths, tracked);
-    (head, merged)
+    Ok((head, merged))
 }
 
 #[tokio::test]
-async fn merging_a_branch_reachable_from_head_records_head_once() {
+async fn merging_a_branch_reachable_from_head_records_head_once()
+-> Result<(), Box<dyn std::error::Error>> {
     // The branch head is HEAD itself: [HEAD, HEAD] would repeat a parent.
-    let (head, merged) = merge_reachable_branch(false).await;
+    let (head, merged) = merge_reachable_branch(false).await?;
     assert_eq!(merged.parents, vec![head.id]);
     // The branch head is an ancestor of HEAD and adds no ancestry.
-    let (head, merged) = merge_reachable_branch(true).await;
+    let (head, merged) = merge_reachable_branch(true).await?;
     assert_eq!(merged.parents, vec![head.id]);
+    Ok(())
 }
 
 /// How far a child branch got before the parent discards it.

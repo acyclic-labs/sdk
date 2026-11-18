@@ -60,16 +60,18 @@ impl GitFilesystemExecutor for TestExecutor {
         operation_id: OperationId,
         _action: &'a GitFilesystemAction,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
-        self.operations
+        let result = self
+            .operations
             .lock()
-            .expect("operation lock")
-            .push(operation_id);
-        Box::pin(std::future::ready(
-            self.result
-                .as_ref()
-                .map(Clone::clone)
-                .map_err(|_| TestExecutorError),
-        ))
+            .map_err(|_| TestExecutorError)
+            .and_then(|mut operations| {
+                operations.push(operation_id);
+                self.result
+                    .as_ref()
+                    .map(Clone::clone)
+                    .map_err(|_| TestExecutorError)
+            });
+        Box::pin(std::future::ready(result))
     }
 }
 
