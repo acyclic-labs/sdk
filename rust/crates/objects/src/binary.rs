@@ -1,7 +1,7 @@
 //! Canonical blob client over the caller's original binary account transport.
 use crate::{
     Availability, Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object,
-    Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
+    ObjectsMethod, Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
 };
 use acyclic_stream::{OwnedBytes, ProviderPlatform, ProviderTask, Revision};
 use bytes::Bytes;
@@ -60,12 +60,12 @@ fn unavailable() -> Error {
 impl<T: Transport> BinaryObjects<T> {
     async fn call<I: Message, O: Message + Default>(
         &self,
-        route: &str,
+        method: ObjectsMethod,
         input: I,
     ) -> Result<(O, Option<Revision>), Error> {
         let (body, revision) = self
             .transport
-            .invoke(route, input.encode_to_vec().into())
+            .invoke(method.http_route(), input.encode_to_vec().into())
             .await?;
         // Owned decoding retains body fields in the original response allocation.
         let reply = O::decode(body).map_err(|_| unavailable())?;
@@ -74,12 +74,12 @@ impl<T: Transport> BinaryObjects<T> {
 
     async fn publish(
         &self,
-        route: &str,
+        method: ObjectsMethod,
         input: impl Message,
         digest: Digest,
         length: u64,
     ) -> Result<Put, Error> {
-        let (reply, revision) = self.call(route, input).await?;
+        let (reply, revision) = self.call(method, input).await?;
         convert::verified_put(&reply, digest, length, revision).map_err(|_| unavailable())
     }
 }
@@ -97,7 +97,8 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         let (request, (digest, length)) = convert::put_blob(body, &references);
-        self.publish("blobs/put", request, digest, length).await
+        self.publish(ObjectsMethod::PutBlob, request, digest, length)
+            .await
     }
 
     async fn put_batch_sealed(
@@ -110,7 +111,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         }
         let (request, expected) = convert::put_blobs(requests);
         let replied = async {
-            let (reply, revision) = self.call("blobs/put-batch", request).await?;
+            let (reply, revision) = self.call(ObjectsMethod::PutBlobs, request).await?;
             convert::verified_puts(reply, &expected, revision.as_ref()).map_err(|_| unavailable())
         };
         replied
@@ -120,7 +121,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         let (request, (digest, length)) = convert::put_manifest(&manifest)?;
-        self.publish("blobs/put-manifest", request, digest, length)
+        self.publish(ObjectsMethod::PutManifest, request, digest, length)
             .await
     }
 
@@ -132,7 +133,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     ) -> Result<Object, Error> {
         let (reply, revision) = self
             .call(
-                "blobs/get",
+                ObjectsMethod::GetBlob,
                 convert::get_request(digest, range, maximum_bytes),
             )
             .await?;
@@ -142,7 +143,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         let (reply, revision) = self
             .call(
-                "blobs/head",
+                ObjectsMethod::HeadBlob,
                 wire::HeadBlobRequest {
                     digest: Some(digest.into()),
                 },
@@ -154,7 +155,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
         let (reply, revision) = self
             .call(
-                "blobs/delete",
+                ObjectsMethod::DeleteBlob,
                 wire::DeleteBlobRequest {
                     digest: Some(digest.into()),
                 },
@@ -165,7 +166,10 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
         let (reply, revision) = self
-            .call("blobs/list", convert::list_request(after, limit))
+            .call(
+                ObjectsMethod::ListBlobs,
+                convert::list_request(after, limit),
+            )
             .await?;
         convert::listed(&reply, after, limit, revision).map_err(|_| unavailable())
     }
@@ -177,14 +181,17 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         let (reply, revision): (wire::RetainResponse, _) = self
-            .call("blobs/retain", convert::retain_request(root, &references))
+            .call(
+                ObjectsMethod::Retain,
+                convert::retain_request(root, &references),
+            )
             .await?;
         Ok(convert::retained(&reply, revision))
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
         let (reply, revision): (wire::ReleaseResponse, _) = self
-            .call("blobs/release", convert::release_request(root))
+            .call(ObjectsMethod::Release, convert::release_request(root))
             .await?;
         Ok(convert::released(&reply, revision))
     }
@@ -197,7 +204,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     ) -> Result<Retained, Error> {
         let (reply, revision): (wire::RetainResponse, _) = self
             .call(
-                "blobs/retain-fenced",
+                ObjectsMethod::RetainFenced,
                 convert::retain_fenced_request(root, fence, &references),
             )
             .await?;
@@ -207,7 +214,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
         let (reply, revision): (wire::ReleaseResponse, _) = self
             .call(
-                "blobs/release-terminal",
+                ObjectsMethod::ReleaseTerminal,
                 convert::release_terminal_request(root, fence),
             )
             .await?;
@@ -215,12 +222,16 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        let (reply, revision) = self.call("blobs/collect", wire::CollectRequest {}).await?;
+        let (reply, revision) = self
+            .call(ObjectsMethod::Collect, wire::CollectRequest {})
+            .await?;
         Ok(convert::collection(&reply, revision))
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
-        let (reply, _) = self.call("blobs/usage", wire::UsageRequest {}).await?;
+        let (reply, _) = self
+            .call(ObjectsMethod::Usage, wire::UsageRequest {})
+            .await?;
         Ok(convert::usage(&reply))
     }
 }

@@ -82,6 +82,10 @@ impl Blobs for Replica {
         &self,
         requests: Vec<(crate::Sealed, Vec<Digest>)>,
     ) -> Vec<Result<Put, Error>> {
+        self.pending
+            .lock()
+            .expect("pending")
+            .extend(requests.iter().map(|(body, _)| body.bytes().clone()));
         let mut receipts = self.primary.put_batch_durable(requests).await;
         if self.surplus_batch_receipt
             && let Some(receipt) = receipts.first().cloned()
@@ -159,6 +163,12 @@ async fn grpc_batch_rejects_a_surplus_provider_receipt() -> TestResult {
         matches!(receipts.as_slice(), [Err(error)] if error.code == wire::ErrorCode::Unavailable)
     );
     replica.primary.head(digest).await?;
+    assert!(matches!(
+        replica.head(digest).await,
+        Err(error) if error.code == wire::ErrorCode::NotFound
+    ));
+    replica.catch_up().await?;
+    replica.head(digest).await?;
     Ok(())
 }
 
