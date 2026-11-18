@@ -951,6 +951,8 @@ mod replay;
 
 #[path = "cli_regressions/archives.rs"]
 mod archives;
+#[path = "support/rustdoc_paths.rs"]
+mod rustdoc_paths;
 
 #[path = "cli_regressions/cache.rs"]
 mod cache;

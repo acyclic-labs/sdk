@@ -60,39 +60,31 @@ pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
 
 pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
     fn rebase(value: &mut Value, original: &Fixture, relocated: &Fixture) {
-        match value {
-            Value::String(text) => {
-                for (old, new) in [
-                    (&original.root, &relocated.root),
-                    (&original.output, &relocated.output),
-                ] {
-                    if let Some(rebased) = super::paths::rebase(
-                        text,
-                        old.to_str().unwrap(),
-                        new.to_str().unwrap(),
-                        cfg!(windows),
-                    ) {
-                        let destination = Path::new(&rebased);
-                        if destination.starts_with(relocated.output.join(".profile-build"))
-                            && !destination.exists()
-                            && Path::new(text).is_file()
-                        {
-                            fs::create_dir_all(destination.parent().unwrap()).unwrap();
-                            fs::hard_link(text.as_str(), destination).unwrap();
-                        }
-                        *text = rebased;
-                        break;
+        let scratch = relocated.output.join(".profile-build");
+        rustdoc_paths::visit(value, |_, text| {
+            for (old, new) in [
+                (&original.root, &relocated.root),
+                (&original.output, &relocated.output),
+            ] {
+                if let Some(rebased) = super::paths::rebase(
+                    text,
+                    old.to_str().unwrap(),
+                    new.to_str().unwrap(),
+                    cfg!(windows),
+                ) {
+                    let destination = Path::new(&rebased);
+                    if destination.starts_with(&scratch)
+                        && !destination.exists()
+                        && Path::new(text.as_str()).is_file()
+                    {
+                        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                        fs::hard_link(text.as_str(), destination).unwrap();
                     }
+                    *text = rebased;
+                    break;
                 }
             }
-            Value::Array(items) => items
-                .iter_mut()
-                .for_each(|item| rebase(item, original, relocated)),
-            Value::Object(items) => items
-                .values_mut()
-                .for_each(|item| rebase(item, original, relocated)),
-            _ => {}
-        }
+        });
     }
     fn receipts(directory: &Path, files: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(directory).unwrap() {
