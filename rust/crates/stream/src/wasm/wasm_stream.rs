@@ -129,16 +129,10 @@ impl WasmStream {
             journal_bytes: maximum_journal_bytes,
             ..Default::default()
         };
-        let provider = Rc::new(
-            crate::BrowserStream::open(&name, limits)
-                .await
-                .map_err(js_error)?,
-        );
-        Ok(Self {
-            connections: None,
-            session: None,
-            provider,
-        })
+        let provider = crate::BrowserStream::open(&name, limits)
+            .await
+            .map_err(js_error)?;
+        Ok(Self::from_provider(Rc::new(provider)))
     }
 
     /// Binds the local session to an authenticated public trust feed supplied by
