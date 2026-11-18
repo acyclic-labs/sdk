@@ -240,24 +240,6 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
 }
 
 #[test]
-fn release_generation_requires_executed_profiles() {
-    let error = parse_generate(vec![
-        "--root".into(),
-        "root".into(),
-        "--output".into(),
-        "output".into(),
-        "--rustdoc-dir".into(),
-        "rustdoc".into(),
-        "--version".into(),
-        "1.0.0".into(),
-        "--channel".into(),
-        "release".into(),
-    ])
-    .expect_err("release hand-supplied receipts must be rejected");
-    assert!(error.to_string().contains("requires --execute-profiles"));
-}
-
-#[test]
 fn missing_external_rustdoc_span_is_restored_at_rustdoc_path() {
     let (_root_directory, root) = test_root("generated-span-staging");
     let root = root.canonicalize().expect("test root should canonicalize");

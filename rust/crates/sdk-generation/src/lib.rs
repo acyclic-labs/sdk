@@ -67,7 +67,6 @@ struct GenerateArgs {
     version: String,
     channel: Channel,
     skip_scenarios: bool,
-    execute_profiles: bool,
     historical_archives: Option<PathBuf>,
     historical_source: HistoricalSource,
     registry_frontier_repository: Option<PathBuf>,
@@ -208,13 +207,12 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         value => return Err(CliError(format!("unknown channel `{value}`"))),
     };
     let rustdoc_dir = flags.get("rustdoc-dir").map(PathBuf::from);
-    let execute_profiles = flags.contains_key("execute-profiles") || rustdoc_dir.is_none();
     if rustdoc_dir.is_some() && flags.contains_key("execute-profiles") {
         return Err(CliError(
             "--rustdoc-dir and --execute-profiles are mutually exclusive".into(),
         ));
     }
-    if channel == Channel::Release && !execute_profiles {
+    if channel == Channel::Release && rustdoc_dir.is_some() {
         return Err(CliError(
             "release generation requires --execute-profiles; hand-supplied Rustdoc receipts are preview-only".into(),
         ));
@@ -236,7 +234,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
     }
     if historical_archives.is_some()
         && (channel != Channel::Release
-            || !execute_profiles
+            || rustdoc_dir.is_some()
             || flags.contains_key("skip-scenarios"))
     {
         return Err(CliError(
@@ -276,7 +274,6 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         version: required("version")?,
         channel,
         skip_scenarios: flags.contains_key("skip-scenarios"),
-        execute_profiles,
         historical_archives,
         historical_source,
         registry_frontier_repository,
