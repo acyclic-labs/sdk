@@ -25,5 +25,9 @@ acyclic-host-platform = { version = "=0.2.0", path = "../../../../host-platform"
 [package.metadata.acyclic]
 compiler-negative-features = ["negative"]
 
+[package.metadata.bazel]
+library-test-features = ["negative"]
+library-test-variant = "negative"
+
 [lints]
 workspace = true
