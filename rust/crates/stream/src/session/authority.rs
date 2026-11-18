@@ -494,6 +494,12 @@ impl Authority {
         ),
         Rejection,
     > {
+        let read_action = crate::authorization::HEAD_ACTION.as_str();
+        let path_action = if request.projection == crate::HeadProjection::Tail {
+            crate::authorization::TAIL_ACTION.as_str()
+        } else {
+            read_action
+        };
         let (mut binding, authorization, visibility) = if let Some(page) = &request.children {
             let (binding, visibility) =
                 self.bind_list(slots, slot, page.parent.as_ref(), channels)?;
@@ -512,7 +518,11 @@ impl Authority {
                 resource.clone(),
                 Arc::clone(capability),
             );
-            authorization.action = crate::authorization::HEAD_ACTION.as_str();
+            authorization.action = if request.paths.is_empty() {
+                read_action
+            } else {
+                path_action
+            };
             let binding = Binding {
                 credential_revision: *revision,
                 slot,
@@ -525,14 +535,19 @@ impl Authority {
             };
             (binding, authorization, None)
         };
-        let read_action = crate::authorization::HEAD_ACTION.as_str();
         binding.additional = request
             .paths
             .iter()
-            .chain(request.retained.iter().map(|selected| &selected.path))
-            // Without a child page, the primary binding already checks path one.
+            .map(|path| (path_action, path))
+            .chain(
+                request
+                    .retained
+                    .iter()
+                    .map(|selected| (read_action, &selected.path)),
+            )
+            // Without a child page, the primary binding already checks the first path.
             .skip(usize::from(request.children.is_none()))
-            .map(|path| (read_action, stream_resource(Some(path))))
+            .map(|(action, path)| (action, stream_resource(Some(path))))
             .collect();
         if visibility.is_some() {
             // bind_list already derived this immutable filter. Recheck the
