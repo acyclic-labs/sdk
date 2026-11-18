@@ -327,19 +327,17 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             continue;
         }
         let target_dir = Path::new(env("CARGO_TARGET_DIR").unwrap());
-        let mut referenced = std::collections::BTreeSet::new();
+        let mut referenced = BTreeMap::new();
         let artifact_target = target_dir.join(output_path.file_stem().unwrap());
         let owner = &metadata.owner_path;
         let entrypoint = metadata.entrypoint.as_path();
         let owner_entrypoint = owner.join(entrypoint);
         rustdoc_paths::visit(&mut json, |kind, path| {
             if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
-                let relative = PathBuf::from(relative);
-                *path = artifact_target
-                    .join(&relative)
-                    .to_string_lossy()
-                    .into_owned();
-                referenced.insert(relative);
+                let destination = referenced
+                    .entry(PathBuf::from(relative))
+                    .or_insert_with(|| artifact_target.join(relative));
+                *path = destination.to_string_lossy().into_owned();
             } else if matches!(kind, rustdoc_paths::Kind::Source) {
                 let filename = Path::new(path);
                 if let Some((_, replacement)) = source_paths.iter().find(|(source, _)| {
@@ -357,8 +355,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 ));
             };
             let artifacts = acyclic_test_support::source_path(artifacts);
-            for relative in referenced {
-                let destination = artifact_target.join(&relative);
+            for (relative, destination) in referenced {
                 let source = artifacts.join(relative);
                 match optional_io(fs::read(&destination))? {
                     Some(existing) if existing == fs::read(&source)? => {}
