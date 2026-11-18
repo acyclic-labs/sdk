@@ -106,12 +106,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                     // Retain the exact source, receipts and compiler directory only.
                     fs::remove_file(&manifest_path).unwrap();
                     fs::remove_file(&manifest_digest).unwrap();
-                    manifest
-                        .registry_corpus
-                        .frontier
-                        .into_iter()
-                        .map(|owner| owner.discovery)
-                        .collect::<Vec<_>>()
+                    manifest.registry_corpus.frontier
                 });
                 let (recorded, replayed_compilers) = queries.compiler_counts();
                 assert!(
@@ -128,9 +123,17 @@ fn archive_locks_override_foreign_cargo_authority() {
                     executed > 0 && replayed > 0,
                     "both real recording and policy replay must run"
                 );
-                assert_ne!(
-                    cargo_home_frontier, working_directory_frontier,
-                    "both automatic-config authorities must execute"
+                let mut pairs = cargo_home_frontier.iter().zip(&working_directory_frontier);
+                assert!(
+                    cargo_home_frontier.len() == working_directory_frontier.len()
+                        && pairs
+                            .clone()
+                            .all(|(home, cwd)| home.revision == cwd.revision),
+                    "both authorities must discover the same fixture revisions"
+                );
+                assert!(
+                    pairs.any(|(home, cwd)| home.discovery != cwd.discovery),
+                    "Cargo discovery evidence must distinguish the two authorities"
                 );
             });
         }
