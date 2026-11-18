@@ -552,7 +552,7 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
             &cancellation,
         )
         .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         assert_eq!(
             baseline,
             acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
@@ -569,21 +569,22 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
         drop(generation);
         drop(opened);
         drop(host);
-        let funded = |bytes: &acyclic_stream::OwnedBytes| {
-            work.live_allocation_bytes()
+        let funded = |bytes: &acyclic_stream::OwnedBytes| -> Result<bool> {
+            Ok(work
+                .live_allocation_bytes()?
                 .checked_sub(baseline)
-                .is_some_and(|live| live >= bytes.retained_capacity().unwrap() as u64 && live != 0)
+                .is_some_and(|live| live >= bytes.retained_capacity().unwrap() as u64 && live != 0))
         };
-        assert!(funded(&bytes), "returned bytes lost their original ledger");
+        assert!(funded(&bytes)?, "returned bytes lost their original ledger");
         let unfunded: acyclic_stream::OwnedBytes = bytes.as_ref().to_vec().into();
         drop(bytes);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             baseline,
             "returned custody leaked"
         );
         assert!(
-            !funded(&unfunded),
+            !funded(&unfunded)?,
             "an unfunded copy must fail the same predicate"
         );
     }
