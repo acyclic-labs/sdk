@@ -52,18 +52,6 @@ impl Default for BrowserStreamLimits {
     }
 }
 
-struct BrowserClock;
-impl UnixMillisClock for BrowserClock {
-    fn is_system_clock(&self) -> bool {
-        true
-    }
-
-    fn now_unix_millis(&self) -> u64 {
-        // Invalid/unavailable clocks fail deadline admission closed.
-        js_sys::Date::now().to_string().parse().unwrap_or(u64::MAX)
-    }
-}
-
 struct Cache {
     provider: MemoryStream,
     cursor: u64,
@@ -345,7 +333,8 @@ fn staged(
     clock: Arc<ReplicaClock>,
     durable: &crate::AppliedRevisions,
 ) -> MemoryStream {
-    let mut provider = MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock);
+    let mut provider =
+        MemoryStream::new_with_commit_clock(limits, Arc::new(SystemUnixMillisClock), clock);
     provider.revisions = Arc::new(durable.staging());
     provider
 }
