@@ -6,6 +6,8 @@ use super::{
 use acyclic_stream::OwnedBytes;
 use futures::FutureExt;
 
+type Observation<T> = Result<T, acyclic_fs::WorkObservationError>;
+
 fn native_work(deny_allocation: bool) -> acyclic_fs::NativeMaterializationWork {
     let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = if deny_allocation {
@@ -21,7 +23,7 @@ fn native_work(deny_allocation: bool) -> acyclic_fs::NativeMaterializationWork {
 /// Programs and reply frames must retire their engine and original credit.
 /// Quoted input and production-encoded replies have independent value oracles.
 /// No host tool, provider or external process runs.
-pub async fn check(input: &[u8]) {
+pub async fn check(input: &[u8]) -> Observation<()> {
     let definitions: Vec<_> = crate::tools::catalog()
         .map(|tool| tool.bind().expect("catalog declaration").definition)
         .collect();
@@ -29,15 +31,16 @@ pub async fn check(input: &[u8]) {
     let definitions: OwnedBytes = serde_json::to_vec(&definitions).unwrap().into();
     let text = String::from_utf8_lossy(input);
     let literal = serde_json::to_string(text.as_ref()).unwrap();
-    let value = check_arguments(input);
-    check_bridge(&text).await;
-    check_programs(input, &definitions, &literal, &text).await;
-    check_progress(&definitions).await;
-    check_replies(input, value, &definitions, &tool_name, &literal, &text).await;
-    check_settlement(&definitions, &tool_name, &literal).await;
+    let value = check_arguments(input)?;
+    check_bridge(&text).await?;
+    check_programs(input, &definitions, &literal, &text).await?;
+    check_progress(&definitions).await?;
+    check_replies(input, value, &definitions, &tool_name, &literal, &text).await?;
+    check_settlement(&definitions, &tool_name, &literal).await?;
+    Ok(())
 }
 
-fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
+fn check_arguments(input: &[u8]) -> Observation<Option<serde_json::Value>> {
     use crate::executor::json::{JsonBounds, JsonValueSchema};
     use crate::wire::ErrorCode;
     // Refine the same owned-Value decoder through the caller's original native
@@ -55,7 +58,7 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
         &mut |_| Ok(()),
     );
     let work = native_work(false);
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
     let result = io.decode(
         std::marker::PhantomData::<serde_json::Value>,
@@ -74,7 +77,7 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
                 held.bytes() >= owned,
                 "decoded argument storage must retain its native admission"
             );
-            assert_eq!(work.live_allocation_bytes(), baseline + held.bytes());
+            assert_eq!(work.live_allocation_bytes()?, baseline + held.bytes());
         }
         (
             Err(crate::Error::NativeJson {
@@ -101,7 +104,7 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
                 custody.bytes() >= crate::executor::json::sdk_json_diagnostic_bytes(),
                 "native argument diagnostic must retain its owned storage"
             );
-            assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
+            assert_eq!(work.live_allocation_bytes()?, baseline + custody.bytes());
         }
         (
             Err(crate::Error::NativeJsonAdmission { code, kind }),
@@ -124,36 +127,36 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
     }
     drop(result);
     drop(io);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    expected.ok()
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(expected.ok())
 }
 
-async fn check_bridge(text: &str) {
+async fn check_bridge(text: &str) -> Observation<()> {
     let work = native_work(false);
-    let original = work.live_allocation_bytes();
+    let original = work.live_allocation_bytes()?;
     let allocator = EngineAllocator::new(Some(&work));
     let runtime = rquickjs::AsyncRuntime::new_with_alloc(allocator.clone()).unwrap();
     let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
     context
-        .with(|ctx| {
+        .with(|ctx| -> Observation<()> {
             let source = rquickjs::String::from_str(ctx, text).unwrap();
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             // Measure the actual engine view, including its native header. ASCII
             // may borrow the string; Unicode may require a temporary UTF-8 copy.
             let view = source.clone().to_cstring().unwrap();
-            let view_bytes = work.live_allocation_bytes() - baseline;
+            let view_bytes = work.live_allocation_bytes()? - baseline;
             drop(view);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
 
             let copy = allocator.copy_text(&source).unwrap();
             assert_eq!(copy.value, text);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 baseline + text.len() as u64,
                 "bridge bytes must retain the original credit after the engine view retires"
             );
             drop(copy);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
 
             // Reserve the remaining original capacity after startup. First fund
             // only the view, then neither allocation when the view needs bytes.
@@ -189,37 +192,45 @@ async fn check_bridge(text: &str) {
                 ));
                 drop(result);
                 drop(reserved);
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes()?, baseline);
             }
+            Ok(())
         })
-        .await;
+        .await?;
     drop(context);
     drop(runtime);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         original,
         "native UTF-8 refusal must retire the original engine allocation"
     );
+    Ok(())
 }
 
 fn assert_retained_result(
     work: &acyclic_fs::NativeMaterializationWork,
     baseline: u64,
     result: &Result<EngineResult, String>,
-) {
+) -> Observation<()> {
     let held = result
         .as_ref()
         .ok()
         .and_then(|result| result.custody.as_ref())
         .map_or(0, acyclic_fs::NativeAllocation::bytes);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         baseline + held,
         "only the original result credit may outlive its engine"
     );
+    Ok(())
 }
 
-async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, text: &str) {
+async fn check_programs(
+    input: &[u8],
+    definitions: &OwnedBytes,
+    literal: &str,
+    text: &str,
+) -> Observation<()> {
     let literal_module = format!("export default {literal}");
     for (source, maximum, deny_allocation) in [
         (
@@ -235,7 +246,7 @@ async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, t
     ] {
         if let Some(source) = source {
             let work = native_work(deny_allocation);
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let allocator = EngineAllocator::new(Some(&work));
             let failure = allocator.failure();
             let (send, receive) = tokio::sync::mpsc::channel(1);
@@ -255,7 +266,7 @@ async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, t
             .await;
             let failed = failure.lock().unwrap().is_some();
             drop(failure.lock().unwrap().take());
-            assert_retained_result(&work, baseline, &result);
+            assert_retained_result(&work, baseline, &result)?;
             if deny_allocation {
                 assert!(result.is_err());
                 assert!(failed);
@@ -274,12 +285,13 @@ async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, t
                 }
             }
             drop(result);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
+    Ok(())
 }
 
-async fn check_progress(definitions: &OwnedBytes) {
+async fn check_progress(definitions: &OwnedBytes) -> Observation<()> {
     // The original runtime idle event owns all possible promise producers. A
     // promise with none must refuse through the same native-funded execution
     // boundary, without a dispatcher reply or cancellation supplying a wake.
@@ -293,7 +305,7 @@ async fn check_progress(definitions: &OwnedBytes) {
         ),
     ] {
         let work = native_work(false);
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let allocator = EngineAllocator::new(Some(&work));
         let failure = allocator.failure();
         let (send, receive) = tokio::sync::mpsc::channel(1);
@@ -316,7 +328,7 @@ async fn check_progress(definitions: &OwnedBytes) {
         .expect("the original blocking pool must execute");
         drop(receive);
         drop(failure.lock().unwrap().take());
-        assert_retained_result(&work, baseline, &result);
+        assert_retained_result(&work, baseline, &result)?;
         if producerless {
             assert_eq!(
                 result.as_ref().err().map(String::as_str),
@@ -332,8 +344,9 @@ async fn check_progress(definitions: &OwnedBytes) {
             );
         }
         drop(result);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
+    Ok(())
 }
 
 async fn check_replies(
@@ -343,7 +356,7 @@ async fn check_replies(
     tool_name: &str,
     literal: &str,
     text: &str,
-) {
+) -> Observation<()> {
     // Exercise the original reply producer and decoder together. The dispatcher
     // transports one frame; it does not stand in for tool admission or execution.
     let source = format!(
@@ -358,7 +371,7 @@ async fn check_replies(
     });
     let encoded = serde_json::to_string(&success).unwrap();
     let maximum = encoded.len().max(literal.len()).saturating_add(4096);
-    let expected = canonical_reply(definitions, &encoded, maximum).await;
+    let expected = canonical_reply(definitions, &encoded, maximum).await?;
     // Refusals use the same canonical cause producer as settled host calls.
     let cause =
         crate::executor::ToolFailureCause::of(&crate::Error::Invalid(text.to_owned()), &mut None)
@@ -369,7 +382,7 @@ async fn check_replies(
     }));
     for kind in 0..3 {
         let work = native_work(false);
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
         let value = if kind == 0 { &success } else { &refusal };
         let reply = if kind < 2 {
@@ -391,7 +404,7 @@ async fn check_replies(
         };
         let Ok(reply) = reply else {
             drop(io);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
             continue;
         };
         let allocator = EngineAllocator::new(Some(&work));
@@ -429,7 +442,7 @@ async fn check_replies(
         drop(io);
         let failed = failure.lock().unwrap().is_some();
         drop(failure.lock().unwrap().take());
-        assert_retained_result(&work, baseline, &result);
+        assert_retained_result(&work, baseline, &result)?;
         if !failed && kind < 2 {
             assert_eq!(
                 result.as_ref().map(|result| &result.value),
@@ -459,15 +472,16 @@ async fn check_replies(
             }
         }
         drop(result);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
+    Ok(())
 }
 
 async fn canonical_reply(
     definitions: &OwnedBytes,
     encoded: &str,
     maximum: usize,
-) -> Result<EngineResult, String> {
+) -> Observation<Result<EngineResult, String>> {
     // Use the original engine's JSON semantics for numbers and Unicode. Rust
     // neither predicts JS number rounding nor implements another reply decoder.
     // Compare the same envelope and allowance: JS number formatting can expand
@@ -477,7 +491,7 @@ async fn canonical_reply(
         serde_json::to_string(encoded).unwrap()
     );
     let work = native_work(false);
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let allocator = EngineAllocator::new(Some(&work));
     let failure = allocator.failure();
     let (send, receive) = tokio::sync::mpsc::channel(1);
@@ -494,16 +508,20 @@ async fn canonical_reply(
     )
     .await;
     drop(failure.lock().unwrap().take());
-    assert_retained_result(&work, baseline, &result);
+    assert_retained_result(&work, baseline, &result)?;
     assert!(
         result.is_ok()
             || matches!(&result, Err(error) if error == "JavaScript result exceeds admitted output"),
         "serializer-produced JSON must complete or retain its output refusal: {result:?}"
     );
-    result
+    Ok(result)
 }
 
-async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &str) {
+async fn check_settlement(
+    definitions: &OwnedBytes,
+    tool_name: &str,
+    literal: &str,
+) -> Observation<()> {
     #[derive(Clone, Copy)]
     enum Settlement {
         Retire,
@@ -518,7 +536,7 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
                 continue; // Successful tool replies are checked above.
             }
             let work = native_work(false);
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let allocator = EngineAllocator::new(Some(&work));
             let failure = allocator.failure();
             let source = if console {
@@ -542,7 +560,7 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
             ));
             let dispatch = async move {
                 let Some(request) = receive.recv().await else {
-                    return (false, None);
+                    return Ok((false, None));
                 };
                 drop(receive);
                 match settlement {
@@ -550,25 +568,26 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
                         let super::Request::Log { arguments, reply } = request else {
                             panic!("console must use its original log request");
                         };
-                        check_logs(&arguments.value);
+                        check_logs(&arguments.value)?;
                         let _ = reply.send(None);
                     }
                     Settlement::Cancel => {
                         cancellation.cancel();
                         // Keep the reply producer alive until execution ends:
                         // only the original cancellation event can wake it.
-                        return (true, Some(request));
+                        return Ok((true, Some(request)));
                     }
                     Settlement::Retire => drop(request),
                 }
-                (true, None)
+                Ok::<_, acyclic_fs::WorkObservationError>((true, None))
             };
-            let (result, (admitted, retained)) = futures::join!(run, dispatch);
+            let (result, dispatch) = futures::join!(run, dispatch);
+            let (admitted, retained) = dispatch?;
             drop(retained);
             let failed = failure.lock().unwrap().is_some();
             drop(failure.lock().unwrap().take());
             if let Ok(result) = &result {
-                assert_retained_result(&work, baseline, result);
+                assert_retained_result(&work, baseline, result)?;
             }
             if !failed {
                 assert!(admitted, "the engine must submit its original RPC");
@@ -590,14 +609,15 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
                 }
             }
             drop(result);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
+    Ok(())
 }
 
 /// Differential checks consume the frame the production engine actually emitted.
 /// The same retained fuzz target covers escaped strings, bounds and native denials.
-fn check_logs(frame: &str) {
+fn check_logs(frame: &str) -> Observation<()> {
     use super::ProgramLogs;
     use serde_json::{Value, json};
     let raw: &serde_json::value::RawValue = serde_json::from_str(frame).unwrap();
@@ -614,15 +634,15 @@ fn check_logs(frame: &str) {
         .join(" ");
     for maximum in [0, 64, frame.len() + 64, frame.len() + 128] {
         let work = native_work(false);
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         {
             let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
             let mut logs = ProgramLogs::default();
-            let before = io.receipt();
+            let before = io.receipt()?;
             logs.observe(raw, maximum, Some(&io)).unwrap();
             if logs.bytes > 0 {
                 assert!(
-                    io.receipt().bytes_copied - before.bytes_copied >= expected.len() as u64,
+                    io.receipt()?.bytes_copied - before.bytes_copied >= expected.len() as u64,
                     "retained log text must fund its actual copy"
                 );
             }
@@ -630,11 +650,11 @@ fn check_logs(frame: &str) {
                 assert!(logs.lines.is_empty());
                 assert_eq!(logs.omitted, 1);
                 assert_eq!(
-                    io.receipt(),
+                    io.receipt()?,
                     before,
                     "omitted logs need no decode, allocation or copy"
                 );
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes()?, baseline);
                 continue;
             }
             let mut output = json!({"value":42});
@@ -654,17 +674,17 @@ fn check_logs(frame: &str) {
                 assert_eq!(projected, 42);
             }
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     // Exhaust the original owner after initialization. A fitting line must
     // refuse before its argument index or decoded text allocates. An omitted
     // line needs neither allocation and must still make progress.
     let work = native_work(false);
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
     let held = work
         .claim(
-            work.budget().peak_allocation_bytes - work.live_allocation_bytes(),
+            work.budget().peak_allocation_bytes - work.live_allocation_bytes()?,
             1,
             acyclic_fs::WorkCounters::UNCHARGED,
         )
@@ -677,21 +697,22 @@ fn check_logs(frame: &str) {
     ProgramLogs::default().observe(raw, 0, Some(&io)).unwrap();
     drop(held);
     drop(io);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 #[tokio::test]
-async fn repeated_console_logs_release_temporary_decode_credit() {
+async fn repeated_console_logs_release_temporary_decode_credit() -> Observation<()> {
     let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 32 * 1024;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
             .unwrap();
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     // Keep engine activity on its own finite owner so the collector's live
     // credit can be measured without racing the engine's drop paths.
     let engine_work = native_work(false);
-    let engine_baseline = engine_work.live_allocation_bytes();
+    let engine_baseline = engine_work.live_allocation_bytes()?;
     let allocator = EngineAllocator::new(Some(&engine_work));
     let (send, mut receive) = tokio::sync::mpsc::channel(1);
     let run = acyclic_native_runtime::blocking_future(interpreter::run(
@@ -712,7 +733,7 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
             let super::Request::Log { arguments, reply } = request else {
                 panic!("the program only calls console.log");
             };
-            let before = work.live_allocation_bytes();
+            let before = work.live_allocation_bytes()?;
             let raw = serde_json::from_str(&arguments.value).unwrap();
             logs.observe(raw, 32 * 1024, Some(&io)).unwrap();
             let retained = logs.lines.capacity() * std::mem::size_of::<serde_json::Value>()
@@ -725,7 +746,7 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
                     })
                     .sum::<usize>();
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 before + (retained - retained_before) as u64,
                 "only retained log text and its index remain charged"
             );
@@ -734,11 +755,14 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
         }
         assert_eq!(logs.lines.len(), 256);
         assert!(logs.lines.iter().all(|line| line == "a\nb"));
+        Ok::<_, acyclic_fs::WorkObservationError>(())
     };
-    let (result, ()) = futures::join!(run, dispatch);
+    let (result, dispatch) = futures::join!(run, dispatch);
+    dispatch?;
     let result = result.unwrap().unwrap();
     assert_eq!(result.value, serde_json::json!(42));
     drop(result);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    assert_eq!(engine_work.live_allocation_bytes(), engine_baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    assert_eq!(engine_work.live_allocation_bytes()?, engine_baseline);
+    Ok(())
 }

@@ -59,10 +59,11 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
             },
         }
     }
-    fn finish<T, E: From<acyclic_fs::FsError>>(
+    fn finish_with<T, E>(
         &self,
         result: std::result::Result<T, E>,
         accounting: &acyclic_fs::kernel::KernelAccounting<'_>,
+        _: impl FnOnce(acyclic_fs::FsError) -> E,
     ) -> Self::Output<T, E> {
         use acyclic_fs::kernel::KernelAccounting;
         let work = match accounting {

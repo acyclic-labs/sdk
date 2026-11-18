@@ -38,13 +38,14 @@ fn native_work(
 }
 
 /// The input is the JSON argument object passed to the production registry.
-pub fn check(input: &[u8]) {
+pub fn check(input: &[u8]) -> std::result::Result<(), acyclic_fs::WorkObservationError> {
     if let Ok(arguments) = serde_json::from_slice(input) {
-        check_value(arguments);
+        check_value(arguments)?;
     }
+    Ok(())
 }
 
-fn check_value(arguments: Value) {
+fn check_value(arguments: Value) -> std::result::Result<(), acyclic_fs::WorkObservationError> {
     use futures::FutureExt as _;
     let mut invocation = ToolInvocation {
         operation_id: crate::OperationId::from_bytes([7; 16]),
@@ -63,7 +64,7 @@ fn check_value(arguments: Value) {
             let expected = serde_json::json!({"identity":text});
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(false, &cancellation);
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             for budget in [None, Some(&work)] {
                 let result = arguments.adapt(&invocation, budget);
                 assert!(
@@ -75,7 +76,7 @@ fn check_value(arguments: Value) {
                 drop(actual);
                 drop(custody);
             }
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     for tool in tools() {
@@ -83,7 +84,7 @@ fn check_value(arguments: Value) {
         let expected = tool.executor.canonical(&invocation, None);
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = native_work(false, &cancellation);
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let actual = tool.executor.canonical(&invocation, Some(&work));
         match (expected, actual) {
             (Ok(Some(expected)), Ok(Some(actual))) => {
@@ -91,7 +92,7 @@ fn check_value(arguments: Value) {
                 let retained =
                     std::mem::size_of::<Value>() as u64 + actual.retained_payload_bytes().unwrap();
                 assert_eq!(
-                    work.live_allocation_bytes(),
+                    work.live_allocation_bytes()?,
                     baseline + retained,
                     "{} lost adapted argument custody",
                     invocation.name
@@ -111,11 +112,11 @@ fn check_value(arguments: Value) {
                 invocation.name
             ),
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         // These original entry points must also pass the ledger to adaptation;
         // none may fall back to an uncharged copy when credit is exhausted.
         let denied = native_work(true, &cancellation);
-        let denied_baseline = denied.live_allocation_bytes();
+        let denied_baseline = denied.live_allocation_bytes()?;
         assert!(tool.executor.canonical(&invocation, Some(&denied)).is_err());
         assert!(
             tool.executor
@@ -142,7 +143,7 @@ fn check_value(arguments: Value) {
                 .expect("credit refusal is synchronous")
                 .is_err()
         );
-        assert_eq!(denied.live_allocation_bytes(), denied_baseline);
+        assert_eq!(denied.live_allocation_bytes()?, denied_baseline);
         cancellation.cancel();
         assert_eq!(
             tool.executor
@@ -151,8 +152,9 @@ fn check_value(arguments: Value) {
                 .code(),
             crate::wire::ErrorCode::Cancelled
         );
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -172,10 +174,12 @@ mod tests {
                     "command":["echo",text], "input":text,
                     "start_line":first, "end_line":last, "offset":first,
                     "limit":last, "timeout":last,
-                }));
+                })).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
             }
-            check_value(Value::String(text));
-            check_value(Value::Null);
+            for value in [Value::String(text), Value::Null] {
+                check_value(value)
+                    .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+            }
         }
     }
 }
