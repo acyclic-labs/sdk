@@ -248,6 +248,17 @@ impl StreamPath {
         std::iter::successors(Some(self.as_str()), |&path| Self::parent_text(path))
     }
 
+    /// Walks through parents while they match, owning only the final path.
+    pub(crate) fn ascend_while(&self, mut matches: impl FnMut(&str) -> bool) -> Self {
+        self.prefix(
+            self.ancestors_including_self()
+                .skip(1)
+                .take_while(|&parent| matches(parent))
+                .last()
+                .map_or(self.length, str::len),
+        )
+    }
+
     pub(crate) fn root_prefixes(path: &str) -> impl Iterator<Item = &str> {
         path.match_indices('/')
             .filter_map(|(end, _)| path.get(..end))

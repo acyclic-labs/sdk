@@ -156,10 +156,7 @@ impl Ephemeral {
         let Some(lease) = self.roots.get_mut(root) else {
             return;
         };
-        let mut top = published.clone();
-        while let Some(parent) = top.parent().filter(|parent| !previous.contains_key(parent)) {
-            top = parent;
-        }
+        let top = published.ascend_while(|parent| !previous.contains_key(parent));
         lease.adopted.push(top.clone());
         self.owned.insert(top, root.clone());
     }
