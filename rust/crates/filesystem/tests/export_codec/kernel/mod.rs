@@ -3,6 +3,7 @@ mod export;
 mod generation;
 mod retention;
 mod transfer;
+mod volume;
 
 #[path = "../../support/generation_objects.rs"]
 mod generation_objects;

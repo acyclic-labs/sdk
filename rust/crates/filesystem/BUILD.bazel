@@ -2870,6 +2870,8 @@ rust_test(
         "tests/export_codec/kernel/retention/tests.rs",
         "tests/export_codec/kernel/transfer/mod.rs",
         "tests/export_codec/kernel/transfer/tests.rs",
+        "tests/export_codec/kernel/volume/mod.rs",
+        "tests/export_codec/kernel/volume/tests.rs",
         "tests/support/export_manifest.rs",
         "tests/support/generation_objects.rs",
         "tests/support/put_object.rs",

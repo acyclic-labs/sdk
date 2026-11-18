@@ -233,7 +233,3 @@ fn decode_bool(value: u8) -> Result<bool, CanonicalDecodeError> {
 fn invariant(message: &'static str) -> CanonicalDecodeError {
     CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
-
-#[cfg(test)]
-#[path = "tests/volume.rs"]
-mod tests;
