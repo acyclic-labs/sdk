@@ -114,6 +114,11 @@ mod format_recovery_tests {
             condemned: 0,
         }
         .encode()?;
+        let mut version = [0; 16];
+        version[15] = 0xab;
+        let payload_key = account.payload_key(&digest, &version);
+        assert!(payload_key.ends_with(".000000000000000000000000000000ab"));
+        assert_eq!(account.payload_of(&payload_key)?, (digest, version));
         let envelope_key = account.envelope_key(&digest);
         let batch = encode_batch(&[]);
         let batch_key = account.retention_key('r', &Digest::of(b"root").to_hex(), "batch");
