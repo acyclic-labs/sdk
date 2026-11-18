@@ -120,11 +120,15 @@ pub(crate) fn release_terminal_request(
     wire::ReleaseTerminalRequest { root, fence }
 }
 
-pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
-    range.map_or(ByteRange::FULL, |range| ByteRange {
-        start: range.start,
-        end: range.end,
-    })
+pub(crate) fn from_get(request: &wire::GetBlobRequest) -> Result<(Digest, ByteRange), Error> {
+    let range = request
+        .range
+        .as_ref()
+        .map_or(ByteRange::FULL, |range| ByteRange {
+            start: range.start,
+            end: range.end,
+        });
+    Ok((digest(request.digest.as_ref())?, range))
 }
 
 pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {

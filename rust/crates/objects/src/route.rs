@@ -2,7 +2,7 @@
 //! each route through these functions, each paired with the revision its
 //! result carries.
 use crate::convert::{self, reply};
-use crate::error::{invalid, unavailable};
+use crate::error::invalid;
 use crate::{Blobs, Digest, Error, ObjectsMethod, RootId, wire};
 use acyclic_auth::action::{Action, ObjectsAction};
 use acyclic_stream::Revision;
@@ -266,8 +266,7 @@ pub async fn get_blob(
     blobs: &dyn Blobs,
     request: wire::GetBlobRequest,
 ) -> Result<Served<wire::GetBlobResponse>, Error> {
-    let digest = convert::digest(request.digest.as_ref())?;
-    let range = convert::from_range(request.range.as_ref());
+    let (digest, range) = convert::from_get(&request)?;
     let object = blobs.get(digest, range, request.maximum_bytes).await?;
     let revision = object.revision().cloned();
     Ok((
@@ -504,8 +503,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         }
         ObjectsMethod::GetBlob => {
             let request: wire::GetBlobRequest = decode(input)?;
-            let digest = convert::digest(request.digest.as_ref())?;
-            let range = convert::from_range(request.range.as_ref());
+            let (digest, range) = convert::from_get(&request)?;
             convert::object(reply(output)?, digest, range, request.maximum_bytes, None).map(drop)
         }
         ObjectsMethod::HeadBlob => {
