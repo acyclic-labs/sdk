@@ -2,9 +2,9 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use acyclic_harness::{
-        LocalHarness, LocalHarnessConfig, filesystem::hosting::LocalGuestEnrollment,
-        local::host_owner::HostWorkspaceOwner,
+    use acyclic_harness_core::filesystem::hosting::LocalGuestEnrollment;
+    use acyclic_harness_local::{
+        LocalHarness, LocalHarnessConfig, local::host_owner::HostWorkspaceOwner,
     };
     use serde::Deserialize;
     use std::{io::Read, path::PathBuf, sync::Arc};

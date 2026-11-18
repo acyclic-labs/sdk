@@ -15,6 +15,9 @@ documentation = "https://docs.rs/acyclic-harness"
 [package.metadata.bazel]
 precise-bin-inputs = true
 
+[package.metadata.bazel.bin-dependencies]
+acyclic-virtiofsd = ["acyclic_fs", "acyclic_fs_work", "acyclic_harness_core", "acyclic_harness_local", "acyclic_native_runtime", "rustix", "serde", "serde_json", "tokio"]
+
 [[test]]
 name = "main"
 path = "tests/main.rs"
