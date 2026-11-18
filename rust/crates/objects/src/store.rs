@@ -900,13 +900,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     /// Whether any key exists under `prefix`.
-    async fn any(&self, prefix: &str) -> Result<bool, Error> {
-        Ok(!self
-            .medium
-            .list(prefix, None, 1)
-            .await
-            .map_err(medium)?
-            .is_empty())
+    async fn any(&self, prefix: String) -> Result<bool, Error> {
+        Ok(!self.pages(prefix).read(1).await?.is_empty())
     }
 
     /// The `i/` holder tag of an envelope.
@@ -1236,7 +1231,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             }
             None | Some(_) => {}
         }
-        if self.any(&self.index_key(&digest, "")).await? {
+        if self.any(self.index_key(&digest, "")).await? {
             // A kept blob outlives a mark its deleter left behind.
             if envelope.dying.is_some() && fence.is_some() {
                 self.revive(observed, envelope).await?;
@@ -1256,7 +1251,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         else {
             return Err(changed());
         };
-        if self.any(&self.index_key(&digest, "")).await? {
+        if self.any(self.index_key(&digest, "")).await? {
             self.revive(marked, envelope).await?;
             return Ok((Delete::Referenced, Vec::new()));
         }
