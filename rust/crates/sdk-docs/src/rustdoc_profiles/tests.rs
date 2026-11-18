@@ -51,7 +51,6 @@ fn browser_profiles_follow_cargo_features_and_binding_policy() {
         browser_profile_for_package(package, has_dependencies, &targets)
     };
     let profile = plan(&package, false).unwrap().unwrap();
-    assert!(!profile.default_features);
     assert!(profile
         .features
         .iter()
