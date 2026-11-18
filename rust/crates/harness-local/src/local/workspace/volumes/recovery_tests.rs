@@ -98,7 +98,7 @@ fn scratch_mount_owner() -> TestResult {
             .with_access_view(Arc::clone(options.require_access_view()?))?,
         );
         let _mount = acyclic_fs::mount_native_over_existing(
-            acyclic_fs::NativeMountRequest {
+            acyclic_fs_native_contract::NativeMountRequest {
                 mount_id: acyclic_fs_format::identity::MountId::new(),
                 volume_id: source.volume_id()?,
                 destination: PathBuf::from(root).join(HOME_PATH),

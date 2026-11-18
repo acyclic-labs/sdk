@@ -277,8 +277,9 @@ mod source;
 pub use source::*;
 mod directory_cursor;
 pub(crate) use acyclic_fs_native_contract::{
-    MountAttributeWriteMode, MountContentPin, MountNodeKind, MountOpenAccess, MountPath,
-    MountRangeAllocation, MountSeekTarget, NativeMountKind,
+    MountAttributeWriteMode, MountContentPin, MountLookup, MountNode, MountNodeKind,
+    MountOpenAccess, MountPath, MountRangeAllocation, MountSeekTarget, NativeMountCapabilities,
+    NativeMountKind, NativeMountRequest,
 };
 pub use directory_cursor::MountDirectoryCursor;
 mod callbacks;

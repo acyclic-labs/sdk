@@ -272,7 +272,7 @@ pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs_native_contract::{
-    MountPath, NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation,
+    MountPath, NativeMountRequest, NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation,
 };
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
@@ -346,11 +346,10 @@ pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
     MountDirectoryCursor, MountDirectoryEntry, MountDirectoryPage, MountFilesystem,
-    MountLifecycleError, MountLookup, MountNode, MountOpenFile, MountOptions, MountPublication,
-    MountSourceError, MountSourceRetirement, MountSparseRange, MountSparseSpan,
-    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountCleanupState,
-    NativeMountControlPaths, NativeMountDrainProof, NativeMountError, NativeMountProbe,
-    NativeMountRecoveryCleanupState, NativeMountRecoveryOwner, NativeMountRequest,
+    MountLifecycleError, MountOpenFile, MountOptions, MountPublication, MountSourceError,
+    MountSourceRetirement, MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
+    NativeMountCleanupState, NativeMountControlPaths, NativeMountDrainProof, NativeMountError,
+    NativeMountProbe, NativeMountRecoveryCleanupState, NativeMountRecoveryOwner,
     NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,

@@ -97,12 +97,6 @@ use acyclic_fs::model::{
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeLimits,
 };
 use acyclic_fs::path::PortablePath;
-use acyclic_fs::{
-    CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions, NativeMountRequest,
-    NativeMountSession, SharedCheckout, WatchCaptureReceipt, capture_baseline, capture_paths,
-    capture_root_identity, capture_watch_batch, materialize_checkout, mount_native,
-    probe_native_mount, seal_checkout,
-};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
@@ -139,4 +133,13 @@ use {
     },
     acyclic_fs_format::identity::{FileId, OperationId, VolumeId},
     acyclic_fs_format::object_reference::ObjectId,
+};
+use {
+    acyclic_fs::{
+        CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions,
+        NativeMountSession, SharedCheckout, WatchCaptureReceipt, capture_baseline, capture_paths,
+        capture_root_identity, capture_watch_batch, materialize_checkout, mount_native,
+        probe_native_mount, seal_checkout,
+    },
+    acyclic_fs_native_contract::NativeMountRequest,
 };
