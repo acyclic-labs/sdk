@@ -965,11 +965,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Err(error @ MediumError::Ambiguous(_)) => return Err(Commit::Unknown(moved(error))),
             Err(error) => return Err(Commit::Failed(medium(error))),
         }
-        let mut keys: Vec<String> = references
+        let keys = references
             .iter()
             .map(|child| self.index_key(child, tag))
+            .chain(std::iter::once(key.to_owned()))
             .collect();
-        keys.push(key.to_owned());
         self.flush_blobs(Some(references), keys)
             .await
             .map_err(Commit::Unflushed)
