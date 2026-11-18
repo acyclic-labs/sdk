@@ -16,6 +16,7 @@
   "acyclic-decimal-u64",
   "acyclic-stream-body",
   "acyclic-stream",
+  "acyclic-stream-trust",
   "acyclic-objects",
   "acyclic-actors",
   "acyclic-machines",

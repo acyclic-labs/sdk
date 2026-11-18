@@ -122,6 +122,7 @@ ed25519-dalek = "=3.0.0"
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-stream-trust = { version = "=0.2.0", path = "../stream-trust" }
 acyclic-process-resources = { version = "=0.2.0", path = "../process-resources" }
 proptest.workspace = true
 # The OS resource sampler the descriptor tests count with.
@@ -162,3 +163,8 @@ path = "tests/main.rs"
 [[test]]
 name = "session-contracts"
 path = "tests/session_contracts.rs"
+
+[[test]]
+name = "provider-contracts"
+path = "tests/provider_contracts.rs"
+required-features = ["conformance"]

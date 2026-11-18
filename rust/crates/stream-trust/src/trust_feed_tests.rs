@@ -1,10 +1,10 @@
 //! Feed controls over the original memory provider. Fault adapters only
 //! interrupt a follow or hold its opening or delivery; they never construct records.
 use super::*;
-use crate::StreamCategory;
-use crate::{IdempotencyKey, MemoryStream, OwnedBytes};
 use acyclic_auth::trust::{ChangeSource as _, EnvironmentFrontier, Issuer};
 use acyclic_auth::verify::{RevocationCheck, Trust as _, VerifyError};
+use acyclic_stream::StreamCategory;
+use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes};
 use ed25519_dalek::SigningKey;
 use futures::{channel::oneshot, stream};
 use std::{

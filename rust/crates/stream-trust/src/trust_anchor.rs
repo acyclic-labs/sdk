@@ -1,4 +1,5 @@
 //! Anchor recovery uses signed records through the original memory provider.
+use crate::trust_feed::TrustFeed;
 use acyclic_auth::{
     trust::{
         AnchorKeys, ChangeSource as _, EnvironmentFrontier, FenceCause, Follower, FollowerState,
@@ -8,7 +9,6 @@ use acyclic_auth::{
 };
 use acyclic_stream::{
     IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamCategory, UnixMillisClock,
-    trust_feed::TrustFeed,
 };
 use ed25519_dalek::SigningKey;
 use futures::FutureExt as _;
