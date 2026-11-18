@@ -508,14 +508,21 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             ("spawn-and-history-positional", true, true),
         ] {
             let mut input = serde_json::to_value(&spawn)?;
-            let fields = input["spawn"].as_object_mut().expect("named spawn writer");
+            let fields = input
+                .get_mut("spawn")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or("spawn writer did not emit named fields")?;
             if positional_history {
-                let history = fields.get_mut("history").expect("written history");
+                let history = fields
+                    .get_mut("history")
+                    .ok_or("spawn writer omitted history")?;
                 *history = serde_json::json!([history["conversation"], history["checkpoint"]]);
             }
             if positional_spawn {
                 input["spawn"] = ["by", "id", "brief", "profile", "history"]
-                    .map(|field| fields.remove(field).expect("written spawn field"))
+                    .into_iter()
+                    .map(|field| fields.remove(field).ok_or("spawn writer omitted a field"))
+                    .collect::<Result<Vec<_>, _>>()?
                     .into();
             }
             let bytes = records::seal(&input)?;
