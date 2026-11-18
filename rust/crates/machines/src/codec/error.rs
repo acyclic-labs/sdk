@@ -83,6 +83,7 @@ pub fn guest_error(uncertain: ProviderError, value: tonic::Status) -> ProviderEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tonic::Status;
 
     #[test]
     fn local_response_credential_refusal_keeps_recovery_identity() {
