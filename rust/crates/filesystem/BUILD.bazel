@@ -842,6 +842,7 @@ rust_test(
         "src/native_mount/shared/view_table/implementation.rs",
         "src/native_mount/shared/views.rs",
         "src/native_sync.rs",
+        "src/native_sync/locks.rs",
         "src/sync.rs",
         "tests/access_binding.rs",
         "tests/access_input.rs",
@@ -2119,7 +2120,7 @@ rust_test(
     crate_root = "tests/native_view_table.rs",
     srcs = [
         "src/native_mount/shared/view_table/implementation.rs",
-        "src/native_sync.rs",
+        "src/native_sync/locks.rs",
         "tests/native_view_table.rs",
         "tests/native_view_table/native_mount.rs",
         "tests/native_view_table/shared/mod.rs",

@@ -5,5 +5,5 @@
 #[path = "native_view_table/native_mount.rs"]
 mod native_mount;
 
-#[path = "../src/native_sync.rs"]
+#[path = "../src/native_sync/locks.rs"]
 mod native_sync;
