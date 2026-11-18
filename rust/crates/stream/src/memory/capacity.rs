@@ -71,10 +71,7 @@ fn missing_paths<'a>(
             StreamPath::root_prefixes(path)
                 .filter(move |&prefix| {
                     !contains_path(state, prefix)
-                        && before != prefix
-                        && !before
-                            .strip_prefix(prefix)
-                            .is_some_and(|suffix| suffix.starts_with('/'))
+                        && crate::path::relative_suffix(before, prefix).is_none()
                         && (prefix.len() == path.len() || !explicit(prefix))
                 })
                 .map(move |prefix| (destination, prefix.len()))

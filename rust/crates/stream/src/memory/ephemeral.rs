@@ -62,8 +62,7 @@ impl Ephemeral {
             .range(descendants.bounds())
             .map(|(top, _)| {
                 StreamPath::new(
-                    top.as_str()
-                        .strip_prefix(descendants.prefix.as_str())
+                    crate::path::relative_suffix(top.as_str(), path.as_str())
                         .ok_or(StreamError::InvalidPath)?,
                 )
             })

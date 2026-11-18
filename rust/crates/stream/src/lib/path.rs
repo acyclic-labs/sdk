@@ -264,7 +264,7 @@ impl StreamPath {
 }
 
 pub(crate) struct Descendants {
-    pub(crate) prefix: String,
+    prefix: String,
     end: String,
 }
 
@@ -276,7 +276,7 @@ impl Descendants {
 }
 
 // Borrow canonical path components without allocating another path or matcher.
-fn relative_suffix<'a>(path: &'a str, ancestor: &str) -> Option<&'a str> {
+pub(crate) fn relative_suffix<'a>(path: &'a str, ancestor: &str) -> Option<&'a str> {
     if ancestor.is_empty()
         || ancestor.len() > path.len()
         || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))
