@@ -142,28 +142,30 @@ mod rpc_admission_tests {
 
     #[test]
     fn every_stream_rpc_resolves_to_its_declared_actions() {
+        use StreamsAction::{
+            Append, Commit, Create, Fork, InspectIdempotency, List, Read, ReadCommit, Tail,
+        };
+
         for &method in StreamRpc::ALL {
             let row = method.authorization();
-            let actions: Vec<_> = row.actions().collect();
+            let expected: &[StreamsAction] = match method {
+                StreamRpc::InspectIdempotency => &[InspectIdempotency],
+                StreamRpc::Append => &[Append],
+                StreamRpc::Head | StreamRpc::Read => &[Read],
+                StreamRpc::Heads => &[Read, List, Tail],
+                StreamRpc::Tail => &[Tail],
+                StreamRpc::Fork => &[Fork, Create],
+                StreamRpc::ChildrenPage => &[List],
+                StreamRpc::Commit => &[Read, Commit, Append, Fork, Create],
+                StreamRpc::ReadCommit => &[ReadCommit],
+            };
             assert_eq!(StreamRpc::from_route(row.route), Some(method));
             assert!(
-                !actions.is_empty()
-                    && actions
-                        .iter()
-                        .all(|action| matches!(action, Action::Streams(_))),
-                "{method:?}: {actions:?}"
+                row.actions()
+                    .eq(expected.iter().copied().map(Action::Streams)),
+                "{method:?}: {:?}",
+                row.actions().collect::<Vec<_>>()
             );
-            match method {
-                StreamRpc::Tail => assert_eq!(actions, [StreamsAction::Tail.into()]),
-                StreamRpc::ReadCommit => assert_eq!(actions, [StreamsAction::ReadCommit.into()]),
-                StreamRpc::InspectIdempotency => {
-                    assert_eq!(actions, [StreamsAction::InspectIdempotency.into()]);
-                }
-                StreamRpc::Heads | StreamRpc::Fork | StreamRpc::Commit => {
-                    assert!(actions.len() > 1, "{method:?}: {actions:?}");
-                }
-                _ => assert_eq!(actions.len(), 1, "{method:?}: {actions:?}"),
-            }
         }
         assert_eq!(
             StreamRpc::from_route("/acyclic.stream.v1.StreamService/Unmapped"),
