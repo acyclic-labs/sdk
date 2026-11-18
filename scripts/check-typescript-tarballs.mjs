@@ -267,7 +267,7 @@ const main = async () => {
       await writeFile(join(tempRoot, "actors-native-companion.mjs"),
         await readFile(join(packagesRoot, "actors/test/native-companion-installed.mjs")));
       const identity = join(tempRoot, "actors-test-identity.json");
-      await writeFile(identity, run("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"]));
+      await writeFile(identity, run("bazel", ["run", "//rust/crates/actors:conformance-certificate_example"]));
       const actorsEnv = { ...process.env, ACTORS_TLS_IDENTITY: identity };
       run("node", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
       run("bun", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
