@@ -23,8 +23,8 @@ impl From<PrivateDirectoryEntry> for DiscoveryEntry {
         Self {
             name: entry.name,
             kind: match entry.kind {
-                PrivateDirectoryEntryKind::File => DiscoveryKind::File,
-                PrivateDirectoryEntryKind::Directory => DiscoveryKind::Directory,
+                DirectoryEntryKind::File => DiscoveryKind::File,
+                DirectoryEntryKind::Directory => DiscoveryKind::Directory,
                 _ => DiscoveryKind::Other,
             },
         }

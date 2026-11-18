@@ -4,8 +4,7 @@ use super::{ContextInput, ContextPlacement, ContextSource, SourceStage};
 use crate::{
     Error, Result,
     conversation::{
-        ContentResidencyVerifier, FileRef, PrivateDirectoryEntryKind, VolumeRef,
-        validate_content_path,
+        ContentResidencyVerifier, DirectoryEntryKind, FileRef, VolumeRef, validate_content_path,
     },
     model::{ModelContent, ModelMessage, ModelRole},
     resources::GenerationRef,

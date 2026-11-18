@@ -296,9 +296,8 @@ pub use content::{
     Custody,
 };
 pub use directory::{
-    DirectoryQuery, DirectoryRead, DirectoryTarget, MAX_PRIVATE_DIRECTORY_PAGE,
-    PrivateDirectoryEntry, PrivateDirectoryEntryKind, PrivateDirectoryPage,
-    PrivateDirectoryPageView,
+    DirectoryEntryKind, DirectoryQuery, DirectoryRead, DirectoryTarget, MAX_PRIVATE_DIRECTORY_PAGE,
+    PrivateDirectoryEntry, PrivateDirectoryPage, PrivateDirectoryPageView,
 };
 pub use file_source::{FilePathSelection, PathSelection};
 pub(crate) use file_source::{PathSelectionView, names_generation};
