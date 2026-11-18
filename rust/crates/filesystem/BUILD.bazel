@@ -2494,6 +2494,7 @@ rust_test(
         "tests/checkout_read/facade/tests/mod.rs",
         "tests/checkout_read/facade/tests/paths.rs",
         "tests/checkout_read/facade/tests/read.rs",
+        "tests/checkout_read/facade/tests/transfer.rs",
         "tests/support/allow_publication.rs",
         "tests/support/checkout_fixture.rs",
         "tests/support/volume_commit.rs",

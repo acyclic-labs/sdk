@@ -1,4 +1,13 @@
-use super::*;
+use acyclic_fs::kernel::TransferCursor;
+use acyclic_fs::model::CheckoutMode;
+use acyclic_fs::{AuthoredMutation, ByteRange, CancellationToken, Fs, FsError, GenerationId};
+use acyclic_fs_format::identity::{Digest, OperationId, VolumeId};
+use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_stream::OwnedBytes;
+
+use super::B;
+use super::checkout_fixture::{config, path, writable_pinned};
+use super::fixtures::open_checkout;
 
 #[tokio::test]
 async fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
@@ -74,9 +83,16 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         .ok_or("manifest closure is empty")?;
     let mut wrong_file_count = manifest.clone();
     let mut duplicate = manifest.clone();
-    duplicate.objects.insert(0, duplicate.objects[0]);
+    let first = *duplicate
+        .objects
+        .first()
+        .ok_or("manifest closure is empty")?;
+    duplicate.objects.insert(0, first);
     let mut reordered = manifest.clone();
-    reordered.objects.swap(0, 1);
+    let [first, second, ..] = reordered.objects.as_mut_slice() else {
+        return Err("manifest closure omitted a dependency".into());
+    };
+    std::mem::swap(first, second);
     wrong_file_count.file_count = wrong_file_count
         .file_count
         .checked_add(1)
@@ -100,14 +116,11 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         .ok_or("invalid manifest unexpectedly restored")?;
         assert!(matches!(failure.error, FsError::InvalidExportManifest));
         assert_eq!(
-            failure.work.as_deref().unwrap().backend_read_operations > 0,
+            failure.work()?.backend_read_operations > 0,
             expected_backend_reads,
             "unexpected invalid-manifest physical plan for {label}"
         );
-        assert_eq!(
-            failure.work.as_deref().unwrap().authority_records_appended,
-            0
-        );
+        assert_eq!(failure.work()?.authority_records_appended, 0);
     }
     let restore_operation = OperationId::from_bytes([32; 16]);
     let restored = (destination.restore_volume(&manifest, restore_operation, B, &cancellation))
@@ -127,7 +140,8 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
     .err()
     .ok_or("changed-operation restore unexpectedly succeeded")?;
     assert!(matches!(changed_operation.error, FsError::CreationRejected));
-    let mut restored_checkout = open_checkout(&restored, pinned(), &cancellation).await?;
+    let mut restored_checkout =
+        open_checkout(&restored, CheckoutMode::read_only_pinned(), &cancellation).await?;
     let bytes = (restored_checkout.read_file_range(
         &path("file")?,
         ByteRange {

@@ -9,6 +9,7 @@ mod fixtures;
 mod generation_position;
 mod paths;
 mod read;
+mod transfer;
 #[path = "../../../support/volume_commit.rs"]
 mod volume_commit;
 use allow_publication::allow;
