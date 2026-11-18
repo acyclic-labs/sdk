@@ -300,12 +300,11 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 .is_some_and(|name| name == "Cargo.toml")
             {
                 let build = Path::new(relative).parent().unwrap().join("build.rs");
-                if root.join(&build).exists()
-                    && (artifacts.is_empty()
-                        || !sources.iter().any(|source| {
-                            source["relative"].as_str().map(Path::new) == Some(build.as_path())
-                        }))
-                {
+                let covered = !artifacts.is_empty()
+                    && sources.iter().any(|source| {
+                        source["relative"].as_str().map(Path::new) == Some(build.as_path())
+                    });
+                if !covered && root.join(&build).exists() {
                     matches = false;
                     break;
                 }
