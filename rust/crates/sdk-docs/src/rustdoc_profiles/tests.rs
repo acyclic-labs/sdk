@@ -72,7 +72,8 @@ fn browser_profiles_follow_cargo_features_and_binding_policy() {
         assert_eq!(profile.features, requested_features);
     }
     package.metadata["napi"]["wasm-features"] = serde_json::json!("wasm");
-    assert!(plan(&package, true).is_err());
+    let invalid_policy = plan(&package, true).unwrap_err();
+    assert!(matches!(invalid_policy, ProfileError::InvalidRustdoc(_)));
 
     package.metadata = serde_json::Value::Null;
     package.features.clear();
