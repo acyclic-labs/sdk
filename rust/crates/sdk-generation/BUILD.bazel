@@ -109,7 +109,6 @@ rust_test(
         "//rust/crates/sdk-generation:tree",
         "//rust/crates/stream:conformance/stream.json",
         "src/lib.rs",
-        "src/main.rs",
     ],
     tags = ["manual"],
 )
