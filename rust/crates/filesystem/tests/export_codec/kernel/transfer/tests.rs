@@ -20,13 +20,7 @@ use super::super::memory::memory_objects;
 mod transfer_manifest;
 use transfer_manifest::fixture;
 
-#[path = "../../../support/put_object.rs"]
-mod object;
-use object::put_object;
-
-#[path = "../../../support/generation_objects.rs"]
-mod generation_objects;
-use generation_objects::{
+use super::super::generation_objects::{
     put_file_metadata, put_file_table_page, put_generation_root, put_tree_page,
 };
 

@@ -2844,6 +2844,8 @@ rust_test(
     crate_root = "tests/export_codec.rs",
     srcs = [
         "tests/export_codec.rs",
+        "tests/export_codec/kernel/checkpoint/mod.rs",
+        "tests/export_codec/kernel/checkpoint/tests.rs",
         "tests/export_codec/kernel/export/mod.rs",
         "tests/export_codec/kernel/export/tests.rs",
         "tests/export_codec/kernel/generation/mod.rs",
