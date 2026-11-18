@@ -209,7 +209,7 @@ fn run(
     variant: u8,
 ) -> (
     Result<String, String>,
-    crate::WorkCounters,
+    Result<crate::WorkCounters, crate::WorkObservationError>,
     Vec<(u8, u64, u64)>,
     AllocationInfo,
 ) {
@@ -258,7 +258,7 @@ fn run(
         .unwrap()
         .map(|name| name.as_str().to_owned())
         .map_err(|error| format!("{error:?}"));
-    (output, accounting.spent().unwrap(), trace, heap)
+    (output, accounting.spent(), trace, heap)
 }
 
 fn compare(

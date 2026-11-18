@@ -12,10 +12,10 @@ struct Fixture {
 
 impl Fixture {
     fn compare(&self, other: &Self) -> proptest::test_runner::TestCaseResult {
-        prop_assert_eq!(self.root.receipt().unwrap(), other.root.receipt().unwrap());
+        prop_assert_eq!(self.root.receipt(), other.root.receipt());
         prop_assert_eq!(
-            self.root.live_allocation_bytes().unwrap(),
-            other.root.live_allocation_bytes().unwrap()
+            self.root.live_allocation_bytes(),
+            other.root.live_allocation_bytes()
         );
         prop_assert_eq!(
             self.view.remaining().map_err(|error| format!("{error:?}")),
@@ -114,8 +114,8 @@ proptest! {
         }
         current.claims.clear();
         legacy.claims.clear();
-        prop_assert_eq!(current.root.live_allocation_bytes().unwrap(), legacy.root.live_allocation_bytes().unwrap());
-        prop_assert_eq!(current.root.receipt().unwrap(), legacy.root.receipt().unwrap());
+        prop_assert_eq!(current.root.live_allocation_bytes(), legacy.root.live_allocation_bytes());
+        prop_assert_eq!(current.root.receipt(), legacy.root.receipt());
     }
 }
 

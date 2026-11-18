@@ -97,8 +97,8 @@ proptest! {
         let after = outcome(after);
         if let Ok(output) = &after { prop_assert_eq!(*output, expected); }
         prop_assert_eq!(after, before);
-        prop_assert_eq!(accounting[1].spent().unwrap(), accounting[0].spent().unwrap());
-        prop_assert_eq!(roots[1].live_allocation_bytes().unwrap(), roots[0].live_allocation_bytes().unwrap());
+        prop_assert_eq!(accounting[1].spent(), accounting[0].spent());
+        prop_assert_eq!(roots[1].live_allocation_bytes(), roots[0].live_allocation_bytes());
         let credit = work[1].state(|state| (state.budget.bytes_copied, state.budget.bytes_hashed, state.original_budget()));
         prop_assert_eq!(credit.0, credit.2.bytes_copied);
         prop_assert_eq!(credit.1, credit.2.bytes_hashed);
