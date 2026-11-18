@@ -1374,6 +1374,7 @@ rust_test(
         "tests/git_history/git_compat/tests/mod.rs",
         "tests/git_history/git_compat/tests/properties.rs",
         "tests/git_history/git_compat/tests/restore_paths.rs",
+        "tests/git_history/git_compat/tests/state.rs",
         "tests/support/allow_publication.rs",
         "tests/support/git_history.rs",
         "tests/support/transaction.rs",
