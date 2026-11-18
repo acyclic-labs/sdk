@@ -414,26 +414,22 @@ fn run_historical_drift(fixture: &Fixture, support: &Path) -> std::process::Outp
 
 fn generate_command(
     root: &Path,
-    rustdoc: &Path,
+    rustdoc: Option<&Path>,
     output: &Path,
     version: &str,
     channel: &str,
     skip_scenarios: bool,
 ) -> Command {
     let mut command = Command::new(runtime::binary("sdk-generation"));
-    command.args([
-        "generate",
-        "--root",
-        root.to_str().unwrap(),
-        "--output",
-        output.to_str().unwrap(),
-        "--rustdoc-dir",
-        rustdoc.to_str().unwrap(),
-        "--version",
-        version,
-        "--channel",
-        channel,
-    ]);
+    command
+        .args(["generate", "--root"])
+        .arg(root)
+        .arg("--output")
+        .arg(output);
+    if let Some(rustdoc) = rustdoc {
+        command.arg("--rustdoc-dir").arg(rustdoc);
+    }
+    command.args(["--version", version, "--channel", channel]);
     if skip_scenarios {
         command.arg("--skip-scenarios");
     }
@@ -450,7 +446,7 @@ fn run_generate(
 ) -> std::process::Output {
     invoke(&mut generate_command(
         root,
-        rustdoc,
+        Some(rustdoc),
         output,
         version,
         channel,
@@ -522,7 +518,7 @@ fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
     for fixture in [&first, &second] {
         let result = run_generate(
             &fixture.root,
-            &fixture.rustdoc,
+            Some(&fixture.rustdoc),
             &fixture.output,
             "relocation-invariant",
             "preview",
@@ -566,7 +562,7 @@ fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
         generate_command(
             &fixture.root,
-            &fixture.rustdoc,
+            Some(&fixture.rustdoc),
             &fixture.output,
             "feature-profile-catalog",
             "preview",
@@ -760,23 +756,18 @@ fn run_historical_generation(
     authority: Option<HistoricalAuthority<'_>>,
     expected_owners: &[&str],
 ) -> std::process::Output {
-    let path = fixture_path(support);
-    let mut command = Command::new(runtime::binary("sdk-generation"));
+    let mut command = generate_command(
+        &fixture.root,
+        None,
+        &fixture.output,
+        "1.0.0",
+        "release",
+        false,
+    );
     command
-        .env("PATH", path)
+        .env("PATH", fixture_path(support))
         .env("CARGO_HOME", fixture_cargo_home(fixture))
-        .args(["generate", "--root"])
-        .arg(&fixture.root)
-        .arg("--output")
-        .arg(&fixture.output)
-        .args([
-            "--version",
-            "1.0.0",
-            "--channel",
-            "release",
-            "--execute-profiles",
-            "--historical-archives",
-        ])
+        .args(["--execute-profiles", "--historical-archives"])
         .arg(support.join("registry"));
     if let Some(mode) = mode {
         command.args(["--historical-source", mode]);

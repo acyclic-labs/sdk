@@ -268,7 +268,7 @@ fn release_generation_requires_executed_profiles() {
     let output = root.join("output");
     let result = generate_command(
         root,
-        &root.join("rustdoc"),
+        Some(&root.join("rustdoc")),
         &output,
         "1.0.0",
         "release",
@@ -310,7 +310,7 @@ fn concurrent_preview_publications_are_idempotent() {
     let spawn = || {
         configure_cli(&mut generate_command(
             &fixture.root,
-            &fixture.rustdoc,
+            Some(&fixture.rustdoc),
             &fixture.output,
             "concurrent-preview",
             "preview",
@@ -346,7 +346,7 @@ fn broken_publication_lock_cannot_be_hidden_by_another_success() {
     let run = || {
         configure_cli(&mut generate_command(
             &fixture.root,
-            &fixture.rustdoc,
+            Some(&fixture.rustdoc),
             &fixture.output,
             "broken-lock",
             "preview",
@@ -362,7 +362,7 @@ fn broken_publication_lock_cannot_be_hidden_by_another_success() {
     fs::remove_dir(lock).unwrap();
     let succeeded = invoke(&mut generate_command(
         &fixture.root,
-        &fixture.rustdoc,
+        Some(&fixture.rustdoc),
         &fixture.output,
         "broken-lock",
         "preview",
