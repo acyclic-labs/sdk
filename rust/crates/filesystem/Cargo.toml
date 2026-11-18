@@ -76,6 +76,7 @@ harness = false
 name = "native_capture"
 harness = false
 [dependencies]
+tracing.workspace = true
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-fs-wire = { version = "=0.2.0", path = "../filesystem-wire" }
@@ -176,7 +177,6 @@ s3s = { workspace = true }
 subtle = { workspace = true }
 sync_wrapper = { workspace = true }
 time = { workspace = true }
-tracing.workspace = true
 urlencoding = { version = "2.1.3" }
 
 [target.'cfg(windows)'.dependencies]
