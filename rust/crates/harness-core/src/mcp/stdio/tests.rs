@@ -302,7 +302,7 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() -> c
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
+fn original_native_partial_line_max_denial_and_failed_state_precede_capture() -> crate::Result<()> {
     let (initialization, operation) = ids();
     let work = native_work();
     let request = McpStdioRequest {
@@ -327,14 +327,15 @@ fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
     drop(first);
     drop(guard);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
+fn original_native_cancellation_and_foreign_ledger_cannot_resume() -> crate::Result<()> {
     let (initialization, operation) = ids();
     let request = McpStdioRequest {
         initialization,
@@ -361,7 +362,7 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     drop(guard);
     drop(exchange);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
 
@@ -386,11 +387,12 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     drop(first);
     drop(guard);
     drop(exchange);
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn malformed_native_frame_preserves_owned_cause() {
+fn malformed_native_frame_preserves_owned_cause() -> crate::Result<()> {
     let (initialization, operation) = ids();
     let request = McpStdioRequest {
         initialization,
@@ -423,7 +425,8 @@ fn malformed_native_frame_preserves_owned_cause() {
     drop(guard);
     drop(exchange);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
+    Ok(())
 }
