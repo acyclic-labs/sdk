@@ -2038,6 +2038,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-stream-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth-action",
+ "acyclic-proto-build",
+ "prost",
+ "serde_json",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
 name = "acyclic-syntect"
 version = "0.2.0"
 dependencies = [
@@ -2060,18 +2072,6 @@ name = "acyclic-test-runner"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
-]
-
-[[package]]
-name = "acyclic-stream-wire"
-version = "0.2.0"
-dependencies = [
- "acyclic-auth-action",
- "acyclic-proto-build",
- "prost",
- "serde_json",
- "tonic",
- "tonic-prost",
 ]
 
 [[package]]
@@ -8902,6 +8902,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
 
 [[package]]
+name = "stream-rpc-inventory"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "acyclic-stream-wire",
+ "serde_json",
+]
+
+[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8910,15 +8919,6 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
  "unicode-properties",
-]
-
-[[package]]
-name = "stream-rpc-inventory"
-version = "0.2.0"
-dependencies = [
- "acyclic-stream",
- "acyclic-stream-wire",
- "serde_json",
 ]
 
 [[package]]
