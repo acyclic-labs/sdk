@@ -1,7 +1,7 @@
 use acyclic_fs::kernel::{
     AsyncBlobSource, BlobBuildError, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage,
     BlobReadError, BlobReadFailure, CanonicalDecodeError, DecodeLimits, OwnedSourceChunk,
-    build_blob, decode_blob_page, read_blob_range,
+    build_blob, decode_blob_page, encode_blob_page, read_blob_range,
 };
 use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
 use acyclic_fs::{
@@ -1074,5 +1074,81 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     assert!(matches!(rejected.error, BlobBuildError::Work(_)));
     assert_eq!(rejected.work()?.source_bytes_read, 4);
     assert_eq!(rejected.work()?.backend_write_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn decoded_blob_shape_and_sync_source_cancellation_fail_before_hidden_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let page = BlobPage {
+        first_offset: 0,
+        end_offset: 1,
+        node: BlobNode::Leaf(vec![BlobChunkRef {
+            first_offset: 0,
+            end_offset: 1,
+            chunk: ObjectId {
+                storage: None,
+                kind: ObjectKind::BlobChunk,
+                digest: Digest::from_bytes([77; 32]),
+            },
+        }]),
+    };
+    let encoded = encode_blob_page(
+        &page,
+        1,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
+    let limits = DecodeLimits {
+        maximum_page_items: 1,
+        ..DecodeLimits::default()
+    };
+    let decoded = decode_blob_page(&encoded, limits, &mut |_| Ok::<_, CanonicalDecodeError>(()))?;
+    assert_eq!(decoded, page);
+
+    let zero_items = DecodeLimits {
+        maximum_page_items: 0,
+        ..limits
+    };
+    assert!(matches!(
+        decode_blob_page(
+            &encoded,
+            zero_items,
+            &mut |_| Ok::<_, CanonicalDecodeError>(())
+        ),
+        Err(CanonicalDecodeError::FieldTooLarge {
+            observed: 1,
+            maximum: 0,
+        })
+    ));
+    let mut unknown_tag = encoded;
+    *unknown_tag.get_mut(26).ok_or("missing blob node tag")? = 99;
+    assert!(matches!(
+        decode_blob_page(
+            &unknown_tag,
+            limits,
+            &mut |_| Ok::<_, CanonicalDecodeError>(())
+        ),
+        Err(CanonicalDecodeError::UnknownTag {
+            field: "blob_page",
+            tag: 99,
+        })
+    ));
+
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut source = std::io::Cursor::new(b"x");
+    let mut destination = [0_u8; 1];
+    let failure = (AsyncBlobSource::read(
+        &mut source,
+        &mut destination,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
+    .err()
+    .ok_or("cancelled synchronous blob source read succeeded")?;
+    assert_eq!(failure.kind(), std::io::ErrorKind::Interrupted);
+    assert_eq!(source.position(), 0);
     Ok(())
 }
