@@ -1,0 +1,49 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+FILESYSTEM_BENCH_SOURCES = [
+    "support/admission.rs",
+    "support/decoded_pages.rs",
+    "support/encoding.rs",
+    "support/extents.rs",
+    "support/filesystem.rs",
+    "support/lazy_nodes.rs",
+    "support/merge_diff.rs",
+    "support/read_admission.rs",
+    "support/workspace_names.rs",
+]
+
+FILESYSTEM_BENCH_DEPS = [
+    "//rust/crates/filesystem:acyclic_fs",
+    "//rust/crates/filesystem-format:acyclic_fs_format",
+    "//rust/crates/filesystem-work:acyclic_fs_work",
+    "//rust/crates/native-runtime:acyclic_native_runtime",
+    "//rust/crates/objects:acyclic_objects",
+    "//rust/crates/stream:acyclic_stream",
+    "@sdk_crates//blake3-1.8.7",
+    "@sdk_crates//bytes-1.12.1",
+    "@sdk_crates//divan-0.1.21",
+    "@sdk_crates//serde_json-1.0.154",
+    "@sdk_crates//tempfile-3.27.0",
+    "@sdk_crates//tokio-1.54.1",
+    "@sdk_crates//tracing-0.1.44",
+    "@sdk_crates//tracing-subscriber-0.3.23",
+    "@sdk_crates//unicode-normalization-0.1.26",
+]
+
+rust_binary(
+    name = "filesystem",
+    srcs = ["filesystem.rs"] + FILESYSTEM_BENCH_SOURCES,
+    crate_root = "filesystem.rs",
+    edition = "2024",
+    tags = ["manual"],
+    deps = FILESYSTEM_BENCH_DEPS,
+)
+
+rust_binary(
+    name = "filesystem_alloc",
+    srcs = ["filesystem_alloc.rs"] + FILESYSTEM_BENCH_SOURCES,
+    crate_root = "filesystem_alloc.rs",
+    edition = "2024",
+    tags = ["manual"],
+    deps = FILESYSTEM_BENCH_DEPS,
+)

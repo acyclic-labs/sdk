@@ -22,8 +22,6 @@ env = os.environ.copy()
 for key in ['RUSTFLAGS', 'ACYCLIC_BENCH_TRACE', 'ACYCLIC_BENCH_WORK',
             'ACYCLIC_BENCH_MARKERS', 'ACYCLIC_BENCH_LEGACY_NAME']:
     env.pop(key, None)
-features = 'distributed,local,memory,native-watch,native-mount,model-checking,fuzzing'
-base = ['--locked', '-p', 'acyclic-fs', '--no-default-features', '--features', features]
 baseline = json.loads(args.baseline.read_text())
 expected = ['93db8b63d0803d0973ea235c7b0ea11899cb76c3c9551ff341feaeae7643ce2c',
             '08010d21d654c7034d706e50345449f90c206cdbe93759987e8bbfd5f734c416']
@@ -41,21 +39,25 @@ def run(label, command, environment=env, timeout=None, permit_failure=False):
         raise RuntimeError(f'{label}: {p.returncode}\n{p.stdout[-5000:]}\n{p.stderr[-5000:]}')
     return p
 
-def build(label, command):
-    p = run(label, command + ['--message-format=json'])
+def build(label, targets, options=()):
+    run(label + '-build', ['bazel', 'build', '--remote_download_toplevel', *options, *targets.values()])
     binaries = {}
-    for line in p.stdout.splitlines():
-        e = json.loads(line)
-        if e.get('reason') == 'compiler-artifact' and e.get('executable'):
-            binary = out / (label + '-' + e['target']['name'])
-            shutil.copyfile(e['executable'], binary)
-            binary.chmod(0o755)
-            binaries[e['target']['name']] = binary
+    for name, target in targets.items():
+        query = ['bazel', 'cquery', '--output=files', *options, target]
+        files = run(f'{label}-{name}-binary', query).stdout.splitlines()
+        if len(files) != 1:
+            raise RuntimeError(f'expected one executable for {target}, got {files}')
+        binary = out / (label + '-' + name)
+        shutil.copyfile(files[0], binary)
+        binary.chmod(0o755)
+        binaries[name] = binary
     return binaries
 
 # Independently initialized parsers compare full canonical bytes, exact errors,
 # every observed operation/failure prefix, all counters and six heap statistics.
-test = args.test_binary or build('ordinary', ['cargo', 'test'] + base + ['--lib', '--no-run'])['acyclic_fs']
+test = args.test_binary or build('ordinary', {
+    'acyclic_fs': '//rust/crates/filesystem:acyclic_fs_test_cases',
+})['acyclic_fs']
 run('differential-and-physical-controls', [test, 'workspace::identity::name_tests::'], timeout=9)
 if args.reuse_release_dir:
     bins = {stage: {n: args.reuse_release_dir / (stage + '-' + n)
@@ -66,8 +68,10 @@ else:
         for stage in ['before', 'after']:
             for p in baseline:
                 pathlib.Path(p).write_bytes(baseline[p].encode() if stage == 'before' else candidate[p])
-            bins[stage] = build(stage, ['cargo', 'bench'] + base + [
-                '--bench', 'filesystem', '--bench', 'filesystem_alloc', '--no-run'])
+            bins[stage] = build(stage, {
+                'filesystem': '//rust/crates/filesystem/benches:filesystem',
+                'filesystem_alloc': '//rust/crates/filesystem/benches:filesystem_alloc',
+            }, ['-c', 'opt'])
     finally:
         for p, contents in candidate.items():
             pathlib.Path(p).write_bytes(contents)
