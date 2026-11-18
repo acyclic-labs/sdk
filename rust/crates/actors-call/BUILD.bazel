@@ -38,7 +38,10 @@ rust_library(
     deps = [
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//prost-0.14.4",
         "@sdk_crates//thiserror-2.0.21",
+        "@sdk_crates//tokio-1.54.1",
     ],
     visibility = ["//visibility:public"],
 )
@@ -58,12 +61,6 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    deps = [
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//futures-0.3.34",
-        "@sdk_crates//prost-0.14.4",
-        "@sdk_crates//tokio-1.54.1",
-    ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )
@@ -111,7 +108,10 @@ rust_library(
     deps = [
         "//rust/crates/stream:acyclic_stream_wasm",
         "@wasm_crates//bytes-1.12.1",
+        "@wasm_crates//futures-0.3.34",
+        "@wasm_crates//prost-0.14.4",
         "@wasm_crates//thiserror-2.0.21",
+        "@wasm_crates//tokio-1.54.1",
     ],
     visibility = ["//visibility:public"],
 )
