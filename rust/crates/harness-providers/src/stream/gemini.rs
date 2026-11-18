@@ -1,5 +1,5 @@
 use super::{ModelEvent, Result, State, Value, invalid, string, text};
-use crate::protocol::present;
+use acyclic_harness_provider_protocol::present;
 
 #[derive(serde::Deserialize)]
 struct Envelope<'a> {
@@ -73,7 +73,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         for (part, raw) in parts.iter().zip(raw) {
             // Value decoding cannot retain duplicate executable fields. Admit
             // the original tokens for unsigned calls and native replay alike.
-            crate::protocol::gemini::native_part(raw)?;
+            acyclic_harness_provider_protocol::gemini::native_part(raw).map_err(crate::invalid)?;
             text(&mut events, &part["text"], part["thought"] == true);
             let position = (state.calls.len() + state.thinking.len() + state.texts.len()) as u64;
             // A signature authenticates its exact part: keep the original

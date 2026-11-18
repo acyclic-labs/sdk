@@ -84,7 +84,7 @@ impl<'work> Budget<'work> {
         Ok(())
     }
     pub fn append(&mut self, target: &mut String, value: Option<&Value>) -> Result<()> {
-        let Some(value) = crate::protocol::present(value) else {
+        let Some(value) = acyclic_harness_provider_protocol::present(value) else {
             return Ok(());
         };
         let delta = value

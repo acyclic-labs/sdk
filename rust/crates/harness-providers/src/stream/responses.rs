@@ -16,7 +16,7 @@ impl Output {
             Some("message") => Ok(Self::Message),
             Some("reasoning") => Ok(Self::Reasoning),
             Some("function_call" | "custom_tool_call") => {
-                if crate::protocol::present(item.get("namespace")).is_some() {
+                if acyclic_harness_provider_protocol::present(item.get("namespace")).is_some() {
                     return Err(invalid("namespaced Responses calls require native replay"));
                 }
                 Ok(if item["type"] == "custom_tool_call" {
@@ -157,7 +157,7 @@ fn complete(
     {
         return Err(invalid("Responses generation did not complete"));
     }
-    if let Some(output) = crate::protocol::present(response.get("output")) {
+    if let Some(output) = acyclic_harness_provider_protocol::present(response.get("output")) {
         let output = output
             .as_array()
             .ok_or_else(|| invalid("response output must be an array"))?;
@@ -200,7 +200,7 @@ fn complete(
 }
 
 fn validate_item_id(call: &super::Call, value: Option<&Value>) -> Result<()> {
-    if let Some(value) = crate::protocol::present(value) {
+    if let Some(value) = acyclic_harness_provider_protocol::present(value) {
         let id = string(value)?;
         if call.item_id != id {
             return Err(invalid("Responses tool item identity changed"));
@@ -253,7 +253,7 @@ fn admit_call(
                 "Responses completed tool input changed; recovery: preserve its original complete input",
             ));
         }
-    } else if let Some(id) = crate::protocol::present(item.get("id")) {
+    } else if let Some(id) = acyclic_harness_provider_protocol::present(item.get("id")) {
         if string(id)?.is_empty() {
             return Err(invalid("incomplete Responses tool item identity"));
         }
@@ -262,7 +262,7 @@ fn admit_call(
     call.freeform = kind == Output::Freeform;
     budget.string(&mut call.id, id)?;
     budget.string(&mut call.name, name)?;
-    if let Some(id) = crate::protocol::present(item.get("id")) {
+    if let Some(id) = acyclic_harness_provider_protocol::present(item.get("id")) {
         budget.string(&mut call.item_id, string(id)?)?;
     }
     if let Some(arguments) = arguments.filter(|_| !call.input_complete) {

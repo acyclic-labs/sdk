@@ -2,18 +2,30 @@
 use super::name::{CALL_ID, Name};
 use serde_json::{Value, value::RawValue};
 
+/// Required value at one wire field.
 #[derive(Clone, Copy)]
-pub(crate) enum Constraint {
-    String { nonempty: bool },
+pub enum Constraint {
+    /// A JSON string.
+    String {
+        /// Whether an empty string is rejected.
+        nonempty: bool,
+    },
+    /// A JSON array.
     Array,
+    /// A string matching a wire identifier grammar.
     Name(Name),
+    /// A string containing a JSON object.
     ObjectJson,
 }
-pub(crate) struct Shape {
+/// Wire discriminator and required field constraints.
+pub struct Shape {
+    /// Required discriminator field and value.
     pub discriminator: (&'static str, &'static str),
+    /// Required fields addressed by JSON pointer.
     pub fields: &'static [(&'static str, Constraint)],
 }
 impl Constraint {
+    /// Check an already decoded field against this constraint.
     pub fn accepts(self, value: &Value) -> bool {
         match self {
             Self::String { nonempty } => value
@@ -41,6 +53,7 @@ impl Constraint {
     }
 }
 impl Shape {
+    /// Check every required field and the discriminator.
     pub fn accepts(&self, value: &Value) -> bool {
         value.is_object()
             && value[self.discriminator.0] == self.discriminator.1
@@ -59,35 +72,43 @@ const FUNCTION_NAME: Constraint = Constraint::Name(Name {
     punctuation: b"_-",
 });
 const TEXT_FIELDS: &[(&str, Constraint)] = &[("/text", STRING)];
-pub(crate) const TEXT: Shape = Shape {
+/// Text part shape.
+pub const TEXT: Shape = Shape {
     discriminator: ("type", "text"),
     fields: TEXT_FIELDS,
 };
-pub(crate) const INPUT_TEXT: Shape = Shape {
+/// Responses input text part shape.
+pub const INPUT_TEXT: Shape = Shape {
     discriminator: ("type", "input_text"),
     fields: TEXT_FIELDS,
 };
-pub(crate) const OUTPUT_TEXT: Shape = Shape {
+/// Responses output text part shape.
+pub const OUTPUT_TEXT: Shape = Shape {
     discriminator: ("type", "output_text"),
     fields: TEXT_FIELDS,
 };
-pub(crate) const REFUSAL: Shape = Shape {
+/// Responses refusal part shape.
+pub const REFUSAL: Shape = Shape {
     discriminator: ("type", "refusal"),
     fields: &[("/refusal", STRING)],
 };
-pub(crate) const IMAGE_URL: Shape = Shape {
+/// Chat Completions image URL part shape.
+pub const IMAGE_URL: Shape = Shape {
     discriminator: ("type", "image_url"),
     fields: &[("/image_url/url", NONEMPTY)],
 };
-pub(crate) const INPUT_IMAGE_URL: Shape = Shape {
+/// Responses image URL part shape.
+pub const INPUT_IMAGE_URL: Shape = Shape {
     discriminator: ("type", "input_image"),
     fields: &[("/image_url", NONEMPTY)],
 };
-pub(crate) const INPUT_IMAGE_ID: Shape = Shape {
+/// Responses image file reference shape.
+pub const INPUT_IMAGE_ID: Shape = Shape {
     discriminator: ("type", "input_image"),
     fields: &[("/file_id", NONEMPTY)],
 };
-pub(crate) const INPUT_AUDIO: Shape = Shape {
+/// Inline audio part shape.
+pub const INPUT_AUDIO: Shape = Shape {
     discriminator: ("type", "input_audio"),
     fields: &[
         ("/input_audio/data", NONEMPTY),
@@ -95,27 +116,33 @@ pub(crate) const INPUT_AUDIO: Shape = Shape {
     ],
 };
 // OAC-MED-01: a file reference or a named inline file, never an empty container.
-pub(crate) const FILE_ID: Shape = Shape {
+/// Chat Completions file reference shape.
+pub const FILE_ID: Shape = Shape {
     discriminator: ("type", "file"),
     fields: &[("/file/file_id", NONEMPTY)],
 };
-pub(crate) const FILE_DATA: Shape = Shape {
+/// Chat Completions named inline file shape.
+pub const FILE_DATA: Shape = Shape {
     discriminator: ("type", "file"),
     fields: &[("/file/file_data", NONEMPTY), ("/file/filename", NONEMPTY)],
 };
-pub(crate) const INPUT_FILE_ID: Shape = Shape {
+/// Responses file reference shape.
+pub const INPUT_FILE_ID: Shape = Shape {
     discriminator: ("type", "input_file"),
     fields: &[("/file_id", NONEMPTY)],
 };
-pub(crate) const INPUT_FILE_URL: Shape = Shape {
+/// Responses file URL shape.
+pub const INPUT_FILE_URL: Shape = Shape {
     discriminator: ("type", "input_file"),
     fields: &[("/file_url", NONEMPTY)],
 };
-pub(crate) const INPUT_FILE_DATA: Shape = Shape {
+/// Responses named inline file shape.
+pub const INPUT_FILE_DATA: Shape = Shape {
     discriminator: ("type", "input_file"),
     fields: &[("/file_data", NONEMPTY), ("/filename", NONEMPTY)],
 };
-pub(crate) const CHAT_CALL: Shape = Shape {
+/// Chat Completions function call shape.
+pub const CHAT_CALL: Shape = Shape {
     discriminator: ("type", "function"),
     fields: &[
         ("/id", Constraint::Name(CALL_ID)),
@@ -123,7 +150,8 @@ pub(crate) const CHAT_CALL: Shape = Shape {
         ("/function/arguments", Constraint::ObjectJson),
     ],
 };
-pub(crate) const RESPONSE_CALL: Shape = Shape {
+/// Responses function call shape.
+pub const RESPONSE_CALL: Shape = Shape {
     discriminator: ("type", "function_call"),
     fields: &[
         (
@@ -137,7 +165,8 @@ pub(crate) const RESPONSE_CALL: Shape = Shape {
         ("/arguments", Constraint::ObjectJson),
     ],
 };
-pub(crate) const RESPONSE_CUSTOM_CALL: Shape = Shape {
+/// Responses custom tool call shape.
+pub const RESPONSE_CUSTOM_CALL: Shape = Shape {
     discriminator: ("type", "custom_tool_call"),
     fields: &[
         (
@@ -151,15 +180,18 @@ pub(crate) const RESPONSE_CUSTOM_CALL: Shape = Shape {
         ("/input", STRING),
     ],
 };
-pub(crate) const THINKING: Shape = Shape {
+/// Anthropic signed thinking block shape.
+pub const THINKING: Shape = Shape {
     discriminator: ("type", "thinking"),
     fields: &[("/thinking", STRING), ("/signature", NONEMPTY)],
 };
-pub(crate) const REDACTED: Shape = Shape {
+/// Anthropic redacted thinking block shape.
+pub const REDACTED: Shape = Shape {
     discriminator: ("type", "redacted_thinking"),
     fields: &[("/data", NONEMPTY)],
 };
-pub(crate) const REASONING: Shape = Shape {
+/// Responses reasoning item shape.
+pub const REASONING: Shape = Shape {
     discriminator: ("type", "reasoning"),
     fields: &[
         ("/id", NONEMPTY),

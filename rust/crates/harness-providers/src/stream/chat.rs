@@ -1,5 +1,5 @@
 use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
-use crate::protocol::present;
+use acyclic_harness_provider_protocol::present;
 
 pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
     let choices = present(value.get("choices"))

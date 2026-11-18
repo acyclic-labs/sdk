@@ -46,7 +46,7 @@ pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
         return None;
     }
     let item: Native<'_> = serde_json::from_slice(bytes).ok()?;
-    use crate::protocol::shape;
+    use acyclic_harness_provider_protocol::shape;
     let shape = match (adapter, item.kind.as_ref()) {
         (Adapter::Anthropic, "thinking") => &shape::THINKING,
         (Adapter::Anthropic, "redacted_thinking") => &shape::REDACTED,
@@ -73,15 +73,18 @@ pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
 pub(crate) fn replay_responses(
     items: &[serde_json::Value],
 ) -> acyclic_harness_core::Result<Vec<serde_json::Value>> {
-    replay_responses_with(items, crate::protocol::sequence::ResponseItem::allows)
+    replay_responses_with(
+        items,
+        acyclic_harness_provider_protocol::sequence::ResponseItem::allows,
+    )
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(super) fn replay_responses_with(
     items: &[serde_json::Value],
     allows: impl Fn(
-        crate::protocol::sequence::ResponseItem,
-        crate::protocol::sequence::ResponseItem,
+        acyclic_harness_provider_protocol::sequence::ResponseItem,
+        acyclic_harness_provider_protocol::sequence::ResponseItem,
     ) -> bool,
 ) -> acyclic_harness_core::Result<Vec<serde_json::Value>> {
     use super::wire::{Item, Message};

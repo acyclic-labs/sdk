@@ -434,7 +434,7 @@ impl<'work> State<'work> {
             &["id", "model"][..]
         };
         for &field in fields {
-            if let Some(value) = crate::protocol::present(value.get(field)) {
+            if let Some(value) = acyclic_harness_provider_protocol::present(value.get(field)) {
                 self.budget.member(&mut self.metadata, field, value)?;
             }
         }

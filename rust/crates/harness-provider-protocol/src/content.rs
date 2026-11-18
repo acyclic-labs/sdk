@@ -3,13 +3,16 @@
 use super::shape::{self, Shape};
 use serde_json::Value;
 
-pub(crate) struct Content {
+/// Admission rules for content at one role or output position.
+pub struct Content {
+    /// Part shapes admitted in array content.
     pub parts: &'static [&'static Shape],
-    pub null_with_calls: bool,
+    null_with_calls: bool,
     array_rule: &'static str,
     scalar_rule: &'static str,
 }
 impl Content {
+    /// Return the rule violated by this position, if any.
     pub fn violation(&self, value: &Value, has_calls: bool) -> Option<&'static str> {
         match value {
             Value::String(_) => None,
@@ -43,7 +46,8 @@ const CHAT_ASSISTANT: Content = Content {
     null_with_calls: true,
     ..CHAT_TEXT
 };
-pub(crate) const CHAT: &[(&str, &Content)] = &[
+/// Content rules by Chat Completions role.
+pub const CHAT: &[(&str, &Content)] = &[
     ("system", &CHAT_TEXT),
     ("developer", &CHAT_TEXT),
     ("user", &CHAT_USER),
@@ -67,19 +71,22 @@ const RESPONSE_ASSISTANT: Content = Content {
     parts: &[&shape::OUTPUT_TEXT, &shape::REFUSAL],
     ..RESPONSE_INPUT
 };
-pub(crate) const RESPONSES: &[(&str, &Content)] = &[
+/// Content rules by Responses message role.
+pub const RESPONSES: &[(&str, &Content)] = &[
     ("system", &RESPONSE_INPUT),
     ("developer", &RESPONSE_INPUT),
     ("user", &RESPONSE_INPUT),
     ("assistant", &RESPONSE_ASSISTANT),
 ];
-pub(crate) const RESPONSE_TOOL_OUTPUT: Content = Content {
+/// Content rules for a Responses tool output.
+pub const RESPONSE_TOOL_OUTPUT: Content = Content {
     array_rule: "OAR-TOOL-05",
     scalar_rule: "OAR-TOOL-05",
     ..RESPONSE_INPUT
 };
 
-pub(crate) fn position<'a>(positions: &'a [(&str, &Content)], role: &str) -> Option<&'a Content> {
+/// Resolve the content rules for a message role.
+pub fn position<'a>(positions: &'a [(&str, &Content)], role: &str) -> Option<&'a Content> {
     positions
         .iter()
         .find_map(|(name, content)| (*name == role).then_some(*content))

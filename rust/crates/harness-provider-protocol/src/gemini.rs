@@ -4,16 +4,20 @@ use super::present;
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 
+/// Known fields of a Gemini part, keeping source tokens when requested.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", bound(deserialize = "T: Deserialize<'de>"))]
-pub(crate) struct Part<T> {
+pub struct Part<T> {
     #[serde(default, deserialize_with = "supplied")]
+    /// Text supplied by the provider.
     pub text: Option<T>,
     #[serde(default, deserialize_with = "supplied")]
+    /// Whether the text represents a thought.
     pub thought: Option<T>,
     #[serde(default, deserialize_with = "supplied")]
     thought_signature: Option<T>,
     #[serde(default, deserialize_with = "supplied")]
+    /// Function call supplied by the provider.
     pub function_call: Option<T>,
     #[serde(default, deserialize_with = "supplied")]
     inline_data: Option<T>,
@@ -86,6 +90,7 @@ impl<T> Part<T> {
 }
 
 impl<'a> Part<&'a Value> {
+    /// Admit a decoded value against the Gemini part data union.
     pub fn of(value: &'a Value) -> Option<Self> {
         value.as_object()?;
         let field = |name| present(value.get(name));
@@ -153,48 +158,50 @@ fn raw_kind(value: &RawValue) -> Kind {
 /// Borrowed executable identity, validated before either execution or replay.
 /// https://ai.google.dev/api/generate-content#FunctionCall
 #[derive(Clone, Copy, Deserialize)]
-pub(crate) struct Function<'a> {
+pub struct Function<'a> {
     #[serde(default, borrow, deserialize_with = "supplied")]
+    /// Optional call identifier as its original JSON string.
     pub id: Option<&'a RawValue>,
     #[serde(borrow)]
+    /// Function name as its original JSON string.
     pub name: &'a RawValue,
     #[serde(default, borrow, deserialize_with = "supplied")]
+    /// Optional arguments as their original JSON object.
     pub args: Option<&'a RawValue>,
 }
 
-pub(crate) struct NativePart<'a> {
+/// An admitted Gemini part borrowing the input JSON.
+pub struct NativePart<'a> {
+    /// Validated fields of the original part.
     pub fields: Part<&'a RawValue>,
+    /// Validated function call, when present.
     pub function: Option<Function<'a>>,
 }
 
 /// Admits known fields after literal-safe JSON validation. All returned tokens
 /// borrow the original part; admission never reconstructs its native bytes.
-pub(crate) fn native_part(raw: &RawValue) -> crate::Result<NativePart<'_>> {
-    let invalid = || {
-        crate::invalid(
-            "Gemini part admission failed; recovery: return one typed data member and a well-formed functionCall per native part",
-        )
-    };
+pub fn native_part(raw: &RawValue) -> Result<NativePart<'_>, &'static str> {
+    const INVALID: &str = "Gemini part admission failed; recovery: return one typed data member and a well-formed functionCall per native part";
     if raw_kind(raw) != Kind::Object {
-        return Err(invalid());
+        return Err(INVALID);
     }
     let part = serde_json::from_str::<Part<&RawValue>>(raw.get())
-        .map_err(|_| invalid())?
+        .map_err(|_| INVALID)?
         .without_nulls();
     if !part.valid_raw() {
-        return Err(invalid());
+        return Err(INVALID);
     }
     let function = part
         .function_call
         .map(|raw| {
-            let function: Function<'_> = serde_json::from_str(raw.get()).map_err(|_| invalid())?;
+            let function: Function<'_> = serde_json::from_str(raw.get()).map_err(|_| INVALID)?;
             if raw_kind(function.name) != Kind::String
                 || function.id.is_some_and(|id| raw_kind(id) != Kind::String)
                 || function
                     .args
                     .is_some_and(|args| raw_kind(args) != Kind::Object)
             {
-                return Err(invalid());
+                return Err(INVALID);
             }
             Ok(function)
         })
