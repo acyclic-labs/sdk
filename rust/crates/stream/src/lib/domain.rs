@@ -37,7 +37,7 @@ impl IdempotencyKey {
     /// Constructs a nonempty bounded key.
     pub fn new(value: impl Into<Bytes>) -> Result<Self, StreamError> {
         let value = value.into();
-        if value.is_empty() || value.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        if !acyclic_stream_wire::validation::is_idempotency_key(&value) {
             return Err(StreamError::InvalidArgument);
         }
         Ok(Self(value))

@@ -75,27 +75,9 @@ impl StreamPath {
     /// # Errors
     /// Returns an invalid-path error for a noncanonical or oversized path.
     pub fn validate(path: &str) -> Result<(), StreamError> {
-        if path.is_empty()
-            || path.len() > MAX_PATH_BYTES
-            || !path.is_ascii()
-            || path.starts_with('/')
-            || path.ends_with('/')
-        {
-            return Err(StreamError::InvalidPath);
-        }
-        for segment in path.split('/') {
-            if segment.is_empty()
-                || segment == "."
-                || segment == ".."
-                || segment
-                    .bytes()
-                    .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
-                || segment.as_bytes().contains(&b'\\')
-            {
-                return Err(StreamError::InvalidPath);
-            }
-        }
-        Ok(())
+        acyclic_stream_wire::validation::is_path(path)
+            .then_some(())
+            .ok_or(StreamError::InvalidPath)
     }
 
     /// Validates and owns path storage on the original native ledger.
