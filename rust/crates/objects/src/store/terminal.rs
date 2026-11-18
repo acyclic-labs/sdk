@@ -157,10 +157,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         fence: u64,
         references: Vec<Digest>,
     ) -> Result<Retained, Error> {
-        let references = canonical(references);
-        if references.is_empty() {
-            return Err(invalid());
-        }
+        let references = retention_references(references)?;
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
         let encoded = Digest::of(root.as_bytes()).encoded_hex();

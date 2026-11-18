@@ -566,6 +566,13 @@ fn canonical(mut references: Vec<Digest>) -> Vec<Digest> {
     references
 }
 
+fn retention_references(references: Vec<Digest>) -> Result<Vec<Digest>, Error> {
+    if references.is_empty() {
+        return Err(invalid());
+    }
+    Ok(canonical(references))
+}
+
 impl<M, P: Deref<Target = M>> Account<M, P> {
     /// The account's original physical availability producer. A repair service
     /// that writes bytes outside this engine must publish completion here,
@@ -1627,10 +1634,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             |error: &Error| error.code.as_str_name(),
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                let references = canonical(references);
-                if references.is_empty() {
-                    return Err(invalid());
-                }
+                let references = retention_references(references)?;
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
