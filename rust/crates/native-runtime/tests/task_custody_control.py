@@ -24,7 +24,6 @@ def main():
         count = 1
         test = "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody"
         expected = 'right: "TaskPanicked"'
-        features = []
     else:
         path = Path("rust/crates/native-runtime/src/testing/executor.rs")
         anchor = (
@@ -45,10 +44,9 @@ def main():
         count = 1
         test = "testing::executor::tests::unjoined_original_output_keeps_its_task_accounted_through_release"
         expected = "task accounting retired before its original cleanup"
-        features = ["--features", "test-support"]
     command = [
-        "cargo", "test", "--locked", "-p", "acyclic-native-runtime",
-        *features, "--lib", "--", test, "--exact", "--nocapture",
+        "bazel", "run", "//rust/crates/native-runtime:acyclic_native_runtime_test_cases",
+        "--", test, "--exact", "--nocapture",
     ]
     recovery = shlex.join(["python3", __file__, defect])
     source = path.read_bytes()
@@ -64,7 +62,7 @@ def main():
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(result.stdout, flush=True)
         if not (
-            result.returncode == 101
+            result.returncode != 0
             and test + " ... FAILED" in result.stdout
             and "test result: FAILED." in result.stdout
             and expected in result.stdout
