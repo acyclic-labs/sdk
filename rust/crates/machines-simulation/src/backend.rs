@@ -669,7 +669,7 @@ impl MachinesProvider for SimulatedMachines {
         }
         let receiver = events.subscribe();
         drop(state);
-        Ok(acyclic_machines::provider::events::checked(
+        Ok(acyclic_machines::events::checked(
             machine,
             after_sequence,
             (receiver, from),

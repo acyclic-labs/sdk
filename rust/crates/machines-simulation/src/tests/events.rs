@@ -81,7 +81,7 @@ async fn event_follow_keeps_original_cursor_and_ends_on_terminal_or_producer_los
 }
 
 fn checked_output(machine: MachineId, after: Option<u64>, event: MachineEvent) -> EventStream {
-    acyclic_machines::provider::events::checked(machine, after, Some(event), |event| async move {
+    acyclic_machines::events::checked(machine, after, Some(event), |event| async move {
         Ok(event.map(|event| (event, None)))
     })
 }
