@@ -19,3 +19,14 @@ pub(crate) fn entry(
         kind,
     })
 }
+
+pub(crate) fn wide_entry(
+    value: u16,
+    kind: FileKind,
+) -> Result<TreeEntry, Box<dyn std::error::Error>> {
+    entry(
+        &format!("wide-{value:04}"),
+        u8::try_from(value & 0xff)?,
+        kind,
+    )
+}
