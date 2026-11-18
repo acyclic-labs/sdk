@@ -1,10 +1,7 @@
 use super::*;
 
 #[cfg(any(target_arch = "wasm32", test))]
-pub(in super::super) fn request_credential_status(
-    mut message: String,
-    detail: Option<String>,
-) -> tonic::Status {
+pub fn request_credential_status(mut message: String, detail: Option<String>) -> tonic::Status {
     if let Some(detail) = detail.filter(|detail| !detail.is_empty()) {
         message.push_str(": ");
         message.push_str(&detail);
@@ -34,7 +31,7 @@ fn uncertain_effect(status: &tonic::Status) -> bool {
         )
 }
 
-pub(in super::super) fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+pub fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     if credential_before_dispatch(&value) {
         return read_error(value);
     }
@@ -48,17 +45,17 @@ pub(in super::super) fn mutation_error(key: IdempotencyKey, value: tonic::Status
         )
         .with_cause(value)
 }
-pub(in super::super) fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+pub fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key).with_cause(value)
 }
-pub(in super::super) fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+pub fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     let classification = match value.code() {
         _ if uncertain_effect(&value) => ProviderError::Indeterminate(key),
         _ => ProviderError::Rejected(value.message().into()),
     };
     classification.with_cause(value)
 }
-pub(in super::super) fn read_error(value: tonic::Status) -> ProviderError {
+pub fn read_error(value: tonic::Status) -> ProviderError {
     let classification = match value.code() {
         code if code != tonic::Code::Internal && uncertain_effect(&value) => {
             ProviderError::Unavailable
@@ -71,10 +68,7 @@ pub(in super::super) fn read_error(value: tonic::Status) -> ProviderError {
 
 /// Guest command and file admission share transport semantics while retaining
 /// the original uncertain effect identity supplied by their caller.
-pub(in super::super) fn guest_error(
-    uncertain: ProviderError,
-    value: tonic::Status,
-) -> ProviderError {
+pub fn guest_error(uncertain: ProviderError, value: tonic::Status) -> ProviderError {
     if credential_before_dispatch(&value) {
         return read_error(value);
     }
@@ -84,4 +78,50 @@ pub(in super::super) fn guest_error(
         _ => ProviderError::Rejected(value.message().into()),
     };
     classification.with_cause(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_response_credential_refusal_keeps_recovery_identity() {
+        let key = IdempotencyKey::from_digest([1; 32]);
+        let request = request_credential_status(
+            "credential source unavailable".into(),
+            Some("credential callback failed".into()),
+        );
+        let expected = "credential source unavailable: credential callback failed";
+        assert_eq!(request.message(), expected);
+        assert_eq!(
+            std::error::Error::source(&request)
+                .map(ToString::to_string)
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            mutation_error(key, request.clone()).classification(),
+            &ProviderError::Unavailable
+        );
+        assert_eq!(
+            guest_error(
+                ProviderError::CommandIndeterminate(MachineId::from_digest([2; 32])),
+                request
+            )
+            .classification(),
+            &ProviderError::Unavailable
+        );
+        let mut response = Status::permission_denied("credential expired");
+        response.set_source(std::sync::Arc::new(
+            acyclic_auth::credential::ResponseCredentialError::from_browser(),
+        ));
+        assert_eq!(
+            mutation_error(key, response).classification(),
+            &ProviderError::Indeterminate(key)
+        );
+        assert_eq!(
+            mutation_error(key, Status::permission_denied("server denied")).classification(),
+            &ProviderError::Rejected("server denied".into())
+        );
+    }
 }

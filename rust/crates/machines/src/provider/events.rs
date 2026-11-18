@@ -1,7 +1,8 @@
 //! One ordered event contract for local, simulated and remote producers.
 use super::*;
 
-pub(crate) fn checked<S, N, F>(
+/// Wraps the original producer with identity, sequence and terminal checks.
+pub fn checked<S, N, F>(
     machine: MachineId,
     after: Option<u64>,
     state: S,

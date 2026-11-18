@@ -5,12 +5,10 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 FEATURES = [
         "http-codec",
-        "javascript",
         "test-support",
     ]
 
 WASM_FEATURES = [
-        "javascript",
         "test-support",
     ]
 
@@ -38,7 +36,7 @@ cargo_build_script(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -65,7 +63,7 @@ rust_library(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -85,7 +83,6 @@ rust_library(
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//hex-0.4.3",
-        "@sdk_crates//hyper-util-0.1.21",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//rustix-1.1.6",
@@ -96,8 +93,6 @@ rust_library(
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tonic-prost-0.14.6",
-        "@sdk_crates//tower-0.5.3",
-        "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//uuid-1.29.0",
     ],
     proc_macro_deps = [
@@ -114,7 +109,7 @@ rust_test(
     crate_features = FEATURES,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -130,11 +125,8 @@ rust_test(
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//rcgen-0.14.10",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tokio-stream-0.1.19",
-        "@sdk_crates//tracing-subscriber-0.3.23",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -174,7 +166,7 @@ rust_test(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -199,11 +191,9 @@ rust_test(
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//hex-0.4.3",
-        "@sdk_crates//hyper-util-0.1.21",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
-        "@sdk_crates//rcgen-0.14.10",
         "@sdk_crates//rustix-1.1.6",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
@@ -211,12 +201,8 @@ rust_test(
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tokio-stream-0.1.19",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tonic-prost-0.14.6",
-        "@sdk_crates//tower-0.5.3",
-        "@sdk_crates//tracing-0.1.44",
-        "@sdk_crates//tracing-subscriber-0.3.23",
         "@sdk_crates//uuid-1.29.0",
     ],
     proc_macro_deps = [
@@ -258,7 +244,7 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -286,7 +272,7 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -311,11 +297,9 @@ rust_binary(
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//hex-0.4.3",
-        "@sdk_crates//hyper-util-0.1.21",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
-        "@sdk_crates//rcgen-0.14.10",
         "@sdk_crates//rustix-1.1.6",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
@@ -323,12 +307,8 @@ rust_binary(
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tokio-stream-0.1.19",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tonic-prost-0.14.6",
-        "@sdk_crates//tower-0.5.3",
-        "@sdk_crates//tracing-0.1.44",
-        "@sdk_crates//tracing-subscriber-0.3.23",
         "@sdk_crates//uuid-1.29.0",
     ],
     proc_macro_deps = [
@@ -352,7 +332,7 @@ cargo_build_script(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -381,7 +361,7 @@ rust_library(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -400,7 +380,6 @@ rust_library(
         "@wasm_crates//bytes-1.12.1",
         "@wasm_crates//futures-0.3.34",
         "@wasm_crates//hex-0.4.3",
-        "@wasm_crates//js-sys-0.3.94",
         "@wasm_crates//prost-0.14.4",
         "@wasm_crates//serde-1.0.229",
         "@wasm_crates//serde_json-1.0.154",
@@ -412,7 +391,6 @@ rust_library(
         "@wasm_crates//tsify-0.5.8",
         "@wasm_crates//uuid-1.29.0",
         "@wasm_crates//wasm-bindgen-0.2.117",
-        "@wasm_crates//wasm-bindgen-futures-0.4.67",
     ],
     proc_macro_deps = [
         "@sdk_crates//async-trait-0.1.92",

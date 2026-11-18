@@ -30,6 +30,7 @@
   "acyclic-machines-limits",
   "acyclic-machines",
   "acyclic-machines-conformance",
+  "acyclic-machines-grpc",
   "acyclic-manifest",
   "acyclic-workers",
   "acyclic-fs-base",

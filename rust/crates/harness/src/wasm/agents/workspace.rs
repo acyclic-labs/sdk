@@ -67,7 +67,8 @@ impl WasmMachinesWorkspace {
         #[wasm_bindgen(unchecked_param_type = "WasmMachinesWorkspaceSource")] source: JsValue,
     ) -> Result<Self, JsValue> {
         use crate::{conversation::VolumeRef, machines::MachinesHost, resources::ProviderRef};
-        use acyclic_machines::{MachineObservation, MachinesProvider, grpc, wire};
+        use acyclic_machines::{MachineObservation, MachinesProvider, wire};
+        use acyclic_machines_grpc as grpc;
         use prost::Message as _;
 
         fn field<T: JsCast>(source: &JsValue, name: &str) -> Result<T, JsValue> {
@@ -172,7 +173,8 @@ impl WasmMachinesWorkspace {
 #[cfg(target_arch = "wasm32")]
 mod deadline {
     use acyclic_auth::operation::{BudgetError, Context};
-    use acyclic_machines::{DeadlineStop, ProviderError, grpc::transport::Deadline};
+    use acyclic_machines::{DeadlineStop, ProviderError};
+    use acyclic_machines_grpc::transport::Deadline;
     use acyclic_stream::ProviderTask;
     use std::{future::Future, time::Duration};
 

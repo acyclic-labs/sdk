@@ -177,6 +177,7 @@ rust_test(
         "//rust/crates/log-frame:tree",
         "//rust/crates/machines-conformance:tree",
         "//rust/crates/machines-daytona:tree",
+        "//rust/crates/machines-grpc:tree",
         "//rust/crates/machines-limits:tree",
         "//rust/crates/machines-wasm:tree",
         "//rust/crates/machines:tree",

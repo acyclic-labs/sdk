@@ -238,7 +238,7 @@ impl NativeEndpoint {
 
 impl transport::Endpoint for NativeEndpoint {
     type Client = Client;
-    type Deadline = crate::provider::deadline::GuestDeadline;
+    type Deadline = GuestDeadline;
 
     async fn client(&self) -> Result<Self::Client, ProviderError> {
         self.authenticated_client().await

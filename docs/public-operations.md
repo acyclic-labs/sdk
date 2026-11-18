@@ -29,7 +29,7 @@ returns its operation identity without waiting for settlement. `assurance` is
 local provider metadata. `Machines::attach` inspects the existing machine through
 `InspectMachine`; `Machine::identity` computes its local resource identity.
 These add no remote endpoint. The implementations
-are in `rust/crates/machines/src/grpc/provider.rs` and
+are in `rust/crates/machines-grpc/src/provider.rs` and
 `rust/crates/machines/src/provider/client.rs`.
 
 ## Auth

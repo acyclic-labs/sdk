@@ -1,5 +1,11 @@
-use super::*;
-use crate::codec::*;
+//! Authenticated Machines gRPC and browser Connect transports.
+
+use acyclic_machines::{codec::*, *};
+use async_trait::async_trait;
+use futures::{StreamExt, stream};
+use std::{num::NonZeroU32, time::Duration};
+
+mod obs;
 pub use acyclic_auth::credential::CredentialProvider;
 use tonic::{Request, Status};
 use transport::{Deadline as _, Endpoint as RpcEndpoint, Messages as _, RpcClient as _};
@@ -65,11 +71,18 @@ pub type GrpcProvider = Provider<NativeEndpoint>;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use native::BearerAuth;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+#[cfg(all(test, not(target_arch = "wasm32")))]
 use tonic::{
     metadata::MetadataValue,
     service::Interceptor as _,
     transport::{Certificate, Endpoint as TonicEndpoint, Identity},
 };
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use uuid::Uuid;
 
 mod duplex;
 mod files;
