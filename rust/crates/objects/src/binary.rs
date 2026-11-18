@@ -77,7 +77,7 @@ impl<T: Transport> BinaryObjects<T> {
         length: u64,
     ) -> Result<Put, Error> {
         let (reply, revision) = self.call(method, input).await?;
-        convert::verified_put(&reply, digest, length, revision).map_err(|_| unavailable())
+        convert::verified_put(&reply, digest, length, revision)
     }
 }
 
@@ -109,7 +109,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         let (request, expected) = convert::put_blobs(requests);
         let replied = async {
             let (reply, revision) = self.call(ObjectsMethod::PutBlobs, request).await?;
-            convert::verified_puts(reply, &expected, revision.as_ref()).map_err(|_| unavailable())
+            convert::verified_puts(reply, &expected, revision.as_ref())
         };
         replied
             .await
@@ -134,7 +134,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 convert::get_request(digest, range, maximum_bytes),
             )
             .await?;
-        convert::object(reply, digest, range, maximum_bytes, revision).map_err(|_| unavailable())
+        convert::object(reply, digest, range, maximum_bytes, revision)
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
@@ -146,7 +146,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 },
             )
             .await?;
-        convert::headed(&reply, digest, revision).map_err(|_| unavailable())
+        convert::headed(&reply, digest, revision)
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
@@ -158,7 +158,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 },
             )
             .await?;
-        convert::delete(&reply, revision).map_err(|_| unavailable())
+        convert::delete(&reply, revision)
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
@@ -168,7 +168,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 convert::list_request(after, limit),
             )
             .await?;
-        convert::listed(&reply, after, limit, revision).map_err(|_| unavailable())
+        convert::listed(&reply, after, limit, revision)
     }
 
     async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {

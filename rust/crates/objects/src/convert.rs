@@ -234,18 +234,18 @@ pub(crate) fn delete(
     value: &wire::DeleteBlobResponse,
     revision: Option<Revision>,
 ) -> Result<crate::Deletion, Error> {
-    let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
+    let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| unavailable())? {
         wire::DeleteStatus::Deleted => Delete::Deleted,
         wire::DeleteStatus::Absent => Delete::Absent,
         wire::DeleteStatus::Referenced => Delete::Referenced,
-        wire::DeleteStatus::Unspecified => return Err(invalid()),
+        wire::DeleteStatus::Unspecified => return Err(unavailable()),
     };
     if outcome != Delete::Deleted && !value.references.is_empty() {
-        return Err(invalid());
+        return Err(unavailable());
     }
     Ok(crate::Deletion {
         outcome,
-        references: digests(&value.references)?,
+        references: digests(&value.references).map_err(|_| unavailable())?,
         revision,
     })
 }
@@ -342,8 +342,9 @@ pub(crate) fn object(
     maximum: u64,
     revision: Option<Revision>,
 ) -> Result<crate::Object, Error> {
-    let head = head(value.info.as_ref().ok_or_else(invalid)?, revision)?;
-    let selected = selection.resolve(head.length)?;
+    let head =
+        head(value.info.as_ref().ok_or_else(unavailable)?, revision).map_err(|_| unavailable())?;
+    let selected = selection.resolve(head.length).map_err(|_| unavailable())?;
     if head.digest != requested
         || value.start != selected.start
         || value.body.len() as u64 != selected.end - selected.start
@@ -365,7 +366,7 @@ pub(crate) fn verified_put(
     length: u64,
     revision: Option<Revision>,
 ) -> Result<Put, Error> {
-    let put = put(value)?;
+    let put = put(value).map_err(|_| unavailable())?;
     if put
         .verified()
         .is_some_and(|verified| verified.digest != requested || verified.length != length)
@@ -436,7 +437,7 @@ pub(crate) fn headed(
     requested: Digest,
     revision: Option<Revision>,
 ) -> Result<Head, Error> {
-    let head = head(value, revision)?;
+    let head = head(value, revision).map_err(|_| unavailable())?;
     if head.digest != requested {
         return Err(unavailable());
     }
@@ -450,7 +451,7 @@ pub(crate) fn listed(
     limit: u32,
     revision: Option<Revision>,
 ) -> Result<Page, Error> {
-    let page = page(value, revision)?;
+    let page = page(value, revision).map_err(|_| unavailable())?;
     if page.digests.len() > limit as usize
         || after.is_some_and(|after| {
             page.digests.first().is_some_and(|first| *first <= after)
