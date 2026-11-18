@@ -80,9 +80,8 @@ pub use event_page::{
     EXECUTION_EVENT_PAGE_RECORDS, ExecutionActivity, ExecutionEventPage, ExecutionPayloadField,
     event_page, page_continuation,
 };
-mod model_cache;
 mod model_cost;
-pub use model_cache::{
+pub use acyclic_harness_model_cache::{
     ModelCacheAccess, ModelCacheBreakpoint, ModelCacheError, ModelCacheKey, ModelCacheObservation,
     ModelCacheResidency, ModelCacheTtl,
 };

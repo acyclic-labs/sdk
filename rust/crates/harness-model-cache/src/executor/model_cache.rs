@@ -2,7 +2,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Requested cache lifetime. Provider-managed residency has no inferred deadline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_contract_derive::HeapLayout,
+)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelCacheTtl {
@@ -19,7 +21,9 @@ pub enum ModelCacheTtl {
 /// bound to its resolved provider family, endpoint base and model.
 /// Generation settings preceding the input are included conservatively: equality
 /// proves equal projected prefixes, but inequality does not prove a cache miss.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_contract_derive::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelCacheBreakpoint {
@@ -34,7 +38,9 @@ pub struct ModelCacheBreakpoint {
 /// Original request cache policy, distinct from reported cache token usage.
 /// The current projector records one final input cut, including implicit caching.
 /// It does not claim that the provider cached or hit that exact cut.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_contract_derive::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelCacheObservation {

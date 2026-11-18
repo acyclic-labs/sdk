@@ -805,6 +805,7 @@ dependencies = [
  "acyclic-harness-control-checks",
  "acyclic-harness-json",
  "acyclic-harness-layout",
+ "acyclic-harness-model-cache",
  "acyclic-harness-modules",
  "acyclic-harness-sse",
  "acyclic-host-platform",
@@ -1091,6 +1092,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-harness-model-cache"
+version = "0.2.0"
+dependencies = [
+ "acyclic-contract-derive",
+ "acyclic-harness-layout",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tsify",
 ]
 
 [[package]]
