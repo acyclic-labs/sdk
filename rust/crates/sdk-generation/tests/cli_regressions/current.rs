@@ -452,54 +452,51 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .join("preview/feature-profile-catalog/sdk-docs-data.v1.json");
     let data_bytes = fs::read(&data_path).unwrap();
     let data: sdk_docs::DocsData = serde_json::from_slice(&data_bytes).unwrap();
-    assert!(data
+    let feature_item = data
         .families
         .iter()
         .flat_map(|family| &family.items)
-        .any(|item| item.path == "demo::FeatureOnly"));
+        .find(|item| item.path == "demo::FeatureOnly")
+        .expect("FeatureOnly must appear in the published catalog");
 
     let availability_bytes =
         fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap();
-    let availability: Value = serde_json::from_slice(&availability_bytes).unwrap();
-    let entries = availability["entries"].as_array().unwrap();
+    let availability: sdk_docs::rustdoc_profiles::ProfileAvailability =
+        serde_json::from_slice(&availability_bytes).unwrap();
+    let entries = &availability.entries;
     for (path, expected) in [
         ("demo::FeatureOnly", 2),
         ("demo::base_only", 3),
         ("demo::default_only", 2),
     ] {
-        let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
+        let entry = entries.iter().find(|entry| entry.path == path).unwrap();
         assert_eq!(
-            entry["profiles"].as_array().unwrap().len(),
+            entry.profiles.len(),
             expected,
             "the compilation reuse key must preserve every cfg feature: {path}"
         );
     }
-    let has_extra = |profile: &Value| {
-        profile["features"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|feature| feature == "extra")
-    };
     let feature_entry = entries
         .iter()
-        .find(|entry| entry["path"] == "demo::FeatureOnly")
-        .expect("feature-only item must retain a sidecar entry");
-    let feature_profile = feature_entry["profiles"]
-        .as_array()
-        .unwrap()
+        .find(|entry| entry.item_id == feature_item.id)
+        .expect("feature-only catalog item must have a matching sidecar entry");
+    let feature_profile = feature_entry
+        .profiles
         .iter()
-        .find(|profile| has_extra(profile))
+        .find(|profile| profile.features.iter().any(|feature| feature == "extra"))
         .expect("FeatureOnly must be attributed to the extra profile");
 
     let mut signatures = BTreeSet::new();
     let mut extra_variant = false;
     for entry in entries
         .iter()
-        .filter(|entry| entry["path"] == "demo::overloaded")
+        .filter(|entry| entry.path == "demo::overloaded")
     {
-        signatures.insert(entry["signature"].as_str().unwrap());
-        extra_variant |= entry["profiles"].as_array().unwrap().iter().any(has_extra);
+        signatures.insert(entry.signature.as_str());
+        extra_variant |= entry
+            .profiles
+            .iter()
+            .any(|profile| profile.features.iter().any(|feature| feature == "extra"));
     }
     assert!(
         signatures.len() >= 2,
@@ -516,7 +513,11 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .map(|receipt| {
             (
                 receipt["defaultFeatures"].as_bool().unwrap(),
-                has_extra(receipt),
+                receipt["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|feature| feature == "extra"),
             )
         })
         .collect::<std::collections::BTreeSet<_>>();
@@ -533,7 +534,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     assert!(
         receipts
             .iter()
-            .any(|receipt| receipt["profile"] == feature_profile["profile"]),
+            .any(|receipt| receipt["profile"].as_str() == Some(feature_profile.profile.0.as_str())),
         "sidecar profile must have an executed receipt row"
     );
     assert_eq!(data.source.revision, git_revision(&fixture.root));
