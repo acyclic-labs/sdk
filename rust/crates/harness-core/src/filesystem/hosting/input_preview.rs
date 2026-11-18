@@ -30,7 +30,7 @@ where
         Box::pin(async_stream::try_stream! {
             bound.admit_path(&agent)?;
             let (mut state, consumed) = bound.agents.state_snapshot(&agent).await?;
-            let provider = bound.agents.provider();
+            let provider = bound.agents.provider().as_ref();
             let inbox = agent.inbox()?;
             let tail = provider.tail(inbox.clone()).await.map_err(Error::Stream)?;
             let floor = input_floor(provider, &agent).await?;
@@ -74,7 +74,7 @@ where
                         && end < state.steered_through
                         && state.turn.as_ref().is_none_or(|turn| turn.inbox != end)
                     {
-                        let disposition = crate::agent::reply(&**provider, &mut state, consumed, &message.id, end).await?;
+                        let disposition = crate::agent::reply(provider, &mut state, consumed, &message.id, end).await?;
                         if !matches!(disposition, crate::agent::Reply::Pending) {
                             yield InputPreviewStep::Progress;
                             continue;
@@ -338,7 +338,7 @@ async fn input_prefix(
 }
 
 async fn input_floor<P: crate::store::JournalProvider + ?Sized>(
-    provider: &Arc<P>,
+    provider: &P,
     agent: &AgentPath,
 ) -> Result<u64, Error> {
     let status = input_record(provider, &agent.status()?, 0).await?;
@@ -346,11 +346,11 @@ async fn input_floor<P: crate::store::JournalProvider + ?Sized>(
 }
 
 async fn input_record<P: crate::store::JournalProvider + ?Sized>(
-    provider: &Arc<P>,
+    provider: &P,
     path: &StreamPath,
     sequence: u64,
 ) -> Result<crate::store::operations::ObservedRecord, Error> {
-    crate::store::operations::one_record(provider.as_ref(), path, sequence, &mut None)
+    crate::store::operations::one_record(provider, path, sequence, &mut None)
         .await
         .map_err(turn)?
         .ok_or(Error::Record("input preview source is absent"))
