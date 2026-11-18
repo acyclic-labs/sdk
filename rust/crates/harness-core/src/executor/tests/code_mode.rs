@@ -1657,7 +1657,7 @@ async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Re
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn real_console_frames_preserve_render_and_original_allocation_admission()
--> std::result::Result<(), acyclic_fs::WorkObservationError> {
+-> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     crate::executor::check_code_mode(include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../harness-fuzz/corpus/code_mode/utf8-view-wide.json"
