@@ -10,8 +10,8 @@ use acyclic_fs::WorkBudget;
 use acyclic_fs::kernel::AsyncBlobSource;
 use acyclic_fs::s3_multipart::*;
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, S3Error,
-    S3ListCursor, S3ListOptions, StreamAuthorityStore, Workspace,
+    AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, S3Error, S3ListCursor,
+    S3ListOptions, Workspace,
 };
 use acyclic_fs_format::s3_limits::FilesystemS3Limits;
 #[cfg(test)]
@@ -46,25 +46,6 @@ const IDEMPOTENCY_HEADER: &str = "x-acyclic-idempotency-key";
 const SDK_INVOCATION_HEADER: &str = "amz-sdk-invocation-id";
 const SESSION_TOKEN_HEADER: &str = "x-amz-security-token";
 const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
-
-/// Authority adapter that retains filesystem state in the canonical public hierarchical Stream provider.
-pub trait StreamBackedAuthority: AsyncAuthorityStore {
-    /// Exact Stream implementation used by this deployment.
-    type Stream: acyclic_stream::StreamProvider;
-
-    /// Returns the shared provider; no shadow log or multipart catalog is created.
-    fn stream_provider(&self) -> Arc<Self::Stream>;
-}
-
-impl<P: acyclic_fs::distributed::AuthorityProvider> StreamBackedAuthority
-    for StreamAuthorityStore<P>
-{
-    type Stream = P;
-
-    fn stream_provider(&self) -> Arc<Self::Stream> {
-        self.provider()
-    }
-}
 
 /// One authenticated credential resolved to one exact workspace.
 #[derive(Clone)]

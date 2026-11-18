@@ -1,6 +1,6 @@
 //! Persisted multipart upload records and object retention.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use acyclic_fs_format::s3_limits::{FilesystemS3Limits, S3MultipartRetentionLimits};
 use acyclic_stream::StreamProviderExt as _;
@@ -9,7 +9,53 @@ use futures::StreamExt as _;
 
 use crate::kernel::{ClosureLimits, DecodeLimits};
 use crate::model::FilesystemProfile;
-use crate::{AsyncObjectStore, CancellationToken, IdempotencyKey, ObjectId, StagedContent};
+use crate::{
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, IdempotencyKey, ObjectId,
+    StagedContent, StreamAuthorityStore, Workspace,
+};
+
+/// Authority adapter that retains filesystem state in the canonical public hierarchical Stream provider.
+pub trait StreamBackedAuthority: AsyncAuthorityStore {
+    /// Exact Stream implementation used by this deployment.
+    type Stream: acyclic_stream::StreamProvider;
+
+    /// Returns the shared provider; no shadow log or multipart catalog is created.
+    fn stream_provider(&self) -> Arc<Self::Stream>;
+}
+
+impl<P: crate::distributed::AuthorityProvider> StreamBackedAuthority for StreamAuthorityStore<P> {
+    type Stream = P;
+
+    fn stream_provider(&self) -> Arc<Self::Stream> {
+        self.provider()
+    }
+}
+
+impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
+    /// Returns the canonical Stream provider that stores multipart upload records.
+    pub fn multipart_stream_provider(&self) -> Arc<A::Stream> {
+        self.volume.fs.authority().stream_provider()
+    }
+
+    /// Authenticates the immutable objects retained by active multipart uploads.
+    pub async fn active_multipart_objects(
+        &self,
+        protocol_limits: FilesystemS3Limits,
+        retention_limits: S3MultipartRetentionLimits,
+        budget: crate::WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MultipartStorageResult<crate::OperationReceipt<Vec<ObjectId>>> {
+        active_s3_multipart_objects(
+            self.multipart_stream_provider().as_ref(),
+            self.volume.fs.objects(),
+            protocol_limits,
+            retention_limits,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+}
 
 pub const MULTIPART_RECORD_VERSION: u8 = 1;
 

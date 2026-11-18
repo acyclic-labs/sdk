@@ -648,55 +648,53 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
     );
     S3::create_multipart_upload(&restarted, bounded_discovery).await?;
 
-    let stream = restarted
+    let cancellation = CancellationToken::new();
+    assert!(
+        restarted
+            .resolver
+            .principal
+            .workspace
+            .active_multipart_objects(
+                FilesystemS3Limits::default(),
+                S3MultipartRetentionLimits {
+                    maximum_uploads: Some(1),
+                    ..S3MultipartRetentionLimits::default()
+                },
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        restarted
+            .resolver
+            .principal
+            .workspace
+            .active_multipart_objects(
+                FilesystemS3Limits::default(),
+                S3MultipartRetentionLimits {
+                    maximum_object_bytes: Some(1),
+                    ..S3MultipartRetentionLimits::default()
+                },
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .is_err()
+    );
+    let active = restarted
         .resolver
         .principal
         .workspace
-        .volume
-        .fs
-        .authority()
-        .stream_provider();
-    let cancellation = CancellationToken::new();
-    assert!(
-        active_s3_multipart_objects(
-            stream.as_ref(),
-            restarted.resolver.principal.workspace.volume.fs.objects(),
+        .active_multipart_objects(
             FilesystemS3Limits::default(),
-            S3MultipartRetentionLimits {
-                maximum_uploads: Some(1),
-                ..S3MultipartRetentionLimits::default()
-            },
+            S3MultipartRetentionLimits::default(),
             acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
-        .is_err()
-    );
-    assert!(
-        active_s3_multipart_objects(
-            stream.as_ref(),
-            restarted.resolver.principal.workspace.volume.fs.objects(),
-            FilesystemS3Limits::default(),
-            S3MultipartRetentionLimits {
-                maximum_object_bytes: Some(1),
-                ..S3MultipartRetentionLimits::default()
-            },
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .is_err()
-    );
-    let active = active_s3_multipart_objects(
-        stream.as_ref(),
-        restarted.resolver.principal.workspace.volume.fs.objects(),
-        FilesystemS3Limits::default(),
-        S3MultipartRetentionLimits::default(),
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
-    .map_err(multipart_storage_error)?;
+        .map_err(multipart_storage_error)?;
     assert!(active.value.len() >= 4);
     assert!(active.work.authority_records_read >= 4);
     assert!(active.work.authority_bytes_read > 0);
@@ -742,18 +740,20 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
     );
     S3::complete_multipart_upload(&restarted, complete).await?;
     assert!(
-        active_s3_multipart_objects(
-            stream.as_ref(),
-            restarted.resolver.principal.workspace.volume.fs.objects(),
-            FilesystemS3Limits::default(),
-            S3MultipartRetentionLimits::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(multipart_storage_error)?
-        .value
-        .is_empty()
+        restarted
+            .resolver
+            .principal
+            .workspace
+            .active_multipart_objects(
+                FilesystemS3Limits::default(),
+                S3MultipartRetentionLimits::default(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(multipart_storage_error)?
+            .value
+            .is_empty()
     );
 
     let response = S3::get_object(
@@ -805,28 +805,22 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
         .headers
         .insert(IDEMPOTENCY_HEADER, HeaderValue::from_static("staged"));
     S3::upload_part(&adapter, staged).await?;
-    let stream = adapter
-        .resolver
-        .principal
-        .workspace
-        .volume
-        .fs
-        .authority()
-        .stream_provider();
     let cancellation = CancellationToken::new();
     assert!(
-        !active_s3_multipart_objects(
-            stream.as_ref(),
-            adapter.resolver.principal.workspace.volume.fs.objects(),
-            FilesystemS3Limits::default(),
-            S3MultipartRetentionLimits::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(multipart_storage_error)?
-        .value
-        .is_empty()
+        !adapter
+            .resolver
+            .principal
+            .workspace
+            .active_multipart_objects(
+                FilesystemS3Limits::default(),
+                S3MultipartRetentionLimits::default(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(multipart_storage_error)?
+            .value
+            .is_empty()
     );
     let mut abort = request(AbortMultipartUploadInput {
         bucket: "bucket".to_owned(),
@@ -839,18 +833,20 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
         .insert(IDEMPOTENCY_HEADER, HeaderValue::from_static("abort"));
     S3::abort_multipart_upload(&adapter, abort).await?;
     assert!(
-        active_s3_multipart_objects(
-            stream.as_ref(),
-            adapter.resolver.principal.workspace.volume.fs.objects(),
-            FilesystemS3Limits::default(),
-            S3MultipartRetentionLimits::default(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(multipart_storage_error)?
-        .value
-        .is_empty()
+        adapter
+            .resolver
+            .principal
+            .workspace
+            .active_multipart_objects(
+                FilesystemS3Limits::default(),
+                S3MultipartRetentionLimits::default(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(multipart_storage_error)?
+            .value
+            .is_empty()
     );
     let mut upload = request(UploadPartInput {
         body: Some(body(Bytes::from_static(b"late"))),

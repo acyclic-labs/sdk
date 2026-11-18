@@ -70,7 +70,7 @@ where
         upload_id: &str,
     ) -> S3Result<MultipartSnapshot> {
         let path = Self::multipart_path(workspace, upload_id)?;
-        let provider = workspace.volume.fs.authority().stream_provider();
+        let provider = workspace.multipart_stream_provider();
         read_multipart_snapshot(provider.as_ref(), path, self.limits)
             .await
             .map_err(multipart_storage_error)
@@ -84,7 +84,7 @@ where
         record: Bytes,
         operation: acyclic_stream::IdempotencyKey,
     ) -> S3Result<bool> {
-        let provider = workspace.volume.fs.authority().stream_provider();
+        let provider = workspace.multipart_stream_provider();
         match provider
             .append(acyclic_stream::AppendRequest {
                 path: Self::multipart_path(workspace, upload_id)?,

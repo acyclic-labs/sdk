@@ -1,5 +1,8 @@
 /// Authenticates and returns every immutable object retained by active multipart Stream state.
-pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: AsyncObjectStore>(
+pub(crate) async fn active_s3_multipart_objects<
+    P: acyclic_stream::StreamProvider,
+    O: AsyncObjectStore,
+>(
     provider: &P,
     objects: &O,
     protocol_limits: FilesystemS3Limits,
