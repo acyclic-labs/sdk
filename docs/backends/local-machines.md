@@ -70,7 +70,7 @@ this binding's own process control are stopped, and nothing else on the host is
 touched. An implicit wake is the provider's own transition and completes even
 when the exec whose deadline triggered it has stopped waiting.
 
-Run `cargo test -p acyclic-machines --features conformance --lib`.
+Run `bazel test //rust/crates/machines:acyclic_machines_test`.
 Real-process controls cover binary channels/input, exit, source buffer identity,
 stop with withheld output credit, file offsets, expired writes, conditional
 single-owner enrollment, FIFO refusal, blocked physical IO, original-result

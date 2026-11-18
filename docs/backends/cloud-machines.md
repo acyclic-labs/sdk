@@ -118,9 +118,9 @@ watch observation is delivered on its own pull credit.
 Run the shared lifecycle and protocol checks with:
 
 ```sh
-cargo test --locked -p acyclic-machines --features conformance --lib
-cargo check --locked -p acyclic-machines --no-default-features --features javascript --target wasm32-unknown-unknown
-cargo test --locked -p acyclic-harness-core --lib --no-run
+bazel test //rust/crates/machines:acyclic_machines_test
+bazel build --config=check --platforms=//:wasm32 //rust/crates/machines:acyclic_machines_wasm
+bazel build //rust/crates/harness-core:acyclic_harness_core_test_cases
 ```
 
 The protocol tests use internal HTTP/2 service vectors, not captured provider
