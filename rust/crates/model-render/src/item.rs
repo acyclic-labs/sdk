@@ -198,13 +198,11 @@ impl WireItem {
                 _ => return None,
             };
             let parts = turn.parts?.get();
-            if !parts.starts_with('[') || !parts.ends_with(']') {
-                return None;
-            }
+            let contents = parts.strip_prefix('[')?.strip_suffix(']')?;
             Some(GeminiTurn {
                 model,
                 parts_end: parts.as_ptr() as usize - wire.get().as_ptr() as usize + parts.len() - 1,
-                empty: parts[1..parts.len() - 1].trim().is_empty(),
+                empty: contents.trim().is_empty(),
             })
         };
         let native =

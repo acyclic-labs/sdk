@@ -77,55 +77,65 @@ impl PendingNotices {
     /// Consumes the batch. Latest metadata wins; changed paths form a union.
     /// Surviving notices keep their last publication's order. Waking events
     /// and unkeyed events are never collapsed. No history cursor is advanced.
+    ///
+    /// # Panics
+    /// Panics if the internal radix partition violates its bucket bounds.
     pub fn finish(self) -> Vec<Notice> {
+        let Ok(notices) = self.partition() else {
+            unreachable!("notice radix partition violated its bucket bounds");
+        };
+        notices
+    }
+
+    fn partition(self) -> Result<Vec<Notice>, RenderError> {
         let mut result: Vec<Option<Notice>> = (0..self.0.len()).map(|_| None).collect();
         let mut keyed = Vec::new();
-        for (position, notice) in self.0.into_iter().enumerate() {
+        for (position, (notice, destination)) in self.0.into_iter().zip(&mut result).enumerate() {
             if notice.coalesce_key.is_some() && !notice.wake {
-                keyed.push((position, notice));
+                keyed.push((position, notice, destination));
             } else {
-                result[position] = Some(notice);
+                *destination = Some(notice);
             }
         }
-        radix(&mut keyed, |(_, notice)| {
+        radix(&mut keyed, |(_, notice, _)| {
             notice
                 .coalesce_key
                 .as_deref()
                 .unwrap_or_default()
                 .as_bytes()
-        });
-        let mut merged: Option<Group> = None;
-        for (position, notice) in keyed {
+        })?;
+        let mut merged: Option<Group<'_>> = None;
+        for (position, notice, destination) in keyed {
             if let Some(group) = &mut merged
                 && group.latest.coalesce_key == notice.coalesce_key
             {
-                group.push(position, notice);
+                group.push(position, notice, destination);
                 continue;
             }
             if let Some(group) = merged.take() {
-                let (position, notice) = group.finish();
-                result[position] = Some(notice);
+                group.finish()?;
             }
-            merged = Some(Group::new(position, notice));
+            merged = Some(Group::new(position, notice, destination));
         }
         if let Some(group) = merged {
-            let (position, notice) = group.finish();
-            result[position] = Some(notice);
+            group.finish()?;
         }
-        result.into_iter().flatten().collect()
+        Ok(result.into_iter().flatten().collect())
     }
 }
 
-struct Group {
+struct Group<'a> {
     position: usize,
+    destination: &'a mut Option<Notice>,
     latest: Notice,
     paths: Vec<Value>,
     has_paths: bool,
 }
-impl Group {
-    fn new(position: usize, notice: Notice) -> Self {
+impl<'a> Group<'a> {
+    fn new(position: usize, notice: Notice, destination: &'a mut Option<Notice>) -> Self {
         let mut group = Self {
             position,
+            destination,
             latest: notice,
             paths: Vec::new(),
             has_paths: false,
@@ -141,9 +151,10 @@ impl Group {
             self.paths.extend(paths);
         }
     }
-    fn push(&mut self, position: usize, mut notice: Notice) {
+    fn push(&mut self, position: usize, mut notice: Notice, destination: &'a mut Option<Notice>) {
         if position > self.position {
             self.position = position;
+            self.destination = destination;
             self.latest = notice;
             self.take_paths();
         } else if let Some(body) = notice.body.as_object_mut()
@@ -153,24 +164,26 @@ impl Group {
             self.paths.extend(paths);
         }
     }
-    fn finish(mut self) -> (usize, Notice) {
+    fn finish(mut self) -> Result<(), RenderError> {
         if self.has_paths
             && let Some(body) = self.latest.body.as_object_mut()
         {
             radix(&mut self.paths, |path| {
                 path.as_str().unwrap_or_default().as_bytes()
-            });
+            })?;
             self.paths.dedup();
             body.insert("paths".into(), Value::Array(self.paths));
         }
-        (self.position, self.latest)
+        *self.destination = Some(self.latest);
+        Ok(())
     }
 }
 
 // In-place byte radix partition. Each edge has a fixed 257-symbol alphabet
 // (end plus every byte); comparisons and work cannot grow with key population.
 // Explicit ranges also avoid recursion for arbitrarily long common prefixes.
-fn radix<T>(items: &mut [T], key: impl Fn(&T) -> &[u8]) {
+fn radix<T>(items: &mut [T], key: impl Fn(&T) -> &[u8]) -> Result<(), RenderError> {
+    let invalid = || RenderError::InvalidItem("inconsistent notice radix partition");
     let mut ranges = vec![(0, items.len(), 0)];
     while let Some((start, end, depth)) = ranges.pop() {
         if end - start < 2 {
@@ -182,32 +195,42 @@ fn radix<T>(items: &mut [T], key: impl Fn(&T) -> &[u8]) {
                 .map_or(0, |byte| usize::from(*byte) + 1)
         };
         let mut counts = [0usize; 257];
-        for item in &items[start..end] {
-            counts[symbol(item)] += 1;
+        for item in items.get(start..end).ok_or_else(invalid)? {
+            *counts.get_mut(symbol(item)).ok_or_else(invalid)? += 1;
         }
         let mut begins = [start; 257];
         let mut offset = start;
-        for bucket in 0..257 {
-            begins[bucket] = offset;
-            offset += counts[bucket];
+        for (begin, count) in begins.iter_mut().zip(counts) {
+            *begin = offset;
+            offset += count;
         }
         let mut next = begins;
-        for bucket in 0..257 {
-            let limit = begins[bucket] + counts[bucket];
-            while next[bucket] < limit {
-                let actual = symbol(&items[next[bucket]]);
+        for (bucket, (begin, count)) in begins.into_iter().zip(counts).enumerate() {
+            let limit = begin + count;
+            loop {
+                let position = next.get_mut(bucket).ok_or_else(invalid)?;
+                if *position >= limit {
+                    break;
+                }
+                let actual = symbol(items.get(*position).ok_or_else(invalid)?);
                 if actual == bucket {
-                    next[bucket] += 1;
+                    *position += 1;
                 } else {
-                    items.swap(next[bucket], next[actual]);
-                    next[actual] += 1;
+                    let position = *position;
+                    let destination = next.get_mut(actual).ok_or_else(invalid)?;
+                    let [source, target] = items
+                        .get_disjoint_mut([position, *destination])
+                        .map_err(|_| invalid())?;
+                    std::mem::swap(source, target);
+                    *destination += 1;
                 }
             }
-            if bucket != 0 && counts[bucket] > 1 {
-                ranges.push((begins[bucket], limit, depth + 1));
+            if bucket != 0 && count > 1 {
+                ranges.push((begin, limit, depth + 1));
             }
         }
     }
+    Ok(())
 }
 
 fn escaped(output: &mut String, text: &str) {
