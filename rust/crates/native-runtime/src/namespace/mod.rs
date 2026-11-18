@@ -353,7 +353,7 @@ pub(crate) fn sync_rename_parents(
         if let Some(meter) = meter {
             meter.check()?;
             meter.admit_read(0)?;
-            let directory = File::open(parent)?;
+            let directory = crate::file::open_directory_for_sync(parent)?;
             sync_file(&directory, Durability::Full, Some(meter.as_ref()))
         } else {
             sync_parent(parent, Durability::Full)

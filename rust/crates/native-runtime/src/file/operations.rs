@@ -258,7 +258,9 @@ fn sync_filesystem_impl(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Flushes the directory entry namespace on platforms exposing directory flushes.
+/// Flushes entries in the directory at `path` after affected files have been
+/// flushed. The opened descriptor must name a directory. Callers must flush
+/// newly created ancestors separately. An error leaves durability unknown.
 pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
     #[cfg(feature = "test-support")]
     return testing::durable_flush("file:sync_parent", || sync_parent_ordered(path, durability));
@@ -273,7 +275,12 @@ fn sync_parent_ordered(path: &Path, durability: Durability) -> io::Result<()> {
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.in_scope(|| operation.finish(sync_parent_impl(path, durability)))
+    operation.in_scope(|| {
+        // Keep descriptor admission and the flush inside the same fault boundary.
+        operation.finish(open_directory_for_sync(path).and_then(|directory| {
+            sync_file_impl(SyncTarget::Borrowed(&directory), durability, None).map(|_| ())
+        }))
+    })
 }
 
 /// Reads at an absolute offset without changing the file cursor.
@@ -623,13 +630,17 @@ pub(crate) fn read_at_impl(
 }
 
 #[cfg(unix)]
-pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
-    // sync_parent owns the fault boundary; never wrap the flush a second time.
-    sync_file_impl(SyncTarget::Borrowed(&File::open(path)?), durability, None).map(|_| ())
+pub(crate) fn open_directory_for_sync(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    File::options()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY)
+        .open(path)
 }
 
 #[cfg(windows)]
-pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
+pub(crate) fn open_directory_for_sync(path: &Path) -> io::Result<File> {
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt as _;
 
@@ -641,5 +652,9 @@ pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Resul
         .share_mode(FILE_SHARE_READ_WRITE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
-    sync_file_impl(SyncTarget::Borrowed(&directory), durability, None).map(|_| ())
+    // BACKUP_SEMANTICS also opens regular files. Validate the held handle.
+    if !directory.metadata()?.is_dir() {
+        return Err(io::ErrorKind::NotADirectory.into());
+    }
+    Ok(directory)
 }
