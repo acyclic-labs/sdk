@@ -172,7 +172,11 @@ pub(super) async fn read(
     };
     let mut vector_hold = edit::allocation(work, std::mem::size_of::<Page<'_>>())?;
     let mut entries = Vec::new();
-    edit::reserve_vec(&mut vector_hold, &mut entries, page.entries.len())?;
+    edit::reserve_vec(
+        &mut vector_hold,
+        &mut entries,
+        page.entries.len().min(limit as usize),
+    )?;
     let mut remaining = page
         .entries
         .iter()
