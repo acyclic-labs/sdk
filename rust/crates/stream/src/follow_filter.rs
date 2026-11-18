@@ -1,5 +1,5 @@
 use crate::{RecordHeaders, StreamError};
-use acyclic_stream_wire::filter::{FilterError, canonical};
+use acyclic_stream_wire::filter::{FilterError, canonical, exclusive_key_end};
 use acyclic_stream_wire::wire;
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -21,21 +21,7 @@ impl FollowFilter {
     /// Select one exact key, including empty and maximum-length keys. This
     /// shares the canonical range representation used by remote sessions.
     pub fn exact_key(key: bytes::Bytes) -> Result<Self, StreamError> {
-        if key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
-        let mut end = key.to_vec();
-        if end.len() < acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
-            end.push(0);
-        } else if let Some(index) = end.iter().rposition(|byte| *byte != u8::MAX) {
-            if let Some(byte) = end.get_mut(index) {
-                *byte += 1;
-            }
-            end.truncate(index + 1);
-        } else {
-            // No longer keys are admitted; the greatest legal key is last.
-            end.clear();
-        }
+        let end = exclusive_key_end(&key)?;
         Self::new(wire::SessionFilter {
             keys: vec![wire::KeyRange {
                 start: key,
@@ -397,8 +383,7 @@ fn projection_range(key: &[u8]) -> Result<wire::KeyRange, StreamError> {
     if key.len() >= acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
         return Err(StreamError::InvalidArgument);
     }
-    let mut end = key.to_vec();
-    end.push(0);
+    let end = exclusive_key_end(key)?;
     Ok(wire::KeyRange {
         start: bytes::Bytes::copy_from_slice(key),
         end: end.into(),

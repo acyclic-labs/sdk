@@ -2,7 +2,7 @@
 
 use prost::Message as _;
 
-use crate::wire;
+use crate::{headers::MAX_RECORD_KEY_BYTES, wire};
 
 /// A filter cannot be represented by the wire contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,4 +68,28 @@ pub fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter,
         attribute.any_of.dedup();
     }
     Ok(filter)
+}
+
+/// Returns the exclusive upper bound selecting exactly one legal record key.
+/// An empty bound is unbounded when the input is the greatest legal key.
+///
+/// # Errors
+/// Returns a size error for a key beyond the wire limit.
+pub fn exclusive_key_end(key: &[u8]) -> Result<Vec<u8>, FilterError> {
+    if key.len() > MAX_RECORD_KEY_BYTES {
+        return Err(FilterError::Limit);
+    }
+    let mut end = key.to_vec();
+    if end.len() < MAX_RECORD_KEY_BYTES {
+        end.push(0);
+    } else if let Some(index) = end.iter().rposition(|byte| *byte != u8::MAX) {
+        if let Some(byte) = end.get_mut(index) {
+            *byte += 1;
+        }
+        end.truncate(index + 1);
+    } else {
+        // No longer keys are admitted; the greatest legal key is last.
+        end.clear();
+    }
+    Ok(end)
 }
