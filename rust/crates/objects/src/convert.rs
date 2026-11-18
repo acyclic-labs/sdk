@@ -2,6 +2,7 @@
 
 use crate::Part;
 use crate::blob::invalid;
+use crate::error::unavailable;
 use crate::{
     ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
 };
@@ -352,7 +353,7 @@ pub(crate) fn object(
             && selected.end == head.length
             && Digest::of(&value.body) != requested)
     {
-        return Err(wire::ErrorCode::Unavailable.into());
+        return Err(unavailable());
     }
     Ok(crate::Object::new(head, value.start, value.body.into()))
 }
@@ -369,7 +370,7 @@ pub(crate) fn verified_put(
         .verified()
         .is_some_and(|verified| verified.digest != requested || verified.length != length)
     {
-        return Err(wire::ErrorCode::Unavailable.into());
+        return Err(unavailable());
     }
     Ok(put.committed_at(revision))
 }
@@ -411,7 +412,7 @@ pub(crate) fn verified_puts(
     revision: Option<&Revision>,
 ) -> Result<Vec<Result<Put, Error>>, Error> {
     if value.results.len() != expected.len() {
-        return Err(wire::ErrorCode::Unavailable.into());
+        return Err(unavailable());
     }
     value
         .results
@@ -421,10 +422,10 @@ pub(crate) fn verified_puts(
             Some(wire::put_result::Outcome::Put(put)) => {
                 Ok(Ok(verified_put(&put, digest, length, revision.cloned())?))
             }
-            Some(wire::put_result::Outcome::Error(detail)) => Error::from_detail(detail)
-                .map(Err)
-                .ok_or_else(|| wire::ErrorCode::Unavailable.into()),
-            None => Err(wire::ErrorCode::Unavailable.into()),
+            Some(wire::put_result::Outcome::Error(detail)) => {
+                Error::from_detail(detail).map(Err).ok_or_else(unavailable)
+            }
+            None => Err(unavailable()),
         })
         .collect()
 }
@@ -437,7 +438,7 @@ pub(crate) fn headed(
 ) -> Result<Head, Error> {
     let head = head(value, revision)?;
     if head.digest != requested {
-        return Err(wire::ErrorCode::Unavailable.into());
+        return Err(unavailable());
     }
     Ok(head)
 }
@@ -456,7 +457,7 @@ pub(crate) fn listed(
                 || page.next.is_some_and(|next| next <= after)
         })
     {
-        return Err(wire::ErrorCode::Unavailable.into());
+        return Err(unavailable());
     }
     Ok(page)
 }
