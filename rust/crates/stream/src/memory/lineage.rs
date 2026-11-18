@@ -106,14 +106,13 @@ impl<I: LineageIndex> IndexLineage<I> {
     ) -> Result<(I, bool), StreamError> {
         match &self.shared {
             Some(shared) if self.before.is_none() && shared.owner == *path => {
-                let newest = shared.with(|newest| {
+                shared.with(|newest| {
                     if newest.generation == self.generation {
                         Ok((newest.index.clone(), true))
                     } else {
                         newest.index.cut(tail, work).map(|index| (index, false))
                     }
-                });
-                newest
+                })
             }
             _ => self.pin(tail, work).map(|index| (index, false)),
         }

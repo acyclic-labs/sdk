@@ -76,6 +76,9 @@ pub(crate) struct Position<'a, V, A, const N: usize, C, K> {
     pub(crate) value_before: Option<C>,
 }
 
+type PositionResult<'a, V, A, const N: usize, C, K, E> =
+    Result<Option<Position<'a, V, A, N, C, K>>, E>;
+
 impl<'a, V, A, const N: usize> Position<'a, V, A, N, std::convert::Infallible, [u8; N]> {
     fn unqualified(self) -> PersistentPosition<'a, V, N> {
         PersistentPosition {
@@ -425,7 +428,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
         &self,
         key: &[u8; N],
         work: &mut W,
-    ) -> Result<Option<Position<'_, V, A, N, C, K>>, W::Error> {
+    ) -> PositionResult<'_, V, A, N, C, K, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before: Option<Arc<Cut<K, A>>> = None;
@@ -476,7 +479,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<Position<'_, V, A, N, C, K>>, W::Error> {
+    ) -> PositionResult<'_, V, A, N, C, K, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before = self.before.clone();
@@ -533,7 +536,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<Position<'_, V, A, N, C, K>>, W::Error> {
+    ) -> PositionResult<'_, V, A, N, C, K, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before: Option<Arc<Cut<K, A>>> = None;
