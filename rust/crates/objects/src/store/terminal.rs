@@ -54,19 +54,18 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         format!("{}t/{root_hash}", self.state.prefix)
     }
 
-    async fn terminal_observed(&self, root_hash: &str) -> Result<(Fence, Observed<'_>), Error> {
-        let key = self.terminal_key(root_hash);
-        let mut observed = self.medium.observe(key.clone()).await.map_err(medium)?;
+    async fn terminal_observed(&self, key: &str) -> Result<(Fence, Observed<'_>), Error> {
+        let mut observed = self.medium.observe(key.to_owned()).await.map_err(medium)?;
         if observed.is_none() {
             let initial = Fence {
                 terminal: None,
                 nonce: version()?,
             };
             self.medium
-                .create(&key, initial.encode())
+                .create(key, initial.encode())
                 .await
                 .map_err(moved)?;
-            observed = self.medium.observe(key).await.map_err(medium)?;
+            observed = self.medium.observe(key.to_owned()).await.map_err(medium)?;
         }
         let observed = observed.ok_or_else(changed)?;
         Ok((Fence::decode(&observed.bytes)?, observed))
@@ -170,7 +169,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let digest = Digest::of(root.as_bytes());
         let encoded = digest.encoded_hex();
         let root_hash = encoded.as_ref();
-        let (state, observed) = self.terminal_observed(root_hash).await?;
+        let terminal_key = self.terminal_key(root_hash);
+        let (state, observed) = self.terminal_observed(&terminal_key).await?;
         state.require_open(fence)?;
         self.medium
             .allocate(references.len() as u64 * 32)
@@ -184,15 +184,15 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         if !self.terminal_replace(observed, state.terminal).await? {
             self.remove_fenced_batch(&key, root_hash, &name, &references)
                 .await?;
-            let (current, _) = self.terminal_observed(root_hash).await?;
+            let (current, _) = self.terminal_observed(&terminal_key).await?;
             current.require_open(fence)?;
             return Err(changed());
         }
         self.medium
-            .flush(&[self.terminal_key(root_hash)])
+            .flush(std::slice::from_ref(&terminal_key))
             .await
             .map_err(medium)?;
-        let (current, _) = self.terminal_observed(root_hash).await?;
+        let (current, _) = self.terminal_observed(&terminal_key).await?;
         if let Err(error) = current.require_open(fence) {
             self.remove_fenced_batch(&key, root_hash, &name, &references)
                 .await?;
@@ -211,14 +211,15 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let digest = Digest::of(root.as_bytes());
         let encoded = digest.encoded_hex();
         let root_hash = encoded.as_ref();
-        let (state, observed) = self.terminal_observed(root_hash).await?;
+        let terminal_key = self.terminal_key(root_hash);
+        let (state, observed) = self.terminal_observed(&terminal_key).await?;
         if state.terminal.is_none_or(|current| fence > current)
             && !self.terminal_replace(observed, Some(fence)).await?
         {
             return Err(changed());
         }
         self.medium
-            .flush(&[self.terminal_key(root_hash)])
+            .flush(std::slice::from_ref(&terminal_key))
             .await
             .map_err(medium)?;
         let mut pages = self.pages(self.fenced_prefix(root_hash));
