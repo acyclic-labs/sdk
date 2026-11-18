@@ -118,7 +118,7 @@ mod format_recovery_tests {
         let batch = encode_batch(&[]);
         let batch_key = format!(
             "{}batch",
-            account.root_prefix(&RootId::new(b"root".to_vec())?)
+            account.root_prefix(&Digest::of(b"root").to_hex())
         );
         account.issued().await?;
         for (key, original) in [(&envelope_key, &envelope), (&batch_key, &batch)] {
@@ -854,8 +854,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         format!("{}{kind}/{}/{hex}{suffix}", self.state.prefix, &hex[..2])
     }
 
-    fn root_prefix(&self, root: &RootId) -> String {
-        format!("{}r/{}/", self.state.prefix, Digest::of(root.as_bytes()))
+    fn root_prefix(&self, root_hash: &str) -> String {
+        format!("{}r/{root_hash}/", self.state.prefix)
     }
 
     /// Whether any key exists under `prefix`.
@@ -874,8 +874,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     /// The `i/` holder tag of the root batch named `batch`.
-    fn batch_tag(root: &RootId, batch: &str) -> String {
-        format!("r{}.{batch}", Digest::of(root.as_bytes()))
+    fn batch_tag(root_hash: &str, batch: &str) -> String {
+        format!("r{root_hash}.{batch}")
     }
 
     /// Marks `tag` as holding each of `children`, then admits them: refused
@@ -1620,8 +1620,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 // Each retain owns its batch and keys, so a concurrent release of an
                 // equal batch never removes them.
                 let name = format!("{}.{}", Digest::of(&batch), nonce()?);
-                let tag = Self::batch_tag(root, &name);
-                let key = format!("{}{name}", self.root_prefix(root));
+                let root_digest = Digest::of(root.as_bytes());
+                let encoded = root_digest.encoded_hex();
+                let root_hash = encoded.as_ref();
+                let tag = Self::batch_tag(root_hash, &name);
+                let key = format!("{}{name}", self.root_prefix(root_hash));
                 self.commit_retention(&references, &tag, &key, batch, 0)
                     .await?;
                 Ok(Retained {
@@ -1918,7 +1921,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             async {
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                let batches = self.list_all(&self.root_prefix(root)).await?;
+                let root_digest = Digest::of(root.as_bytes());
+                let encoded = root_digest.encoded_hex();
+                let root_hash = encoded.as_ref();
+                let batches = self.list_all(&self.root_prefix(root_hash)).await?;
                 let mut removed = Vec::new();
                 for (key, _) in &batches {
                     let Some(references) = self.batch(key).await? else {
@@ -1933,7 +1939,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 self.medium.flush(&batch_keys).await.map_err(medium)?;
                 let mut index_keys = Vec::new();
                 for (key, references) in &removed {
-                    let tag = Self::batch_tag(root, key.rsplit('/').next().ok_or_else(corrupt)?);
+                    let tag =
+                        Self::batch_tag(root_hash, key.rsplit('/').next().ok_or_else(corrupt)?);
                     self.unreference(references, &tag).await?;
                     index_keys.extend(references.iter().map(|child| self.index_key(child, &tag)));
                 }
