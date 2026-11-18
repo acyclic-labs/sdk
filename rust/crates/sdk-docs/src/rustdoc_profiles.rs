@@ -190,19 +190,27 @@ pub struct ProfileId(pub String);
 
 impl ProfileSpec {
     pub fn id(&self) -> ProfileId {
-        let features = self
-            .features
-            .iter()
-            .map(|feature| crate::format_digest(&[], feature.as_bytes(), ""))
-            .collect::<Vec<_>>()
-            .join(",");
-        ProfileId(format!(
-            "p{};t{};d{};f{}",
-            crate::format_digest(&[], self.package.as_bytes(), ""),
-            crate::format_digest(&[], self.target.as_bytes(), ""),
-            u8::from(self.default_features),
-            features
-        ))
+        use crate::digest::push_hex;
+
+        let name_bytes = self.package.len()
+            + self.target.len()
+            + self.features.iter().map(String::len).sum::<usize>();
+        let separators = self.features.len().saturating_sub(1);
+        let mut id = String::with_capacity("p;t;d0;f".len() + 2 * name_bytes + separators);
+        id.push('p');
+        push_hex(&mut id, self.package.as_bytes());
+        id.push_str(";t");
+        push_hex(&mut id, self.target.as_bytes());
+        id.push_str(";d");
+        id.push(if self.default_features { '1' } else { '0' });
+        id.push_str(";f");
+        for (index, feature) in self.features.iter().enumerate() {
+            if index != 0 {
+                id.push(',');
+            }
+            push_hex(&mut id, feature.as_bytes());
+        }
+        ProfileId(id)
     }
 }
 

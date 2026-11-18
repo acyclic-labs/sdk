@@ -6,11 +6,15 @@ pub fn format_digest(prefixes: &[&str], digest: &[u8], suffix: &str) -> String {
     for prefix in prefixes {
         result.push_str(prefix);
     }
-    for &byte in digest {
-        push_hex_byte(&mut result, byte);
-    }
+    push_hex(&mut result, digest);
     result.push_str(suffix);
     result
+}
+
+pub(crate) fn push_hex(result: &mut String, bytes: &[u8]) {
+    for &byte in bytes {
+        push_hex_byte(result, byte);
+    }
 }
 
 pub(crate) fn push_hex_byte(result: &mut String, byte: u8) {

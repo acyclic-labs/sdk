@@ -32,12 +32,8 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
 
     for package in public_roots {
         let package_name = package.name.as_ref();
-        let declared = package
-            .features
-            .keys()
-            .filter(|feature| feature.as_str() != "default")
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        let declared_count =
+            package.features.len() - usize::from(package.features.contains_key("default"));
         let mut ids = BTreeSet::new();
         let mut count = None;
         for target in &targets {
@@ -47,21 +43,25 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
                 assert!(profiles[0].default_features);
                 assert!(profiles[0].features.is_empty());
             }
-            assert!(profiles.len() <= declared.len() + 3, "{package_name}");
+            assert!(profiles.len() <= declared_count + 3, "{package_name}");
             assert_eq!(*count.get_or_insert(profiles.len()), profiles.len());
+            let mut covered = BTreeSet::<&str>::new();
+            let mut has_all_features = false;
             for profile in &profiles {
                 assert_eq!(&profile.target, target);
                 assert!(ids.insert(profile.id()));
-                assert!(profile.features.is_subset(&declared));
+                assert!(profile
+                    .features
+                    .iter()
+                    .all(|feature| feature != "default" && package.features.contains_key(feature)));
+                if profile.default_features {
+                    has_all_features |= profile.features.len() == declared_count;
+                } else {
+                    covered.extend(profile.features.iter().map(String::as_str));
+                }
             }
-            for feature in &declared {
-                assert!(profiles.iter().any(|profile| {
-                    !profile.default_features && profile.features.contains(feature)
-                }));
-            }
-            assert!(profiles
-                .iter()
-                .any(|profile| profile.default_features && profile.features == declared));
+            assert_eq!(covered.len(), declared_count, "{package_name}: {target}");
+            assert!(has_all_features, "{package_name}: {target}");
         }
     }
 }
