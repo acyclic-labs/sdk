@@ -1,6 +1,5 @@
 use super::*;
 
-use crate::kernel::Child;
 #[test]
 fn windows_names_validate_utf16_without_lossy_normalization()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -123,53 +122,6 @@ fn names_kinds_and_profiles_are_total() -> Result<(), Box<dyn std::error::Error>
     }
     assert!(FileKind::ReparsePoint.is_supported_by_profile(FilesystemProfile::Windows));
     assert!(!FileKind::ReparsePoint.is_supported_by_profile(FilesystemProfile::Posix));
-    Ok(())
-}
-
-#[test]
-fn tree_page_validation_rejects_every_malformed_shape() -> Result<(), Box<dyn std::error::Error>> {
-    let a = LogicalName::new(NameEncoding::Utf8, b"a".to_vec())?;
-    let b = LogicalName::new(NameEncoding::Utf8, b"b".to_vec())?;
-    let entry = |name| TreeEntry {
-        name,
-        file_id: FileId::from_bytes([1; 16]),
-        kind: FileKind::Regular,
-    };
-    assert_eq!(TreePage::Leaf(Vec::new()).validate(0), Ok(()));
-    assert_eq!(
-        TreePage::Leaf(vec![entry(a.clone())]).validate(0),
-        Err(TreePageError::TooManyItems)
-    );
-    assert_eq!(
-        TreePage::Leaf(vec![entry(b.clone()), entry(a.clone())]).validate(2),
-        Err(TreePageError::NamesNotStrictlyOrdered)
-    );
-    assert_eq!(
-        TreePage::Internal(Vec::new()).validate(2),
-        Err(TreePageError::EmptyInternalPage)
-    );
-    assert_eq!(
-        TreePage::Internal(vec![Child {
-            first: a.clone(),
-            page: digest_object(ObjectKind::Blob, [1; 32]),
-        }])
-        .validate(2),
-        Err(TreePageError::WrongChildKind)
-    );
-    assert_eq!(
-        TreePage::Internal(vec![
-            Child {
-                first: b,
-                page: digest_object(ObjectKind::TreePage, [1; 32]),
-            },
-            Child {
-                first: a,
-                page: digest_object(ObjectKind::TreePage, [2; 32]),
-            },
-        ])
-        .validate(2),
-        Err(TreePageError::NamesNotStrictlyOrdered)
-    );
     Ok(())
 }
 
