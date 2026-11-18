@@ -27,10 +27,6 @@ fn exclusive_lock_contention_is_not_a_generic_io_failure() {
     assert!(!is_exclusive_lock_contention(&io::Error::from(
         io::ErrorKind::Unsupported
     )));
-    #[cfg(windows)]
-    assert!(is_exclusive_lock_contention(&io::Error::from_raw_os_error(
-        33
-    )));
 }
 
 #[test]

@@ -13,6 +13,41 @@ mod fixture;
 #[cfg(unix)]
 use fixture::{is_free, open};
 
+/// A held lock of either mode excludes only other lock holders: the file's
+/// bytes stay readable and writable through every other handle, on Windows
+/// too, where byte-range locks are mandatory for I/O on their range.
+/// Control: the whole-file lock `std` takes makes the same read fail.
+#[test]
+fn a_held_lock_leaves_file_data_readable_and_writable() -> io::Result<()> {
+    use std::io::Write as _;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("lock");
+    std::fs::write(&path, b"record")?;
+    for mode in [FileLockMode::Shared, FileLockMode::Exclusive] {
+        let held = FileLock::acquire(open(&path)?, mode)?;
+        assert_eq!(std::fs::read(&path)?, b"record");
+        OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .write_all(b"record")?;
+        assert!(!is_free(&path)?);
+        drop(held);
+    }
+    assert!(is_free(&path)?);
+
+    let raw = open(&path)?;
+    raw.lock()?;
+    let read = std::fs::read(&path);
+    raw.unlock()?;
+    if cfg!(windows) {
+        // ERROR_LOCK_VIOLATION: the oracle observes a mandatory range lock.
+        assert_eq!(read.map(drop).unwrap_err().raw_os_error(), Some(33));
+    } else {
+        assert_eq!(read?, b"record");
+    }
+    Ok(())
+}
+
 #[test]
 fn a_nonblocking_acquisition_never_waits_for_another_operation() -> io::Result<()> {
     let lock = FileLock::new(tempfile::tempfile()?);

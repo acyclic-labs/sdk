@@ -25,11 +25,22 @@ const RAW_LOCKS: [&str; 12] = [
 ];
 
 /// Exact remaining raw spellings: (file, spelling, count).
-const ALLOWED: [(&str, &str, usize); 4] = [
-    // The guard itself.
+const ALLOWED: [(&str, &str, usize); 6] = [
+    // The guard itself: the Windows byte-range lock, its unlock, and the
+    // std fallback on other platforms.
     (
         "rust/crates/native-runtime/src/file_lock.rs",
         "LockFileEx",
+        7,
+    ),
+    (
+        "rust/crates/native-runtime/src/file_lock.rs",
+        "UnlockFile",
+        3,
+    ),
+    (
+        "rust/crates/native-runtime/src/file_lock.rs",
+        "File::lock",
         1,
     ),
     (

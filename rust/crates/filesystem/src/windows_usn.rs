@@ -16,7 +16,7 @@ use crate::native_host::HostRoot;
 use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{ERROR_JOURNAL_NOT_ACTIVE, HANDLE};
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{FSCTL_QUERY_USN_JOURNAL, USN_JOURNAL_DATA_V0};
 
@@ -147,7 +147,13 @@ fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
             None,
         )
     }
-    .map_err(|error| WindowsUsnError::Native(error.to_string()))?;
+    .map_err(|error| {
+        if error.code() == ERROR_JOURNAL_NOT_ACTIVE.to_hresult() {
+            WindowsUsnError::JournalInactive
+        } else {
+            WindowsUsnError::Native(error.to_string())
+        }
+    })?;
     if returned < output_size || data.NextUsn < 0 || data.LowestValidUsn < 0 {
         return Err(WindowsUsnError::InvalidJournal);
     }
@@ -163,8 +169,8 @@ fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
 mod tests {
     use super::{
         JournalSnapshot, NativeRootIdentity, Path, WindowsUsnCheckpoint, WindowsUsnContinuity,
-        WindowsUsnDiscontinuity, capture_windows_usn_checkpoint, classify_continuity,
-        validate_windows_usn_checkpoint,
+        WindowsUsnDiscontinuity, WindowsUsnError, capture_windows_usn_checkpoint,
+        classify_continuity, validate_windows_usn_checkpoint,
     };
     use proptest::prelude::*;
 
@@ -260,7 +266,14 @@ mod tests {
                 .sync_all()
         };
 
-        let checkpoint = capture_windows_usn_checkpoint(&root)?;
+        let checkpoint = match capture_windows_usn_checkpoint(&root) {
+            Ok(checkpoint) => checkpoint,
+            // The host volume may have no active journal. The contract then
+            // refuses to certify continuity, and the caller takes the
+            // canonical baseline; prove that refusal, not a volume feature.
+            Err(WindowsUsnError::JournalInactive) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
         // This fixture owns the interleaving, not the volume: another subtree
         // can advance its journal between two reads even while this root is
         // untouched. The exact unchanged case is proved on immutable journal

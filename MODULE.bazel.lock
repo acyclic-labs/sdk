@@ -243,15 +243,53 @@
     },
     "//:node_repo.bzl%node": {
       "general": {
-        "bzlTransitiveDigest": "F9czdKVmcL8GN7NLDdlDiERNVWsr+UwRauYFkmtOUng=",
+        "bzlTransitiveDigest": "q7uYUA9zpfZYnPQBO6zleyE0sPYcKAEpmZfsBC1Cn2U=",
         "usagesDigest": "FPCFWNrWy4C6DiuAQ/J/op4V14JvAVoA3Mb+qezTQHA=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
-          "nodejs": {
-            "repoRuleId": "@@//:node_repo.bzl%_node_repository",
+          "nodejs_linux_x86_64": {
+            "repoRuleId": "@@//:node_repo.bzl%_node_release",
             "attributes": {
-              "version": "24.22.2"
+              "version": "24.22.2",
+              "release": "linux-x64",
+              "suffix": "tar.xz",
+              "sha256": "48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75",
+              "node": "bin/node"
             }
+          },
+          "nodejs_macos_aarch64": {
+            "repoRuleId": "@@//:node_repo.bzl%_node_release",
+            "attributes": {
+              "version": "24.22.2",
+              "release": "darwin-arm64",
+              "suffix": "tar.gz",
+              "sha256": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a",
+              "node": "bin/node"
+            }
+          },
+          "nodejs_macos_x86_64": {
+            "repoRuleId": "@@//:node_repo.bzl%_node_release",
+            "attributes": {
+              "version": "24.22.2",
+              "release": "darwin-x64",
+              "suffix": "tar.gz",
+              "sha256": "d5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52",
+              "node": "bin/node"
+            }
+          },
+          "nodejs_windows_x86_64": {
+            "repoRuleId": "@@//:node_repo.bzl%_node_release",
+            "attributes": {
+              "version": "24.22.2",
+              "release": "win-x64",
+              "suffix": "zip",
+              "sha256": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2",
+              "node": "node.exe"
+            }
+          },
+          "nodejs": {
+            "repoRuleId": "@@//:node_repo.bzl%_node_hub",
+            "attributes": {}
           }
         }
       }

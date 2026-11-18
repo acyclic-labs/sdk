@@ -858,7 +858,7 @@ where
             fence_io::try_lock(file)
         };
         match result {
-            Err(error) if lock_is_contended(&error) => Ok(false),
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Ok(false),
             result => result.map(|()| true),
         }
     })
@@ -919,21 +919,6 @@ fn open_mount_lock(
     let file = file.into();
     lock_mount_file_with_work(&file, blocking, &mut work)?;
     Ok(file)
-}
-
-pub(super) fn lock_is_contended(error: &std::io::Error) -> bool {
-    if error.kind() == std::io::ErrorKind::WouldBlock {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        // Windows reports ERROR_LOCK_VIOLATION rather than WouldBlock.
-        error.raw_os_error() == Some(33)
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
 }
 
 #[cfg(unix)]

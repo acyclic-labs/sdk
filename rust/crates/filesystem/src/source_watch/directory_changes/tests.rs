@@ -523,6 +523,9 @@ mod original {
         let origin = birth(budget, &CancellationToken::new());
         let mut work = crate::NativeMaterializationWork::from_meter(origin.clone());
         let watch = driver(&directory, &mut work)?;
+        // The ambient directory handle refuses deletion on Windows; the watch
+        // holds its own handle, which admits it.
+        drop(directory);
         let completion = Arc::clone(&watch.shared);
         let before = origin.with_original_leaf(|work| work.work);
         let mut reads = completion.lock_reads();

@@ -209,7 +209,10 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
     // can hold this fixture's registry and counterfeit that failure.
     {
         let held = registry.lock(&mut &work)?;
-        assert!(fence_io::try_lock(&probe).is_err_and(|error| lock_is_contended(&error)));
+        assert!(
+            fence_io::try_lock(&probe)
+                .is_err_and(|error| acyclic_native_runtime::is_exclusive_lock_contention(&error))
+        );
         held.unlock(&mut &work)?;
     }
     fence_io::try_lock(&probe)?;

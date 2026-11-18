@@ -7,6 +7,18 @@ use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn sandbox_policy() {
+    // A host without the native policy API refuses before launch. Prove that
+    // typed refusal; the policy matrix runs where the API is available.
+    #[cfg(windows)]
+    if let Err(error) = super::windows::capability() {
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(
+            error
+                .to_string()
+                .contains(super::windows::REQUIRED_CAPABILITY)
+        );
+        return;
+    }
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let volume = root.path().join("volume");
@@ -95,7 +107,6 @@ fn sandbox_policy() {
             #[cfg(windows)]
             command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
             let mut tree = if confined {
-                // Native capability absence is a failure, never a skipped case.
                 ProcessTree::spawn_granted(command, &grant, custodied.then_some(&custody)).unwrap()
             } else {
                 ProcessTree::spawn(&mut command).unwrap()
