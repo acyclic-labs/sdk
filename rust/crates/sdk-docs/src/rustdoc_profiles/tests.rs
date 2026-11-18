@@ -120,7 +120,7 @@ fn historical_defaults_cover_features() {
 }
 
 #[test]
-fn historical_docs_rs_policy_is_required_and_validated() {
+fn historical_docs_rs_policy_preserves_qualified_features_and_rejects_invalid_options() {
     let mut metadata = (*metadata()).clone();
     let targets = BTreeSet::from(["host".into()]);
     let mut plan = |policy: serde_json::Value| {
@@ -132,14 +132,10 @@ fn historical_docs_rs_policy_is_required_and_validated() {
     assert!(profiles
         .iter()
         .any(|profile| profile.default_features && profile.features.is_empty()));
-    assert!(profiles.iter().any(|profile| !profile.default_features
-        && profile.features
-            == BTreeSet::from([
-                "codec".into(),
-                "json".into(),
-                "other/feature".into(),
-                "wasm".into()
-            ])));
+    let expected = BTreeSet::from(["codec", "json", "other/feature", "wasm"].map(str::to_owned));
+    assert!(profiles
+        .iter()
+        .any(|profile| !profile.default_features && profile.features == expected));
     for policy in [
         serde_json::json!({"all-features":"true"}),
         serde_json::json!({"rustdoc-args":["--cfg","pretend"]}),
