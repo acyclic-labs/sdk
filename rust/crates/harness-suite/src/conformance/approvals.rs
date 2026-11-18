@@ -37,7 +37,9 @@ use acyclic_harness_core::{
         ToolResult,
     },
 };
-use acyclic_stream::{BoxProviderFuture, CommitMutation, CommitRequest, StreamProviderExt as _};
+use acyclic_stream::{
+    BoxProviderFuture, CommitMutation, CommitRequest, ProviderOwner, StreamProviderExt as _,
+};
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -167,13 +169,13 @@ struct Asked {
     root: AgentPath,
     calls: Arc<AtomicUsize>,
     _storage: Box<dyn crate::conformance::Storage>,
-    stream: Arc<Observed>,
+    stream: ProviderOwner<Observed>,
 }
 
 async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> Result<Asked> {
     let storage = backend.fresh().await?;
     let provider = storage.open().await?;
-    let stream = Arc::new(if capture {
+    let stream = ProviderOwner::new(if capture {
         Observed::capturing(provider)
     } else {
         Observed::new(provider)
@@ -214,7 +216,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: acyclic_fs::Fs::new(
-                acyclic_fs::StreamAuthorityStore::new(Arc::clone(&stream)),
+                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
                 objects.into_store(storage.as_ref())?,
                 capabilities,
             ),

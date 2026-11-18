@@ -33,7 +33,7 @@ struct Admitted {
 }
 
 pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
-    pub stream: Arc<P>,
+    pub stream: acyclic_stream::ProviderOwner<P>,
     pub host: Arc<FilesystemHost<A, O>>,
     pub issuer: RuntimeAuthority,
     pub admission: TurnAdmission,
@@ -59,7 +59,7 @@ fn identity(operation: OperationId, step: u32, item: u64) -> OperationId {
 
 impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
     pub(super) fn new(
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         host: Arc<FilesystemHost<A, O>>,
         issuer: RuntimeAuthority,
         admission: TurnAdmission,

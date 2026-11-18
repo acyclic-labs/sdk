@@ -2,6 +2,7 @@ use crate::conformance::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::guest::{
     self, Checkpoint, Delivery, GuestFuture, Handler, Manifest, Transition, wire,
 };
+use acyclic_stream::ProviderOwner;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -60,7 +61,7 @@ impl Handler for Stalled {
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let handler = vectors::handler(&provider)?;
     strict(handler.manifest())?;
     let mut manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;

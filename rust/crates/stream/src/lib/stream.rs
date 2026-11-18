@@ -1,6 +1,6 @@
 /// Handle to one permanent Stream path.
 pub struct Stream<P: ?Sized> {
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     path: StreamPath,
     fork_receipt: Option<ForkReceipt>,
 }
@@ -8,7 +8,7 @@ pub struct Stream<P: ?Sized> {
 impl<P: ?Sized> Clone for Stream<P> {
     fn clone(&self) -> Self {
         Self {
-            provider: Arc::clone(&self.provider),
+            provider: self.provider.clone(),
             path: self.path.clone(),
             fork_receipt: self.fork_receipt.clone(),
         }
@@ -17,7 +17,10 @@ impl<P: ?Sized> Clone for Stream<P> {
 
 impl<P: StreamProvider + ?Sized> Stream<P> {
     /// Binds a provider to one validated path.
-    pub fn new(provider: Arc<P>, path: impl AsRef<str>) -> Result<Self, StreamError> {
+    pub fn new(
+        provider: crate::ProviderOwner<P>,
+        path: impl AsRef<str>,
+    ) -> Result<Self, StreamError> {
         Ok(Self {
             provider,
             path: StreamPath::new(path)?,
@@ -43,7 +46,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     pub fn submit(&self, request: CommitRequest) -> crate::Pending {
         crate::Pending::submit(
-            Arc::clone(&self.provider),
+            self.provider.clone(),
             request,
             &crate::runtime::PlatformExecutor,
         )
@@ -53,7 +56,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     pub fn submit_append(&self, request: AppendRequest) -> crate::AppendPending {
         crate::AppendPending::submit_append(
-            Arc::clone(&self.provider),
+            self.provider.clone(),
             request,
             &crate::runtime::PlatformExecutor,
         )
@@ -126,7 +129,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
             })
             .await?;
         Ok(Self {
-            provider: Arc::clone(&self.provider),
+            provider: self.provider.clone(),
             path: receipt.destination.clone(),
             fork_receipt: Some(receipt),
         })

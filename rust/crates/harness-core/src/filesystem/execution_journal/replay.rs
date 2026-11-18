@@ -186,7 +186,7 @@ where
                 None
             };
             let stream =
-                acyclic_stream::Stream::new(Arc::clone(&self.stream), &path).map_err(|error| {
+                acyclic_stream::Stream::new(self.stream.clone(), &path).map_err(|error| {
                     Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error)
                 })?;
             let mut history = io.map(PreparationIo::history_io);

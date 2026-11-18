@@ -121,7 +121,7 @@ where
 
     /// Binds the journal with optional original preparation IO.
     pub fn new(
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         host: Arc<FilesystemHost<A, O>>,
         binding: super::super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
@@ -331,7 +331,7 @@ where
     #[cfg(test)]
     pub(super) fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
-            Arc::clone(&self.stream),
+            self.stream.clone(),
             crate::distributed::execution_path(operation_id, &mut None)?.as_str(),
         )
         .map_err(|error| Error::Invalid(error.to_string()))

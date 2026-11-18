@@ -14,9 +14,8 @@
 use crate::reader::RecordBytes;
 use crate::reader::{Priority, Reader, ReaderPolicy, Want};
 use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, StatusRecord};
-use acyclic_stream::{StreamError, StreamPath};
+use acyclic_stream::{ProviderOwner, StreamError, StreamPath};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 /// A scoped explorer driven by its original provider events. Native and web
@@ -33,7 +32,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> LiveExplorer<P> {
     pub fn children(
         policy: ReaderPolicy,
         agent: &AgentPath,
-        provider: Arc<P>,
+        provider: ProviderOwner<P>,
     ) -> Result<Self, StreamError> {
         let mut view = Explorer::children(policy, agent)?;
         let mut driver = crate::reader::Driver::new(provider);
@@ -126,7 +125,7 @@ mod tests {
             (
                 LiveExplorer<Counted<MemoryStream>>,
                 acyclic_stream::testing::Requests,
-                Arc<Counted<MemoryStream>>,
+                ProviderOwner<Counted<MemoryStream>>,
             ),
             Box<dyn std::error::Error>,
         > {
@@ -191,7 +190,7 @@ mod tests {
                     acyclic_stream::CommitOutcome::Committed(_)
                 ));
             }
-            let provider = Arc::new(Counted::new(memory));
+            let provider = ProviderOwner::new(Counted::new(memory));
             let mut live =
                 LiveExplorer::children(ReaderPolicy::default(), &root, provider.clone())?;
             live.view.set_viewport(5, 0, 16);
@@ -860,7 +859,7 @@ mod tests {
                 "both visible statuses and both witnesses must use the shared admission, retaining one source"
             );
             let mut replacement =
-                crate::reader::Driver::new(std::sync::Arc::new(MemoryStream::default()));
+                crate::reader::Driver::new(ProviderOwner::new(MemoryStream::default()));
             let waker = futures::task::noop_waker();
             replacement.step(
                 explorer.reader(),
