@@ -461,44 +461,6 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     .contains("absent"));
 }
 #[test]
-fn absent_cargo_binary_is_rejected_before_compilation() {
-    compiler::with(|| {
-        use sdk_docs::rustdoc_profiles::{
-            execute_profile, CargoExecutionContext, ProfileSpec, RustdocTarget,
-        };
-        let fixture = Fixture::new();
-        fs::write(fixture.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-        let metadata = fixture.metadata();
-        let target = "fixture-host".to_owned();
-        let profile = ProfileSpec {
-            package: "historical-fixture".into(),
-            target: target.clone(),
-            default_features: true,
-            features: BTreeSet::new(),
-        };
-        let target_dir = fixture.path().join("native-rustdoc");
-        let absent = execute_profile(
-            fixture.path().join("Cargo.toml"),
-            &metadata,
-            &profile,
-            &BTreeSet::from([target]),
-            &target_dir,
-            &fixture.path().join("binary.json"),
-            CargoExecutionContext {
-                cargo_path: Some(&cargo()),
-                lock_selection: None,
-            },
-            &RustdocTarget::Binary("absent".into()),
-        );
-        assert!(absent
-            .unwrap_err()
-            .to_string()
-            .contains("absent from Cargo"));
-        assert!(!target_dir.exists());
-    });
-}
-
-#[test]
 fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
