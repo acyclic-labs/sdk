@@ -86,7 +86,7 @@ fn managed_usage_rejects_missing_lineage_authority() {
 #[test]
 fn local_response_credential_refusal_keeps_recovery_identity() {
     let key = IdempotencyKey::from_digest([1; 32]);
-    let request = crate::grpc::codec::request_credential_status(
+    let request = crate::codec::request_credential_status(
         "credential source unavailable".into(),
         Some("credential callback failed".into()),
     );

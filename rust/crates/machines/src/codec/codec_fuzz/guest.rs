@@ -1,5 +1,4 @@
 use super::*;
-use crate::grpc::{files, recovery};
 
 pub(super) fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let machine = MachineId::from_digest([1; 32]);
@@ -65,23 +64,21 @@ pub(super) fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::
             for offset in [0, u64::MAX - u64::from(MAX_OUTPUT_READ_BYTES)] {
                 for limit in [1, MAX_OUTPUT_READ_BYTES] {
                     if let Some(result) = project::<wire::ReadFileResponse, _>(bytes, |value| {
-                        files::decode_read_response(value, machine, offset, limit)
+                        decode_read_response(value, machine, offset, limit)
                     })? {
                         let value = wire::ReadFileResponse::decode(bytes)?;
                         assert!(
-                            files::decode_read_response(value.clone(), foreign, offset, limit)
-                                .is_err()
+                            decode_read_response(value.clone(), foreign, offset, limit).is_err()
                         );
                         assert!(
-                            files::decode_read_response(value.clone(), machine, offset ^ 1, limit)
+                            decode_read_response(value.clone(), machine, offset ^ 1, limit)
                                 .is_err()
                         );
                         if let FileRead::Data(data) = result {
                             if data.len() > 1 {
                                 let short = u32::try_from(data.len() - 1)?;
                                 assert!(
-                                    files::decode_read_response(value, machine, offset, short)
-                                        .is_err()
+                                    decode_read_response(value, machine, offset, short).is_err()
                                 );
                             }
                         }
@@ -93,26 +90,21 @@ pub(super) fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::
             for offset in [0, u64::MAX - u64::from(MAX_OUTPUT_READ_BYTES)] {
                 for length in [0, 1, MAX_OUTPUT_READ_BYTES as usize] {
                     if let Some(result) = project::<wire::WriteFileResponse, _>(bytes, |value| {
-                        files::decode_write_response(value, machine, offset, length)
+                        decode_write_response(value, machine, offset, length)
                     })? {
                         let value = wire::WriteFileResponse::decode(bytes)?;
                         assert_eq!(
-                            files::decode_write_response(value.clone(), foreign, offset, length),
+                            decode_write_response(value.clone(), foreign, offset, length),
                             Err(ProviderError::FileIndeterminate(foreign))
                         );
                         assert_eq!(
-                            files::decode_write_response(
-                                value.clone(),
-                                machine,
-                                offset ^ 1,
-                                length
-                            ),
+                            decode_write_response(value.clone(), machine, offset ^ 1, length),
                             Err(ProviderError::FileIndeterminate(machine))
                         );
                         if let FileWrite::Written(written) = result {
                             if written > 0 {
                                 assert_eq!(
-                                    files::decode_write_response(
+                                    decode_write_response(
                                         value,
                                         machine,
                                         offset,
@@ -128,7 +120,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::
         }
         "acyclic.machines.v1.RecoveredAdmission" => {
             if let Some(operation) = project::<wire::RecoveredAdmission, _>(bytes, |value| {
-                recovery::validate_recovered_admission(&value)
+                validate_recovered_admission(&value)
             })? {
                 let mut value = wire::RecoveredAdmission::decode(bytes)?;
                 let foreign = if operation == OperationId::from_digest([9; 32]) {
@@ -137,19 +129,19 @@ pub(super) fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::
                     OperationId::from_digest([9; 32])
                 };
                 value.operation = operation_request(foreign).operation;
-                assert!(recovery::validate_recovered_admission(&value).is_err());
+                assert!(validate_recovered_admission(&value).is_err());
             }
         }
         "acyclic.machines.v1.MachineAdmissions" => {
             if project::<wire::MachineAdmissions, _>(bytes, |value| {
-                recovery::decode_fork_admissions(&value)
+                decode_fork_admissions(&value)
                     .map(|value| (value.operation, value.provenance, value.count))
             })?
             .is_some()
             {
                 let mut value = wire::MachineAdmissions::decode(bytes)?;
                 value.operation = None;
-                assert!(recovery::decode_fork_admissions(&value).is_err());
+                assert!(decode_fork_admissions(&value).is_err());
             }
         }
         "acyclic.machines.v1.ResultCut" => {

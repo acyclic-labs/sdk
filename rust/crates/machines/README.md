@@ -149,7 +149,7 @@ cargo test --locked -p acyclic-machines-conformance --lib
 
 Fork admissions retain operation, provenance, requested extent and the original
 source contract. The public `check_fork_fidelity` function is shared by clients
-and servers; `grpc::decode_fork_admissions` also validates the wire admission.
+and servers; `codec::decode_fork_admissions` also validates the wire admission.
 A DiskOnly result cannot satisfy a MemoryAndDisk contract.
 
 Every child is recorded in the original result owner at creation, before the

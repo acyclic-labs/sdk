@@ -73,7 +73,7 @@ machine_mutations! {
                 .map(|expiry| self.endpoint.absolute_deadline(expiry)).transpose()?;
             let mut client = transport::run(deadline.as_ref(), self.client()).await
                     .map_err(DeadlineStop::before_dispatch)??;
-            let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
+            let (input, input_guard) = duplex::input(stream::iter(encode_exec_input(machine, command)));
             let mut request = Request::new(input);
             if let Some(remaining) = deadline.as_ref().and_then(transport::Deadline::remaining) {
                 request.set_timeout(remaining);

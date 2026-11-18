@@ -102,6 +102,9 @@ pub use simulation::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
 
+/// Canonical conversions shared by Machines transports.
+#[doc(hidden)]
+pub mod codec;
 pub mod grpc;
 mod obs;
 #[cfg(not(target_arch = "wasm32"))]
