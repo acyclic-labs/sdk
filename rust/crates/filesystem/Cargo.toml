@@ -57,6 +57,7 @@ rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
 creation = ["acyclic_fs", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tempfile", "tokio"]
+operation_claim = ["acyclic_fs", "acyclic_stream"]
 operation_claim_model = ["acyclic_stream", "loom"]
 git_history = ["acyclic_fs", "acyclic_stream", "thiserror", "tokio"]
 git_marker_contracts = ["proptest"]
