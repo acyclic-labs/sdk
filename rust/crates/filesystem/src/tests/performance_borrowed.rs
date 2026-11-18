@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs_work::performance::counter_fields;
 use proptest::prelude::*;
 
 fn baseline(observed: WorkCounters, budget: WorkBudget) -> Result<(), WorkError> {

@@ -741,6 +741,38 @@ pub enum WorkError {
     },
 }
 
+#[cfg(any(test, feature = "test-support"))]
+/// Every counter of [`WorkCounters`], as mutable references in declaration
+/// order, so a test can set one counter at a time.
+pub fn counter_fields(work: &mut WorkCounters) -> [&mut u64; 24] {
+    [
+        &mut work.authority_records_read,
+        &mut work.authority_records_appended,
+        &mut work.authority_bytes_read,
+        &mut work.authority_bytes_written,
+        &mut work.object_probes,
+        &mut work.backend_read_operations,
+        &mut work.backend_write_operations,
+        &mut work.durability_operations,
+        &mut work.page_reads,
+        &mut work.page_writes,
+        &mut work.object_bytes_read,
+        &mut work.object_bytes_written,
+        &mut work.bytes_hashed,
+        &mut work.bytes_copied,
+        &mut work.bytes_encoded,
+        &mut work.source_bytes_read,
+        &mut work.source_path_components,
+        &mut work.source_entries_visited,
+        &mut work.output_bytes,
+        &mut work.items_examined,
+        &mut work.items_returned,
+        &mut work.allocation_operations,
+        &mut work.peak_allocation_bytes,
+        &mut work.materializations,
+    ]
+}
+
 #[cfg(test)]
 #[path = "tests/performance.rs"]
 mod tests;

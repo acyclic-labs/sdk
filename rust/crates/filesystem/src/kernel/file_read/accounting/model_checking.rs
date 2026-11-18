@@ -96,7 +96,7 @@ fn copy_model_impl<const BROKEN: bool, const CHECK_LIMIT: bool>(
             }
         }
         assert_eq!(
-            original.receipt().bytes_copied,
+            original.receipt().unwrap().bytes_copied,
             completed,
             "every completed copy stays charged"
         );
