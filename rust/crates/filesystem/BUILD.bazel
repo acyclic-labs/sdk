@@ -1670,11 +1670,13 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
