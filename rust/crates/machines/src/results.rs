@@ -92,7 +92,8 @@ impl ResultCursor {
         Ok(())
     }
 
-    pub(crate) fn interval(
+    /// Admit this cursor against the original result and bound its next page by credit.
+    pub fn interval(
         self,
         original: ResultCut,
         credit: NonZeroU32,
