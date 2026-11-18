@@ -10,11 +10,7 @@ impl BrowserStream {
         filter: crate::FollowFilter,
         window: crate::memory::FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
-        let changed = self
-            .inner
-            .publications
-            .interests
-            .subscribe(publication::Key::Records(path.clone()))?;
+        let changed = self.inner.publications.interests.subscribe(path.clone())?;
         let (snapshot, selection, _, cursor) = self
             .with_provider(async |memory| {
                 memory

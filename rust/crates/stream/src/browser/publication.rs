@@ -1,22 +1,10 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) enum Key {
-    Records(StreamPath),
-}
-impl std::borrow::Borrow<str> for Key {
-    fn borrow(&self) -> &str {
-        match self {
-            Self::Records(path) => path.as_str(),
-        }
-    }
-}
-
 /// Retained outside the replaceable replay cache, dispatched after durability.
 #[derive(Default)]
 pub(super) struct Changes {
-    keys: BTreeSet<Key>,
+    keys: BTreeSet<StreamPath>,
     records: BTreeMap<StreamPath, (Vec<Record>, u64)>,
     created: BTreeSet<StreamPath>,
 }
@@ -95,9 +83,7 @@ impl Before {
             // Consult active subscriptions, never enumerate the forked subtree.
             if fork {
                 let descendants = path.descendants();
-                for Key::Records(path) in publications.interests.keys_in(descendants.bounds())? {
-                    paths.insert(path);
-                }
+                paths.extend(publications.interests.keys_in(descendants.bounds())?);
                 paths.extend(publications.follows.keys_in(descendants.bounds())?);
             }
             let mut next = Some(path.clone());
@@ -138,7 +124,7 @@ impl Before {
             if after == before {
                 continue;
             }
-            keys.keys.insert(Key::Records(path.clone()));
+            keys.keys.insert(path.clone());
             let followed = publications.follows.get(&path)?.is_some();
             let Some(after) = after.filter(|_| followed) else {
                 continue;

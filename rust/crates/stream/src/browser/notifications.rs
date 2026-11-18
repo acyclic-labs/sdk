@@ -1,11 +1,10 @@
-use super::publication::Key;
 use super::*;
 use std::{cell::RefCell, rc::Weak};
 use wasm_bindgen::closure::Closure;
 
 pub(super) struct Publications {
     channel: web_sys::BroadcastChannel,
-    pub(super) interests: crate::interest::Interests<Key>,
+    pub(super) interests: crate::interest::Interests<StreamPath>,
     pub(super) follows: crate::interest::Interests<
         StreamPath,
         Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
