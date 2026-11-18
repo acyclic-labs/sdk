@@ -618,12 +618,10 @@ fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims
         include_str!("../fixtures/feature-profile/rust/crates/demo/binary.rs"),
     );
     init_git(&fixture.root, "binary-only fixture");
-    let hits = commands::DECLARED_RUSTDOC_HITS.get();
-    let result = run_generate_execute_profiles(&fixture);
-    assert!(result.status.success(), "{}", output_message(&result));
-    if std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
-        assert_eq!(commands::DECLARED_RUSTDOC_HITS.get() - hits, 1);
-    }
+    commands::expect_declared_profiles(1, || {
+        let result = run_generate_execute_profiles(&fixture);
+        assert!(result.status.success(), "{}", output_message(&result));
+    });
     let receipt = fixture.rustdoc.join("demo_cli.json");
     let native = sdk_docs::rustdoc_profiles::observe_binary_rustdoc(&receipt).unwrap();
     assert_eq!(native.format_version, 60);

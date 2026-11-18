@@ -686,8 +686,10 @@ fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
 fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() {
     runtime::time_control();
     let (fixture, support) = historical_fixture(None);
-    let result = run_historical_generation(&fixture, &support, None, None, &["demo"]);
-    assert!(result.status.success(), "{}", output_message(&result));
+    commands::expect_declared_profiles(2, || {
+        let result = run_historical_generation(&fixture, &support, None, None, &["demo"]);
+        assert!(result.status.success(), "{}", output_message(&result));
+    });
     let version = fixture.output.join("releases/1.0.0");
     let data: Value =
         serde_json::from_slice(&fs::read(version.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
