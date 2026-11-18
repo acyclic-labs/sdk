@@ -10,9 +10,6 @@ publish = false
 description = "Internal Harness scenario substrates and parity oracles"
 default-run = "scenarios"
 
-[package.metadata.acyclic]
-consumer-examples = true
-
 [lib]
 doctest = false
 
