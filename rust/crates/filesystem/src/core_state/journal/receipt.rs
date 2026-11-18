@@ -189,7 +189,7 @@ pub(super) fn remove(
             crate::native_host::sync_directory_held(&root.directory(), &mut &*work)?;
         }
         None => match std::fs::remove_dir_all(directory) {
-            Ok(()) => sync_directory(parent)?,
+            Ok(()) => sync_parent(parent, NativeDurability::Full)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         },

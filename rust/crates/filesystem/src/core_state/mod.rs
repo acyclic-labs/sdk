@@ -12,7 +12,7 @@ use crate::{
     WorkspaceContextId, WorkspaceContextStore, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceLineageStore,
 };
-use acyclic_native_runtime::{FileLock, FileLockMode};
+use acyclic_native_runtime::{Durability as NativeDurability, FileLock, FileLockMode, sync_parent};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};

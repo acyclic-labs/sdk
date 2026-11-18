@@ -37,7 +37,7 @@ impl RecordPaths<'_> {
             let parent = RecordDirectory::open(&self.current, work, parent)?;
             crate::native_host::sync_directory_held(parent.get(), &mut &*work)?;
         } else {
-            sync_directory(self.directory())?;
+            sync_parent(self.directory(), NativeDurability::Full)?;
         }
         Ok(())
     }
@@ -537,12 +537,6 @@ pub(super) fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
-}
-
-/// Makes the entries of directory `path` durable, with the one directory
-/// synchronization every store shares; Windows flushes a directory handle.
-pub(super) fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
-    acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
 }
 
 #[cfg(test)]
