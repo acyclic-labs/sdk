@@ -35,6 +35,33 @@ fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
     })
 }
 
+/// Apply operation-specific constraints on shared deployment envelopes before I/O.
+pub fn validate_deployment_operation(
+    request_name: &str,
+    deployment: &wire::DeploymentRequest,
+) -> Result<(), &'static str> {
+    // RPC descriptors use UpperCamelCase; HTTP_ROUTES exposes lowerCamelCase.
+    // Both dispatchers select their operation before reaching this shared check.
+    if request_name.eq_ignore_ascii_case("DeployWorker")
+        || request_name.eq_ignore_ascii_case("DeployNamespace")
+    {
+        if request_name.eq_ignore_ascii_case("DeployNamespace") {
+            if deployment.limits.is_none() || deployment.worker_limits.is_some() {
+                return Err("namespace deploy requires actor limits");
+            }
+            return Ok(());
+        }
+        if deployment.worker_limits.is_none()
+            || deployment.limits.is_some()
+            || !deployment.subscriptions.is_empty()
+            || !deployment.jurisdiction.is_empty()
+        {
+            return Err("Worker deploy cannot carry actor subscriptions or jurisdiction");
+        }
+    }
+    Ok(())
+}
+
 /// Validates an explicit namespace or named script deployment before admission.
 pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), ContractError> {
     if !request.publication.is_empty() {

@@ -614,11 +614,11 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
         "deploy".into(),
     )?;
     let raw: wire::DeploymentRequest = worker.clone().into();
-    assert!(crate::client::validate_operation("DeployWorker", &raw).is_ok());
+    assert!(crate::contract::validate_deployment_operation("DeployWorker", &raw).is_ok());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let allocation = acyclic_test_support::measure(|| {
-            assert!(crate::client::validate_operation("DeployWorker", &raw).is_ok());
+            assert!(crate::contract::validate_deployment_operation("DeployWorker", &raw).is_ok());
         });
         assert_eq!(
             allocation.count_total, 0,
@@ -626,7 +626,7 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
         );
         assert_eq!(allocation.bytes_total, 0);
     }
-    assert!(crate::client::validate_operation("DeployNamespace", &raw).is_err());
+    assert!(crate::contract::validate_deployment_operation("DeployNamespace", &raw).is_err());
     let mut neither = raw.clone();
     neither.worker_limits = None;
     assert!(DeploymentRequest::try_from(neither).is_err());
@@ -661,8 +661,8 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
             );
         }
     }
-    assert!(crate::client::validate_operation("DeployNamespace", &namespace).is_ok());
-    assert!(crate::client::validate_operation("DeployWorker", &namespace).is_err());
+    assert!(crate::contract::validate_deployment_operation("DeployNamespace", &namespace).is_ok());
+    assert!(crate::contract::validate_deployment_operation("DeployWorker", &namespace).is_err());
     for name in ["worker", "worker-1", "a"] {
         let mut deployment: wire::DeploymentRequest = namespace.clone();
         deployment.name = name.into();
