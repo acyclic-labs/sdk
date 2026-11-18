@@ -33,7 +33,6 @@ bytes.workspace = true
 blake3.workspace = true
 futures.workspace = true
 http.workspace = true
-httpdate = "1.0.3"
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -61,6 +60,9 @@ js-sys.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
+
+[dev-dependencies]
+httpdate = "1.0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness-provider-response = { path = "../harness-provider-response", version = "=0.2.0", features = ["test-support"] }
