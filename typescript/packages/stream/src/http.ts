@@ -76,7 +76,7 @@ export class HttpStreamProvider implements StreamProvider {
     const input = await validateChildrenPageRequest(request);
     return this.#request("children/page", await encodeHttpRequest("children/page", input));
   }
-  async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { const authored = structuredClone(request); const retained = structuredClone(options); const input = await normalizeWireCommitBytes(authored, retained); const result = await this.#request("commit", await encodeHttpRequest("commit", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
+  async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { const input = await normalizeWireCommitBytes(request, options); const result = await this.#request("commit", await encodeHttpRequest("commit", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
   async readCommit(value: CommitId): Promise<CommittedEnvelope> { const input = wireReadCommitRequest(value); return this.#request("commits/read", await encodeHttpRequest("commits/read", input)); }
   async createToken(request: CreateTokenRequest): Promise<AccessToken> {
     const input = wireCreateTokenRequest(request);

@@ -109,10 +109,8 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const authored = structuredClone(request);
-    const retainedOptions = structuredClone(options);
-    idempotencyKey(retainedOptions.idempotencyKey);
-    const input = await normalizeWireCommitBytes(authored, retainedOptions);
+    idempotencyKey(options.idempotencyKey);
+    const input = await normalizeWireCommitBytes(request, options);
     return this.#project<CommitResult>("commit", input);
   }
 

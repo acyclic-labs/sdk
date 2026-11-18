@@ -246,7 +246,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const bytes = Buffer.from(await normalizeWireCommitBytes(structuredClone(request), structuredClone(options)));
+    const bytes = Buffer.from(await normalizeWireCommitBytes(request, options));
     const value = await this.operation("commit", this.request(client => client.commitResult(bytes)));
     return this.project("commit", value) as CommitResult;
   }

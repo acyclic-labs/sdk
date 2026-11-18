@@ -310,7 +310,7 @@ export class GrpcStreamProvider implements StreamProvider {
     return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const input = await normalizeWireCommitBytes(structuredClone(request), structuredClone(options));
+    const input = await normalizeWireCommitBytes(request, options);
     const response = await this.#call("commit", () => this.#client.commit(fromBinary(wire.CommitRequestSchema, input)));
     const result = this.#project<CommitResult>("commit", toBinary(wire.CommitResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);

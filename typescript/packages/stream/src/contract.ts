@@ -276,6 +276,7 @@ export async function encodeHttpRequest(route: HttpRoute, input: Uint8Array): Pr
   catch (error) { validationError(error, "request"); }
 }
 
+// Serialize caller-owned fields before the first await.
 export async function normalizeWireCommitBytes(request: ProviderCommitRequest, options: CommitOptions): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
@@ -325,7 +326,7 @@ function wireMutations(mutations: ProviderCommitEffect["mutations"]) {
         destination: mutation.fork.destination,
         atTail: mutation.fork.atTail,
         exclude: [...(mutation.fork.exclude ?? [])],
-        records: mutation.fork.values.map(value => create(AppendRecordSchema, { value: value.slice() })),
+        records: mutation.fork.values.map(value => create(AppendRecordSchema, { value })),
       }) },
     });
     throw new StreamError("invalid_argument", "commit mutation is invalid");
