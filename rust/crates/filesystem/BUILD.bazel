@@ -2693,6 +2693,8 @@ rust_test(
     crate_root = "tests/memory_authority.rs",
     srcs = [
         "tests/memory_authority.rs",
+        "tests/memory_authority/async_storage/mod.rs",
+        "tests/memory_authority/async_storage/tests.rs",
         "tests/memory_authority/memory/mod.rs",
         "tests/memory_authority/memory/tests/authority.rs",
         "tests/memory_authority/memory/tests/mod.rs",
@@ -2719,6 +2721,7 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//tokio-1.54.1",
     ],
