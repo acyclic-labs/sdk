@@ -1,7 +1,7 @@
 //! On-demand multipart record admission through the original replay decoder.
 use super::*;
 
-fn created() -> S3Result<Bytes> {
+fn created() -> MultipartStorageResult<Bytes> {
     let limits = FilesystemS3Limits::default();
     encode_multipart_created("key", Some(2), limits.maximum_multipart_part_bytes, 0)
 }

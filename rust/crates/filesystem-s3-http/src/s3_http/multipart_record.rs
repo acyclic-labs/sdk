@@ -3,8 +3,8 @@ fn encode_multipart_created(
     maximum_parts: Option<u32>,
     maximum_part_bytes: Option<u64>,
     minimum_part_bytes: u64,
-) -> S3Result<Bytes> {
-    let key_length = u32::try_from(key.len()).map_err(|_| s3s::s3_error!(InvalidArgument))?;
+) -> MultipartStorageResult<Bytes> {
+    let key_length = u32::try_from(key.len()).map_err(|_| MultipartStorageError::KeyTooLong)?;
     let mut output = Vec::with_capacity(2 + 4 + key.len() + 4 + 8 + 8);
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 1]);
     output.extend_from_slice(&key_length.to_le_bytes());
@@ -36,8 +36,8 @@ fn encode_multipart_part(
     Bytes::from(output)
 }
 
-fn encode_multipart_completing(parts: &[(u32, String)]) -> S3Result<Bytes> {
-    let count = u32::try_from(parts.len()).map_err(|_| s3s::s3_error!(InvalidRequest))?;
+fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageResult<Bytes> {
+    let count = u32::try_from(parts.len()).map_err(|_| MultipartStorageError::TooManyParts)?;
     let mut output = Vec::with_capacity(6 + parts.len().saturating_mul(36));
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 3]);
     output.extend_from_slice(&count.to_le_bytes());
@@ -45,7 +45,7 @@ fn encode_multipart_completing(parts: &[(u32, String)]) -> S3Result<Bytes> {
         output.extend_from_slice(&number.to_le_bytes());
         let mut digest = [0_u8; 32];
         hex::decode_to_slice(etag_value.trim_matches('"'), &mut digest)
-            .map_err(|_| s3s::s3_error!(InvalidPart))?;
+            .map_err(|_| MultipartStorageError::InvalidPartDigest)?;
         output.extend_from_slice(&digest);
     }
     Ok(Bytes::from(output))
@@ -138,6 +138,12 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
 /// Persisted multipart refusal, projected only at the S3 service boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartStorageError {
+    #[error("multipart record key is too long")]
+    KeyTooLong,
+    #[error("multipart record has too many parts")]
+    TooManyParts,
+    #[error("multipart part digest is invalid")]
+    InvalidPartDigest,
     #[error("multipart limits are invalid")]
     InvalidLimits,
     #[error("multipart retention was cancelled")]

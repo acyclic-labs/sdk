@@ -173,6 +173,9 @@ fn validate_completed_parts(
 impl From<MultipartStorageError> for s3s::S3Error {
     fn from(error: MultipartStorageError) -> Self {
         match error {
+            MultipartStorageError::KeyTooLong => s3s::s3_error!(InvalidArgument),
+            MultipartStorageError::TooManyParts => s3s::s3_error!(InvalidRequest),
+            MultipartStorageError::InvalidPartDigest => s3s::s3_error!(InvalidPart),
             MultipartStorageError::InvalidLimits => s3s::s3_error!(InvalidArgument),
             MultipartStorageError::Cancelled => s3s::s3_error!(RequestTimeout),
             MultipartStorageError::BudgetExceeded => s3s::s3_error!(SlowDown),

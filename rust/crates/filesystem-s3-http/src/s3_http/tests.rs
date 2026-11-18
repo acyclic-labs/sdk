@@ -938,7 +938,7 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
                     .into())
                 }
             })
-            .collect::<S3Result<Vec<_>>>()?;
+            .collect::<MultipartStorageResult<Vec<_>>>()?;
         let result = provider
             .append(acyclic_stream::AppendRequest {
                 path: path.clone(),
