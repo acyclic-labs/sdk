@@ -19,7 +19,7 @@ impl std::borrow::Borrow<str> for Key {
 pub(super) struct Changes {
     keys: BTreeSet<Key>,
     records: BTreeMap<StreamPath, (Vec<Record>, u64)>,
-    created: BTreeMap<StreamPath, u64>,
+    created: BTreeSet<StreamPath>,
 }
 
 // Declared before the cache guard, so early return/cancellation drops that guard
@@ -52,7 +52,13 @@ impl Drop for Dispatch {
             for key in &self.keys.keys {
                 let _ = self.provider.inner.publications.interests.notify(key);
             }
-            for path in self.keys.created.keys() {
+            let created = self.keys.created.iter().map(|path| (path, None));
+            let published = self
+                .keys
+                .records
+                .iter()
+                .map(|(path, batch)| (path, Some(batch)));
+            for (path, batch) in created.chain(published) {
                 let index = self
                     .provider
                     .inner
@@ -62,20 +68,12 @@ impl Drop for Dispatch {
                     .ok()
                     .flatten();
                 if let Some(index) = index {
-                    crate::follow_index::FollowIndex::created(&index);
-                }
-            }
-            for (path, (records, tail)) in &self.keys.records {
-                let index = self
-                    .provider
-                    .inner
-                    .publications
-                    .follows
-                    .get(path)
-                    .ok()
-                    .flatten();
-                if let Some(index) = index {
-                    crate::follow_index::FollowIndex::publish(&index, records, *tail);
+                    match batch {
+                        None => crate::follow_index::FollowIndex::created(&index),
+                        Some((records, tail)) => {
+                            crate::follow_index::FollowIndex::publish(&index, records, *tail);
+                        }
+                    }
                 }
             }
         }
@@ -145,7 +143,7 @@ impl Before {
                 continue;
             };
             if before.is_none() {
-                keys.created.insert(path.clone(), after);
+                keys.created.insert(path.clone());
             }
             let records = keys.records.entry(path.clone()).or_default();
             records.1 = after;
