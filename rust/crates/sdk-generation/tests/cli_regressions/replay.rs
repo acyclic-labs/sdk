@@ -71,9 +71,10 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             }
         });
     }
-    let manifest_name = "generation-manifest.v1.json";
-    let mut manifest: Value =
-        serde_json::from_slice(&fs::read(original.output.join(manifest_name)).unwrap()).unwrap();
+    let manifest_path = original.output.join("generation-manifest.v1.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let release_path = PathBuf::from(manifest["releaseManifest"].as_str().unwrap());
+    let digest_path = release_path.with_extension("sha256");
     let inventory = manifest["rustdocFiles"]
         .as_object()
         .unwrap()
@@ -85,9 +86,15 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let scratch = original.output.join(".profile-build");
+    let replaced = [
+        manifest_path.with_extension("sha256"),
+        manifest_path,
+        original.output.join(".profile-build"),
+        original.output.join(&release_path),
+        original.output.join(&digest_path),
+    ];
     copy_tree_inner(&original.output, &relocated.output, &|path| {
-        path == scratch.as_path() || inventory.contains_key(path)
+        replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains_key(path)
     });
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
         let mut changed = BTreeMap::new();
@@ -117,29 +124,32 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     });
     // Relocation changes physical receipt bytes. Re-attest only those verified
     // rewrites; preserve all source identities and logical Rustdoc digests.
-    let release_path = relocated
-        .output
-        .join(manifest["releaseManifest"].as_str().unwrap());
-    let mut release: Value = serde_json::from_slice(&fs::read(&release_path).unwrap()).unwrap();
+    let original_release = fs::read(original.output.join(&release_path)).unwrap();
+    let mut release: Value = serde_json::from_slice(&original_release).unwrap();
     for row in release["artifacts"].as_array_mut().unwrap() {
         if let Some((old, new)) = changed.get(row["path"].as_str().unwrap()) {
             assert_eq!(row["sha256"].as_str().unwrap(), old);
             row["sha256"] = json!(new);
         }
     }
-    let old_release = hash_file(&release_path);
-    let digest_path = release_path.with_extension("sha256");
-    let old_sidecar = hash_file(&digest_path);
-    fs::write(&release_path, serde_json::to_vec_pretty(&release).unwrap()).unwrap();
-    fs::write(&digest_path, hash_file(&release_path)).unwrap();
-    for (path, old) in [(&release_path, old_release), (&digest_path, old_sidecar)] {
+    let rebased_release = serde_json::to_vec_pretty(&release).unwrap();
+    let rebased_digest = hash_bytes(&rebased_release);
+    for (path, old, new) in [
+        (
+            release_path,
+            hash_bytes(&original_release),
+            rebased_release.as_slice(),
+        ),
+        (
+            digest_path.clone(),
+            hash_file(&original.output.join(&digest_path)),
+            rebased_digest.as_bytes(),
+        ),
+    ] {
+        fs::write(relocated.output.join(&path), new).unwrap();
         changed.insert(
-            path.strip_prefix(&relocated.output)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .replace('\\', "/"),
-            (old, hash_file(path)),
+            path.to_str().unwrap().replace('\\', "/"),
+            (old, hash_bytes(new)),
         );
     }
     for (path, (old, new)) in changed {
