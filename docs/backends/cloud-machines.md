@@ -17,12 +17,12 @@ It must support bidirectional streaming, input backpressure and `AbortSignal`.
 The Node/Bun `@acyclic-labs/machines/grpc` entry point uses this same client core
 and owns its HTTP/2 connection; the portable entry point imports no Node APIs.
 
-Rust embeddings on WebAssembly enable `acyclic-machines`'s `javascript` feature.
-Construct `grpc::javascript::Endpoint::new(open, budget)` and
-`grpc::Provider::over(endpoint)`. `open` is the function returned by
+Rust embeddings on WebAssembly enable the `javascript` feature on `acyclic-machines-grpc`.
+Construct `acyclic_machines_grpc::javascript::Endpoint::new(open, budget)` and
+`acyclic_machines_grpc::Provider::over(endpoint)`. `open` is the function returned by
 `createMachinesRpcTransport(originalAuthenticatedTransport)`, exported by the
 same portable TypeScript entry point. `budget` binds the platform's original
-clock/cancellation owner, implementing `grpc::transport::Deadline`; it receives
+clock/cancellation owner, implementing `acyclic_machines_grpc::transport::Deadline`; it receives
 the relative execution budget and authenticated absolute expiry, or only the
 absolute file deadline. It must retain that event across credentials, headers
 and every output pull, rather than starting a new timer for each stage.
@@ -119,8 +119,8 @@ Run the shared lifecycle and protocol checks with:
 
 ```sh
 cargo test --locked -p acyclic-machines-conformance --lib
-cargo test --locked -p acyclic-machines --lib grpc::
-cargo check --locked -p acyclic-machines --no-default-features --features javascript --target wasm32-unknown-unknown
+cargo test --locked -p acyclic-machines-grpc --lib
+cargo check --locked -p acyclic-machines-grpc --no-default-features --features javascript --target wasm32-unknown-unknown
 cargo test --locked -p acyclic-harness-core --lib --no-run
 ```
 

@@ -615,8 +615,39 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
 }
 
 #[tokio::test]
-async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
+async fn exec_stream_preserves_values_and_completed_eof_after_deadline()
+-> Result<(), Box<dyn std::error::Error>> {
+    use futures::FutureExt as _;
+
     let (machine, io, shutdown, task) = fixture().await;
+    let target = machine.id();
+    for after_dispatch in [false, true] {
+        let (deadline, finish) = GuestDeadline::controlled();
+        let cause = Arc::new(std::io::Error::from_raw_os_error(5));
+        if !after_dispatch {
+            finish(Err(cause.clone()));
+        }
+        let (entered, entering) = tokio::sync::oneshot::channel();
+        let mut dispatch = Box::pin(transport::dispatch(
+            Some(&deadline),
+            async {
+                let _ = entered.send(());
+                std::future::pending::<()>().await
+            },
+            |stop| stop.command(target),
+        ));
+        if after_dispatch {
+            assert!(dispatch.as_mut().now_or_never().is_none());
+            entering.await?;
+            finish(Err(cause.clone()));
+        }
+        assert!(
+            matches!(dispatch.now_or_never().expect("original terminal must settle dispatch"),
+            Err(ProviderError::DeadlineSourceLost { machine: actual, cause: failure })
+                if actual == after_dispatch.then_some(target) && Arc::ptr_eq(&failure.0, &cause))
+        );
+    }
+
     let mut output = machine.exec(command(60_000)).await.unwrap();
     let sender = io.sender();
     sender
@@ -659,6 +690,7 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
     }
     drop(output);
     stop(shutdown, task).await;
+    Ok(())
 }
 
 #[tokio::test]

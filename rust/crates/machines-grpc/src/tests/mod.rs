@@ -489,9 +489,9 @@ fn scripted_operation_service(
     std::sync::Arc<std::sync::Mutex<ObservationScript>>,
     MachineId,
 ) {
-    let key = IdempotencyKey(uuid::Uuid::from_u128(0x41));
-    let operation = OperationId(uuid::Uuid::from_u128(0x42));
-    let machine = MachineId(uuid::Uuid::from_u128(0x43));
+    let key = IdempotencyKey::from_bytes(Uuid::from_u128(0x41).into_bytes()).unwrap();
+    let operation = OperationId::from_bytes(Uuid::from_u128(0x42).into_bytes()).unwrap();
+    let machine = MachineId::from_bytes(Uuid::from_u128(0x43).into_bytes()).unwrap();
     let script = std::sync::Arc::new(std::sync::Mutex::new(ObservationScript {
         results: None,
         watches: watches.into(),

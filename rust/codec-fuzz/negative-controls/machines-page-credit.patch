@@ -1,6 +1,6 @@
-diff --git a/rust/crates/machines/src/grpc/codec/observation.rs b/rust/crates/machines/src/grpc/codec/observation.rs
---- a/rust/crates/machines/src/grpc/codec/observation.rs
-+++ b/rust/crates/machines/src/grpc/codec/observation.rs
+diff --git a/rust/crates/machines/src/codec/observation.rs b/rust/crates/machines/src/codec/observation.rs
+--- a/rust/crates/machines/src/codec/observation.rs
++++ b/rust/crates/machines/src/codec/observation.rs
 @@ -39,9 +39,7 @@
          .as_ref()
          .map(|value| decode_machine(Some(value)))

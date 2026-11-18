@@ -107,11 +107,6 @@ pub mod local;
 pub mod codec;
 include!(concat!(env!("OUT_DIR"), "/machines-client.rs"));
 
-pub mod grpc;
-mod obs;
-#[cfg(not(target_arch = "wasm32"))]
-pub use grpc::Tls;
-
 #[cfg(test)]
 mod admission_tests {
     use acyclic_auth::action::{Action, MachinesAction};

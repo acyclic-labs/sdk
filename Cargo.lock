@@ -738,6 +738,7 @@ dependencies = [
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-daytona",
+ "acyclic-machines-grpc",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -1543,13 +1544,10 @@ dependencies = [
  "futures",
  "heck",
  "hex",
- "hyper-util",
- "js-sys",
  "proptest",
  "prost",
  "prost-reflect",
  "prost-types",
- "rcgen",
  "rustix",
  "serde",
  "serde_json",
@@ -1557,16 +1555,11 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-stream",
  "tonic",
  "tonic-prost",
- "tower",
- "tracing",
- "tracing-subscriber",
  "tsify",
  "uuid",
  "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -1600,6 +1593,34 @@ dependencies = [
  "time",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "acyclic-machines-grpc"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-machines",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "async-trait",
+ "futures",
+ "hyper-util",
+ "js-sys",
+ "prost",
+ "proptest",
+ "rcgen",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

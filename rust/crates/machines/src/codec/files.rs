@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in super::super) fn decode_read_response(
+pub fn decode_read_response(
     response: wire::ReadFileResponse,
     machine: MachineId,
     offset: u64,
@@ -21,7 +21,7 @@ pub(in super::super) fn decode_read_response(
     }
 }
 
-pub(in super::super) fn decode_write_response(
+pub fn decode_write_response(
     response: wire::WriteFileResponse,
     machine: MachineId,
     offset: u64,
@@ -41,7 +41,7 @@ pub(in super::super) fn decode_write_response(
         .map_err(|_| ProviderError::FileIndeterminate(machine))
 }
 
-pub(in super::super) fn encode_access(machine: MachineId, access: &FileAccess) -> wire::FileAccess {
+pub fn encode_access(machine: MachineId, access: &FileAccess) -> wire::FileAccess {
     wire::FileAccess {
         machine: Some(encode_machine(machine)),
         path: access.path.clone(),

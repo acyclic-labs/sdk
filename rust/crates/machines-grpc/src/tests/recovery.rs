@@ -37,7 +37,7 @@ fn suspended_state(operation: OperationId) -> wire::OperationState {
     let mut state = operation_state(operation, wire::OperationStatus::Succeeded);
     state.outcome = Some(wire::MutationOutcome {
         result: Some(wire::mutation_outcome::Result::Suspended(encode_machine(
-            MachineId(uuid::Uuid::from_u128(0x43)),
+            MachineId::from_bytes(Uuid::from_u128(0x43).into_bytes()).unwrap(),
         ))),
     });
     state

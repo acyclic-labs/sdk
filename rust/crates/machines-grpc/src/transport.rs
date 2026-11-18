@@ -14,7 +14,7 @@ macro_rules! native_rpc {
     }};
 }
 
-machines_rpc_client!(native_rpc);
+acyclic_machines::machines_rpc_client!(native_rpc);
 
 /// Authentication and physical transport belong to the embedding platform.
 /// The provider retains all admission, decoding and settlement in one core.
@@ -98,7 +98,7 @@ pub(super) trait Messages<T>: Stream<Item = Result<T, Status>> + Unpin {
 impl<T, S: Stream<Item = Result<T, Status>> + Unpin> Messages<T> for S {}
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Deadline for crate::provider::deadline::GuestDeadline {
+impl Deadline for GuestDeadline {
     fn remaining(&self) -> Option<Duration> {
         self.remaining()
     }

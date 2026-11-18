@@ -14,7 +14,7 @@ impl<E: RpcEndpoint> Provider<E> {
             ));
         }
         access.validate_range(limit as usize)?;
-        let deadline = self.endpoint.absolute_deadline(access.deadline_unix_ms)?;
+        let deadline = self.endpoint.absolute_deadline(access.deadline_unix_ms())?;
         let mut client = self.file_client(&deadline).await?;
         let (input, _input_guard) =
             duplex::input(stream::iter(std::iter::once(wire::ReadFileRequest {
@@ -41,7 +41,7 @@ impl<E: RpcEndpoint> Provider<E> {
             .map_err(|stop| stop.file(machine))?
             .map_err(|error| ProviderError::FileIndeterminate(machine).with_cause(error))?
             .ok_or(ProviderError::FileIndeterminate(machine))?;
-        decode_read_response(response, machine, access.offset, limit)
+        decode_read_response(response, machine, access.offset(), limit)
     }
 
     pub(super) async fn guest_write_file(
@@ -53,11 +53,11 @@ impl<E: RpcEndpoint> Provider<E> {
         observation: &obs::Span,
     ) -> Result<FileWrite, ProviderError> {
         access.validate_range(data.len())?;
-        if truncate && access.offset != 0 {
+        if truncate && access.offset() != 0 {
             return Err(ProviderError::Invalid("file truncation admission failed; recovery: truncate only the first chunk at offset zero".into()));
         }
         let length = data.len();
-        let deadline = self.endpoint.absolute_deadline(access.deadline_unix_ms)?;
+        let deadline = self.endpoint.absolute_deadline(access.deadline_unix_ms())?;
         let mut client = self.file_client(&deadline).await?;
         let (input, _input_guard) =
             duplex::input(stream::iter(std::iter::once(wire::WriteFileRequest {
@@ -85,7 +85,7 @@ impl<E: RpcEndpoint> Provider<E> {
             .map_err(|stop| stop.file(machine))?
             .map_err(|error| ProviderError::FileIndeterminate(machine).with_cause(error))?
             .ok_or(ProviderError::FileIndeterminate(machine))?;
-        decode_write_response(response, machine, access.offset, length)
+        decode_write_response(response, machine, access.offset(), length)
     }
 
     async fn file_client(&self, deadline: &E::Deadline) -> Result<E::Client, ProviderError> {

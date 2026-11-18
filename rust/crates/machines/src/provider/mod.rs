@@ -1,6 +1,8 @@
 use super::*;
 
-pub(crate) mod events;
+/// Validates ordered event delivery across Machines providers.
+#[doc(hidden)]
+pub mod events;
 
 /// Public provider interface shared by deterministic and managed implementations.
 /// Native providers retain thread-safe futures; browser providers retain their
@@ -303,6 +305,9 @@ pub use capture::{CapturedExec, capture_exec};
 pub(crate) mod admitted;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod deadline;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub use deadline::GuestDeadline;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod journal;
 #[cfg(all(

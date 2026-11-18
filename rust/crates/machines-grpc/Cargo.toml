@@ -1,0 +1,53 @@
+[package]
+name = "acyclic-machines-grpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated Machines gRPC and browser Connect transports"
+
+[package.metadata.bazel]
+unit-test-only-sources = ["src/credential_tests.rs", "src/tests/**"]
+
+[features]
+javascript = ["dep:js-sys", "dep:prost", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+test-support = ["acyclic-machines/test-support"]
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+async-trait.workspace = true
+futures.workspace = true
+tonic = { workspace = true, features = ["codegen"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+hyper-util.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["net"] }
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
+tower.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["test-support"] }
+acyclic-test-support = { path = "../test-support" }
+prost.workspace = true
+proptest.workspace = true
+rcgen = "0.14.10"
+tokio-stream.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "test-util", "time"] }
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -78,7 +78,7 @@ const fields = [
 const families = [
   ["harness", [], ["sdk"], []],
   ["stream", ["stream"], ["sdk"], ["conformance", "filesystem", "filesystem-wasm", "harness"]],
-  ["machines", ["machines"], ["sdk"], ["machines-conformance", "harness"]],
+  ["machines", ["machines"], ["sdk"], ["machines-conformance", "machines-grpc", "harness"]],
   ["inference", ["inference", "inference-wasm"], ["sdk"], ["inference-wasm"]],
   ["objects", ["objects"], ["sdk", "harness"], ["conformance", "filesystem", "filesystem-wasm", "harness"]],
   ["filesystem", ["filesystem", "filesystem-napi", "filesystem-wasm"], [], []],

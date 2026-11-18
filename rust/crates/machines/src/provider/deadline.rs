@@ -48,14 +48,16 @@ impl GuestDeadline {
         })
     }
 
-    pub(crate) fn absolute(expiry: u64) -> Result<Self, ProviderError> {
+    /// Admits an original absolute expiry for a native transport.
+    pub fn absolute(expiry: u64) -> Result<Self, ProviderError> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| ProviderError::Rejected(format!("guest clock admission failed: {error}; recovery: restore the system clock before dispatch")))?;
         let timeout = Duration::from_millis(expiry).saturating_sub(now);
         Self::new(Some(timeout), Some(expiry))
     }
 
-    pub(crate) fn remaining(&self) -> Option<Duration> {
+    /// Remaining budget for transport metadata.
+    pub fn remaining(&self) -> Option<Duration> {
         self.until
             .map(|until| until.saturating_duration_since(tokio::time::Instant::now()))
     }
@@ -64,8 +66,9 @@ impl GuestDeadline {
         self.until.map(tokio::time::Instant::into_std)
     }
 
-    #[cfg(test)]
-    pub(crate) fn controlled() -> (Self, impl Fn(Result<(), Arc<std::io::Error>>)) {
+    /// Exposes the original alarm decision to deterministic transport tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn controlled() -> (Self, impl Fn(Result<(), Arc<std::io::Error>>)) {
         let (terminal, wake) = terminal();
         (
             Self {
@@ -78,7 +81,8 @@ impl GuestDeadline {
         )
     }
 
-    pub(crate) async fn run<T>(
+    /// Observes the producer until its terminal or the original deadline.
+    pub async fn run<T>(
         &self,
         future: impl std::future::Future<Output = T>,
     ) -> Result<T, DeadlineStop> {
