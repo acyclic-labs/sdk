@@ -33,8 +33,6 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness",
     edition = "2024",
     version = "0.2.0",
@@ -55,7 +53,7 @@ cargo_build_script(
 rust_library(
     name = "acyclic_harness",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/bin/virtiofsd.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     clippy_config = "clippy.toml",
     edition = "2024",
@@ -4327,8 +4325,6 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness",
     edition = "2024",
     version = "0.2.0",
@@ -4351,7 +4347,7 @@ rust_library(
     name = "acyclic_harness_wasm",
     crate_name = "acyclic_harness",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/bin/virtiofsd.rs"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     clippy_config = "clippy.toml",
     edition = "2024",
