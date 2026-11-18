@@ -335,15 +335,19 @@ fn write_manifest(output: &Path, value: &Value) {
     .unwrap();
 }
 
-fn invoke(command: &mut Command) -> std::process::Output {
+fn configure_cli(command: &mut Command) -> &mut Command {
     runtime::configure(command);
-    command.env("RUSTC", runtime::rustc());
     if !command
         .get_envs()
         .any(|(key, _)| key.as_encoded_bytes().eq_ignore_ascii_case(b"PATH"))
     {
         command.env("PATH", runtime::path());
     }
+    command
+}
+
+fn invoke(command: &mut Command) -> std::process::Output {
+    configure_cli(command);
     let mut stdout = Vec::new();
     let result = commands::execute(|| {
         sdk_docs::with_command_environment(command, || {
@@ -417,9 +421,6 @@ fn generate_command(
     skip_scenarios: bool,
 ) -> Command {
     let mut command = Command::new(runtime::binary("sdk-generation"));
-    runtime::configure(&mut command);
-    command.env("PATH", runtime::path());
-    command.env("RUSTC", runtime::rustc());
     command.args([
         "generate",
         "--root",
