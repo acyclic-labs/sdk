@@ -382,6 +382,7 @@ async fn search_uses_current_session_grants_even_for_a_retained_cursor()
             actions: vec![
                 "streams/list".into(),
                 "streams/read".into(),
+                "streams/tail".into(),
                 "streams/follow".into(),
             ],
         }])
