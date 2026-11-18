@@ -548,7 +548,6 @@ rust_test(
         "tests/e2e/stall.rs",
         "tests/e2e/substrate_matrix.rs",
         "tests/e2e_progress_model.rs",
-        "tests/file_tools_contract.rs",
         "tests/filesystem_access.rs",
         "tests/filesystem_access_coarse.rs",
         "tests/filesystem_access_compilation.rs",
@@ -899,7 +898,6 @@ rust_test(
         "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:fixtures/harness/v2/file-tools-contract.json",
         "//rust/crates/harness-fuzz:tree/corpus",
         "//rust/crates/harness-fuzz:tree/corpus/client_diff",
         "//rust/crates/harness-fuzz:tree/corpus/e2e_expectations",
@@ -1605,6 +1603,61 @@ isolated_test(
     binary = ":plan-markdown_cases",
     binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd","@nodejs//:node":"node"},
     id = "acyclic-harness::plan-markdown",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "file-tools-fixture_cases",
+    crate_root = "tests/file_tools_fixture_cases.rs",
+    srcs = [
+        "tests/file_tools_contract.rs",
+        "tests/file_tools_fixture_cases.rs",
+    ],
+    clippy_config = "clippy.toml",
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"model-checking\", \"research\", \"test-support\", \"wasm\", \"wasm-journal\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/test-support:acyclic_test_support",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
+    ],
+    data = [
+        "//:fixtures/harness/v2/file-tools-contract.json",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "file-tools-fixture",
+    binary = ":file-tools-fixture_cases",
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    id = "acyclic-harness::file-tools-fixture",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "file-tools-fixture_full-cloud",
+    binary = ":file-tools-fixture_cases",
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd","@nodejs//:node":"node"},
+    id = "acyclic-harness::file-tools-fixture",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
