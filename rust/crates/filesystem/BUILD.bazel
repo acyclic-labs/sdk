@@ -1956,7 +1956,6 @@ rust_test(
     name = "native_checkpoint_cases",
     crate_root = "tests/native_checkpoint.rs",
     srcs = [
-        "src/native_identity.rs",
         "src/windows_usn_codec.rs",
         "tests/native_checkpoint.rs",
         "tests/native_checkpoint/windows_usn_codec.rs",
@@ -1976,8 +1975,7 @@ rust_test(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
-        "@sdk_crates//cap-primitives-4.0.3",
-        "@sdk_crates//cap-std-4.0.3",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "@sdk_crates//thiserror-2.0.21",
     ],
     tags = ["manual"],
