@@ -168,6 +168,22 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  /** @type {Map<import('typescript-parser').Symbol, Dependency>} */
  const symbols = new Map();
  const indices = new Map([...units].map(([file, unit]) => [file, new Map(unit.stream.map((token, index) => [token.start, index]))]));
+
+ // A top-level function owns its lexical context, including all local bindings.
+ // Compute its token identity once even when many symbols refer into that scope.
+ const functions = new Map();
+ for (const source of program.getSourceFiles()) {
+  const file = source.fileName.slice(1), unit = required(units, file), index = required(indices, file);
+  for (const node of source.statements) {
+   if (!ts.isFunctionDeclaration(node)) continue;
+   const start = index.get(node.getStart(source));
+   if (start === undefined) continue;
+   let end = start;
+   while (end < unit.stream.length && unit.stream[end].start < node.end) end++;
+   functions.set(node, {start, position: file + ':function:' + (node.name?.text ?? 'default'),
+    unit: digest(unit.stream.slice(start, end).map(token => [token.kind, token.value]))});
+  }
+ }
  /** @param {import('typescript-parser').Node} node */
  const nodePosition = node => {
   const file = node.getSourceFile().fileName.slice(1);
@@ -212,15 +228,12 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    const file = node.getSourceFile().fileName.slice(1);
    const source = required(units, file);
    const index = required(indices, file).get(node.getStart());
-   // Top-level functions have no enclosing executable context. Their
-   // binding and body remain stable when unrelated declarations move.
-   if (ts.isFunctionDeclaration(node) && ts.isSourceFile(node.parent) && index !== undefined) {
-    let end = index;
-    while (end < source.stream.length && source.stream[end].start < node.end) end++;
-    return {
-     position: file + ':function:' + (node.name?.text ?? 'default'),
-     unit: digest(source.stream.slice(index, end).map(token => [token.kind, token.value])),
-    };
+   for (let parent = /** @type {import('typescript-parser').Node} */ (node); parent; parent = parent.parent) {
+    const scope = functions.get(parent);
+    if (!scope) continue;
+    if (parent === node) return scope;
+    const local = index === undefined ? digest(node.getText()) : index - scope.start;
+    return {position: scope.position + ':local:' + node.kind + ':' + local, unit: scope.unit};
    }
    // Type-only JSDoc bindings and empty module declarations have no executable token.
    return {position: file + ':' + node.kind + ':' + (index ?? digest(node.getText())), unit: source.fingerprint};
