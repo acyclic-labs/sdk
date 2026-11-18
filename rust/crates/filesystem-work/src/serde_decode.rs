@@ -83,7 +83,7 @@ impl<W: DecodeWork> MaterializationDecode<'_, W> {
     ) -> Result<T, E> {
         let copied = WorkCounters {
             bytes_copied: bytes as u64,
-            ..Default::default()
+            ..WorkCounters::UNCHARGED
         };
         self.work
             .admit(copied)
@@ -360,7 +360,7 @@ impl<'de, W: DecodeWork, S: serde::de::DeserializeSeed<'de>> serde::de::Deserial
                 .work
                 .charge(WorkCounters {
                     items_examined: 1,
-                    ..Default::default()
+                    ..WorkCounters::UNCHARGED
                 })
                 .map_err(|error| D::Error::custom(self.decode.error(error)))?;
         }
