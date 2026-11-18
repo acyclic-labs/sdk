@@ -103,7 +103,6 @@ impl StringSyntax {
             };
         }
         match byte {
-            0..=0x1f => false,
             b'\\' => {
                 self.escape = true;
                 true
