@@ -638,11 +638,11 @@ const wasmGraph = wasm && {nodes:[wasmNodes], roots:wasm.roots, suffix:"_wasm",
 // and every renamed dependency's alias. crate_universe's all_crate_deps() and aliases() are not
 // used: they follow its default-features resolution, and aliases() drops the conditional aliases
 // of a package with more than one cfg condition.
-function edges(p, kinds, graph, variants = {}) {
+function edges(p, kinds, graph, variants = {}, names) {
   return (graph?.nodes ?? nodes).map(byId => {
     const deps = [], procMacros = [], aliases = {};
     for (const dep of byId.get(p.id)?.deps ?? []) {
-      if (!dep.dep_kinds.some(k => kinds.includes(k.kind))) continue;
+      if (!dep.dep_kinds.some(k => kinds.includes(k.kind)) || (names && !names.includes(dep.name))) continue;
       const target = packages.get(dep.pkg);
       const lib = libOf(target);
       const targetGraph = kinds.includes("build") || lib.kind.includes("proc-macro") ? undefined : graph;
@@ -715,8 +715,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : undefined],
   ];
   // Rendered dependencies of one target.
-  const deps = (kinds, extra = [], extraMacros = [], variants = {}) => {
-    const first = edges(p, kinds, graph, variants);
+  const deps = (kinds, extra = [], extraMacros = [], variants = {}, names) => {
+    const first = edges(p, kinds, graph, variants, names);
     return [
       ["deps", plus(list(extra), configured(first, e => list(e.deps)))],
       ["proc_macro_deps", plus(list(extraMacros), configured(first, e => list(e.procMacros)))],
@@ -893,6 +893,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     : [];
   const depVariable = key => `SEPARATE_${key.toUpperCase()}`;
   const separate = target => {
+    const names = p.metadata?.bazel?.["test-dependencies"]?.[target.name];
+    const includeOwn = names?.includes(lib && crateName(lib));
     const crateRoot = local(target.src_path);
     const extra = extras(target, () => false);
     return [
@@ -900,7 +902,9 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["srcs", list(extra.srcs)],
       ["compile_data", list(extra.data)],
       ...common(target),
-      ...(sharedDeps.length ? sharedDeps.map(([key]) => [key, depVariable(key)]) : separateDeps()),
+      ...(names ? deps([null, "dev"], includeOwn ? [...ownLib, ...ownDeps] : ownDeps,
+        includeOwn ? ownMacro : [], {}, names)
+        : sharedDeps.length ? sharedDeps.map(([key]) => [key, depVariable(key)]) : separateDeps()),
     ];
   };
   for (const target of executables.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {

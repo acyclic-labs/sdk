@@ -38,6 +38,9 @@ build-script-inputs = [
 [package.metadata.bazel.unit-test-dependency-variants]
 acyclic-fs-work = "observations"
 
+[package.metadata.bazel.test-dependencies]
+native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
+
 [[test]]
 name = "main"
 path = "tests/main.rs"
@@ -83,6 +86,10 @@ path = "tests/workspace_context_contracts.rs"
 [[test]]
 name = "wire_error_contracts"
 path = "tests/wire_error_contracts.rs"
+
+[[test]]
+name = "native_checkpoint"
+path = "tests/native_checkpoint.rs"
 
 [[bench]]
 name = "lease_paths"
