@@ -1,7 +1,6 @@
 [
   ".bazelrc",
   ".github/workflows/publish-crate.yml",
-  ".github/workflows/publish-npm.yml",
   "MODULE.bazel",
   "fuzz/guest-negative-control.mjs",
   "plugin/tests/hosts/prepare-native.mjs",
