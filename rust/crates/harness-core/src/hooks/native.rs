@@ -97,7 +97,7 @@ impl Hooks {
     }
 }
 
-pub(super) async fn run_hook(
+pub async fn run_hook(
     hook: Arc<HookSpec>,
     request: (PathBuf, PathBuf, Vec<u8>),
     owner_check: HookCheck,
