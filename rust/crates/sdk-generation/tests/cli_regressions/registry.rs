@@ -1,56 +1,14 @@
 use super::*;
 
 #[test]
-fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
+fn archive_locks_override_foreign_cargo_authority() {
     runtime::time_control();
     std::thread::scope(|scope| {
         for published in [true, false] {
             scope.spawn(move || {
                 let (fixture, support) = registry_archive_fixture(false, published, None, true);
-                let foreign = support.join("foreign/Cargo.lock");
-                fs::create_dir_all(foreign.parent().unwrap()).unwrap();
-                fs::write(&foreign, "invalid foreign lock must never be selected\n").unwrap();
-                let archive = support.join("registry/demo-1.0.0.crate");
-                let original_archive = fs::read(&archive).unwrap();
-                let result = run_historical_generation(
-                    &fixture,
-                    &support,
-                    Some("registry-archives"),
-                    Some(HistoricalAuthority::Lock(&foreign)),
-                    &[],
-                );
-                assert!(result.status.success(), "{}", output_message(&result));
-                assert_eq!(
-                    fs::read(&foreign).unwrap(),
-                    b"invalid foreign lock must never be selected\n"
-                );
-                assert_eq!(fs::read(&archive).unwrap(), original_archive);
-                let data: Value = serde_json::from_slice(
-                    &fs::read(fixture.output.join("releases/1.0.0/sdk-docs-data.v1.json")).unwrap(),
-                )
-                .unwrap();
-                assert_eq!(
-                    data["source"]["capturedSource"]["archives"][0]["resolutionLock"]["kind"],
-                    if published {
-                        "published"
-                    } else {
-                        "docsProducer"
-                    }
-                );
-            });
-        }
-    });
-}
-
-#[test]
-fn archive_locks_override_foreign_automatic_cargo_configuration() {
-    runtime::time_control();
-    std::thread::scope(|scope| {
-        for published in [true, false] {
-            scope.spawn(move || {
-                let (fixture, support) = registry_archive_fixture(false, published, None, true);
-                // These controls differ only in automatic-config location. Keep the
-                // captured source and compiler output immutable between the two runs.
+                // These controls differ only in Cargo authority. Keep the
+                // captured source and compiler output immutable across runs.
                 let mut discovery = Vec::new();
                 let queries = commands::Queries::default();
                 let directory = support.join("automatic-config");
@@ -65,64 +23,68 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                 );
                 let archive = support.join("registry/demo-1.0.0.crate");
                 let original_archive = fs::read(&archive).unwrap();
-                for cargo_home in [true, false] {
-                    let config_directory = if cargo_home {
-                        directory.clone()
-                    } else {
-                        directory.join(".cargo")
-                    };
-                    fs::create_dir_all(&config_directory).unwrap();
-                    fs::write(config_directory.join("config.toml"), &config).unwrap();
-                    // Negative control: maintained Cargo really discovers this automatic config.
-                    let mut control = Command::new(&*runtime::cargo());
-                    runtime::configure(&mut control);
-                    control.env("CARGO_HOME", fixture_cargo_home(&fixture));
-                    control
-                        .args([
-                            "metadata",
-                            "--locked",
-                            "--offline",
-                            "--format-version",
-                            "1",
-                            "--manifest-path",
-                        ])
-                        .arg(support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml"))
-                        .env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-                    if cargo_home {
-                        control.env("CARGO_HOME", &directory);
-                    } else {
-                        control.current_dir(&directory);
+                for (authority, config_directory) in [
+                    (HistoricalAuthority::Lock(&foreign), None),
+                    (
+                        HistoricalAuthority::CargoHome(&directory),
+                        Some(directory.clone()),
+                    ),
+                    (
+                        HistoricalAuthority::WorkingDirectory(&directory),
+                        Some(directory.join(".cargo")),
+                    ),
+                ] {
+                    if let Some(config_directory) = &config_directory {
+                        fs::create_dir_all(&config_directory).unwrap();
+                        fs::write(config_directory.join("config.toml"), &config).unwrap();
+                        // Negative control: maintained Cargo really discovers this automatic config.
+                        let mut control = Command::new(&*runtime::cargo());
+                        runtime::configure(&mut control);
+                        control.env("CARGO_HOME", fixture_cargo_home(&fixture));
+                        control
+                            .args([
+                                "metadata",
+                                "--locked",
+                                "--offline",
+                                "--format-version",
+                                "1",
+                                "--manifest-path",
+                            ])
+                            .arg(support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml"))
+                            .env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+                        if matches!(&authority, HistoricalAuthority::CargoHome(_)) {
+                            control.env("CARGO_HOME", &directory);
+                        } else {
+                            control.current_dir(&directory);
+                        }
+                        let rejected = control.output().unwrap();
+                        assert!(
+                            !rejected.status.success(),
+                            "automatic config negative control did not select foreign lock"
+                        );
+                        assert!(
+                            output_message(&rejected).contains("lock"),
+                            "{}",
+                            output_message(&rejected)
+                        );
                     }
-                    let rejected = control.output().unwrap();
-                    assert!(
-                        !rejected.status.success(),
-                        "automatic config negative control did not select foreign lock"
-                    );
-                    assert!(
-                        output_message(&rejected).contains("lock"),
-                        "{}",
-                        output_message(&rejected)
-                    );
                     let result = queries.run(|| {
                         run_historical_generation(
                             &fixture,
                             &support,
                             Some("registry-archives"),
-                            Some(if cargo_home {
-                                HistoricalAuthority::CargoHome(&directory)
-                            } else {
-                                HistoricalAuthority::WorkingDirectory(&directory)
-                            }),
+                            Some(authority),
                             &[],
                         )
                     });
                     assert!(result.status.success(), "{}", output_message(&result));
                     assert_eq!(fs::read(&foreign).unwrap(), foreign_bytes);
                     assert_eq!(fs::read(&archive).unwrap(), original_archive);
-                    assert_eq!(
-                        fs::read_to_string(config_directory.join("config.toml")).unwrap(),
-                        config
-                    );
+                    if let Some(config_directory) = config_directory {
+                        let path = config_directory.join("config.toml");
+                        assert_eq!(fs::read_to_string(&path).unwrap(), config);
+                        fs::remove_file(path).unwrap();
+                    }
                     let data: Value = serde_json::from_slice(
                         &fs::read(fixture.output.join("releases/1.0.0/sdk-docs-data.v1.json"))
                             .unwrap(),
@@ -146,16 +108,16 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     // Retain the exact source, receipts and compiler directory only.
                     fs::remove_file(output.join("generation-manifest.v1.json")).unwrap();
                     fs::remove_file(output.join("generation-manifest.v1.sha256")).unwrap();
-                    fs::remove_file(config_directory.join("config.toml")).unwrap();
                 }
-                assert_eq!(discovery.len(), 2);
+                assert_eq!(discovery.len(), 3);
                 let (recorded, replayed_compilers) = queries.compiler_counts();
                 assert!(
                     recorded > 0,
                     "the original compiler matrix must really execute"
                 );
                 assert_eq!(
-                    recorded, replayed_compilers,
+                    recorded * 2,
+                    replayed_compilers,
                     "each identical policy profile must replay its real JSON"
                 );
                 let (executed, replayed) = queries.counts();
@@ -164,7 +126,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     "both real recording and policy replay must run"
                 );
                 assert_ne!(
-                    discovery[0], discovery[1],
+                    discovery[1], discovery[2],
                     "both automatic-config authorities must execute"
                 );
             });
