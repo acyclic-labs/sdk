@@ -25,7 +25,6 @@ try {
     const selected = Object.keys(args).filter((key) => args[key]);
     if (selected.length > 1) throw new Error("select at most one admission control");
     const mode = selected[0];
-    const nextest = ["depth-prior", "first-cause-prior", "hidden-items"].includes(mode);
     const source = join(root, "rust/crates/harness-core/src/executor/json",
       mode === "record-sequence" ? "layout.rs" : mode ? "admission.rs" : "records.rs");
     const oracle = join(root, mode === "hidden-items"
@@ -42,10 +41,8 @@ try {
     const property = mode === "hidden-items"
       ? "executor::json::value_shape_tests::hidden_raw_values_are_bounded_before_decode"
       : "executor::json::tests::object_work::checked_codec_fuzz_corpus";
-    const command = nextest
-      ? ["cargo", "nextest", "run", "--locked", "--profile", "ci", "--retries", "0", "-p", "acyclic-harness-core", "--lib",
-        ...(mode === "hidden-items" ? ["--features", "filesystem"] : []), "-E", `test(=${property})`]
-      : ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib", property, "--", "--exact", "--nocapture"];
+    const command = ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases",
+      "--", property, "--exact", "--nocapture"];
     function git(...argv) {
       const result = spawnSync("git", argv, { cwd: root, maxBuffer: 32 * 1024 * 1024 });
       if (result.error) throw result.error;
@@ -71,25 +68,25 @@ try {
       git("apply", patch);
       const mutated = readFileSync(source);
       let prior;
-      const positive = nextest ? "1 test run: 1 passed" : "test result: ok. 1 passed; 0 failed";
-      let phases = [["diagnostic-admission-refusal-red", 101, "typed JSON decode must preserve caller charge refusal at frontier 5"],
-        ["restored-original-corpus", 0, positive]];
+      const positive = "test result: ok. 1 passed; 0 failed";
+      let phases = [["diagnostic-admission-refusal-red", false, "typed JSON decode must preserve caller charge refusal at frontier 5"],
+        ["restored-original-corpus", true, positive]];
       if (typeof args[mode] === "string") {
         step = "read prior shared oracle from the selected revision";
         prior = git("show", `${args[mode]}:${portable(oracle)}`);
         result.prior_oracle = { revision: args[mode], sha256: digest(prior) };
       }
-      if (mode === "raw-domain-prior") phases = [["prior-oracle-mutant-miss", 0, positive],
-        ["raw-domain-red", 101, "typed raw JSON must admit independently valid raw input"], ["restored-original-corpus", 0, positive]];
-      if (mode === "depth-prior") phases = [["prior-depth-false-positive", 100, "typed raw JSON must admit independently valid raw input"],
-        ["depth-omission-red", 100, "typed raw JSON must refuse documents beyond the declared depth"], ["restored-original-corpus", 0, positive]];
-      if (mode === "first-cause-prior") phases = [["prior-oracle-mutant-miss", 0, positive],
-        ["first-cause-loss-red", 100, "materialized JSON admission must preserve the first caller cause"], ["restored-original-corpus", 0, positive]];
-      if (mode === "hidden-items") phases = [["hidden-item-omission-red", 100, "assertion failed: !admitted && inspected <= maximum_inspected"],
-        ["restored-original-property", 0, positive]];
-      if (mode === "record-sequence") phases = [["record-sequence-refusal-red", 101, "record layout must admit every Serde record form"],
-        ["restored-original-corpus", 0, positive]];
-      for (const [name, expected, assertion] of phases) {
+      if (mode === "raw-domain-prior") phases = [["prior-oracle-mutant-miss", true, positive],
+        ["raw-domain-red", false, "typed raw JSON must admit independently valid raw input"], ["restored-original-corpus", true, positive]];
+      if (mode === "depth-prior") phases = [["prior-depth-false-positive", false, "typed raw JSON must admit independently valid raw input"],
+        ["depth-omission-red", false, "typed raw JSON must refuse documents beyond the declared depth"], ["restored-original-corpus", true, positive]];
+      if (mode === "first-cause-prior") phases = [["prior-oracle-mutant-miss", true, positive],
+        ["first-cause-loss-red", false, "materialized JSON admission must preserve the first caller cause"], ["restored-original-corpus", true, positive]];
+      if (mode === "hidden-items") phases = [["hidden-item-omission-red", false, "assertion failed: !admitted && inspected <= maximum_inspected"],
+        ["restored-original-property", true, positive]];
+      if (mode === "record-sequence") phases = [["record-sequence-refusal-red", false, "record layout must admit every Serde record form"],
+        ["restored-original-corpus", true, positive]];
+      for (const [name, expectSuccess, assertion] of phases) {
         writeFileSync(source, ["prior-depth-false-positive", "restored-original-corpus", "restored-original-property"].includes(name) ? original : mutated);
         writeFileSync(oracle, ["prior-oracle-mutant-miss", "prior-depth-false-positive"].includes(name) ? prior : originalOracle);
         step = name;
@@ -104,7 +101,7 @@ try {
         const output = readFileSync(log, "utf8");
         process.stdout.write(output.slice(-6000));
         const phase = { name, exit: completed.status, source: digest(readFileSync(source)), oracle: digest(readFileSync(oracle)), log: digest(readFileSync(log)) };
-        const pattern = nextest ? /command:.*?(\/[^\s]+\/acyclic_harness_core-[a-f0-9]+)/g : /Running unittests .*? \(([^)]+)\)/g;
+        const pattern = /Running command line: (\S*acyclic_harness_core_test_cases(?:\.exe)?)\s/g;
         const executables = [...output.matchAll(pattern)];
         if (executables.length) {
           const executable = resolve(root, executables.at(-1)[1]);
@@ -116,8 +113,8 @@ try {
         result.phases.push(phase);
         save();
         if (completed.error) throw completed.error;
-        if (completed.status !== expected || !output.includes(assertion)) throw new Error(`expected semantic assertion absent; inspect ${log}`);
-        if ([100, 101].includes(expected) && (!output.includes("panicked at ") || !output.includes("test result: FAILED."))) {
+        if ((completed.status === 0) !== expectSuccess || !output.includes(assertion)) throw new Error(`expected semantic assertion absent; inspect ${log}`);
+        if (!expectSuccess && (!output.includes("panicked at ") || !output.includes("test result: FAILED."))) {
           throw new Error(`mutation did not reach the runtime assertion; inspect ${log}`);
         }
       }
