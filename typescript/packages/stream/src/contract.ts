@@ -94,7 +94,7 @@ type WireRequest =
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
   | ({ readonly kind: "follow"; readonly path: string } & Omit<import("./types.js").FollowOptions, "signal">)
-  | { readonly kind: "children_page"; readonly tailStream?: string | undefined; readonly parent?: string | undefined; readonly after?: string | undefined; readonly offset?: bigint | undefined; readonly hierarchyVersion?: Uint8Array | undefined; readonly limit: number };
+  | { readonly kind: "children_page"; readonly options: import("./types.js").ChildrenPageRequest };
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
@@ -198,14 +198,13 @@ export function wireRequest(request: WireRequest): Uint8Array {
           ...(request.filter === undefined ? {} : { filter: request.filter }),
         }));
       case "children_page":
-        return toBinary(ChildrenPageRequestSchema, childrenPageMessage(request));
+        return toBinary(ChildrenPageRequestSchema, childrenPageMessage(request.options));
       default: throw new StreamError("invalid_argument", "stream request kind is invalid");
   }
 }
 
-export function validateChildrenPageRequest(request: import("./types.js").ChildrenPageRequest): Promise<Uint8Array> {
-  const { offset, tailStream, parent, after, hierarchyVersion, limit } = request;
-  return validateWireRequest({ kind: "children_page", offset, tailStream, parent, after, hierarchyVersion, limit });
+export function validateChildrenPageRequest(options: import("./types.js").ChildrenPageRequest): Promise<Uint8Array> {
+  return validateWireRequest({ kind: "children_page", options });
 }
 
 export function validateHeadsRequest(options: import("./types.js").HeadsRequest): Promise<Uint8Array> {
