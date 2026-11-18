@@ -351,20 +351,17 @@ fn extend_feature_closure(
     root: &str,
     result: &mut BTreeSet<String>,
 ) {
-    let mut pending = vec![root];
-    while let Some(feature) = pending.pop() {
+    let mut pending = vec![(root, features.get(root))];
+    while let Some((feature, dependencies)) = pending.pop() {
         if result.contains(feature) {
             continue;
         }
         result.insert(feature.to_owned());
-        if let Some(dependencies) = features.get(feature) {
-            for dependency in dependencies {
-                let local = dependency.strip_prefix("?").unwrap_or(dependency);
-                if !local.starts_with("dep:")
-                    && !local.contains('/')
-                    && features.contains_key(local)
-                {
-                    pending.push(local);
+        for dependency in dependencies.into_iter().flatten() {
+            let local = dependency.strip_prefix("?").unwrap_or(dependency);
+            if !local.starts_with("dep:") && !local.contains('/') {
+                if let Some(children) = features.get(local) {
+                    pending.push((local, Some(children)));
                 }
             }
         }
