@@ -22,8 +22,8 @@ elif refusal_contract:
 elif sibling_validation:
     recovery += " --sibling-validation"
 test = "context::native_skills::tests::retained_records_share_one_sync_on_the_native_io_service"
-native = ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib",
-          "--features", "filesystem-local,native-execution,test-support", test, "--", "--exact"]
+native = ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases",
+          "--", test, "--exact"]
 
 
 def fail(step, detail):
