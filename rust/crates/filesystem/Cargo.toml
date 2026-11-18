@@ -80,6 +80,10 @@ path = "tests/workspace_merge.rs"
 name = "workspace_context_contracts"
 path = "tests/workspace_context_contracts.rs"
 
+[[test]]
+name = "wire_error_contracts"
+path = "tests/wire_error_contracts.rs"
+
 [[bench]]
 name = "lease_paths"
 harness = false
