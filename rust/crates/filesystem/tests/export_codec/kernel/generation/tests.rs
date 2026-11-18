@@ -3,13 +3,27 @@ use acyclic_fs::kernel::{
     encode_generation_root, generation_root_id,
 };
 use acyclic_fs_format::{
-    identity::Digest,
+    identity::{Digest, FileId, VolumeId},
     object_reference::{GenerationId, ObjectId, ObjectKind, ObjectStorage},
 };
 
-#[path = "../../../support/generation_root.rs"]
-mod fixture;
-use fixture::root;
+fn root() -> GenerationRoot {
+    GenerationRoot {
+        volume_id: VolumeId::from_bytes([1; 16]),
+        root_file_id: FileId::from_bytes([2; 16]),
+        file_table: ObjectId {
+            storage: Some(ObjectStorage {
+                locator: Digest::from_bytes([5; 32]),
+                root_file_id: FileId::from_bytes([2; 16]),
+                origin_generation: Digest::from_bytes([6; 32]),
+            }),
+            kind: ObjectKind::FileTablePage,
+            digest: Digest::from_bytes([3; 32]),
+        },
+        parents: vec![GenerationId::new(Digest::from_bytes([4; 32]))],
+        required_features: 0,
+    }
+}
 
 fn parent_count_offset(value: &GenerationRoot) -> usize {
     b"ACYFSGEN".len() + size_of::<u16>() + 16 + 16 + value.file_table.encoded_len()
@@ -306,5 +320,52 @@ fn every_generation_invariant_fails_closed_on_encode_and_decode()
         >(())),
         Err(CanonicalDecodeError::Truncated)
     ));
+    Ok(())
+}
+
+#[test]
+fn filtered_fork_feature_round_trips_and_requires_one_parent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut value = root();
+    value.required_features = GenerationRoot::FILTERED_FORK;
+    let parent = ObjectId {
+        kind: ObjectKind::GenerationRoot,
+        digest: Digest::from_bytes([4; 32]),
+        storage: value.file_table.storage,
+    };
+    *value.parents.first_mut().ok_or("missing fixture parent")? = GenerationId::from_root(parent);
+    let encoded = encode_generation_root(
+        &value,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
+    assert_eq!(
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
+            _,
+            CanonicalDecodeError,
+        >(()))?,
+        value
+    );
+    value.parents.clear();
+    assert!(
+        encode_generation_root(
+            &value,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed
+        )
+        .is_err()
+    );
+    value.parents = vec![
+        GenerationId::new(Digest::from_bytes([4; 32])),
+        GenerationId::new(Digest::from_bytes([5; 32])),
+    ];
+    assert!(
+        encode_generation_root(
+            &value,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed
+        )
+        .is_err()
+    );
     Ok(())
 }
