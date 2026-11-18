@@ -48,6 +48,11 @@ macro_rules! http_routes {
                 (input, output)
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
+            pub(crate) const fn is_streaming_http(self) -> bool {
+                matches!(self, $(Self::$stream)|+)
+            }
+
             const fn http_metadata(self) -> (&'static str, &'static str, &'static str) {
                 match self {
                     $(Self::$method => ($route, stringify!($input), stringify!($output)),)+
