@@ -1,6 +1,6 @@
 #[cfg(not(loom))]
 compile_error!(
-    r#"STEP_FAILED stream-models: Loom synchronization is disabled; recovery: ACYCLIC_LOOM=1 cargo test --manifest-path rust/crates/stream/models/Cargo.toml --features model-checking --test session_model"#
+    "STEP_FAILED stream-models: Loom synchronization is disabled; recovery: bazel test //rust/crates/stream/models/bazel:session_model"
 );
 
 pub use acyclic_stream::StreamError;

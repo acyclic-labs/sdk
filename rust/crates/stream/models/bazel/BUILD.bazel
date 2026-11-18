@@ -1,0 +1,40 @@
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+extract_cargo_lints(
+    name = "lints",
+    manifest = "//rust/crates/stream/models:Cargo.toml",
+)
+
+rust_test(
+    name = "session_model",
+    srcs = [
+        "//rust/crates/stream:src/runtime/signal.rs",
+        "//rust/crates/stream:src/runtime/sync.rs",
+        "//rust/crates/stream:src/session/client/credit.rs",
+        "//rust/crates/stream:src/session/client/outbound.rs",
+        "//rust/crates/stream:src/session/client/progress.rs",
+        "//rust/crates/stream:src/session/gate.rs",
+        "//rust/crates/stream-napi:src/eager.rs",
+        "//rust/crates/stream/models:checked.rs",
+        "//rust/crates/stream/models:credit.rs",
+        "//rust/crates/stream/models:gate.rs",
+        "//rust/crates/stream/models:native_registration.rs",
+        "//rust/crates/stream/models:outbound.rs",
+        "//rust/crates/stream/models:session_model.rs",
+        "//rust/crates/stream/models:signal.rs",
+    ],
+    crate_root = "//rust/crates/stream/models:session_model.rs",
+    crate_features = ["model-checking"],
+    edition = "2024",
+    lint_config = ":lints",
+    rustc_flags = ["--cfg=loom", "--check-cfg=cfg(loom)"],
+    tags = ["manual"],
+    deps = [
+        "//rust/crates/stream:acyclic_stream",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//loom-0.7.3",
+        "@sdk_crates//proptest-1.12.0",
+    ],
+)

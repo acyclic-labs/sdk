@@ -4,7 +4,7 @@ These on-demand models use the production synchronization primitives. From the
 repository root, the explicit compiler routing is:
 
 ```sh
-ACYCLIC_LOOM=1 cargo test --locked -p acyclic-stream-models --features model-checking --test session_model
+bazel test //rust/crates/stream/models/bazel:session_model
 ```
 
 An ordinary Rust compile without that routing deliberately refuses this model target. Compiling
@@ -172,7 +172,7 @@ or waking the queued frame reader:
 
 ```sh
 git apply rust/crates/stream/models/mutations/outbound_close_publication.patch
-ACYCLIC_LOOM=1 cargo test --locked -p acyclic-stream-models --features model-checking --test session_model outbound::closing_a_link_wakes_its_response_reader_without_nesting_locks -- --exact --nocapture
+bazel test //rust/crates/stream/models/bazel:session_model --test_arg=outbound::closing_a_link_wakes_its_response_reader_without_nesting_locks --test_arg=--exact --test_arg=--nocapture --test_output=all
 git apply --reverse rust/crates/stream/models/mutations/outbound_close_publication.patch
 ```
 
@@ -190,7 +190,7 @@ branches are distinct from moving the actual shipping guard across its callback:
 
 ```sh
 git apply rust/crates/stream/models/mutations/notification_lock_order.patch
-ACYCLIC_LOOM=1 cargo test --locked -p acyclic-stream-models --features model-checking --test session_model registration_cannot_lose_a_wakeup -- --nocapture
+bazel test //rust/crates/stream/models/bazel:session_model --test_arg=registration_cannot_lose_a_wakeup --test_arg=--nocapture --test_output=all
 git apply --reverse rust/crates/stream/models/mutations/notification_lock_order.patch
 ```
 
@@ -211,7 +211,7 @@ waiter. The registration race models above remain necessary.
 
 ```sh
 git apply rust/crates/stream/models/mutations/waiter_retirement_lock.patch
-ACYCLIC_LOOM=1 cargo test --locked -p acyclic-stream-models --features model-checking --test session_model replacing_waiter_retires_previous_outside_lock -- --nocapture
+bazel test //rust/crates/stream/models/bazel:session_model --test_arg=replacing_waiter_retires_previous_outside_lock --test_arg=--nocapture --test_output=all
 git apply --reverse rust/crates/stream/models/mutations/waiter_retirement_lock.patch
 ```
 
