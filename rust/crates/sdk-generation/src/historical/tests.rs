@@ -477,12 +477,13 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
 fn cohort_publisher_anchors_require_immutable_archive_checksum_lineage() {
     let fixture = Fixture::new();
     let publisher = "a".repeat(40);
-    let (release, archive) = fixture.archive_with_dirty(&publisher, "original-owner", true);
+    let entry = fixture.stage_archive(&publisher, "original-owner", true);
+    let (release, archive) = fixture.pack_archive(&entry);
     let archives = fixture.path().join("cohort");
     fs::create_dir(&archives).unwrap();
     let name = "historical-fixture-0.1.0.crate";
     let retained = archives.join(name);
-    fs::copy(&archive, &retained).unwrap();
+    fs::rename(archive, &retained).unwrap();
     let inventory = BTreeMap::from([(
         "historical-fixture".into(),
         RegistryOwnerVersions {
@@ -716,15 +717,7 @@ impl Fixture {
         .unwrap()
     }
     fn archive(&self, revision: &str, vcs_path: &str) -> (RegistryVersion, PathBuf) {
-        self.archive_with_dirty(revision, vcs_path, false)
-    }
-    fn archive_with_dirty(
-        &self,
-        revision: &str,
-        vcs_path: &str,
-        dirty: bool,
-    ) -> (RegistryVersion, PathBuf) {
-        let entry = self.stage_archive(revision, vcs_path, dirty);
+        let entry = self.stage_archive(revision, vcs_path, false);
         self.pack_archive(&entry)
     }
     fn stage_archive(&self, revision: &str, vcs_path: &str, dirty: bool) -> PathBuf {
