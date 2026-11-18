@@ -202,6 +202,8 @@ filegroup(
         "//rust/crates/source-policies:Cargo.toml",
         "//rust/crates/stream-body:Cargo.toml",
         "//rust/crates/stream-napi:Cargo.toml",
+        "//rust/crates/stream-rpc-inventory:Cargo.toml",
+        "//rust/crates/stream-trust:Cargo.toml",
         "//rust/crates/stream-wire:Cargo.toml",
         "//rust/crates/stream:Cargo.toml",
         "//rust/crates/stream/contract-fuzz:Cargo.toml",
@@ -529,9 +531,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-filegroup(
-    name = "tree/rust/proofs/sdk-rustdoc-fixtures",
-    srcs = glob(["rust/proofs/sdk-rustdoc-fixtures/**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)
