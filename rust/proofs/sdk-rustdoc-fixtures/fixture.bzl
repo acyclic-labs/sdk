@@ -65,7 +65,7 @@ def _rustdoc_fixture_impl(ctx):
         "cargo_flags": ctx.attr.cargo_flags,
         "sources": [{"file": _repository_path(file.short_path), "relative": relative} for file, relative in sources],
         "output": _repository_path(output.short_path),
-        "artifacts": _repository_path(artifacts.short_path) if artifacts else "",
+        "artifacts": _repository_path(artifacts.short_path) if artifacts else None,
     }
     args = ctx.actions.args()
     args.add(output)
