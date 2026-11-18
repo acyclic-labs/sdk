@@ -2,7 +2,8 @@ use acyclic_fs::kernel::{
     DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage, ExtentRangeRequest, ExtentReadError,
     ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent,
 };
-use acyclic_fs::{ByteRange, CancellationToken};
+use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
+use acyclic_fs::{ByteRange, CancellationToken, MemoryObjectBackend, ObjectReadRequest};
 use acyclic_fs_format::{
     identity::Digest,
     object_reference::{ObjectId, ObjectKind},
@@ -289,41 +290,7 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
 #[tokio::test]
 async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::Error>> {
     let store = memory_objects();
-    let first = put_extent_page(
-        &store,
-        &ExtentPage::Leaf(vec![Extent {
-            offset: 0,
-            length: 100,
-            kind: ExtentKind::Hole,
-        }]),
-        16,
-    )
-    .await?;
-    let second = put_extent_page(
-        &store,
-        &ExtentPage::Leaf(vec![Extent {
-            offset: 100,
-            length: 100,
-            kind: ExtentKind::AllocatedZero,
-        }]),
-        16,
-    )
-    .await?;
-    let root = put_extent_page(
-        &store,
-        &ExtentPage::Internal(vec![
-            ExtentChild {
-                first: 0,
-                page: first,
-            },
-            ExtentChild {
-                first: 100,
-                page: second,
-            },
-        ]),
-        16,
-    )
-    .await?;
+    let (root, _) = adjacent_extents(&store).await?;
     let request = ExtentRangeRequest {
         root,
         file_size: 200,
@@ -623,5 +590,82 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     assert!(matches!(alias.error, ExtentReadError::Cycle));
     assert_eq!(alias.work()?.page_reads, 2);
 
+    Ok(())
+}
+
+async fn adjacent_extents(
+    store: &MemoryObjectBackend,
+) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
+    let first = put_extent_page(
+        store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 100,
+            kind: ExtentKind::Hole,
+        }]),
+        16,
+    )
+    .await?;
+    let second = put_extent_page(
+        store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 100,
+            length: 100,
+            kind: ExtentKind::AllocatedZero,
+        }]),
+        16,
+    )
+    .await?;
+    let root = put_extent_page(
+        store,
+        &ExtentPage::Internal(vec![
+            ExtentChild {
+                first: 0,
+                page: first,
+            },
+            ExtentChild {
+                first: 100,
+                page: second,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    Ok((root, second))
+}
+
+#[tokio::test]
+async fn range_plan_exposes_nearest_authenticated_unvisited_page()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let (root, second) = adjacent_extents(&store).await?;
+    let limits = DecodeLimits::default();
+    let plan = plan_extent_range(
+        &store,
+        ExtentRangeRequest {
+            root,
+            file_size: 200,
+            range: ByteRange {
+                offset: 90,
+                length: 10,
+            },
+            maximum_spans: Some(1),
+            limits,
+            budget: WorkBudget::UNBOUNDED,
+        },
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(plan.work.page_reads, 2);
+    assert_eq!(
+        plan.next_residency,
+        Some(ResidencyHint {
+            request: ObjectReadRequest {
+                object_id: second,
+                maximum_bytes: limits.maximum_object_bytes,
+            },
+            reason: ResidencyReason::SequentialRange,
+        })
+    );
     Ok(())
 }

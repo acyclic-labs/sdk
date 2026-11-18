@@ -1,8 +1,6 @@
 use super::*;
-use crate::kernel::{Extent, ExtentChild};
+use crate::kernel::Extent;
 use crate::memory::MemoryObjectStore;
-use crate::speculation::{ResidencyHint, ResidencyReason};
-use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
 use std::sync::atomic::Ordering;
 
@@ -81,76 +79,6 @@ async fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admissi
         ExtentReadError::Storage(ObjectStoreError::Corrupt)
     ));
     assert!(failure.work.as_deref().unwrap().peak_allocation_bytes > 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn range_plan_exposes_nearest_authenticated_unvisited_page()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let first = put_page(
-        &store,
-        &ExtentPage::Leaf(vec![Extent {
-            offset: 0,
-            length: 100,
-            kind: ExtentKind::Hole,
-        }]),
-        16,
-    )
-    .await?;
-    let second = put_page(
-        &store,
-        &ExtentPage::Leaf(vec![Extent {
-            offset: 100,
-            length: 100,
-            kind: ExtentKind::AllocatedZero,
-        }]),
-        16,
-    )
-    .await?;
-    let root = put_page(
-        &store,
-        &ExtentPage::Internal(vec![
-            ExtentChild {
-                first: 0,
-                page: first,
-            },
-            ExtentChild {
-                first: 100,
-                page: second,
-            },
-        ]),
-        16,
-    )
-    .await?;
-    let limits = DecodeLimits::default();
-    let plan = plan_extent_range(
-        &store,
-        ExtentRangeRequest {
-            root,
-            file_size: 200,
-            range: ByteRange {
-                offset: 90,
-                length: 10,
-            },
-            maximum_spans: Some(1),
-            limits,
-            budget: WorkBudget::UNBOUNDED,
-        },
-        &CancellationToken::new(),
-    )
-    .await?;
-    assert_eq!(plan.work.page_reads, 2);
-    assert_eq!(
-        plan.next_residency,
-        Some(ResidencyHint {
-            request: ObjectReadRequest {
-                object_id: second,
-                maximum_bytes: limits.maximum_object_bytes,
-            },
-            reason: ResidencyReason::SequentialRange,
-        })
-    );
     Ok(())
 }
 
