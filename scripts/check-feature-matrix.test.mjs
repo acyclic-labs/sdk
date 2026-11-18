@@ -3,7 +3,6 @@ import test from "node:test";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
-import { clippySelections, treeUnits } from "./clippy-feature-sets.mjs";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
 import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages, consumerSelections, consumerCommand, publishedMatrixPackages } from "./check-feature-matrix.mjs";
 
@@ -196,9 +195,6 @@ test("shipped feature admission uses actual defining packages and preserves inde
   assert.ok(proofTarget.includes("wasm32-unknown-unknown"));
   assert.notDeepEqual(proofTarget, commands[0].slice(2));
 
-  const missing = new Map(inventory);
-  missing.delete(fs.name);
-  assert.throws(() => clippySelections(missing), /STEP_FAILED cargo-feature-selection: unknown package acyclic-fs/);
   const renamed = new Map(inventory);
   const features = { ...fs.features };
   delete features.browser;
@@ -211,91 +207,4 @@ test("shipped feature admission uses actual defining packages and preserves inde
   assert.throws(() => selectCargoFeatures(inventory, [fs.name], ["--features", `${stream.name}/wasm`]), /unknown selected-root feature/);
   // Neither cfg(test) nor a dev dependency can admit an unknown root feature.
   assert.throws(() => selectCargoFeatures(inventory, [fs.name], ["--features", "not-a-defined-root-feature"]), /unknown selected-root feature/);
-});
-
-test("clippy lints each member feature set a dependent unifies, and only adds runs that reach one", () => {
-  const real = new Map(localCargoPackages().map(item => [item.name, { ...item, workspace_member: false }]));
-  const crate = (name, features) => ({ name, id: name, features, workspace_member: true, manifest_path: `${name}/Cargo.toml` });
-  // What Cargo unifies for each member selection: the member itself and the
-  // features its dependencies receive from it.
-  const reached = {
-    core: { "--all-features": ["core|a,b"], "": ["core|"], "--no-default-features": ["core|"] },
-    mid: { "--all-features": ["core|a", "mid|"], "": ["core|a", "mid|"], "--no-default-features": ["core|a", "mid|"] },
-    app: { "--all-features": ["app|", "core|b"], "": ["app|"], "--no-default-features": ["app|"] },
-    same: { "--all-features": ["core|a", "same|"], "": ["core|a", "same|"], "--no-default-features": ["core|a", "same|"] },
-  };
-  const units = (selection, targets) => {
-    const [item] = selection.packages;
-    if (!item.workspace_member) return [];
-    const own = reached[item.name][selection.flags.join(" ")];
-    return targets === "all-targets" ? [...own, `${item.name}||tests`] : own;
-  };
-  const linted = names => {
-    const inventory = new Map(real);
-    for (const name of names) inventory.set(name, crate(name, name === "core" ? { a: [], b: [] } : {}));
-    const selections = clippySelections(inventory, units);
-    return { selections, units: new Set(selections.flatMap(selection => selection.units)) };
-  };
-  const core = units => [...units].filter(unit => unit.startsWith("core|")).sort();
-  const base = linted(["core", "mid"]);
-  // Core's own all-targets run also lints its tests.
-  assert.deepEqual(core(base.units), ["core|", "core|a", "core|a,b", "core||tests"]);
-  // A dependent that unifies a new feature set onto core adds the run that lints it.
-  const added = linted(["core", "mid", "app"]);
-  assert.deepEqual(core(added.units), ["core|", "core|a", "core|a,b", "core|b", "core||tests"]);
-  const app = added.selections.find(item => item.units.includes("core|b"));
-  assert.deepEqual(cargoFeatureArguments(app.selection, { targets: app.targets }), ["-p", "app", "--all-targets", "--all-features"]);
-  // Negative control: a dependent reaching only linted core sets adds none.
-  const same = linted(["core", "mid", "same"]);
-  assert.deepEqual(core(same.units), core(base.units));
-  // Every unit a candidate reaches is linted by some selected run.
-  for (const flags of ["--all-features", "", "--no-default-features"]) {
-    for (const unit of reached.app[flags]) assert.ok(added.units.has(unit), unit);
-  }
-  // Shipped sets always run, and before every derived set.
-  const explicit = added.selections.findIndex(item => item.selection.packages[0].workspace_member);
-  assert.ok(added.selections.slice(0, explicit).every(item => item.units.length === 0));
-  assert.ok(added.selections.slice(explicit).every(item => item.units.length > 0));
-});
-
-test("the passing clippy matrix never enables a manifest's compiler-negative features", () => {
-  const real = new Map(localCargoPackages().map(item => [item.name, { ...item, workspace_member: false }]));
-  const runs = metadata => {
-    const inventory = new Map(real);
-    inventory.set("neg", { name: "neg", id: "neg", features: { negative: [], ok: [] }, metadata, workspace_member: true, manifest_path: "neg/Cargo.toml" });
-    // Every selection reaches a fresh unit, so each candidate run is kept.
-    const units = (selection, targets) => selection.packages[0].workspace_member
-      ? [`${selection.flags.join(" ")}|${targets}`] : [];
-    return clippySelections(inventory, units)
-      .filter(item => item.selection.packages[0].name === "neg")
-      .map(item => cargoFeatureArguments(item.selection, { targets: item.targets }).join(" "));
-  };
-  const marked = runs({ acyclic: { "compiler-negative-features": ["negative"] } });
-  assert.ok(marked.includes("-p neg --all-targets --features ok"), marked.join(" ; "));
-  assert.ok(marked.every(args => !args.includes("negative") && !args.includes("--all-features")), marked.join(" ; "));
-  // Negative control: an unmarked manifest keeps its all-features run.
-  assert.ok(runs(null).includes("-p neg --all-targets --all-features"));
-  // The shipped negative fixture is marked.
-  const fixture = localCargoPackages().find(item => item.name === "hermetic-environment-ui");
-  assert.deepEqual(fixture?.metadata?.acyclic?.["compiler-negative-features"], ["negative"]);
-});
-
-test("cargo tree output becomes member units keyed by unified features", () => {
-  const output = [
-    "acyclic-objects v0.2.0 (/w/rust/crates/objects)|default,native,test-support",
-    "acyclic-stream v0.2.0 (/w/rust/crates/stream)|test-support,conformance,serde",
-    "tokio v1.48.0|macros,rt",
-    "acyclic-stream v0.2.0 (/w/rust/crates/stream)|conformance,serde,test-support (*)",
-    "acyclic-proto-build v0.2.0 (/w/compatibility)|",
-    "",
-  ].join("\r\n");
-  const members = new Set(["acyclic-objects", "acyclic-stream", "acyclic-proto-build"]);
-  assert.deepEqual(treeUnits(output, members, ["acyclic-objects"], undefined), [
-    "acyclic-objects|default,native,test-support",
-    "acyclic-proto-build|",
-    "acyclic-stream|conformance,serde,test-support",
-  ]);
-  assert.ok(treeUnits(output, members, ["acyclic-objects"], "all-targets").includes("acyclic-objects|default,native,test-support|tests"));
-  assert.ok(!treeUnits(output, members, ["acyclic-objects"], "all-targets").includes("acyclic-stream|conformance,serde,test-support|tests"),
-    "a dependency's tests are not built");
 });

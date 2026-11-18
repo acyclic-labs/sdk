@@ -129,9 +129,7 @@ for (const [marker, target, name, features] of e2e) {
   executed.e2e.add(name);
   e2eTranscripts.set(marker, createHash("sha256").update(transcript).digest("hex"));
 }
-command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-conformance", "--bin", "harness-conformance"]);
-const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
-const runnerBinary = resolve(metadata.target_directory, `debug/harness-conformance${process.platform === "win32" ? ".exe" : ""}`);
+const runHarness = args => command("bazel", ["run", "//rust/crates/conformance:harness-conformance", "--", ...args]);
 const hash = await receiptDigester();
 const packageEvidenceDigest = hash(JSON.stringify([...packageDigests]));
 const cases = harnessCases.map(item => {
@@ -151,11 +149,8 @@ const cases = harnessCases.map(item => {
   };
 });
 
-const artifactDigest = command(
-  runnerBinary,
-  ["bundle-digest", ...artifacts.map(name => resolve(artifactDirectory, name))],
-);
-const protocolIdentity = JSON.parse(command(runnerBinary, ["identity"]));
+const artifactDigest = runHarness(["bundle-digest", ...artifacts.map(name => resolve(artifactDirectory, name))]);
+const protocolIdentity = JSON.parse(runHarness(["identity"]));
 const compatibility = JSON.parse(readFileSync("compatibility/manifest.json", "utf8"));
 const report = {
   protocol: "acyclic.conformance.runner.v1",
@@ -179,7 +174,7 @@ const report = {
 };
 const reportBytes = `${JSON.stringify(report, null, 2)}\n`;
 writeFileSync(reportPath, reportBytes, { flag: "wx" });
-const receipt = command(runnerBinary, ["validate", reportPath]);
+const receipt = runHarness(["validate", reportPath]);
 const parsedReceipt = JSON.parse(receipt);
 verifyQualificationReceipt(report, parsedReceipt, hash(reportBytes));
 assertSource();

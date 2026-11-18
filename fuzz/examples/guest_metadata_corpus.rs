@@ -83,7 +83,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "step=capture-guest-metadata: {error}; recovery=cargo run --manifest-path fuzz/Cargo.toml --example guest_metadata_corpus -- fuzz/corpus/guest_json"
+            "step=capture-guest-metadata: {error}; recovery=bazel run //fuzz:guest_metadata_corpus_example -- -- \"$PWD/fuzz/corpus/guest_json\""
         );
         std::process::exit(1);
     }

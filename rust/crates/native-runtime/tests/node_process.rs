@@ -7,7 +7,7 @@ fn node_process_bridge_owns_real_input_output_and_descendant_cancellation() {
         use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
         use std::os::unix::process::ExitStatusExt as _;
 
-        let recovery = "step=native-argument-capture; recovery=cargo test --locked -p acyclic-native-runtime --test main -- node_process::node_process_bridge_owns_real_input_output_and_descendant_cancellation --exact --nocapture";
+        let recovery = "step=native-argument-capture; recovery=bazel test //rust/crates/native-runtime:main --test_output=all --test_arg=node_process::node_process_bridge_owns_real_input_output_and_descendant_cancellation --test_arg=--exact";
         let mut records = Vec::new();
         // Node cannot pass an invalid UTF-8 OS string. Exercise the same
         // executable directly, then retain the original native argv bytes.
