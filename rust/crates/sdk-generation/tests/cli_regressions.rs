@@ -324,15 +324,18 @@ fn git_revision(root: &Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
+const GENERATION_MANIFEST: &str = "generation-manifest.v1.json";
+
 fn write_manifest(output: &Path, value: &Value) {
     write_manifest_bytes(output, &serde_json::to_vec_pretty(value).unwrap());
 }
 
 fn write_manifest_bytes(output: &Path, bytes: &[u8]) {
     fs::create_dir_all(output).unwrap();
-    fs::write(output.join("generation-manifest.v1.json"), bytes).unwrap();
+    let manifest = output.join(GENERATION_MANIFEST);
+    fs::write(&manifest, bytes).unwrap();
     fs::write(
-        output.join("generation-manifest.v1.sha256"),
+        manifest.with_extension("sha256"),
         format!("{}\n", hash_bytes(bytes)),
     )
     .unwrap();

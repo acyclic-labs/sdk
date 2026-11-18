@@ -66,7 +66,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             }
         });
     };
-    let manifest_path = original.output.join("generation-manifest.v1.json");
+    let manifest_path = original.output.join(GENERATION_MANIFEST);
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     let release_path = PathBuf::from(manifest["releaseManifest"].as_str().unwrap());
     let digest_path = release_path.with_extension("sha256");
@@ -182,10 +182,9 @@ fn project_inner(
     rows: &[Value],
     template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    let mut manifest: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(fixture.output.join(GENERATION_MANIFEST)).unwrap())
+            .unwrap();
     // The CLI drift checks recompute the logical digests in this inventory.
     let digests = manifest["rustdocFiles"].as_object_mut().unwrap();
     let mut specs = BTreeMap::new();
