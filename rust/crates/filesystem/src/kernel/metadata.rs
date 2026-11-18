@@ -339,10 +339,6 @@ fn validate_object(
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "tests/metadata.rs"]
-mod tests;
-
 fn object_payload_length(field: MetadataField<ObjectId>) -> u64 {
     match field {
         MetadataField::Unavailable => 0,

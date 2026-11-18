@@ -565,7 +565,6 @@ rust_test(
         "tests/support/mount_checkout.rs",
         "tests/support/native_access.rs",
         "tests/support/native_authority_publication.rs",
-        "tests/support/portable_metadata.rs",
         "tests/support/provider_receipt.rs",
         "tests/support/selected_budget.rs",
         "tests/support/simulation_image.rs",
@@ -2975,6 +2974,7 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//proptest-1.12.0",
     ],
     tags = ["manual"],
 )
