@@ -48,8 +48,6 @@
   "scripts/check-test-support.test.mjs",
   "scripts/check-wasm.mjs",
   "scripts/filesystem-napi-types.mjs",
-  "scripts/full-cloud-qualification.test.mjs",
-  "scripts/full-cloud-test.sh",
   "scripts/graphcoder-e2e/artifacts.test.mjs",
   "scripts/node-tests.mjs",
   "scripts/publish-cargo-crates.mjs",
