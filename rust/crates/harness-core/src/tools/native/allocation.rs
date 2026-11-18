@@ -38,14 +38,14 @@ fn native_work(
 }
 
 /// The input is the JSON argument object passed to the production registry.
-pub fn check(input: &[u8]) -> Result<(), acyclic_fs::WorkObservationError> {
+pub fn check(input: &[u8]) -> std::result::Result<(), acyclic_fs::WorkObservationError> {
     if let Ok(arguments) = serde_json::from_slice(input) {
         check_value(arguments)?;
     }
     Ok(())
 }
 
-fn check_value(arguments: Value) -> Result<(), acyclic_fs::WorkObservationError> {
+fn check_value(arguments: Value) -> std::result::Result<(), acyclic_fs::WorkObservationError> {
     use futures::FutureExt as _;
     let mut invocation = ToolInvocation {
         operation_id: crate::OperationId::from_bytes([7; 16]),
