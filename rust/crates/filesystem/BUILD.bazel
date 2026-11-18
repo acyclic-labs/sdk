@@ -542,6 +542,7 @@ rust_test(
     crate_name = "acyclic_fs",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
+        "tests/support/allow_publication.rs",
         "tests/support/append.rs",
         "tests/support/checkout_modes.rs",
         "tests/support/creation_budget.rs",
@@ -931,6 +932,7 @@ rust_test(
         "tests/recovery_concurrency/window.rs",
         "tests/session_fs_model.rs",
         "tests/shared_storage_contract.rs",
+        "tests/support/allow_publication.rs",
         "tests/support/cloud_contract.rs",
         "tests/support/native_access.rs",
         "tests/support/portable_source.rs",
@@ -1635,6 +1637,7 @@ rust_test(
     name = "workspace_append_cases",
     crate_root = "tests/workspace_append.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/append.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -1699,6 +1702,7 @@ rust_test(
     name = "workspace_contracts_cases",
     crate_root = "tests/workspace_contracts.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -1767,6 +1771,7 @@ rust_test(
     name = "workspace_creation_race_cases",
     crate_root = "tests/workspace_creation_race.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -1833,6 +1838,7 @@ rust_test(
     name = "workspace_join_history_cases",
     crate_root = "tests/workspace_join_history.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/join_plan.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -1895,6 +1901,7 @@ rust_test(
     name = "workspace_fork_selection_cases",
     crate_root = "tests/workspace_fork_selection.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -1958,6 +1965,7 @@ rust_test(
     name = "workspace_rebase_cases",
     crate_root = "tests/workspace_rebase.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -2020,6 +2028,7 @@ rust_test(
     name = "workspace_restore_cases",
     crate_root = "tests/workspace_restore.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/selected_budget.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -2083,6 +2092,7 @@ rust_test(
     name = "workspace_transactions_cases",
     crate_root = "tests/workspace_transactions.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/selected_budget.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -2149,6 +2159,7 @@ rust_test(
     name = "workspace_merge_cases",
     crate_root = "tests/workspace_merge.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -2213,6 +2224,7 @@ rust_test(
     name = "workspace_materialization_cases",
     crate_root = "tests/workspace_materialization.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/workspace_materialization.rs",
@@ -2274,6 +2286,7 @@ rust_test(
     name = "workspace_simulation_cases",
     crate_root = "tests/workspace_simulation.rs",
     srcs = [
+        "tests/support/allow_publication.rs",
         "tests/support/simulation_image.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",

@@ -2,16 +2,11 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, PublicationPermit, Transaction,
     TransactionCommit, WorkspaceError,
 };
-use acyclic_fs_work::performance::{MeasuredResult, OperationReceipt, WorkBudget, WorkCounters};
+use acyclic_fs_work::performance::WorkBudget;
 
-pub(crate) fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<MeasuredResult<OperationReceipt<()>, E>> {
-    std::future::ready(Ok(OperationReceipt {
-        value: (),
-        work: WorkCounters::UNCHARGED,
-    }))
-}
+#[path = "allow_publication.rs"]
+mod allow_publication;
+pub(crate) use allow_publication::allow;
 
 pub(crate) async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,

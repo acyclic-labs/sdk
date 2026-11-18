@@ -2,6 +2,7 @@ use super::*;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
 use crate::model::{CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy};
 use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite};
+use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -631,11 +632,3 @@ use protocol_helpers::*;
 mod fixtures;
 use fixtures::*;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
-fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<Result<OperationReceipt<()>, OperationFailure<E>>> {
-    std::future::ready(Ok(OperationReceipt {
-        value: (),
-        work: WorkCounters::UNCHARGED,
-    }))
-}
