@@ -80,6 +80,17 @@ impl Backoff {
         ((base_ms * factor).min(maximum_ms) * (0.5 + unit_sample / 2.0)).ceil()
     }
 
+    /// Preserve the reconnect envelope from the capped ceiling through 125% of
+    /// that ceiling. The caller supplies its sample and owns the absolute timer.
+    #[must_use]
+    pub fn reconnect_delay_ms(ceiling_ms: u64, sample: u64) -> u64 {
+        ceiling_ms.saturating_add(Self::offset(ceiling_ms / 4, sample))
+    }
+
+    fn offset(span: u64, sample: u64) -> u64 {
+        sample % (span + 1)
+    }
+
     fn advance(&mut self, draw: impl FnOnce(u32) -> u32) -> u32 {
         let ceiling = self.ceiling_ms;
         self.ceiling_ms = u32::try_from(Self::ceiling_ms_at(
@@ -89,7 +100,9 @@ impl Backoff {
         ))
         .unwrap_or(self.maximum_ms);
         let lower = ceiling.div_ceil(2);
-        let choices = ceiling - lower + 1;
-        lower + draw(choices) % choices
+        let span = ceiling - lower;
+        lower
+            + u32::try_from(Self::offset(u64::from(span), u64::from(draw(span + 1))))
+                .expect("jitter offset is bounded by the u32 span")
     }
 }
