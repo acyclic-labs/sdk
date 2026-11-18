@@ -5,17 +5,20 @@ use super::{
     checkpoint, records,
 };
 
-fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) {
+type Oracle = Result<(), Box<dyn std::error::Error>>;
+
+fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) -> Oracle {
     if let Ok(value) = T::decode(bytes) {
-        let encoded = value.encode().expect("admitted agent record encodes");
-        let restored = T::decode(&encoded).expect("encoded agent record decodes");
+        let encoded = value.encode()?;
+        let restored = T::decode(&encoded)?;
         assert_eq!(restored, value);
-        assert_eq!(restored.encode().expect("stable record encoding"), encoded);
-        header(&value);
+        assert_eq!(restored.encode()?, encoded);
+        header(&value)?;
     }
+    Ok(())
 }
 
-fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
+fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) -> Oracle {
     fn refuses<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8], found: u32) {
         let refused = match records::decode_record::<T>(bytes) {
             Err(super::Error::Record("record exceeds MAX_RECORD_BYTES")) => {
@@ -34,11 +37,11 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
         };
         assert!(refused, "agent record header refusal changed");
     }
-    let encoded = records::seal(value).expect("admitted record writer");
+    let encoded = records::seal(value)?;
     assert!(records::decode_record::<T>(&encoded).is_ok());
     // Struct records and the struct payload of an externally tagged variant
     // refuse unknown fields. Unit variants have no fields to extend.
-    let mut extended = serde_json::to_value(value).expect("admitted record fields");
+    let mut extended = serde_json::to_value(value)?;
     if let serde_json::Value::Object(fields) = &mut extended {
         let fields = if fields.len() == 1 {
             fields
@@ -50,7 +53,7 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
         };
         if let Some(fields) = fields {
             fields.insert("__unknown_record_field".into(), serde_json::Value::Null);
-            let bytes = records::seal(&extended).expect("extended record writer");
+            let bytes = records::seal(&extended)?;
             assert!(
                 matches!(
                     records::decode_record::<T>(&bytes),
@@ -88,9 +91,10 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
         ));
     }
     refuses::<T>(&encoded[..encoded.len() - 1], records::RECORD_VERSION);
+    Ok(())
 }
 
-fn envelope(value: &acyclic_actors::guest::Checkpoint) {
+fn envelope(value: &acyclic_actors::guest::Checkpoint) -> Oracle {
     fn refuses_before_payload(mut foreign: acyclic_actors::guest::Checkpoint) {
         for clear_payload in [false, true] {
             if clear_payload {
@@ -114,18 +118,12 @@ fn envelope(value: &acyclic_actors::guest::Checkpoint) {
     } else if let Ok(state) = decoded {
         let encoded = acyclic_actors::guest::Checkpoint {
             codec: checkpoint::codec(),
-            bytes: state.encode().expect("admitted state encodes").into(),
+            bytes: state.encode()?.into(),
         };
-        assert_eq!(
-            checkpoint::checkpoint_head(&encoded).expect("checkpoint identity admits"),
-            state
-        );
+        assert_eq!(checkpoint::checkpoint_head(&encoded)?, state);
         // Checkpoint and record versions evolve independently. Exercise this
         // codec's foreign versions with both decodable and malformed payloads.
-        let current = checkpoint::codec()
-            .version
-            .parse::<u32>()
-            .expect("numeric checkpoint codec version");
+        let current = checkpoint::codec().version.parse::<u32>()?;
         for version in (0..=current + 1)
             .chain(std::iter::once(u32::MAX))
             .filter(|version| *version != current)
@@ -156,11 +154,17 @@ fn envelope(value: &acyclic_actors::guest::Checkpoint) {
             Err(super::Error::Record(_))
         ));
     }
+    Ok(())
 }
 
 /// Every accepted record or checkpoint must preserve its typed value.
 /// Parsers are synchronous; completion requires no producer or event.
 pub fn check(bytes: &[u8]) {
+    let observed = check_records(bytes);
+    assert!(observed.is_ok(), "agent record oracle failed: {observed:?}");
+}
+
+fn check_records(bytes: &[u8]) -> Oracle {
     workspace(bytes);
     history(bytes);
     roster(bytes);
@@ -170,54 +174,48 @@ pub fn check(bytes: &[u8]) {
     if let Ok(state) = serde_json::from_slice::<AgentState>(bytes) {
         if let Ok(encoded) = checkpoint::encode(&state) {
             assert_eq!(
-                checkpoint::decode(&encoded)
-                    .expect("written checkpoint decodes")
-                    .restore(state.volumes.clone())
-                    .expect("table identity"),
+                checkpoint::decode(&encoded)?.restore(state.volumes.clone())?,
                 state,
                 "checkpoint lost the writer's state"
             );
         }
     }
-    record::<InboxRecord>(bytes);
+    record::<InboxRecord>(bytes)?;
     // Read the selection independently of SpawnRequest's field deserializer:
     // dropping it there otherwise leaves a stable decode/encode fixed point.
     if let Ok(InboxRecord::Spawn(spawn)) = InboxRecord::decode(bytes) {
-        let input =
-            records::decode_record::<serde_json::Value>(bytes).expect("admitted spawn payload");
+        let input = records::decode_record::<serde_json::Value>(bytes)?;
         // The production serde reader admits both named and positional
         // structs. Keep this projection independent of SpawnRequest while
         // reading its fifth field in either representation.
-        let spawn_input = input.get("spawn").expect("admitted spawn variant");
+        let spawn_input = input
+            .get("spawn")
+            .ok_or("admitted spawn variant is missing")?;
         let selected: Option<super::HistorySelection> = serde_json::from_value(
             field(spawn_input, "history", 4)
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
-        )
-        .expect("admitted spawn history selection");
+        )?;
         assert_eq!(
             spawn.history, selected,
             "spawn record lost the input's history selection"
         );
     }
-    record::<StatusRecord>(bytes);
-    record::<Closed>(bytes);
-    record::<ConversationEntry>(bytes);
+    record::<StatusRecord>(bytes)?;
+    record::<Closed>(bytes)?;
+    record::<ConversationEntry>(bytes)?;
     if let Ok(effect) = records::open::<TurnEffect>(bytes) {
-        let encoded = records::seal(&effect).expect("admitted effect encodes");
+        let encoded = records::seal(&effect)?;
         let restored: TurnEffect =
-            records::open(&encoded).unwrap_or_else(|_| panic!("encoded effect does not decode"));
+            records::open(&encoded).map_err(|_| "encoded effect does not decode")?;
         assert_eq!(restored, effect);
-        header(&effect);
+        header(&effect)?;
     }
-    let checkpoint = checkpoint::check_wire(bytes);
-    assert!(
-        checkpoint.is_ok(),
-        "checkpoint oracle failed: {checkpoint:?}"
-    );
+    checkpoint::check_wire(bytes)?;
     if let Ok(value) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
-        envelope(&value);
+        envelope(&value)?;
     }
+    Ok(())
 }
 
 // Serde struct readers accept both named maps and positional sequences.
