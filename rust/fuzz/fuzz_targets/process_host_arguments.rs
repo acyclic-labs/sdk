@@ -1,10 +1,7 @@
 //! Byte-input properties for the same argument admission used by the host.
 #![no_main]
 
-#[path = "../../crates/native-runtime/src/process_tree/external_host/arguments.rs"]
-mod arguments;
-
-use arguments::Invocation;
+use acyclic_process_host_arguments::Invocation;
 use std::ffi::OsString;
 
 fn check(input: Vec<OsString>) -> bool {

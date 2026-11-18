@@ -6,6 +6,7 @@
 use super::{
     Child, ProcessCommand, ProcessCustody, ProcessCustodyLease, ProcessStdio, ProcessTree,
 };
+use acyclic_process_host_arguments::{Invocation, invalid_arguments};
 use std::ffi::OsString;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -189,9 +190,6 @@ fn observe<const N: usize>(
 }
 
 struct Directory(PathBuf);
-
-mod arguments;
-use arguments::{Invocation, invalid_arguments};
 
 struct Completion(Option<std::fs::File>);
 

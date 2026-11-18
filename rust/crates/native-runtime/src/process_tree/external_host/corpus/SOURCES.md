@@ -23,8 +23,8 @@ parser, then runs the same `process_host_argument_fuzz` property. It must reject
 the now-admitted duplicate option. Restore the guard before replaying the
 ordinary property. Measured branch coverage remains a separate obligation.
 
-The retained `process_host_arguments` byte fuzzer includes the exact same
-production argument module. It checks literal OS-string round trips, endpoint
+The retained `process_host_arguments` byte fuzzer depends on the same
+production argument crate. It checks literal OS-string round trips, endpoint
 admission and duplicate-flag refusal. The original recorded status is an oracle
 only for these exact captured bytes; mutated records do not inherit it.
 
