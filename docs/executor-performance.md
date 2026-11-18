@@ -165,7 +165,7 @@ render targets on another machine.
 Reproduce the focused controls with:
 
 ```sh
-cargo test --locked -p acyclic-harness-tui --lib screen::tests::tui_render_work
+ACYCLIC_TEST_SOURCE_ROOT="$PWD" bazel run //rust/crates/harness-tui:acyclic_harness_tui_test_cases -- screen::tests::tui_render_work
 ```
 
 The ordinary acceptance runner selects the same native test executable through

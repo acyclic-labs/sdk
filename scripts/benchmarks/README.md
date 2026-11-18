@@ -14,7 +14,12 @@ bash scripts/qualify-benchmarks.sh /path/to/benchmark-tools/environment/bin/pyth
 ```
 
 Setup network/install time is separate from the offline qualification suite.
-On Linux also run `cargo test --locked -p acyclic-harness-providers --test main benchmark_catalog::`.
+On Linux, run the catalogue controls from the SDK checkout root:
+
+```sh
+ACYCLIC_TEST_SOURCE_ROOT="$PWD" bazel run //rust/crates/harness-providers:main_cases -- benchmark_catalog::
+```
+
 It generates the actual Python catalogue, loads/resolves it through GraphCoder's
 production registry with empty explicit credentials, and rejects the old
 incomplete feature declaration. It never sends a request.
