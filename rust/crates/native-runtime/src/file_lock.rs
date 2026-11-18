@@ -152,6 +152,8 @@ impl FileLock {
 
     /// Acquires a lock without waiting and holds it until the last descriptor
     /// for this open file description closes or the lock is explicitly released.
+    /// Use this when a duplicated or inherited descriptor is the ownership
+    /// capability and must keep the lock after the original descriptor closes.
     ///
     /// # Errors
     ///
@@ -178,7 +180,8 @@ impl FileLock {
     /// OS error; `file` is then closed.
     #[cfg(unix)]
     pub fn try_hold_until_exit(file: File, mode: FileLockMode) -> io::Result<()> {
-        sys::try_lock(&file, mode)?;
+        use std::os::fd::AsFd as _;
+        Self::try_lock_description(file.as_fd(), mode)?;
         // The descriptor, and with it the lock, stays until exit.
         std::mem::forget(file);
         Ok(())
