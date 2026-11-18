@@ -1,4 +1,5 @@
 //! Canonical blob client over the caller's original binary account transport.
+use crate::error::unavailable;
 use crate::{
     Availability, Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object,
     ObjectsMethod, Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
@@ -51,10 +52,6 @@ impl<T> BinaryObjects<T> {
     pub const fn new(transport: T) -> Self {
         Self { transport }
     }
-}
-
-fn unavailable() -> Error {
-    wire::ErrorCode::Unavailable.into()
 }
 
 impl<T: Transport> BinaryObjects<T> {

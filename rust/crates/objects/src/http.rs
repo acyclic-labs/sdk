@@ -1,4 +1,5 @@
 //! Authenticated blob client for the Protobuf-JSON HTTP gateway.
+use crate::error::unavailable;
 use crate::{
     Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
     RootId, Usage,
@@ -105,10 +106,6 @@ fn put_batch_request() -> Option<(usize, usize, usize)> {
 fn request_member((_, step, reference): (usize, usize, usize), len: usize, refs: usize) -> usize {
     step.saturating_add((len.div_ceil(3).saturating_mul(4)).saturating_sub(4))
         .saturating_add(refs.saturating_sub(1).saturating_mul(reference))
-}
-
-fn unavailable() -> Error {
-    wire::ErrorCode::Unavailable.into()
 }
 
 /// Authenticated native HTTP client for the Objects v1 blob gateway.

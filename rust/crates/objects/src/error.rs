@@ -8,6 +8,10 @@ pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
 pub const REVISION: &str = "acyclic-revision-bin";
 pub(crate) const OWNED: &[&str] = &[REVISION, MINIMUM_REVISION];
 
+pub(crate) fn unavailable() -> Error {
+    wire::ErrorCode::Unavailable.into()
+}
+
 /// Semantic service failure or the original local operation stop.
 ///
 /// Its `source` is the local stop or, for a remote failure, the server's

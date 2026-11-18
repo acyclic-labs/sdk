@@ -1,5 +1,6 @@
 //! Original JavaScript request ownership over the canonical binary client.
 use super::{Reply, Transport};
+use crate::error::unavailable;
 use crate::{Availability, Blobs, Digest, Error, ObjectsMethod, wire};
 use bytes::Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -45,10 +46,6 @@ pub fn js_reply(
         )?;
     }
     Ok(reply.into())
-}
-
-fn unavailable() -> Error {
-    wire::ErrorCode::Unavailable.into()
 }
 
 fn original_error(value: &JsValue) -> Error {
