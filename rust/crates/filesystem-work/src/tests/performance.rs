@@ -80,7 +80,7 @@ fn nested_failure_accounting_never_substitutes_a_sentinel_receipt() {
     assert_eq!(mapped.error, OuterError::Inner);
     assert_eq!(
         mapped.work(),
-        Err(crate::WorkObservationError::Work(WorkError::Overflow))
+        Err(WorkObservationError::Work(WorkError::Overflow))
     );
 }
 
