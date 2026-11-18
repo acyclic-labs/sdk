@@ -286,11 +286,11 @@ fn failure(
     work: &NativeMaterializationWork,
     cause: acyclic_fs::NativeTreeMaterializationError,
 ) -> Error {
-    match work.receipt() {
-        Ok(receipt) => Error::NativeConstruction {
+    work.receipt().map_or_else(
+        |error| error.into(),
+        |receipt| Error::NativeConstruction {
             cause,
             work: Box::new(receipt),
         },
-        Err(error) => error.into(),
-    }
+    )
 }
