@@ -525,11 +525,8 @@ pub fn execute_profile(
     for feature in &profile.features {
         // Cargo owns qualified dependency/workspace feature syntax and resolution.
         // Keep the cheap early rejection for unknown owner-local names only.
-        if !feature.contains('/') && !package.features.contains_key(feature) {
-            return Err(ProfileError::InvalidFeature {
-                package: profile.package.clone(),
-                feature: feature.clone(),
-            });
+        if !feature.contains('/') {
+            super::validate_local_feature(package, feature)?;
         }
     }
     let target_dir = target_dir.as_ref();
