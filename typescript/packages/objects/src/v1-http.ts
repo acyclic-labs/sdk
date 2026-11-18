@@ -1,3 +1,4 @@
+import { validateByteLimit } from "@acyclic-labs/core";
 import { awaitSignal, credentialProvider, resolveCredential, watchCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/auth/credential";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
@@ -28,8 +29,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     const endpoint = new URL(options.endpoint);
     if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("invalid Objects HTTP endpoint");
     this.credential = credentialProvider(options);
-    this.maximumResponse = options.maximumResponseBytes;
-    if (this.maximumResponse !== undefined && (!Number.isSafeInteger(this.maximumResponse) || this.maximumResponse < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    this.maximumResponse = validateByteLimit(options.maximumResponseBytes, "maximumResponseBytes");
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "") + "/v1/objects/";
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);

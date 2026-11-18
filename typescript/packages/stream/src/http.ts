@@ -1,3 +1,4 @@
+import { validateByteLimit } from "@acyclic-labs/core";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import type { Opened } from "./opened.js";
@@ -37,8 +38,7 @@ export class HttpStreamProvider implements StreamProvider {
     this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, this.#credential, options.webSocketFactory), true, options.revisionScope);
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#observer = resolveObserver(options.observer);
-    this.#maximum = options.maximumResponseBytes;
-    if (this.#maximum !== undefined && (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    this.#maximum = validateByteLimit(options.maximumResponseBytes, "maximumResponseBytes");
   }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const input = wireInspectIdempotencyRequest(key);
