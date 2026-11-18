@@ -610,4 +610,10 @@ use protocol_helpers::*;
 #[path = "../../../tests/support/volume_fixture.rs"]
 mod fixtures;
 use fixtures::*;
+#[path = "../../../tests/support/volume_commit.rs"]
+mod volume_commit;
+#[path = "../../../tests/support/volume_read.rs"]
+mod volume_read;
+use volume_commit::commit;
+use volume_read::read;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
