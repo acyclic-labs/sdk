@@ -450,13 +450,13 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     let data_path = fixture
         .output
         .join("preview/feature-profile-catalog/sdk-docs-data.v1.json");
-    let data: Value = serde_json::from_slice(&fs::read(&data_path).unwrap()).unwrap();
+    let data_bytes = fs::read(&data_path).unwrap();
+    let data: Value = serde_json::from_slice(&data_bytes).unwrap();
     assert!(data.to_string().contains("FeatureOnly"));
 
-    let availability: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let availability_bytes =
+        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap();
+    let availability: Value = serde_json::from_slice(&availability_bytes).unwrap();
     let entries = availability["entries"].as_array().unwrap();
     for (path, expected) in [
         ("demo::FeatureOnly", 2),
@@ -470,6 +470,13 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
             "the compilation reuse key must preserve every cfg feature: {path}"
         );
     }
+    let has_extra = |profile: &Value| {
+        profile["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature == "extra")
+    };
     let feature_entry = entries
         .iter()
         .find(|entry| entry["path"] == "demo::FeatureOnly")
@@ -478,34 +485,26 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|profile| {
-            profile["features"]
-                .as_array()
-                .is_some_and(|features| features.iter().any(|feature| feature == "extra"))
-        })
+        .find(|profile| has_extra(profile))
         .expect("FeatureOnly must be attributed to the extra profile");
 
-    let variant_entries = entries
+    let mut signatures = BTreeSet::new();
+    let mut extra_variant = false;
+    for entry in entries
         .iter()
         .filter(|entry| entry["path"] == "demo::overloaded")
-        .collect::<Vec<_>>();
-    let signatures = variant_entries
-        .iter()
-        .filter_map(|entry| entry["signature"].as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+    {
+        signatures.insert(entry["signature"].as_str().unwrap());
+        extra_variant |= entry["profiles"].as_array().unwrap().iter().any(has_extra);
+    }
     assert!(
         signatures.len() >= 2,
         "same-path profile variants must remain signature-distinct"
     );
-    assert!(variant_entries.iter().any(|entry| {
-        entry["profiles"].as_array().is_some_and(|profiles| {
-            profiles.iter().any(|profile| {
-                profile["features"]
-                    .as_array()
-                    .is_some_and(|features| features.iter().any(|feature| feature == "extra"))
-            })
-        })
-    }));
+    assert!(
+        extra_variant,
+        "overloaded must have an extra-feature variant"
+    );
 
     let receipts = assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
     let effective = receipts
@@ -513,11 +512,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .map(|receipt| {
             (
                 receipt["defaultFeatures"].as_bool().unwrap(),
-                receipt["features"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|feature| feature == "extra"),
+                has_extra(receipt),
             )
         })
         .collect::<std::collections::BTreeSet<_>>();
@@ -531,36 +526,20 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         ]),
         "both API branches remain qualified with and without Cargo defaults"
     );
-    let receipt = receipts
-        .iter()
-        .find(|receipt| receipt["profile"] == feature_profile["profile"])
-        .expect("sidecar profile must have an executed receipt row");
-    let receipt_path = receipt_path(&fixture.rustdoc, receipt);
-    assert_eq!(
-        receipt["rustdocSha256"],
-        rustdoc_digest(&receipt_path, &fixture.root).unwrap()
-    );
-    assert_eq!(
-        fs::read_to_string(receipt_path.with_extension("source.sha256"))
-            .unwrap()
-            .trim(),
-        data["source"]["sourceSha256"].as_str().unwrap()
+    assert!(
+        receipts
+            .iter()
+            .any(|receipt| receipt["profile"] == feature_profile["profile"]),
+        "sidecar profile must have an executed receipt row"
     );
     assert_eq!(data["source"]["revision"], git_revision(&fixture.root));
 
-    let availability_hash =
-        hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json"));
     let metadata = super::replay::metadata(&fixture);
-    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata);
-    sdk_docs::write_bundle_files(&rebuilt, &fixture.output, false).unwrap();
+    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata, &receipts, &data_bytes);
+    assert_eq!(serde_json::to_vec_pretty(&rebuilt).unwrap(), data_bytes);
     assert_eq!(
-        hash_bytes(&serde_json::to_vec_pretty(&replayed).unwrap()),
-        availability_hash
-    );
-
-    assert_eq!(
-        hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json")),
-        availability_hash
+        serde_json::to_vec_pretty(&replayed).unwrap(),
+        availability_bytes
     );
 
     let source = fixture.root.join("rust/crates/demo/src/lib.rs");
@@ -714,13 +693,12 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         .unwrap(),
         vec!["demo", "relocation-helper"]
     );
-    super::replay::copy_profile_output(&fixture.output, &relocated.output);
     let generated = "target/sdk-generation-generated-sources";
     super::replay::copy_tree(
         &fixture.root.join(generated),
         &relocated.root.join(generated),
     );
-    super::replay::relocate_receipts(&fixture, &relocated);
+    super::replay::relocate_profile_output(&fixture, &relocated);
     std::thread::scope(|scope| {
         for checkout in [&fixture, &relocated] {
             scope.spawn(move || {
@@ -729,12 +707,15 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             });
         }
     });
-    let (data, availability) = super::replay::project(&relocated, &metadata);
-    super::replay::assert_catalog_matches(&relocated, &data);
-    sdk_docs::write_bundle_files(&data, &relocated.output, false).unwrap();
-    assert_eq!(
-        serde_json::to_vec_pretty(&availability).unwrap(),
-        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
+    let relocated_receipts =
+        assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
+    let catalog = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
+    let relocated_catalog = fs::read(relocated.output.join(catalog)).unwrap();
+    let (data, availability) = super::replay::project(
+        &relocated,
+        &metadata,
+        &relocated_receipts,
+        &relocated_catalog,
     );
     let host = original_receipts[0]["target"].as_str().unwrap();
     let available = BTreeSet::from([host.to_owned()]);
@@ -762,17 +743,14 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         let mut paths = Vec::new();
         for receipt in receipts {
             let path = receipt_path(&checkout.rustdoc, receipt);
-            let raw: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            let raw = sdk_docs::read_rustdoc_json(&path).unwrap();
+            let profile = receipt["profile"].as_str().unwrap();
             let before = paths.len();
             for record in raw["external_crates"].as_object().unwrap().values() {
                 if record["name"] == "relocation_helper" {
                     let physical = record["path"].as_str().unwrap();
                     assert!(physical.contains(".profile-build"), "{physical}");
-                    assert!(
-                        Path::new(physical).is_file(),
-                        "dependency artifact must exist: {physical}"
-                    );
-                    paths.push(physical.to_string());
+                    paths.push((profile.to_owned(), physical.to_owned()));
                 }
             }
             if receipt["package"] == "demo" {
@@ -790,36 +768,54 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
         paths
     };
-    let original_dependencies = dependency_paths(&fixture, &original_receipts);
-    let relocated_receipts =
-        assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
-    assert_ne!(
-        original_dependencies,
-        dependency_paths(&relocated, &relocated_receipts),
-        "raw Rustdoc must retain the relocated dependency artifacts"
-    );
-    for original in original_dependencies {
-        let relocated = super::paths::rebase(
-            &original,
-            fixture.output.to_str().unwrap(),
-            relocated.output.to_str().unwrap(),
-            cfg!(windows),
-        )
-        .unwrap();
+    sdk_docs::with_rustdoc_cache(|| {
+        let mut rebased_paths = BTreeMap::new();
+        let mut expected_dependencies = Vec::new();
+        for (profile, original) in dependency_paths(&fixture, &original_receipts) {
+            let rebased = rebased_paths.entry(original.clone()).or_insert_with(|| {
+                let rebased = super::paths::rebase(
+                    &original,
+                    fixture.output.to_str().unwrap(),
+                    relocated.output.to_str().unwrap(),
+                    cfg!(windows),
+                )
+                .unwrap();
+                assert_eq!(
+                    sdk_file_identity::stamp(Path::new(&original)).unwrap(),
+                    sdk_file_identity::stamp(Path::new(&rebased)).unwrap(),
+                    "completed compiler artifacts share their native file identity"
+                );
+                rebased
+            });
+            expected_dependencies.push((profile, rebased.clone()));
+        }
+        expected_dependencies.sort();
         assert_eq!(
-            sdk_file_identity::stamp(Path::new(&original)).unwrap(),
-            sdk_file_identity::stamp(Path::new(&relocated)).unwrap(),
-            "completed compiler artifacts share their native file identity"
+            dependency_paths(&relocated, &relocated_receipts),
+            expected_dependencies,
+            "each profile must retain its exact rebased dependency paths"
+        );
+    });
+    let replayed_catalog = serde_json::to_vec_pretty(&data).unwrap();
+    assert_eq!(relocated_catalog, replayed_catalog);
+    assert_eq!(
+        fs::read(fixture.output.join(catalog)).unwrap(),
+        replayed_catalog
+    );
+    let replayed_availability = serde_json::to_vec_pretty(&availability).unwrap();
+    for checkout in [&fixture, &relocated] {
+        assert_eq!(
+            fs::read(
+                checkout
+                    .output
+                    .join("sdk-docs-profile-availability.v1.json")
+            )
+            .unwrap(),
+            replayed_availability,
+            "published availability must match the independent replay"
         );
     }
-    let path = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
-    assert_eq!(
-        fs::read(fixture.output.join(path)).unwrap(),
-        fs::read(relocated.output.join(path)).unwrap(),
-        "relocated profile outputs must publish identical content identities and bytes"
-    );
-    let data: Value =
-        serde_json::from_slice(&fs::read(fixture.output.join(path)).unwrap()).unwrap();
+    let data: Value = serde_json::to_value(data).unwrap();
     let mut spans = BTreeSet::new();
     fn source_paths(value: &Value, paths: &mut BTreeSet<String>) {
         if let Some(object) = value.as_object() {
@@ -852,13 +848,4 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             );
         }
     }
-    assert_eq!(
-        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
-        fs::read(
-            relocated
-                .output
-                .join("sdk-docs-profile-availability.v1.json")
-        )
-        .unwrap()
-    );
 }
