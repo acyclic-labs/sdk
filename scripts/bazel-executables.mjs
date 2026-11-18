@@ -69,6 +69,19 @@ export function bazelExecutables(root, labels, capture = defaultCapture(root)) {
   return executablesFromCquery(requested, answers, executionRoot);
 }
 
+/** Build the label and locate its single dynamic library. @param {string} root @param {string} label */
+export function bazelSharedLibrary(root, label) {
+  assertLabel(label);
+  const capture = defaultCapture(root);
+  const bazel = bazelCommand();
+  capture("build", bazel, ["build", ...FLAGS, "--remote_download_outputs=toplevel", label]);
+  const files = capture("cquery", bazel, ["cquery", ...FLAGS, "--output=files", label]).trim().split(/\r?\n/);
+  const libraries = files.filter(file => /\.(?:dll|so|dylib)$/.test(file));
+  if (libraries.length !== 1) throw new Error(`expected one shared library from ${label}, got ${libraries.length}`);
+  const executionRoot = capture("info", bazel, ["info", ...FLAGS, "execution_root"]).trim();
+  return resolve(executionRoot, libraries[0]);
+}
+
 function defaultCapture(root) {
   return (phase, executable, args) => execFileSync(executable, args, {
     cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"], windowsHide: true,

@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { bazelSharedLibrary } from "./bazel-executables.mjs";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { sha256File } from "./file-digest.mjs";
@@ -30,18 +30,8 @@ if (positional.length > 1 || (output !== undefined && !isAbsolute(output))) {
   throw new Error("usage: check-filesystem-napi.mjs [--adapter] [ABSOLUTE_OUTPUT]");
 }
 
-const target = "//rust/crates/filesystem-napi:acyclic_fs_napi_cdylib";
-const download = "--remote_download_toplevel";
-if (await runCommand("bazel", ["build", download, target]) !== 0) {
-  throw new Error(`native binding build failed for ${target}`);
-}
-const bazelOutput = (...args) => execFileSync("bazel", args, { encoding: "utf8" }).trim();
-const files = bazelOutput("cquery", download, "--output=files", target).split(/\r?\n/);
-const libraries = files.filter((file) => /\.(?:dll|so|dylib)$/.test(file));
-if (libraries.length !== 1) {
-  throw new Error(`expected one shared library from ${target}, got ${libraries.length}`);
-}
-const source = resolve(bazelOutput("info", "execution_root"), libraries[0]);
+const root = fileURLToPath(new URL("..", import.meta.url));
+const source = bazelSharedLibrary(root, "//rust/crates/filesystem-napi:acyclic_fs_napi_cdylib");
 const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-napi-"));
 const bindingPath = join(temporary, `${basename(source)}.node`);
 try {

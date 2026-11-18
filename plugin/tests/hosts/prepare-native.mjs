@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bazelSharedLibrary } from "../../../scripts/bazel-executables.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -31,12 +32,11 @@ run("node", ["scripts/generate.mjs", "filesystem"]);
 // supplies their wire contracts; build the executable declarations before tsc.
 run("node", ["scripts/build-wasm.mjs", "auth"]);
 run("node", ["node_modules/typescript/bin/tsc", "-b", "typescript/packages/actors", "--pretty", "false"]);
-run("cargo", ["build", "-p", "acyclic-fs-napi", "--locked"]);
+const library = bazelSharedLibrary(root, "//rust/crates/filesystem-napi:acyclic_fs_napi_cdylib");
 
 const { version } = JSON.parse(readFileSync(join(root, "typescript/packages/filesystem/package.json"), "utf8"));
 const name = `@acyclic-labs/fs-${process.platform}-${process.arch}`;
 const directory = join(root, "node_modules", name);
-const library = { win32: "acyclic_fs_napi.dll", linux: "libacyclic_fs_napi.so", darwin: "libacyclic_fs_napi.dylib" }[process.platform];
 mkdirSync(directory, { recursive: true });
-copyFileSync(resolve(root, process.env.CARGO_TARGET_DIR ?? "target", "debug", library), join(directory, "index.node"));
+copyFileSync(library, join(directory, "index.node"));
 writeFileSync(join(directory, "package.json"), JSON.stringify({ name, version, main: "index.node" }));
