@@ -107,6 +107,7 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-prost",
+ "tracing",
  "ts-rs",
 ]
 

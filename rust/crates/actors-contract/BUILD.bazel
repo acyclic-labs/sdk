@@ -96,6 +96,7 @@ rust_library(
         "@sdk_crates//tokio-util-0.7.20",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tonic-prost-0.14.6",
+        "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//ts-rs-12.0.1",
     ],
     proc_macro_deps = [
@@ -152,6 +153,7 @@ rust_library(
         "@sdk_crates//tokio-util-0.7.20",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tonic-prost-0.14.6",
+        "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//ts-rs-12.0.1",
     ],
     proc_macro_deps = [
@@ -210,6 +212,7 @@ rust_test(
         "@sdk_crates//tokio-util-0.7.20",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tonic-prost-0.14.6",
+        "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//ts-rs-12.0.1",
     ],
     proc_macro_deps = [
