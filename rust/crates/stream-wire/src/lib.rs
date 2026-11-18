@@ -26,17 +26,34 @@ pub mod rpc {
     include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
 }
 
-/// Route-to-response families for the hosted HTTP projection.
-pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
-    ("head", "head"),
-    ("heads", "heads"),
-    ("idempotency/inspect", "observation"),
-    ("tail", "tail"),
-    ("append", "append"),
-    ("fork", "fork"),
-    ("read", "read"),
-    ("children/page", "children_page"),
-    ("commit", "commit"),
-    ("commits/read", "envelope"),
-    ("tokens/create", "token"),
-];
+macro_rules! hosted_http_routes {
+    ($(($path:literal, $response:literal, $method:ident)),+ $(,)?) => {
+        /// Route-to-response families for the hosted HTTP projection.
+        pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
+            $(($path, $response),)+
+            ("tokens/create", "token"),
+        ];
+
+        /// Resolves a hosted HTTP path to its canonical path and generated unary RPC.
+        /// Token issuance is a hosted operation outside the unary Stream service.
+        pub fn hosted_http_rpc(path: &str) -> Option<(&'static str, rpc::StreamRpc)> {
+            match path {
+                $($path => Some(($path, rpc::StreamRpc::$method)),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+hosted_http_routes! {
+    ("head", "head", Head),
+    ("heads", "heads", Heads),
+    ("idempotency/inspect", "observation", InspectIdempotency),
+    ("tail", "tail", Tail),
+    ("append", "append", Append),
+    ("fork", "fork", Fork),
+    ("read", "read", Read),
+    ("children/page", "children_page", ChildrenPage),
+    ("commit", "commit", Commit),
+    ("commits/read", "envelope", ReadCommit),
+}

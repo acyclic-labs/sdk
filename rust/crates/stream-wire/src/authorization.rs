@@ -172,4 +172,20 @@ mod rpc_admission_tests {
             None
         );
     }
+
+    #[test]
+    fn each_unary_rpc_has_one_hosted_http_route() {
+        for &method in StreamRpc::ALL {
+            assert_eq!(
+                crate::HTTP_RESPONSE_CONTRACT
+                    .iter()
+                    .filter(|(path, _)| crate::hosted_http_rpc(path) == Some((*path, method)))
+                    .count(),
+                1,
+                "{method:?}"
+            );
+        }
+        assert_eq!(crate::hosted_http_rpc("tokens/create"), None);
+        assert_eq!(crate::hosted_http_rpc("unmapped"), None);
+    }
 }
