@@ -177,6 +177,12 @@ fn project_inner(
     rows: &[Value],
     template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
+    )
+    .unwrap();
+    // The CLI drift checks recompute the logical digests in this inventory.
+    let digests = manifest["rustdocFiles"].as_object().unwrap();
     let mut specs = BTreeMap::new();
     let mut items = Vec::new();
     let mut prepared = Vec::new();
@@ -196,8 +202,10 @@ fn project_inner(
         assert_eq!(id.0, row["profile"].as_str().unwrap());
         let receipt = receipt_path(&fixture.rustdoc, row);
         assert_eq!(
-            rustdoc_digest(&receipt, &fixture.root).unwrap(),
-            row["rustdocSha256"]
+            digests[row["rustdocFile"].as_str().unwrap()]
+                .as_str()
+                .unwrap(),
+            row["rustdocSha256"].as_str().unwrap()
         );
         assert_eq!(
             fs::read_to_string(receipt.with_extension("source.sha256"))
