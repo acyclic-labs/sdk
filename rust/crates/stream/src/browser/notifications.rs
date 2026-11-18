@@ -50,13 +50,9 @@ impl Publications {
         self.follows.subscribe_with(path.clone(), Arc::default)
     }
     pub(super) fn invalidate_follows(&self) {
-        let Ok(paths) = self.follows.keys_in::<StreamPath, _>(..) else {
+        let Ok(indices) = self.follows.values() else {
             return;
         };
-        let indices = paths
-            .into_iter()
-            .filter_map(|path| self.follows.get(&path).ok().flatten())
-            .collect::<Vec<_>>();
         for index in indices {
             crate::follow_index::FollowIndex::invalidate(&index);
         }

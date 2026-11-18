@@ -109,6 +109,15 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
             .map(|(key, _)| key.clone())
             .collect())
     }
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    pub(crate) fn values(&self) -> Result<Vec<V>, StreamError> {
+        Ok(self
+            .entries
+            .lock()?
+            .values()
+            .map(|entry| entry.value.clone())
+            .collect())
+    }
     #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
     pub(crate) fn notify(&self, key: &K) -> Result<(), StreamError> {
         let changed = self
