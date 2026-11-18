@@ -1,4 +1,7 @@
 use super::*;
+#[path = "../support/rustdoc_paths.rs"]
+mod rustdoc_paths;
+
 use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
@@ -307,55 +310,26 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             .unwrap();
         let mut referenced = std::collections::BTreeSet::new();
         let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
-        fn relocate(
-            value: &mut Value,
-            root: &Path,
-            target: &Path,
-            sources: &[String],
-            owner: &str,
-            referenced: &mut std::collections::BTreeSet<PathBuf>,
-        ) {
-            match value {
-                Value::String(text) => {
-                    if let Some(suffix) = text.strip_prefix("@fixture-target@") {
-                        referenced.insert(PathBuf::from(suffix.trim_start_matches(['/', '\\'])));
-                        *text = format!("{}{suffix}", target.to_string_lossy());
-                    }
-                }
-                Value::Object(object) => {
-                    if let Some(Value::Object(span)) = object.get_mut("span") {
-                        if let Some(Value::String(filename)) = span.get_mut("filename") {
-                            let normalized = filename.replace('\\', "/");
-                            if let Some(source) = sources.iter().find(|source| {
-                                normalized.ends_with(source.as_str())
-                                    || normalized == "src/lib.rs"
-                                        && source.as_str() == format!("{owner}/src/lib.rs")
-                            }) {
-                                *filename = root.join(source).to_string_lossy().into_owned();
-                            }
-                        }
-                    }
-                    for child in object.values_mut() {
-                        relocate(child, root, target, sources, owner, referenced);
-                    }
-                }
-                Value::Array(array) => {
-                    for child in array {
-                        relocate(child, root, target, sources, owner, referenced);
-                    }
-                }
-                _ => {}
-            }
-        }
         let owner = metadata["owner_path"].as_str().unwrap();
-        relocate(
-            &mut json,
-            root,
-            &artifact_target,
-            &relative_sources,
-            owner,
-            &mut referenced,
-        );
+        let owner_library = format!("{owner}/src/lib.rs");
+        rustdoc_paths::visit(&mut json, |kind, path| {
+            if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
+                let relative = PathBuf::from(relative);
+                *path = artifact_target
+                    .join(&relative)
+                    .to_string_lossy()
+                    .into_owned();
+                referenced.insert(relative);
+            } else if matches!(kind, rustdoc_paths::Kind::Source) {
+                let normalized = path.replace('\\', "/");
+                if let Some(source) = relative_sources.iter().find(|source| {
+                    normalized.ends_with(source.as_str())
+                        || normalized == "src/lib.rs" && **source == owner_library
+                }) {
+                    *path = root.join(source).to_string_lossy().into_owned();
+                }
+            }
+        });
         if !referenced.is_empty() {
             let artifacts = acyclic_test_support::source_path(artifacts);
             for relative in referenced {

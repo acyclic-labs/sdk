@@ -225,6 +225,7 @@ rust_test(
         "tests/main.rs",
         "tests/profile_planner.rs",
         "tests/support/archive.rs",
+        "tests/support/rustdoc_paths.rs",
     ],
     compile_data = [
         "tests/fixtures/excluded-owners/Cargo.lock",

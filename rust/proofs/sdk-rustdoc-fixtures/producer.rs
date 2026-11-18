@@ -118,46 +118,28 @@ fn main() {
     if artifacts.as_os_str().is_empty() {
         fs::copy(rustdoc, output).unwrap();
     } else {
-        fn retain(
-            value: &mut serde_json::Value,
-            target: &std::path::Path,
-            artifacts: &std::path::Path,
-        ) {
-            match value {
-                serde_json::Value::String(text) => {
-                    let source = std::path::Path::new(text);
-                    if let Ok(relative) = source.strip_prefix(target) {
-                        let destination = artifacts.join(relative);
-                        assert!(
-                            source.is_file(),
-                            "missing Rustdoc artifact: {}",
-                            source.display()
-                        );
-                        if !destination.exists() {
-                            fs::create_dir_all(destination.parent().unwrap()).unwrap();
-                            fs::copy(source, destination).unwrap();
-                        }
-                        *text = format!("@fixture-target@/{}", relative.display());
-                    }
-                }
-                serde_json::Value::Array(values) => {
-                    values
-                        .iter_mut()
-                        .for_each(|value| retain(value, target, artifacts));
-                }
-                serde_json::Value::Object(values) => {
-                    values
-                        .values_mut()
-                        .for_each(|value| retain(value, target, artifacts));
-                }
-                _ => {}
-            }
-        }
         let mut json: serde_json::Value =
             serde_json::from_slice(&fs::read(rustdoc).unwrap()).unwrap();
         fs::create_dir_all(&artifacts).unwrap();
-        retain(&mut json, &target, &artifacts);
+        rustdoc_paths::visit(&mut json, |_, text| {
+            let source = std::path::Path::new(text);
+            if let Ok(relative) = source.strip_prefix(&target) {
+                let destination = artifacts.join(relative);
+                assert!(
+                    source.is_file(),
+                    "missing Rustdoc artifact: {}",
+                    source.display()
+                );
+                if !destination.exists() {
+                    fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                    fs::copy(source, destination).unwrap();
+                }
+                *text = format!("{}{}", rustdoc_paths::TARGET_PREFIX, relative.display());
+            }
+        });
         fs::write(output, serde_json::to_vec(&json).unwrap()).unwrap();
     }
     fs::remove_dir_all(root).unwrap();
 }
+#[path = "../../crates/sdk-generation/tests/support/rustdoc_paths.rs"]
+mod rustdoc_paths;
