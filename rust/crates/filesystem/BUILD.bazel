@@ -2887,6 +2887,8 @@ rust_test(
     crate_root = "tests/metadata_codec.rs",
     srcs = [
         "tests/metadata_codec.rs",
+        "tests/metadata_codec/kernel/attribute/mod.rs",
+        "tests/metadata_codec/kernel/attribute/tests.rs",
         "tests/metadata_codec/kernel/metadata/mod.rs",
         "tests/metadata_codec/kernel/metadata/tests.rs",
         "tests/metadata_codec/kernel/mod.rs",

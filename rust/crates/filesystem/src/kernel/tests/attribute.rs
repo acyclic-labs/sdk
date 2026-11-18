@@ -3,33 +3,6 @@ use crate::foundation::Digest;
 
 use crate::kernel::Child;
 #[test]
-fn classes_and_raw_names_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let page = AttributePage::Leaf(vec![AttributeEntry {
-        name: AttributeName::new(AttributeClass::PosixXattr, b"user.test".to_vec())?,
-        value_bytes: 4,
-        value: ObjectId {
-            storage: None,
-            kind: ObjectKind::Blob,
-            digest: Digest::from_bytes([9; 32]),
-        },
-    }]);
-    let bytes = encode_attribute_page(
-        &page,
-        8,
-        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?;
-    assert_eq!(
-        decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<
-            _,
-            crate::kernel::CanonicalDecodeError,
-        >(()))?,
-        page
-    );
-    Ok(())
-}
-
-#[test]
 fn every_attribute_class_and_name_boundary_is_canonical() -> Result<(), Box<dyn std::error::Error>>
 {
     for (class, tag) in [
