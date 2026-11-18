@@ -70,6 +70,13 @@ test("a source repository rejects a bare Git URL", () => {
 test("check accepts the generated files and fails on a stale BUILD file", () => {
   const { root, run } = fixture();
   try {
+    const workspace = join(root, "Cargo.toml");
+    const member = join(root, "member/Cargo.toml");
+    const local = join(root, "local/Cargo.toml");
+    writeFileSync(workspace, readFileSync(workspace, "utf8") +
+      '\n[workspace.lints.rust]\ndead_code = "deny"\nunused = { level = "warn", priority = -1 }\n');
+    writeFileSync(member, readFileSync(member, "utf8") + '\n[lints]\nworkspace = true\n');
+    writeFileSync(local, readFileSync(local, "utf8") + '\n[lints.rust]\nunsafe_code = "forbid"\n');
     assert.equal(run("write").status, 0);
     execFileSync("git", ["add", "-A"], { cwd: root });
     const clean = run("check");
@@ -78,7 +85,11 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     // hub so it wins over the gnu toolchain that rules_rust also considers compatible.
     const memberBuild = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
     assert.match(memberBuild, /"\/\/:scripts\/mold-linker\.sh"/, "a test that carries Cargo's config also carries the linker it names");
+    assert.match(memberBuild, /lint_config = "\/\/:workspace_lints"/);
+    assert.doesNotMatch(memberBuild, /extract_cargo_lints/);
     const buildFile = readFileSync(join(root, "BUILD.bazel"), "utf8");
+    assert.match(buildFile, /name = "workspace_lints",[\s\S]*?"unused": "warn",[\s\S]*?"dead_code": "deny"/,
+      "the workspace group precedes its higher-priority lint");
     const platformStart = buildFile.indexOf('platform(\n    name = "linux_musl",');
     assert.notEqual(platformStart, -1, "linux_musl platform is generated");
     const platformBlock = buildFile.slice(platformStart, buildFile.indexOf("\n)\n", platformStart) + 3);
@@ -90,6 +101,8 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     }
     const localBuild = readFileSync(join(root, "local/BUILD.bazel"), "utf8");
     assert.match(localBuild, /"-Copt-level=3"/, "a local path crate carries its dev opt-level in its own BUILD");
+    assert.match(localBuild, /extract_cargo_lints\(/);
+    assert.match(localBuild, /lint_config = ":lints"/, "the local crate keeps its own lint policy");
     assert.doesNotMatch(moduleFile, /crate = "local"/, "a local path crate is not a third-party annotation");
     const muslToolchain = moduleFile.indexOf("@rust_toolchains//:rust_linux_musl__x86_64-unknown-linux-musl__stable");
     const toolchainHub = moduleFile.indexOf("@rust_toolchains//:all");
