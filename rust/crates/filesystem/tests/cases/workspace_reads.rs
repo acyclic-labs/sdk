@@ -1,4 +1,6 @@
 //! Focused public whole-file read behavior tests.
+use acyclic_fs::{CancellationToken, Fs, IdempotencyKey, TransactionCommit, WorkspaceError};
+use acyclic_fs_work::performance::WorkBudget;
 use bytes::Bytes;
 use std::error::Error;
 use {
@@ -9,47 +11,12 @@ use {
     acyclic_fs_work::performance::WorkBudget,
 };
 
-macro_rules! value {
-    ($result:expr) => {
-        $result
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-    };
-}
-
 #[macro_use]
 #[path = "../support/unbounded.rs"]
 mod unbounded;
-
-fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<
-    acyclic_fs_work::performance::MeasuredResult<
-        acyclic_fs_work::performance::OperationReceipt<()>,
-        E,
-    >,
-> {
-    std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
-        value: (),
-        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
-    }))
-}
-
-async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    transaction: &mut Transaction<A, O>,
-) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-    value!(
-        transaction
-            .commit::<WorkspaceError, _, _>(
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                allow
-            )
-            .await
-    )
-}
+#[path = "../support/transaction.rs"]
+mod transaction;
+use transaction::commit;
 
 #[tokio::test]
 async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), Box<dyn Error>> {

@@ -297,6 +297,7 @@ rust_library(
         "tests/support/git_markers_oracle.rs",
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
+        "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/wire_errors.rs",
         "tests/support/workspace.rs",
@@ -534,6 +535,7 @@ rust_test(
         "tests/support/git_markers_oracle.rs",
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
+        "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/wire_errors.rs",
         "tests/support/workspace.rs",
@@ -905,6 +907,7 @@ rust_test(
         "tests/support/portable_source.rs",
         "tests/support/projfs_legacy_path.rs",
         "tests/support/provider_receipt.rs",
+        "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/transaction_create_batch.rs",
         "tests/windows_ntfs_perf.rs",
@@ -1287,6 +1290,7 @@ rust_test(
     name = "workspace_contracts_cases",
     crate_root = "tests/workspace_contracts.rs",
     srcs = [
+        "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
         "tests/workspace_contracts.rs",
@@ -1343,6 +1347,7 @@ rust_test(
     name = "workspace_merge_cases",
     crate_root = "tests/workspace_merge.rs",
     srcs = [
+        "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
         "tests/workspace_merge.rs",
@@ -1702,6 +1707,7 @@ rust_library(
         "tests/support/git_markers_oracle.rs",
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
+        "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
