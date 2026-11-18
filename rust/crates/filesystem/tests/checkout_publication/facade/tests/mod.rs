@@ -13,6 +13,7 @@ mod checkout_tracking;
 #[path = "../../../support/volume_fixture.rs"]
 mod fixtures;
 mod publication;
+mod transactions;
 
 use allow_publication::allow;
 

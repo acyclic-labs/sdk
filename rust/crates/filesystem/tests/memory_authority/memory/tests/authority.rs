@@ -1,4 +1,10 @@
-use super::*;
+use acyclic_fs::{
+    AppendOutcome, AsyncAuthorityStore, AuthorityFailure, AuthorityStoreError,
+    CreateAuthorityOutcome, Epoch, FenceOutcome, Head, MemoryAuthorityStore, ProposedCommit,
+    ReplayLimit, Sequence,
+};
+use acyclic_fs_format::identity::{AuthorityId, Digest, OperationId};
+use acyclic_fs_work::performance::WorkBudget;
 
 #[tokio::test]
 async fn authority_retains_complete_large_payloads_without_an_implicit_policy()
@@ -42,9 +48,11 @@ async fn authority_retains_complete_large_payloads_without_an_implicit_policy()
         ),
         WorkBudget::UNBOUNDED
     )?;
-    assert_eq!(page.value.len(), 1);
-    assert_eq!(page.value[0], durable);
-    assert_eq!(page.value[0].payload, payload);
+    let [record] = page.value.as_slice() else {
+        return Err("expected one retained record".into());
+    };
+    assert_eq!(record, &durable);
+    assert_eq!(record.payload, payload);
     Ok(())
 }
 
@@ -235,7 +243,10 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
         WorkBudget::UNBOUNDED
     )?;
     assert_eq!(replay.value.len(), 1);
-    assert_eq!(replay.value[0].payload.as_ref(), b"aa");
+    assert_eq!(
+        replay.value.first().map(|record| record.payload.as_ref()),
+        Some(b"aa".as_slice())
+    );
 
     Ok(())
 }

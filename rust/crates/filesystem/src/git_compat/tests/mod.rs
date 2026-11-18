@@ -239,7 +239,6 @@ async fn publish_fixture(
     generation
 }
 
-mod argv;
 mod capture;
 mod history;
 mod incremental;

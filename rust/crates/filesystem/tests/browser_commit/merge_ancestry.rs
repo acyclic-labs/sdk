@@ -1,7 +1,5 @@
 use super::*;
-use acyclic_fs::model::{
-    AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode, VolumeLimits,
-};
+use acyclic_fs::model::{CheckoutMode, GenerationSelector, VolumeLimits};
 use acyclic_stream::OwnedBytes;
 use {acyclic_fs::kernel::NamespacePath, acyclic_fs_format::metadata::FileMetadata};
 use {
@@ -9,17 +7,14 @@ use {
         AuthoredMutation, ContentChange, ContentTimes, FsError, LivePublicationObservation,
     },
     acyclic_fs_format::identity::OperationId,
-    acyclic_fs_work::performance::OperationReceipt,
 };
 
-async fn allow(
-    _: WorkBudget,
-) -> acyclic_fs_work::performance::MeasuredResult<OperationReceipt<()>, FsError> {
-    Ok(OperationReceipt {
-        value: (),
-        work: WorkCounters::UNCHARGED,
-    })
-}
+#[path = "../support/allow_publication.rs"]
+mod allow_publication;
+#[path = "../support/checkout_manual.rs"]
+mod checkout_manual;
+use allow_publication::allow;
+use checkout_manual::writable_manual;
 
 #[wasm_bindgen_test]
 async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result<(), JsValue> {
@@ -46,11 +41,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
             .await
             .map_err(js_error)?
             .value;
-        let mode = CheckoutMode {
-            access: AccessMode::ReadWrite,
-            consistency: ConsistencyMode::Manual,
-            mutations: MutationMode::PrivateOverlay,
-        };
+        let mode = writable_manual();
         let mut seed = workspace
             .checkout(GenerationSelector::Head, mode, budget, &cancel)
             .await
@@ -83,7 +74,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
             PublicationPermit::Unrestricted,
             budget,
             &cancel,
-            allow,
+            allow::<FsError>,
         )
         .await
         .map_err(js_error)?;
@@ -138,7 +129,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
                     PublicationPermit::Unrestricted,
                     budget,
                     &cancel,
-                    allow,
+                    allow::<FsError>,
                 )
                 .await
                 .map_err(js_error)?;
@@ -151,7 +142,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
             PublicationPermit::Unrestricted,
             budget,
             &cancel,
-            allow,
+            allow::<FsError>,
         );
         let outcome = if stale {
             publish.await.map_err(js_error)?
@@ -165,7 +156,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
                     PublicationPermit::Unrestricted,
                     budget,
                     &cancel,
-                    allow
+                    allow::<FsError>
                 ),
                 publish
             );

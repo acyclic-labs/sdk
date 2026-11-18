@@ -1,4 +1,15 @@
-use super::*;
+use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs::{AuthoredMutation, CancellationToken, Fs, FsError, PublicationPermit};
+use acyclic_fs_format::{
+    identity::{OperationId, VolumeId},
+    metadata::FileMetadata,
+};
+use acyclic_stream::OwnedBytes;
+
+use super::super::checkout_fixture::{config, path, writable_pinned};
+use super::super::checkout_manual::writable_manual;
+use super::super::fixtures::open_checkout;
+use super::super::{B, allow};
 
 #[tokio::test]
 async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()

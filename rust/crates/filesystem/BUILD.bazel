@@ -302,7 +302,7 @@ cargo_build_script(
 rust_library(
     name = "acyclic_fs",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs","src/git_compat/tests/**","src/multi_root/tests/**","src/native_mount/fixture_access.rs","src/tests/**","src/wire_service/access_tests.rs","src/wire_service/errors/tests.rs","src/wire_service/metadata_tests.rs","src/wire_service/mount_fixture.rs","src/wire_service/mount_tests.rs","src/wire_service/tests.rs","tests/support/**"], allow_empty = True) + select({
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs","src/access/fixtures.rs","src/collection/tests.rs","src/core_state/group/tests/**","src/core_state/tests/**","src/demand/admissions_tests.rs","src/demand/computed_tests.rs","src/distributed/append/group_tests.rs","src/distributed/composition/append/tests/**","src/distributed/state_tests.rs","src/distributed/tests.rs","src/distributed/tests/**","src/facade/test_fixtures.rs","src/git_compat/tests/**","src/heap_future/frame_tests.rs","src/kernel/rebase/tests/**","src/kernel/tests/**","src/lazy_workspace/hash_tests.rs","src/lazy_workspace/tests/**","src/lineage/tests.rs","src/logical_objects/tests.rs","src/multi_root/tests/**","src/native_mount/adapter/tests/**","src/native_mount/fixture_access.rs","src/native_mount/lazy/tests/**","src/native_mount/materialize/tests/**","src/native_mount/tests/**","src/operation_window/tests/**","src/s3_http/tests.rs","src/s3/access_tests.rs","src/simulation/native_write_controls.rs","src/speculation/tests/**","src/staged_objects/tests/**","src/tests/**","src/wire_service/access_tests.rs","src/wire_service/errors/tests.rs","src/wire_service/metadata_tests.rs","src/wire_service/mount_fixture.rs","src/wire_service/mount_tests.rs","src/wire_service/tests.rs","src/workspace/access_tests.rs","src/workspace/accounting_tests.rs","src/workspace/retention_accounting_tests.rs","tests/support/**"], allow_empty = True) + select({
         "@platforms//os:linux": glob(["src/native_mount/fuse/**/*.rs"], allow_empty = True),
         "@platforms//os:macos": glob(["src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs"], allow_empty = True),
         "@platforms//os:windows": glob(["src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True),
@@ -554,6 +554,7 @@ rust_test(
         "tests/support/join_plan.rs",
         "tests/support/mount_checkout.rs",
         "tests/support/native_access.rs",
+        "tests/support/native_authority_publication.rs",
         "tests/support/provider_receipt.rs",
         "tests/support/selected_budget.rs",
         "tests/support/simulation_image.rs",
@@ -941,6 +942,7 @@ rust_test(
         "tests/session_fs_model.rs",
         "tests/shared_storage_contract.rs",
         "tests/support/allow_publication.rs",
+        "tests/support/checkout_manual.rs",
         "tests/support/cloud_contract.rs",
         "tests/support/native_access.rs",
         "tests/support/portable_source.rs",
@@ -1207,6 +1209,8 @@ rust_test(
         "tests/browser_commit/conformance.rs",
         "tests/browser_commit/merge_ancestry.rs",
         "tests/browser_commit/storage.rs",
+        "tests/support/allow_publication.rs",
+        "tests/support/checkout_manual.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -1363,6 +1367,9 @@ rust_test(
     srcs = [
         "tests/git_history.rs",
         "tests/git_history/git_compat/mod.rs",
+        "tests/git_history/git_compat/stream_store/mod.rs",
+        "tests/git_history/git_compat/stream_store/tests.rs",
+        "tests/git_history/git_compat/tests/argv.rs",
         "tests/git_history/git_compat/tests/history.rs",
         "tests/git_history/git_compat/tests/mod.rs",
         "tests/support/git_history.rs",
@@ -1386,6 +1393,7 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
     ],
@@ -2688,6 +2696,132 @@ isolated_test(
 )
 
 rust_test(
+    name = "memory_authority_cases",
+    crate_root = "tests/memory_authority.rs",
+    srcs = [
+        "tests/memory_authority.rs",
+        "tests/memory_authority/async_storage/mod.rs",
+        "tests/memory_authority/async_storage/tests.rs",
+        "tests/memory_authority/memory/mod.rs",
+        "tests/memory_authority/memory/tests/authority.rs",
+        "tests/memory_authority/memory/tests/mod.rs",
+        "tests/memory_authority/memory/tests/native_publication.rs",
+        "tests/support/native_authority_publication.rs",
+        "tests/support/provider_receipt.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+        ":build_script",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "src/lib.rs",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "memory_authority",
+    binary = ":memory_authority_cases",
+    id = "acyclic-fs::memory_authority",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "memory_authority_full-cloud",
+    binary = ":memory_authority_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::memory_authority",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "memory_objects_cases",
+    crate_root = "tests/memory_objects.rs",
+    srcs = [
+        "tests/memory_objects.rs",
+        "tests/memory_objects/memory/mod.rs",
+        "tests/memory_objects/memory/tests/mod.rs",
+        "tests/memory_objects/memory/tests/native_objects.rs",
+        "tests/memory_objects/memory/tests/objects.rs",
+        "tests/support/provider_receipt.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+        ":build_script",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "src/lib.rs",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "memory_objects",
+    binary = ":memory_objects_cases",
+    id = "acyclic-fs::memory_objects",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "memory_objects_full-cloud",
+    binary = ":memory_objects_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::memory_objects",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
     name = "checkout_cancellation_cases",
     crate_root = "tests/checkout_cancellation.rs",
     srcs = [
@@ -2743,6 +2877,69 @@ isolated_test(
     binary = ":checkout_cancellation_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::checkout_cancellation",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "checkout_transactions_cases",
+    crate_root = "tests/checkout_transactions.rs",
+    srcs = [
+        "tests/checkout_transactions.rs",
+        "tests/checkout_transactions/facade/mod.rs",
+        "tests/checkout_transactions/facade/tests/mod.rs",
+        "tests/checkout_transactions/facade/tests/transactions.rs",
+        "tests/support/checkout_fixture.rs",
+        "tests/support/volume_fixture.rs",
+        "tests/support/volume_read.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+        ":build_script",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "src/lib.rs",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "checkout_transactions",
+    binary = ":checkout_transactions_cases",
+    id = "acyclic-fs::checkout_transactions",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "checkout_transactions_full-cloud",
+    binary = ":checkout_transactions_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::checkout_transactions",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
@@ -3021,6 +3218,8 @@ rust_test(
         "tests/checkout_publication/facade/mod.rs",
         "tests/checkout_publication/facade/tests/mod.rs",
         "tests/checkout_publication/facade/tests/publication.rs",
+        "tests/checkout_publication/facade/tests/transactions/limits.rs",
+        "tests/checkout_publication/facade/tests/transactions/mod.rs",
         "tests/support/allow_publication.rs",
         "tests/support/checkout_fixture.rs",
         "tests/support/checkout_manual.rs",
@@ -3702,7 +3901,7 @@ rust_library(
     name = "acyclic_fs_wasm",
     crate_name = "acyclic_fs",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs","src/git_compat/tests/**","src/multi_root/tests/**","src/native_mount/fixture_access.rs","src/tests/**","src/wire_service/access_tests.rs","src/wire_service/errors/tests.rs","src/wire_service/metadata_tests.rs","src/wire_service/mount_fixture.rs","src/wire_service/mount_tests.rs","src/wire_service/tests.rs","tests/support/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs","src/access/fixtures.rs","src/collection/tests.rs","src/core_state/group/tests/**","src/core_state/tests/**","src/demand/admissions_tests.rs","src/demand/computed_tests.rs","src/distributed/append/group_tests.rs","src/distributed/composition/append/tests/**","src/distributed/state_tests.rs","src/distributed/tests.rs","src/distributed/tests/**","src/facade/test_fixtures.rs","src/git_compat/tests/**","src/heap_future/frame_tests.rs","src/kernel/rebase/tests/**","src/kernel/tests/**","src/lazy_workspace/hash_tests.rs","src/lazy_workspace/tests/**","src/lineage/tests.rs","src/logical_objects/tests.rs","src/multi_root/tests/**","src/native_mount/adapter/tests/**","src/native_mount/fixture_access.rs","src/native_mount/lazy/tests/**","src/native_mount/materialize/tests/**","src/native_mount/tests/**","src/operation_window/tests/**","src/s3_http/tests.rs","src/s3/access_tests.rs","src/simulation/native_write_controls.rs","src/speculation/tests/**","src/staged_objects/tests/**","src/tests/**","src/wire_service/access_tests.rs","src/wire_service/errors/tests.rs","src/wire_service/metadata_tests.rs","src/wire_service/mount_fixture.rs","src/wire_service/mount_tests.rs","src/wire_service/tests.rs","src/workspace/access_tests.rs","src/workspace/accounting_tests.rs","src/workspace/retention_accounting_tests.rs","tests/support/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/filesystem/fuzz:corpus/decoded_cache/eviction",
         "//rust/crates/filesystem/fuzz:corpus/decoded_cache/identity",
