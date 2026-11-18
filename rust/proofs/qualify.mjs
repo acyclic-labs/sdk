@@ -278,17 +278,23 @@ const claims = {
   "native-usage-counters": [
     "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
     "executor::model_usage::tests::usage_dialects_preserve_units_absence_and_malformed_controls",
-    "Test failed:", ["--features", "test-support"],
+    "Test failed:", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases", "--",
+      "executor::model_usage::tests::usage_dialects_preserve_units_absence_and_malformed_controls", "--exact", "--nocapture"] },
   ],
   "native-event-cut": [
     "rust/crates/harness-local/src/local/host_process/children.rs", "acyclic-harness-local",
     "local::host_process::children::tests::an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof",
-    "exited native terminal without LF was discarded", nativeHarness,
+    "exited native terminal without LF was discarded", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-local:acyclic_harness_local_test_cases", "--",
+      "local::host_process::children::tests::an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof", "--exact", "--nocapture"] },
   ],
   "native-event-retention": [
     "rust/crates/harness-local/src/local/host_process.rs", "acyclic-harness-local",
     "local::host_owner::tests::native_event_log_keeps_late_usage_and_resume_after_recovery",
-    "native event publication lost records after the old cutoff", nativeHarness,
+    "native event publication lost records after the old cutoff", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-local:acyclic_harness_local_test_cases", "--",
+      "local::host_owner::tests::native_event_log_keeps_late_usage_and_resume_after_recovery", "--exact", "--nocapture"] },
   ],
   "capture-marker-retirement": [
     "rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs", "acyclic-harness-core",
