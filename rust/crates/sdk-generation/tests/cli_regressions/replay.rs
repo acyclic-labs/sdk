@@ -100,18 +100,20 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
         }
     }
     let mut files = Vec::new();
-    receipts(&relocated.rustdoc, &mut files);
+    receipts(&original.rustdoc, &mut files);
     let mut changed = BTreeMap::new();
-    for file in files {
-        let mut value: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    for original_file in files {
+        let original_bytes = fs::read(&original_file).unwrap();
+        let mut value: Value = serde_json::from_slice(&original_bytes).unwrap();
         if value.get("format_version").is_none() {
             continue;
         }
-        let relative = file.strip_prefix(&relocated.output).unwrap();
-        let original_file = original.output.join(relative);
+        let relative = original_file.strip_prefix(&original.output).unwrap();
+        let file = relocated.output.join(relative);
         let logical = rustdoc_digest(&original_file, &original.root).unwrap();
         rebase(&mut value, original, relocated);
-        fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        let rebased_bytes = serde_json::to_vec(&value).unwrap();
+        fs::write(&file, &rebased_bytes).unwrap();
         assert_eq!(
             rustdoc_digest(&file, &relocated.root).unwrap(),
             logical,
@@ -120,7 +122,7 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
         );
         changed.insert(
             relative.to_str().unwrap().replace('\\', "/"),
-            (hash_file(&original_file), hash_file(&file)),
+            (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
         );
     }
     // Relocation changes physical receipt bytes. Re-attest only those verified
