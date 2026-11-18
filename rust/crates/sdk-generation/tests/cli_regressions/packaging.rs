@@ -37,11 +37,6 @@ fn shared_package() -> cache::Arc<Package> {
             "1.0.0",
         )
         .unwrap();
-        fs::copy(
-            runtime::binary("registry-transport-fixture"),
-            support.join(if cfg!(windows) { "curl.exe" } else { "curl" }),
-        )
-        .unwrap();
         Ok::<_, std::convert::Infallible>((fixture, members))
     })
     .unwrap()
@@ -88,11 +83,4 @@ pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) ->
     )
     .unwrap();
     source
-}
-pub(super) fn transport() -> PathBuf {
-    shared_package()
-        .0
-        .output
-        .join("test-support")
-        .join(if cfg!(windows) { "curl.exe" } else { "curl" })
 }

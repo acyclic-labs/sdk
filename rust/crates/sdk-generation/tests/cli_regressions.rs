@@ -725,9 +725,9 @@ fn write_registry_transport(support: &Path) {
         .map(|(suffix, response)| format!("{suffix}\n{response}\n"))
         .collect::<String>();
     fs::write(support.join("registry-responses.txt"), records).unwrap();
-    let source = packaging::transport();
     let destination = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
     if !destination.exists() {
+        let source = runtime::binary("registry-transport-fixture");
         fs::hard_link(&source, &destination)
             .or_else(|_| fs::copy(&source, &destination).map(|_| ()))
             .unwrap();
