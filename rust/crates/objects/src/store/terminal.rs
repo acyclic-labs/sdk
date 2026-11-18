@@ -103,7 +103,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // This batch is terminal or its admission lost the conditional commit.
         // Keep it as a cleanup receipt until its index removals are durable,
         // so interruption cannot leave a permanent orphan pin.
-        let tag = Self::batch_tag("f", root, name);
+        let tag = Self::batch_tag('f', root, name);
         let mut indexes = Vec::with_capacity(references.len());
         self.unreference(references, &tag, Some(&mut indexes))
             .await?;

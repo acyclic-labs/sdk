@@ -797,10 +797,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let (kind, rest) = key
             .strip_prefix(&self.state.prefix)
             .and_then(|rest| rest.split_once('/'))
-            .filter(|(kind, _)| matches!(*kind, "r" | "f"))
             .ok_or_else(corrupt)?;
+        let [kind @ (b'r' | b'f')] = kind.as_bytes() else {
+            return Err(corrupt());
+        };
         let (root, name) = rest.split_once('/').ok_or_else(corrupt)?;
-        let tag = Self::batch_tag(kind, root, name);
+        let tag = Self::batch_tag(char::from(*kind), root, name);
         for member in &members {
             if !blobs.contains_key(member)
                 || self
@@ -888,7 +890,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     /// The `i/` holder tag of the root batch named `batch`.
-    fn batch_tag(namespace: &str, root_hash: &str, batch: &str) -> String {
+    fn batch_tag(namespace: char, root_hash: &str, batch: &str) -> String {
         format!("{namespace}{root_hash}.{batch}")
     }
 
@@ -970,11 +972,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let digest = Digest::of(&batch);
         // A unique version keeps concurrent retains of equal batches distinct.
         let version = u128::from_be_bytes(version()?);
-        let (namespace, kind, name, extra_writes) = match fence {
-            Some(fence) => ("f", 'f', format!("{fence:016x}.{digest}.{version:032x}"), 2),
-            None => ("r", 'r', format!("{digest}.{version:032x}"), 0),
+        let (kind, name, extra_writes) = match fence {
+            Some(fence) => ('f', format!("{fence:016x}.{digest}.{version:032x}"), 2),
+            None => ('r', format!("{digest}.{version:032x}"), 0),
         };
-        let tag = Self::batch_tag(namespace, root_hash, &name);
+        let tag = Self::batch_tag(kind, root_hash, &name);
         let key = self.retention_key(kind, root_hash, &name);
         let first = references.first().ok_or_else(invalid)?;
         let held = (std::mem::size_of::<String>() + self.index_key(first, &tag).len()) as u64
@@ -1952,7 +1954,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let mut index_keys = Vec::new();
                 for (key, references) in batch_keys.into_iter().zip(batch_references) {
                     let name = key.rsplit('/').next().ok_or_else(corrupt)?;
-                    let tag = Self::batch_tag("r", root_hash, name);
+                    let tag = Self::batch_tag('r', root_hash, name);
                     self.unreference(&references, &tag, Some(&mut index_keys))
                         .await?;
                 }
