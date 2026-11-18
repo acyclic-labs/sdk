@@ -398,10 +398,7 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
     );
     let generated = run_generate_execute_profiles(&fixture);
     assert!(generated.status.success(), "{}", output_message(&generated));
-    let receipts: Vec<Value> = serde_json::from_slice(
-        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let receipts = read_profile_rows(&fixture.output);
     let mut long_profiles = receipts
         .iter()
         .filter(|receipt| {

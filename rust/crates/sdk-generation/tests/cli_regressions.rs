@@ -602,15 +602,18 @@ fn receipt_path(rustdoc: &Path, row: &Value) -> PathBuf {
     )
 }
 
+const PROFILE_TABLE: &str = "sdk-docs-rustdoc-profiles.v1.json";
+
+fn read_profile_rows(output: &Path) -> Vec<Value> {
+    serde_json::from_slice(&fs::read(output.join(PROFILE_TABLE)).unwrap()).unwrap()
+}
+
 fn assert_executed_profiles(
     output: &Path,
     rustdoc: &Path,
     expected: &[(&str, usize)],
 ) -> Vec<Value> {
-    let rows: Vec<Value> = serde_json::from_slice(
-        &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let rows = read_profile_rows(output);
 
     let mut counts = BTreeMap::new();
     let mut identities = std::collections::BTreeSet::new();
@@ -795,7 +798,7 @@ fn run_historical_generation(
     }
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");
-    if result.status.success() || version.join("sdk-docs-rustdoc-profiles.v1.json").is_file() {
+    if result.status.success() || version.join(PROFILE_TABLE).is_file() {
         let releases: Value = serde_json::from_slice(
             &fs::read(version.join("sdk-docs-registry-releases.v1.json")).unwrap(),
         )
