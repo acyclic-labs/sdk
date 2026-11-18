@@ -56,6 +56,10 @@ name = "browser_blob_custody"
 path = "tests/browser_blob_custody.rs"
 required-features = ["browser"]
 
+[[test]]
+name = "wire_contracts"
+path = "tests/wire_contracts.rs"
+
 [[bench]]
 name = "lease_paths"
 harness = false
