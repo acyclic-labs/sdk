@@ -308,14 +308,14 @@ fn concurrent_preview_publications_are_idempotent() {
     runtime::time_control();
     let fixture = fixture(false);
     let spawn = || {
-        generate_command(
+        configure_cli(&mut generate_command(
             &fixture.root,
             &fixture.rustdoc,
             &fixture.output,
             "concurrent-preview",
             "preview",
             true,
-        )
+        ))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -344,14 +344,14 @@ fn broken_publication_lock_cannot_be_hidden_by_another_success() {
     let lock = fixture.output.join(".sdk-docs-versions.v1.lock");
     fs::create_dir_all(&lock).unwrap();
     let run = || {
-        generate_command(
+        configure_cli(&mut generate_command(
             &fixture.root,
             &fixture.rustdoc,
             &fixture.output,
             "broken-lock",
             "preview",
             true,
-        )
+        ))
         .output()
         .unwrap()
     };

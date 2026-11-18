@@ -74,10 +74,6 @@ pub(super) fn cargo() -> sync::Arc<PathBuf> {
     COMPILER.with(sync::Arc::clone)
 }
 
-pub(super) fn rustc() -> PathBuf {
-    binary("rustc")
-}
-
 pub(super) fn configure(command: &mut Command) {
     // These controls inspect API/source identity and execute unoptimized code.
     command
