@@ -1,12 +1,17 @@
 //! Stateful production-volume simulation. See docs/filesystem-simulation.md.
-use super::*;
+use acyclic_fs::{
+    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ForkOptions, Fs, IdempotencyKey,
+    JoinOutcome, PublicationPermit, TransactionCommit, Workspace, WorkspaceError,
+};
+use std::error::Error;
+
+use crate::fixtures::{commit, fork_workspace};
+use crate::simulation_image::{Image, check};
 use acyclic_native_runtime::testing::sweep::{minimize, seeds, sweep};
 use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 use std::collections::BTreeMap;
 
 mod lazy;
-
-type Image = BTreeMap<String, Vec<u8>>;
 
 fn choice() -> u8 {
     let mut byte = [0];
@@ -41,48 +46,6 @@ fn history(seed: u64, steps: usize) -> Result<Vec<Action>, Box<dyn Error>> {
     })))
 }
 
-pub(super) async fn check<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    workspace: &Workspace<A, O>,
-    expected: &Image,
-) -> Result<(), Box<dyn Error>> {
-    // Reopen the immutable generation, rather than trusting a checkout cache.
-    let head = unbounded!(workspace, head())?;
-    let reopened = unbounded!(workspace, generation(head.id()))?;
-    let mut names = Vec::new();
-    let mut after = None;
-    loop {
-        let (page, _allocation) = unbounded!(workspace, list_directory("/", after.as_ref(), 3))?;
-        names.extend(
-            page.entries
-                .iter()
-                .map(|entry| entry.name.as_bytes().to_vec()),
-        );
-        if !page.has_more {
-            break;
-        }
-        after = Some(
-            page.entries
-                .last()
-                .ok_or("empty nonterminal page")?
-                .name
-                .clone(),
-        );
-    }
-    assert_eq!(
-        names,
-        expected
-            .keys()
-            .map(|path| path.as_bytes()[1..].to_vec())
-            .collect::<Vec<_>>(),
-        "publication exposed an unexpected or missing file"
-    );
-    for (path, bytes) in expected {
-        assert_eq!(unbounded!(workspace, read(path, 256))?.as_ref(), bytes);
-        assert_eq!(unbounded!(reopened, read(path, 256))?.as_ref(), bytes);
-    }
-    Ok(())
-}
-
 async fn join<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     source: &Workspace<A, O>,
     target: &Workspace<A, O>,
@@ -94,7 +57,7 @@ async fn join<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
             idempotency_key: IdempotencyKey::new(),
         },
         BTreeMap::new(),
-        crate::PublicationPermit::Unrestricted,
+        PublicationPermit::Unrestricted,
     )
     .await
 }

@@ -1,16 +1,20 @@
 //! Real native demand source with a sparse authored overlay.
 use super::*;
-use crate::{LazyWorkspace, MemoryLazyWorkspaceStore};
+use acyclic_fs::{
+    CancellationToken, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore, VolumeConfig,
+};
+use acyclic_fs_work::performance::WorkBudget;
+use std::sync::Arc;
 
 pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let source_bytes = vec![42; 37];
     std::fs::write(directory.path().join("source"), &source_bytes)?;
     let cancel = CancellationToken::new();
-    let source = crate::demand::native::NativeDemandSource::open(
+    let source = acyclic_fs::demand::native::NativeDemandSource::open(
         std::borrow::Cow::Borrowed(directory.path()),
-        crate::FilesystemProfile::Portable,
-        crate::VolumeLimits::default(),
+        acyclic_fs::FilesystemProfile::Portable,
+        acyclic_fs::VolumeLimits::default(),
         None,
         None,
         WorkBudget::UNBOUNDED,
@@ -19,17 +23,17 @@ pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
     .await?
     .value;
     let fs = Fs::memory();
-    let mut ctx = crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+    let mut ctx = acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
     let (lazy, _) = LazyWorkspace::attach(
         &fs,
         "lazy",
         Arc::new(source),
         MemoryLazyWorkspaceStore::default(),
-        crate::VolumeInitialization {
+        acyclic_fs::VolumeInitialization {
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             access_policy: None,
         },
-        crate::OperationId::new(),
+        acyclic_fs::OperationId::new(),
         &mut ctx,
     )
     .await?;
@@ -48,7 +52,7 @@ pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
         "/authored",
         current.clone().into(),
         IdempotencyKey::new(),
-        crate::PublicationPermit::Unrestricted,
+        PublicationPermit::Unrestricted,
         &mut ctx,
     )
     .await?;
@@ -61,7 +65,7 @@ pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
             "/authored",
             current.clone().into(),
             IdempotencyKey::new(),
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
             &mut ctx,
         )
         .await?;

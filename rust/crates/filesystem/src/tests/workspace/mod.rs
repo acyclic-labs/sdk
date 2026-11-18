@@ -65,7 +65,8 @@ mod sibling_files;
 mod transactions;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod simulation;
+#[path = "../../../tests/support/simulation_image.rs"]
+mod simulation_image;
 
 #[path = "../../../tests/support/selected_budget.rs"]
 mod selected_budget;
