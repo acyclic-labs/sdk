@@ -22,5 +22,5 @@ It performs linear work in the transcript and selected names, with no I/O or wai
 
 Run the shared checks with `node --test scripts/test-support/libtest.test.mjs`.
 The retained transcript is an original Linux libtest result from
-`cargo test --locked -p acyclic-harness-core --lib executor::json::tests::object_work::checked_codec_fuzz_corpus -- --exact --nocapture`.
+`bazel run //rust/crates/harness-core:acyclic_harness_core_test_cases -- executor::json::tests::object_work::checked_codec_fuzz_corpus --exact --nocapture`.
 Adversarial transcripts are explicit derivatives of those original bytes.
