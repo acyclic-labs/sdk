@@ -1,8 +1,7 @@
 use super::{
-    ActorRuntime, AdmittedCaller, Checkpoint, CodecIdentity, GuestError, GuestEvent,
+    ActorRuntime, AdmittedCaller, Checkpoint, CheckpointCodec, GuestError, GuestEvent,
     GuestEventResult, GuestState, GuestStreamingRequest, GuestStreamingResponse, retry_key,
 };
-use bytes::Bytes;
 use ts_rs::TS;
 
 type EventHandler<State, Bindings> = for<'a> fn(
@@ -10,20 +9,6 @@ type EventHandler<State, Bindings> = for<'a> fn(
     GuestEvent,
     &'a GuestContext<Bindings>,
 ) -> GuestFuture<'a, Option<GuestEventResult>>;
-
-/// Artifact codec hooks for exactly one checkpoint byte format.
-#[derive(TS)]
-#[ts(bound = "State: TS")]
-pub struct CheckpointCodec<State> {
-    /// Identity written on the next checkpoint.
-    pub identity: CodecIdentity,
-    /// Artifact encoder.
-    #[ts(type = "(state: State) => Uint8Array")]
-    pub encode: fn(&State) -> Result<Bytes, GuestError>,
-    /// Artifact decoder, called only after its exact codec identity is admitted.
-    #[ts(type = "(checkpoint: Checkpoint) => State")]
-    pub decode: fn(&Checkpoint) -> Result<State, GuestError>,
-}
 
 type RetryKey = Box<dyn Fn(&str) -> Result<String, GuestError> + Send + Sync>;
 

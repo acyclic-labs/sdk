@@ -2,10 +2,10 @@
 
 pub use acyclic_actors_guest_wire::{
     ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateSeed, Checkpoint,
-    CodecIdentity, GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent, GuestEventResult,
-    GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest, GuestStreamingResponse,
-    SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply, SocketTransport,
-    WebSocketAutoResponse, WebSocketId,
+    CheckpointCodec, CodecIdentity, GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent,
+    GuestEventResult, GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest,
+    GuestStreamingResponse, SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply,
+    SocketTransport, WebSocketAutoResponse, WebSocketId,
 };
 use ts_rs::{Config, TS};
 
@@ -82,7 +82,7 @@ pub fn typescript() -> String {
             output.push('\n');
         )+};
     }
-    declarations!(CheckpointCodec<()>,
+    declarations!(
         CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,
         ActorMetadataWrite, ActorStateAlarm, ActorStateSeed, ActorStateCommit,
         GuestState<()>, GuestContext<()>, ActorDefinition<(), ()>);

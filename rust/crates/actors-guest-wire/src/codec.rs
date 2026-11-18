@@ -182,3 +182,17 @@ impl GuestError {
         }
     }
 }
+
+/// Artifact codec hooks for exactly one checkpoint byte format.
+#[derive(TS)]
+#[ts(bound = "State: TS")]
+pub struct CheckpointCodec<State> {
+    /// Identity written on the next checkpoint.
+    pub identity: CodecIdentity,
+    /// Artifact encoder.
+    #[ts(type = "(state: State) => Uint8Array")]
+    pub encode: fn(&State) -> Result<Bytes, GuestError>,
+    /// Artifact decoder, called only after its exact codec identity is admitted.
+    #[ts(type = "(checkpoint: Checkpoint) => State")]
+    pub decode: fn(&Checkpoint) -> Result<State, GuestError>,
+}

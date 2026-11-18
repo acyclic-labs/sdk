@@ -10,7 +10,7 @@ pub use events::{GuestEvent, GuestRequest, GuestResponse};
 mod codec;
 /// Live-update compatibility declarations.
 pub mod compatibility;
-pub use codec::{Checkpoint, CodecIdentity, GuestError};
+pub use codec::{Checkpoint, CheckpointCodec, CodecIdentity, GuestError};
 /// Portable live-update selection contract.
 pub mod live_selection;
 mod sockets;
@@ -177,6 +177,7 @@ pub fn typescript(config: &ts_rs::Config) -> String {
         CodecIdentity,
         Checkpoint,
         GuestError,
+        CheckpointCodec<()>,
     );
     output
 }
