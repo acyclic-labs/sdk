@@ -45,6 +45,8 @@ rust_library(
         "@sdk_crates//hex-0.4.3",
         "@sdk_crates//s3s-0.17.0",
         "@sdk_crates//subtle-2.6.1",
+        "@sdk_crates//sync_wrapper-1.0.2",
+        "@sdk_crates//urlencoding-2.1.3",
     ],
     proc_macro_deps = [
         "@sdk_crates//async-trait-0.1.92",
@@ -70,6 +72,7 @@ rust_test(
     deps = [
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//axum-0.8.9",
         "@sdk_crates//hmac-0.13.0",
         "@sdk_crates//http-1.5.0",
         "@sdk_crates//sha2-0.11.1",
