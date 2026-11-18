@@ -464,7 +464,9 @@ impl<M: Medium> Pages<'_, M> {
             .await
             .map_err(medium)?;
         self.done = page.len() < PAGE;
-        self.after = page.last().map(|(key, _)| key.clone());
+        if !self.done {
+            self.after = page.last().map(|(key, _)| key.clone());
+        }
         Ok(Some(page))
     }
 }
