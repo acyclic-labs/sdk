@@ -4,14 +4,22 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {assertRegistryPinsCurrent, workspaceBrowserGraph, workspaceGraph, workspacePackages, workspaceProfileMetadata, versionMatches} from './workspace-model.mjs';
 import {workspacePackages as testPackages, wasmPackages} from './check-crate-tests.mjs';
 
-test('manifest and Bazel lock projection preserves aliases, target edges and local feature forwarding', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-model-'));
+function workspaceFixture(t, prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  return {root, write(file, text) {
+    const destination = path.join(root, file);
+    fs.mkdirSync(path.dirname(destination), {recursive: true});
+    fs.writeFileSync(destination, text);
+  }};
+}
+
+test('manifest and Bazel lock projection preserves aliases, target edges and local feature forwarding', t => {
+  const {root, write} = workspaceFixture(t, 'workspace model #% -');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\nexclude=["backend"]\n[workspace.package]\nversion="0.1.0"\nedition="2024"\n[workspace.dependencies]\nrenamed={package="backend",path="backend",version="=0.1.0",default-features=false}\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion.workspace=true\nedition.workspace=true\n[dependencies]\nrenamed.workspace=true\n[features]\ntest-support=["renamed/test-support"]\nwasm=[]\n[target.\'cfg(windows)\'.dependencies]\nwin="1"\n[[bin]]\nname="custom"\npath="src/main.rs"\n');
   write('app/src/main.rs', 'fn main() {}\n');
@@ -22,6 +30,7 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'win 1.0.0': {targets: [{Library: {crate_name: 'win'}}], common_attrs: {crate_features: {common: [], selects: {'x86_64-pc-windows-msvc': ['windows-only']}}}}}}));
   write('cargo-wasm-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
   const packages = workspacePackages(root), app = packages.find(p => p.name === 'app');
+  assert.equal(app.id, `path+${pathToFileURL(path.join(root, 'app')).href}#0.1.0`);
   assert.equal(app.edition, '2024');
   assert.deepEqual(app.targets.map(t => t.name), ['custom']);
   assert.equal(app.dependencies[0].rename, 'renamed');
@@ -60,13 +69,11 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
 });
 
 test('crate test planning keeps default members and all wasm workspace members distinct', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-test-selection-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers=["app", "tool"]\ndefault-members=["app"]\n');
+  const {root, write} = workspaceFixture(t, 'workspace-test-selection-');
+  write('Cargo.toml', '[workspace]\nmembers=["app", "tool"]\ndefault-members=["app"]\n');
   for (const name of ['app', 'tool']) {
-    fs.mkdirSync(path.join(root, name, 'src'), {recursive: true});
-    fs.writeFileSync(path.join(root, name, 'Cargo.toml'), `[package]\nname="${name}"\nversion="0.1.0"\n${name === 'tool' ? '[features]\nwasm=[]\n' : ''}`);
-    fs.writeFileSync(path.join(root, name, 'src/lib.rs'), '');
+    write(`${name}/Cargo.toml`, `[package]\nname="${name}"\nversion="0.1.0"\n${name === 'tool' ? '[features]\nwasm=[]\n' : ''}`);
+    write(`${name}/src/lib.rs`, '');
   }
   const metadata = workspaceProfileMetadata(root, {workspaceOnly: true});
   assert.deepEqual(testPackages(metadata), ['app']);
@@ -75,9 +82,7 @@ test('crate test planning keeps default members and all wasm workspace members d
 });
 
 test('captured sibling path dependencies stay inside the declared source boundary', t => {
-  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-sibling-'));
-  t.after(() => fs.rmSync(sourceRoot, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(sourceRoot, file)), {recursive: true}); fs.writeFileSync(path.join(sourceRoot, file), text);};
+  const {root: sourceRoot, write} = workspaceFixture(t, 'workspace-sibling-');
   write('owner/Cargo.toml', '[package]\nname="owner"\nversion="0.1.0"\n[dependencies]\nhelper={path="../helper"}\n');
   write('owner/src/lib.rs', '');
   write('helper/Cargo.toml', '[package]\nname="helper"\nversion="0.1.0"\n');
@@ -92,9 +97,7 @@ test('captured sibling path dependencies stay inside the declared source boundar
 });
 
 test('retained producer patches use their declared config and separate lock', t => {
-  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-patch-'));
-  t.after(() => fs.rmSync(sourceRoot, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(sourceRoot, file)), {recursive: true}); fs.writeFileSync(path.join(sourceRoot, file), text);};
+  const {root: sourceRoot, write} = workspaceFixture(t, 'workspace-patch-');
   write('owner/Cargo.toml', '[package]\nname="owner"\nversion="0.1.0"\n[dependencies]\nrenamed={package="helper",version="=0.1.0",optional=true}\n');
   write('owner/src/lib.rs', '');
   write('owner/Cargo.lock', 'original published lock');
@@ -131,9 +134,7 @@ test('retained producer patches use their declared config and separate lock', t 
 });
 
 test('retained lock reaches transitive patches without making patches workspace members', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-transitive-patch-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  const {root, write} = workspaceFixture(t, 'workspace-transitive-patch-');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n[patch.crates-io]\ndirect={path="direct"}\ntransitive={path="transitive"}\nunused={path="unused"}\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nbridge="1"\ndirect="1"\n');
   for (const name of ['direct', 'transitive', 'unused']) {
@@ -160,9 +161,7 @@ test('retained lock reaches transitive patches without making patches workspace 
 });
 
 test('a patch discovered before its path edge gains its workspace test dependencies', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-late-member-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  const {root, write} = workspaceFixture(t, 'workspace-late-member-');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n[patch.crates-io]\npatched={path="patched"}\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="1.0.0"\n[dependencies]\nmiddle={path="../middle"}\n');
   write('middle/Cargo.toml', '[package]\nname="middle"\nversion="1.0.0"\n[dependencies]\npatched={path="../patched"}\n');
@@ -178,9 +177,7 @@ test('a patch discovered before its path edge gains its workspace test dependenc
 });
 
 test('workspace discovery includes implicit path members and respects excluded subtrees', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-members-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  const {root, write} = workspaceFixture(t, 'workspace-members-');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\nexclude=["vendor/*"]\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nimplicit={path="../implicit"}\nexternal={path="../vendor/external"}\n');
   write('implicit/Cargo.toml', '[package]\nname="implicit"\nversion="0.1.0"\n');
@@ -202,9 +199,7 @@ test('locked version selection distinguishes aliases across incompatible version
 });
 
 test('registry features follow the current dependency declaration', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-features-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  const {root, write} = workspaceFixture(t, 'registry-features-');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nserde_json={version="1",features=["preserve_order"]}\n');
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["serde_json"]\n[[package]]\nname="serde_json"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
@@ -220,9 +215,7 @@ test('registry features follow the current dependency declaration', t => {
 });
 
 test('registry dependencies are selected from the current Cargo lock', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-new-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  const {root, write} = workspaceFixture(t, 'registry-new-');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nnew_crate="1"\n');
   const source = 'registry+https://github.com/rust-lang/crates.io-index';
@@ -236,9 +229,7 @@ test('registry dependencies are selected from the current Cargo lock', t => {
 });
 
 test('browser registry inputs retain direct default-feature requests', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-defaults-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  const {root, write} = workspaceFixture(t, 'browser-defaults-');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nserde_json="1"\ncfg-if={version="1",default-features=false}\n');
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["serde_json","cfg-if"]\n[[package]]\nname="serde_json"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname="cfg-if"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
@@ -252,9 +243,7 @@ test('browser registry inputs retain direct default-feature requests', t => {
 });
 
 test('unselected platforms and disabled optional dependencies do not require registry pins', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-inactive-'));
-  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  const {root, write} = workspaceFixture(t, 'registry-inactive-');
   write('Cargo.toml', '[workspace]\nmembers=["app"]\nexclude=["helper"]\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nhelper={path="../helper",default-features=false}\n[target.\'cfg(target_arch = "wasm32")\'.dependencies]\nwasm="1"\n');
   write('helper/Cargo.toml', '[package]\nname="helper"\nversion="0.1.0"\n[dependencies]\nunused={version="1",optional=true}\n[features]\ndefault=["dep:unused"]\n');
