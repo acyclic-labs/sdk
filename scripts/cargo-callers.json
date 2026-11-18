@@ -58,7 +58,5 @@
   "scripts/workspace-defaults.mjs",
   "typescript/packages/actors/test/browser-http-conformance.mjs",
   "typescript/packages/actors/test/grpc-conformance.mjs",
-  "typescript/packages/objects/test/v1-grpc-conformance.mjs",
-  "typescript/packages/stream/test/grpc-provider-conformance.mjs",
   "typescript/packages/stream/test/http-provider-conformance.mjs"
 ]

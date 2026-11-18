@@ -2,7 +2,8 @@ import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import { sessionService } from "./session-service-fixture.mjs";
 import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { conformanceCertificate } from "../../../../scripts/conformance-certificate.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -170,11 +171,7 @@ if (process.argv.includes("--client")) {
 
 await ensureStreamWasm();
 const memory = new WasmStream();
-const certificate = process.env.ACYCLIC_CONFORMANCE_CERTIFICATE;
-const identity = spawnSync(certificate ?? "cargo", certificate === undefined ? ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"] : [], { cwd: root, encoding: "utf8" });
-assert.ifError(identity.error);
-assert.equal(identity.status, 0, identity.stderr);
-const tls = JSON.parse(identity.stdout);
+const tls = conformanceCertificate(root, process.env.ACYCLIC_CONFORMANCE_CERTIFICATE);
 // One Read frame per batch, optionally Zstandard-compressed.
 function readFrame(records, zstd) {
   const data = toBinary(RecordBatchSchema, create(RecordBatchSchema, { records }));
