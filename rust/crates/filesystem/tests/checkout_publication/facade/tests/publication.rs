@@ -2,7 +2,7 @@ use acyclic_fs::kernel::{
     DependencyRegion, FileKind, FilePayload, FileRecord, InlineFileData, Mutation, NamespacePath,
     RebaseDecision,
 };
-use acyclic_fs::model::{CheckoutMode, ConcurrencyMode, GenerationSelector};
+use acyclic_fs::model::{CheckoutMode, ConcurrencyMode, ConsistencyMode, GenerationSelector};
 use acyclic_fs::{
     AuthoredMutation, CancellationToken, Fs, FsError, LivePublicationObservation,
     PublicationPermit, VolumeConfig,
@@ -12,7 +12,7 @@ use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_stream::OwnedBytes;
 
 use super::checkout_fixture::{config, path, writable_pinned};
-use super::checkout_manual::{manual, writable_manual};
+use super::checkout_manual::writable_manual;
 use super::checkout_serialized::serialized_config;
 use super::checkout_tracking::tracking;
 use super::fixtures::{TestResult, create, fixture, open_checkout};
@@ -358,7 +358,11 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let (volume, _) = fixture(config(), &cancellation).await?;
-    let mut clean = open_checkout(&volume, manual(), &cancellation).await?;
+    let read_only_manual = CheckoutMode {
+        consistency: ConsistencyMode::Manual,
+        ..CheckoutMode::read_only_pinned()
+    };
+    let mut clean = open_checkout(&volume, read_only_manual, &cancellation).await?;
     let mut clean_tracking = open_checkout(&volume, tracking(), &cancellation).await?;
     let mut dirty = open_checkout(&volume, writable_manual(), &cancellation).await?;
     let mut conflicted = open_checkout(&volume, writable_manual(), &cancellation).await?;

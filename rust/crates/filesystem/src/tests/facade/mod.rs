@@ -12,7 +12,7 @@ use checkout_fixture::{config, path, path_parts, writable_pinned};
 
 #[path = "../../../tests/support/checkout_manual.rs"]
 mod checkout_manual;
-use checkout_manual::{manual, writable_manual};
+use checkout_manual::writable_manual;
 
 #[path = "../../../tests/support/checkout_tracking.rs"]
 mod checkout_tracking;

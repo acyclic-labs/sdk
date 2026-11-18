@@ -1,10 +1,7 @@
 //! Real public commit-path benchmark. Run one named case per invocation with
 //! `cargo test --release -p acyclic-fs --test main fs_concurrency_bench::CASE -- --exact --nocapture`.
 //! The driver also builds unchanged on the pre-combiner revision.
-use acyclic_fs::model::{
-    AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
-    VolumeConfig,
-};
+use acyclic_fs::model::{GenerationSelector, Lifecycle, VolumeConfig};
 use acyclic_stream::{OwnedBytes, StreamProvider};
 use futures::TryStreamExt;
 use std::collections::BTreeSet;
@@ -28,6 +25,9 @@ use {
 #[path = "support/allow_publication.rs"]
 mod allow_publication;
 use allow_publication::allow;
+#[path = "support/checkout_manual.rs"]
+mod checkout_manual;
+use checkout_manual::writable_manual;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Volume =
@@ -36,13 +36,6 @@ type Checkout =
     acyclic_fs::Checkout<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
 
-fn mode() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Manual,
-        mutations: MutationMode::PrivateOverlay,
-    }
-}
 fn path(parts: &[String]) -> Result<NamespacePath> {
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     Ok(NamespacePath::new(
@@ -75,7 +68,7 @@ async fn run(writers: usize, same_file: bool) -> Result {
     let mut proposals = Vec::with_capacity(writers);
     for index in 0..writers {
         let mut checkout = volume
-            .checkout(GenerationSelector::Head, mode(), B, &cancel)
+            .checkout(GenerationSelector::Head, writable_manual(), B, &cancel)
             .await?
             .value;
         checkout
@@ -132,7 +125,7 @@ async fn seed_volume(
     cancel: &CancellationToken,
 ) -> Result<(Vec<Vec<String>>, acyclic_fs::Head)> {
     let mut seed = volume
-        .checkout(GenerationSelector::Head, mode(), B, cancel)
+        .checkout(GenerationSelector::Head, writable_manual(), B, cancel)
         .await?
         .value;
     // Keep the same 256-directory volume for every disjoint writer count.
@@ -238,7 +231,7 @@ async fn verify_tree(
     cancel: &CancellationToken,
 ) -> Result {
     let mut final_tree = volume
-        .checkout(GenerationSelector::Head, mode(), B, cancel)
+        .checkout(GenerationSelector::Head, writable_manual(), B, cancel)
         .await?
         .value;
     for (index, parts) in paths.iter().enumerate() {
