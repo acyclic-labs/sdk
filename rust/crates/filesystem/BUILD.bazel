@@ -1049,6 +1049,7 @@ rust_test(
         "tests/measured_creation.rs",
         "tests/measured_creation/tests/mod.rs",
         "tests/measured_creation/tests/populated_creation.rs",
+        "tests/measured_creation/tests/publication_guards.rs",
         "tests/measured_creation/workspace.rs",
         "tests/support/creation_budget.rs",
         "tests/support/unbounded.rs",
