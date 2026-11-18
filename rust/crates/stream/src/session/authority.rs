@@ -3,12 +3,12 @@
 #[path = "testing.rs"]
 pub mod testing;
 use super::*;
-use crate::StreamMethod;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Scope, Target},
     trust::{ChangeSource, Changed, SourceClosed},
     verify::{self, Trust, VerifiedCapability, VerifyError},
 };
+use acyclic_stream_wire::authorization::StreamMethod;
 use futures::FutureExt as _;
 
 /// One authenticated, current public trust view and its protected clock.
@@ -236,7 +236,7 @@ impl Authority {
             .as_ref()
             .map_err(|error| *error)?;
         let action = binding.resource_authorization.as_ref().map_or(
-            crate::authorization::FOLLOW_ACTION.as_str(),
+            acyclic_stream_wire::authorization::FOLLOW_ACTION.as_str(),
             |authorization| authorization.action,
         );
         let target = binding
@@ -459,7 +459,7 @@ impl Authority {
         let resource = stream_resource(parent);
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
-        authorization.action = crate::authorization::CHILDREN_ACTION.as_str();
+        authorization.action = acyclic_stream_wire::authorization::CHILDREN_ACTION.as_str();
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
@@ -494,9 +494,9 @@ impl Authority {
         ),
         Rejection,
     > {
-        let read_action = crate::authorization::HEAD_ACTION.as_str();
+        let read_action = acyclic_stream_wire::authorization::HEAD_ACTION.as_str();
         let path_action = if request.projection == crate::HeadProjection::Tail {
-            crate::authorization::TAIL_ACTION.as_str()
+            acyclic_stream_wire::authorization::TAIL_ACTION.as_str()
         } else {
             read_action
         };

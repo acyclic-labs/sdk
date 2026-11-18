@@ -1,9 +1,9 @@
 //! Token grants select declared method admission, never a second action list.
-use crate::StreamMethod;
 use acyclic_auth::{
     action::{Action, StreamsAction},
     method::Resources,
 };
+use acyclic_stream_wire::authorization::StreamMethod;
 use acyclic_stream_wire::rpc::StreamRpc;
 
 // These narrow grants select an actual operation of a request-dependent method.

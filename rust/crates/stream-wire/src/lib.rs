@@ -1,5 +1,7 @@
 //! Canonical Stream protobuf messages, services and RPC authorization.
 
+pub mod authorization;
+
 /// Generated canonical Stream v1 protocol.
 #[allow(
     missing_docs,
