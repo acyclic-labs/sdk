@@ -1,4 +1,4 @@
-"""The pinned Linux wasm-bindgen executable for the browser toolchain."""
+"""The pinned Linux wasm-bindgen executables for the browser toolchain."""
 
 def _wasm_bindgen_impl(ctx):
     manifest = ctx.read(Label("//:Cargo.toml"))
@@ -23,6 +23,7 @@ tool = rule(implementation = _tool_impl, executable = True,
     ctx.file("BUILD.bazel", '''
 load(":defs.bzl", "tool")
 tool(name = "wasm_bindgen_cli", binary = "wasm-bindgen", visibility = ["//visibility:public"])
+tool(name = "wasm_bindgen_test_runner", binary = "wasm-bindgen-test-runner", visibility = ["//visibility:public"])
 ''')
 
 wasm_bindgen_cli = repository_rule(implementation = _wasm_bindgen_impl)
