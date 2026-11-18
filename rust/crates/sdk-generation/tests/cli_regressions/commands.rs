@@ -348,16 +348,19 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             for relative in referenced {
                 let destination = artifact_target.join(&relative);
                 let source = artifacts.join(relative);
-                if destination.exists() {
-                    if fs::read(&destination)? != fs::read(&source)? {
+                match fs::read(&destination) {
+                    Ok(existing) if existing == fs::read(&source)? => {}
+                    Ok(_) => {
                         return Err(std::io::Error::other(format!(
                             "Rustdoc fixture artifacts disagree at {}",
                             destination.display()
                         )));
                     }
-                } else {
-                    fs::create_dir_all(destination.parent().unwrap())?;
-                    fs::copy(source, destination)?;
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        fs::create_dir_all(destination.parent().unwrap())?;
+                        fs::copy(source, destination)?;
+                    }
+                    Err(error) => return Err(error),
                 }
             }
         }
