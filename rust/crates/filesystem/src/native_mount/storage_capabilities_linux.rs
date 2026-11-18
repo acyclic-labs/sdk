@@ -36,7 +36,7 @@ pub(super) fn probe(
         .metadata()
         .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?
         .dev();
-    let (major, minor) = crate::native_host::split_device(device);
+    let (major, minor) = acyclic_fs_native_contract::device::split_device(device);
     let sysfs = PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
     let mut device_path = std::fs::canonicalize(sysfs)
         .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;

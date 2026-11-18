@@ -240,13 +240,13 @@ impl FuseProjection {
             return Err(libc::EINVAL.into());
         }
         let operation = if mode == (PUNCH_HOLE | KEEP_SIZE) {
-            crate::MountRangeAllocation::PunchHole
+            acyclic_fs_native_contract::MountRangeAllocation::PunchHole
         } else if mode == ZERO_RANGE || mode == (ZERO_RANGE | KEEP_SIZE) {
-            crate::MountRangeAllocation::ZeroRange {
+            acyclic_fs_native_contract::MountRangeAllocation::ZeroRange {
                 extend: mode == ZERO_RANGE,
             }
         } else if mode == 0 || mode == KEEP_SIZE {
-            crate::MountRangeAllocation::Preallocate {
+            acyclic_fs_native_contract::MountRangeAllocation::Preallocate {
                 keep_size: mode == KEEP_SIZE,
             }
         } else {

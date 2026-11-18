@@ -551,8 +551,8 @@ async fn native_device_metadata_preserves_the_host_number() -> Result<(), Box<dy
     let node = lookup_node(&source, reference.clone(), &path("/null")?, &cancellation).await?;
     assert_eq!(node.kind, SourceNodeKind::CharacterDevice);
     let (major, minor) = node.device.ok_or("device number absent")?;
-    let native =
-        crate::native_host::join_device(major, minor).map_err(std::io::Error::from_raw_os_error)?;
+    let native = acyclic_fs_native_contract::device::join_device(major, minor)
+        .map_err(std::io::Error::from_raw_os_error)?;
     assert_eq!(
         native as u64,
         std::fs::symlink_metadata("/dev/null")?.rdev()

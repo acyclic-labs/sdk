@@ -2,12 +2,12 @@
 //!
 //! Linux and Darwin disagree on the width of `dev_t` and on the signatures of
 //! `libc::major`, `libc::minor`, and `libc::makedev`. Every split or join of a
-//! host device number goes through these shims so call sites stay
+//! host device number uses this codec so call sites stay
 //! platform-free.
 
 /// Splits a host `dev_t` into `(major, minor)`.
 #[cfg(target_os = "linux")]
-pub(crate) fn split_device(device: u64) -> (u32, u32) {
+pub fn split_device(device: u64) -> (u32, u32) {
     (libc::major(device), libc::minor(device))
 }
 
@@ -16,7 +16,7 @@ pub(crate) fn split_device(device: u64) -> (u32, u32) {
 /// Darwin's `dev_t` is a signed 32-bit value; the low 32 bits of the wider
 /// host representation are reinterpreted without loss.
 #[cfg(target_os = "macos")]
-pub(crate) fn split_device(device: u64) -> (u32, u32) {
+pub fn split_device(device: u64) -> (u32, u32) {
     let native = device as libc::dev_t;
     (
         libc::major(native).cast_unsigned(),
@@ -27,8 +27,7 @@ pub(crate) fn split_device(device: u64) -> (u32, u32) {
 /// Joins `(major, minor)` into a host `dev_t`, failing with `EOVERFLOW` when
 /// the pair cannot be represented on this platform.
 #[cfg(target_os = "linux")]
-#[cfg(any(test, not(target_arch = "wasm32"), feature = "fuzzing"))]
-pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
+pub fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
     let device = libc::makedev(major, minor);
     if libc::major(device) != major || libc::minor(device) != minor {
         return Err(libc::EOVERFLOW);
@@ -42,8 +41,7 @@ pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
 /// Darwin packs the major number into 8 bits and the minor number into 24;
 /// out-of-range components are rejected instead of silently aliasing.
 #[cfg(target_os = "macos")]
-#[cfg(any(test, not(target_arch = "wasm32"), feature = "fuzzing"))]
-pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
+pub fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
     if major > 0xFF || minor > 0xFF_FFFF {
         return Err(libc::EOVERFLOW);
     }
@@ -63,6 +61,10 @@ fn widen(device: libc::dev_t) -> u64 {
 }
 
 /// Checks arbitrary native bit patterns and component pairs against the OS codec.
+///
+/// # Panics
+///
+/// Panics if the native codec disagrees with the OS or accepts an unrepresentable pair.
 #[cfg(all(feature = "fuzzing", any(target_os = "linux", target_os = "macos")))]
 pub fn check_device_codec(input: &[u8]) {
     let Some((native, input)) = input.split_first_chunk::<8>() else {
@@ -105,28 +107,26 @@ pub fn check_device_codec(input: &[u8]) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{join_device, split_device, widen};
+#[path = "tests/device.rs"]
+mod tests;
 
-    #[test]
-    fn split_and_join_round_trip() -> Result<(), i32> {
-        for (major, minor) in [(0, 0), (1, 3), (0xFF, 0xFF_FFFF)] {
-            let device = join_device(major, minor)?;
-            assert_eq!(split_device(widen(device)), (major, minor));
-            #[cfg(target_os = "macos")]
-            if device < 0 {
-                // A checked narrowing loses valid device numbers after the
-                // host's signed dev_t was widened by a metadata consumer.
-                assert!(libc::dev_t::try_from(widen(device)).is_err());
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn join_rejects_unrepresentable_components() {
-        assert_eq!(join_device(0x100, 0), Err(libc::EOVERFLOW));
-        assert_eq!(join_device(0, 0x100_0000), Err(libc::EOVERFLOW));
-    }
+/// Decodes a native special node request into its kind and optional device number.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn special_mount_node(
+    mode: libc::mode_t,
+    device: u64,
+) -> Result<(crate::MountNodeKind, Option<(u32, u32)>), i32> {
+    let kind = match mode & libc::S_IFMT {
+        libc::S_IFIFO => crate::MountNodeKind::Fifo,
+        libc::S_IFSOCK => crate::MountNodeKind::Socket,
+        libc::S_IFCHR => crate::MountNodeKind::CharacterDevice,
+        libc::S_IFBLK => crate::MountNodeKind::BlockDevice,
+        _ => return Err(libc::EOPNOTSUPP),
+    };
+    let device = matches!(
+        kind,
+        crate::MountNodeKind::CharacterDevice | crate::MountNodeKind::BlockDevice
+    )
+    .then(|| split_device(device));
+    Ok((kind, device))
 }

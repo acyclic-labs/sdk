@@ -5,6 +5,7 @@
 mod unbounded;
 
 use acyclic_fs::mount_qualification::COVERAGE;
+use acyclic_fs_native_contract::NativeMountKind;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -15,8 +16,8 @@ use std::time::{Duration, Instant};
 use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
-    Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit,
-    native_mount::NativeMountRecoveryOwner, probe_native_mount,
+    Fs, LocalOptions, MountOptions, TransactionCommit, native_mount::NativeMountRecoveryOwner,
+    probe_native_mount,
 };
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
 use bytes::Bytes;

@@ -8,9 +8,18 @@ repository.workspace = true
 publish = true
 description = "Held-root identity contracts for native filesystem adapters"
 
+[package.metadata.bazel]
+unit-test-only-sources = ["src/native_host/tests/**"]
+
 [target.'cfg(windows)'.dependencies]
 cap-primitives = "4.0.3"
 cap-std = "4.0.3"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2.175"
+
+[features]
+fuzzing = []
 
 [lints]
 workspace = true
