@@ -3147,6 +3147,8 @@ rust_test(
         "tests/checkout_publication/facade/mod.rs",
         "tests/checkout_publication/facade/tests/mod.rs",
         "tests/checkout_publication/facade/tests/publication.rs",
+        "tests/checkout_publication/facade/tests/transactions/limits.rs",
+        "tests/checkout_publication/facade/tests/transactions/mod.rs",
         "tests/support/allow_publication.rs",
         "tests/support/checkout_fixture.rs",
         "tests/support/checkout_manual.rs",
