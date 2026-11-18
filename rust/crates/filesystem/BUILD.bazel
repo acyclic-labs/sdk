@@ -531,6 +531,7 @@ rust_test(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
         "tests/support/append.rs",
+        "tests/support/creation_budget.rs",
         "tests/support/git_history.rs",
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
@@ -1046,6 +1047,11 @@ rust_test(
     crate_root = "tests/measured_creation.rs",
     srcs = [
         "tests/measured_creation.rs",
+        "tests/measured_creation/tests/mod.rs",
+        "tests/measured_creation/tests/populated_creation.rs",
+        "tests/measured_creation/tests/publication_guards.rs",
+        "tests/measured_creation/workspace.rs",
+        "tests/support/creation_budget.rs",
         "tests/support/unbounded.rs",
     ],
     edition = "2024",

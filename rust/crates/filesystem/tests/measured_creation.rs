@@ -10,8 +10,12 @@ use {
     acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 
-const FINITE_BUDGET: WorkBudget =
-    acyclic_fs_work::performance::work_budget(100_000_000, 100_000_000);
+#[path = "support/creation_budget.rs"]
+mod creation_budget;
+use creation_budget::FINITE_BUDGET;
+
+#[path = "measured_creation/workspace.rs"]
+mod workspace;
 
 #[tokio::test]
 async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
