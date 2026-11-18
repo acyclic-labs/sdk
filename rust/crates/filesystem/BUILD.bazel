@@ -2193,6 +2193,7 @@ rust_test(
         "//rust/crates/filesystem-merge:acyclic_fs_merge",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//tokio-1.54.1",
     ],
     tags = ["manual"],
