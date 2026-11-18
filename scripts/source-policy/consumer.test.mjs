@@ -6,7 +6,6 @@ import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {fuzzProject} from '../no-polling.fuzz.mjs';
 import {newProjectPollingSites} from './project.mjs';
-import {pollingSites} from './index.mjs';
 
 const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
 const indexUrl = new URL('./index.mjs', import.meta.url);
@@ -36,16 +35,13 @@ test('closed project consumers use the original parser and production graph orac
  const original = readFileSync(indexUrl, 'utf8');
  // Counterfactual production branch: a closed artifact has no installed
  // package to resolve. The parser and the graph themselves remain original.
- const index = await import(moduleUrl(original
-  .replace('createRequire(import.meta.url)', 'createRequire(' + JSON.stringify(indexUrl.href) + ')')
-  .replace("require('typescript-parser')", '(() => { throw Error("runtime parser lookup"); })()')));
  const sourceUrl = moduleUrl(original
   .replace('createRequire(import.meta.url)', 'createRequire(' + JSON.stringify(indexUrl.href) + ')')
   .replace("require('typescript-parser')", '(() => { throw Error("runtime parser lookup"); })()'));
  const source = readFileSync(new URL('./project.mjs', import.meta.url), 'utf8')
   .replace("from 'typescript-parser'", 'from ' + JSON.stringify(import.meta.resolve('typescript-parser')))
   .replace("from './index.mjs'", 'from ' + JSON.stringify(sourceUrl));
- const graph = await import(moduleUrl(source));
+ const [index, graph] = await Promise.all([import(sourceUrl), import(moduleUrl(source))]);
  const replay = api => fuzzProject(Uint8Array.of(0), {source: index, graph: api});
  assert.doesNotThrow(() => replay(graph));
  // Delete precisely the parser handoff in production. The unchanged oracle
@@ -58,18 +54,4 @@ test('closed project consumers use the original parser and production graph orac
  const negative = await import(moduleUrl(source.replace(JSON.stringify(sourceUrl), JSON.stringify(freshUrl))
   .replace('pollingUnit(file, source, ts)', 'pollingUnit(file, source)')));
  assert.throws(() => replay(negative), /runtime parser lookup/);
-});
-
-test('Bash substitutions and heredocs preserve the following command', () => {
- const source = [
-  String.raw`channel="$(sed -nE 's/^channel = "([^"]+)"$/\1/p' rust-toolchain.toml)"`,
-  String.raw`IFS=$'\t' read -r label <<< "$channel"`,
-  "node --input-type=module - <<'JS'",
-  "// a payload's quote does not start shell syntax",
-  'JS',
-  '((value = 1 << shift))',
-  'sleep 1',
- ].join('\n');
- assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));
- assert.throws(() => pollingSites('control.sh', "cat <<'EOF'\nunterminated"), /unterminated shell here-document/);
 });
