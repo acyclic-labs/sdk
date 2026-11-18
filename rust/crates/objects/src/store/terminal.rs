@@ -103,11 +103,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // Keep it as a cleanup receipt until its index removals are durable,
         // so interruption cannot leave a permanent orphan pin.
         let tag = format!("f{root}.{name}");
-        self.unreference(references, &tag).await?;
-        let indexes: Vec<_> = references
-            .iter()
-            .map(|child| self.index_key(child, &tag))
-            .collect();
+        let mut indexes = Vec::with_capacity(references.len());
+        self.unreference(references, &tag, Some(&mut indexes))
+            .await?;
         self.medium.flush(&indexes).await.map_err(medium)?;
         let removed = self.medium.remove(key).await.map_err(moved)?;
         self.medium.flush(&[key.to_owned()]).await.map_err(medium)?;

@@ -959,19 +959,25 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Ok(()) => Ok(()),
             Err(Commit::Unknown(error) | Commit::Unflushed(error)) => Err(error),
             Err(Commit::Failed(error)) => {
-                self.unreference(references, tag).await?;
+                self.unreference(references, tag, None).await?;
                 Err(error)
             }
         }
     }
 
-    /// Removes `tag`'s index keys, once its holder is gone.
-    async fn unreference(&self, children: &[Digest], tag: &str) -> Result<(), Error> {
+    /// Removes the holder's index keys, optionally retaining them for a batched flush.
+    async fn unreference(
+        &self,
+        children: &[Digest],
+        tag: &str,
+        mut removed: Option<&mut Vec<String>>,
+    ) -> Result<(), Error> {
         for child in children {
-            self.medium
-                .remove(&self.index_key(child, tag))
-                .await
-                .map_err(medium)?;
+            let key = self.index_key(child, tag);
+            self.medium.remove(&key).await.map_err(medium)?;
+            if let Some(keys) = &mut removed {
+                keys.push(key);
+            }
         }
         Ok(())
     }
@@ -1210,6 +1216,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         self.unreference(
             &envelope.references,
             &Self::envelope_tag(&digest, &envelope.version),
+            None,
         )
         .await?;
         Ok((Delete::Deleted, envelope.references))
@@ -1936,8 +1943,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 for (key, references) in &removed {
                     let tag =
                         Self::batch_tag(root_hash, key.rsplit('/').next().ok_or_else(corrupt)?);
-                    self.unreference(references, &tag).await?;
-                    index_keys.extend(references.iter().map(|child| self.index_key(child, &tag)));
+                    self.unreference(references, &tag, Some(&mut index_keys))
+                        .await?;
                 }
                 // An index key back from a crash would pin its child forever.
                 self.medium.flush(&index_keys).await.map_err(medium)?;
