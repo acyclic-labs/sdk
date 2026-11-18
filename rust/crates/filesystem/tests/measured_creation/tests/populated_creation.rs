@@ -1,7 +1,7 @@
 use acyclic_fs::{
     CancellationToken, Fs, FsError, Lifecycle, OperationId, VolumeConfig, WorkspaceError,
 };
-use acyclic_fs_work::performance::{MeasuredResult, OperationReceipt, WorkBudget};
+use acyclic_fs_work::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
@@ -362,7 +362,7 @@ async fn many_file_creation(
     files: &[(&str, OwnedBytes)],
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<acyclic_fs::GenerationId>, WorkspaceError> {
+) -> Result<OperationReceipt<acyclic_fs::GenerationId>, Box<OperationFailure<WorkspaceError>>> {
     let config = acyclic_fs::VolumeInitialization {
         config: VolumeConfig::portable(Lifecycle::Ephemeral),
         access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
@@ -381,6 +381,7 @@ async fn many_file_creation(
         value: receipt.value.id(),
         work: receipt.work,
     })
+    .map_err(Box::new)
 }
 
 fn assert_linear_work(count: usize, work: u64, previous: &mut Option<u64>) {
