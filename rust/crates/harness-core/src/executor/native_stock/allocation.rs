@@ -363,7 +363,7 @@ mod tests {
         fn drop(&mut self) {
             let live = self.io.original_native_work().map_or_else(
                 || self.io.owned_bytes().ok(),
-                |work| Some(work.live_allocation_bytes()),
+                |work| work.live_allocation_bytes().ok(),
             );
             self.lowest
                 .set(self.lowest.get().zip(live).map(|(old, live)| old.min(live)));
@@ -390,10 +390,10 @@ mod tests {
                     )?;
                 }
                 let owned = io.owned_bytes()?;
-                let minimum = io.original_native_work().map_or(
-                    owned,
+                let minimum = io.original_native_work().map_or_else(
+                    || Ok(owned),
                     acyclic_fs::NativeMaterializationWork::live_allocation_bytes,
-                );
+                )?;
                 let slots = values.capacity() * std::mem::size_of::<Witness<'_>>();
                 // Construct directly to make destruction order independent of
                 // the factory's admission/retirement negative control.
