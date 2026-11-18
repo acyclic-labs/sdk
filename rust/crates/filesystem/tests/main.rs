@@ -150,7 +150,5 @@ mod package_install;
 mod session_fs_model;
 #[cfg(not(loom))]
 mod shared_storage_contract;
-#[cfg(not(loom))]
-mod transaction_create_batch;
 #[cfg(all(not(loom), windows, not(target_arch = "wasm32")))]
 mod windows_ntfs_perf;

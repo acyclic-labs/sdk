@@ -436,7 +436,3 @@ fn validate_unique_parents<T: Ord, E: From<CanonicalDecodeError>>(
 fn invariant(message: &'static str) -> CanonicalDecodeError {
     CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
-
-#[cfg(test)]
-#[path = "tests/generation.rs"]
-mod tests;

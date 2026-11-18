@@ -1,7 +1,7 @@
-use super::*;
+use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use proptest::prelude::*;
 
-#[path = "../../../tests/support/portable_metadata.rs"]
+#[path = "../../../support/portable_metadata.rs"]
 mod fixture;
 use fixture::metadata;
 

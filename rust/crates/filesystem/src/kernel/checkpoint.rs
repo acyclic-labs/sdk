@@ -261,7 +261,3 @@ pub enum CheckpointError {
     #[error(transparent)]
     Work(#[from] WorkError),
 }
-
-#[cfg(test)]
-#[path = "tests/checkpoint.rs"]
-mod tests;

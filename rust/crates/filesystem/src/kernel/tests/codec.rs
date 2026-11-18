@@ -264,7 +264,7 @@ mod properties {
         encode: impl Fn(&T) -> Result<Vec<u8>, E>,
         decode: impl Fn(&[u8]) -> Result<T, CanonicalDecodeError>,
         change: &Change,
-    ) -> Result<(), TestCaseError> {
+    ) -> Result<Vec<u8>, TestCaseError> {
         let fail = |error: E| TestCaseError::fail(format!("{error:?}"));
         let encoded = encode(value).map_err(fail)?;
         let decoded = decode(&encoded);
@@ -273,7 +273,7 @@ mod properties {
         if let Ok(decoded) = decode(&mutated) {
             prop_assert_eq!(encode(&decoded).map_err(fail)?, mutated);
         }
-        Ok(())
+        Ok(encoded)
     }
 
     fn tree_entries() -> impl Strategy<Value = Vec<TreeEntry>> {
@@ -414,12 +414,12 @@ mod properties {
             change in change(),
         ) {
             let limits = DecodeLimits::default();
-            let page = TreePage::Leaf(entries.clone());
+            let count = entries.len();
+            let page = TreePage::Leaf(entries);
             let decode = |bytes: &[u8]| decode_tree_page(bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
-            check_canonical(&page, |page| encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
-            let encoded = encode_tree_page(&page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)
-                .map_err(|error| TestCaseError::fail(error.to_string()))?;
-            if let Some(maximum_page_items) = fewer(entries.len()) {
+            let encoded = check_canonical(&page, |page| encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
+
+            if let Some(maximum_page_items) = fewer(count) {
                 let tight = DecodeLimits { maximum_page_items, ..limits };
                 prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err(), "page bounds");
             }
@@ -431,12 +431,12 @@ mod properties {
             change in change(),
         ) {
             let limits = DecodeLimits::default();
-            let page = ExtentPage::Leaf(extents.clone());
+            let count = extents.len();
+            let page = ExtentPage::Leaf(extents);
             let decode = |bytes: &[u8]| decode_extent_page(bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
-            check_canonical(&page, |page| encode_extent_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
-            if let Some(maximum_page_items) = fewer(extents.len()) {
-                let encoded = encode_extent_page(&page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)
-                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            let encoded = check_canonical(&page, |page| encode_extent_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
+            if let Some(maximum_page_items) = fewer(count) {
+
                 let tight = DecodeLimits { maximum_page_items, ..limits };
                 prop_assert!(decode_extent_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
             }

@@ -1,6 +1,6 @@
 use acyclic_fs::{
     ApplyOptions, ForkOptions, Fs, IdempotencyKey, JoinOutcome, MergeConflict, PublicationPermit,
-    TransactionCommit, WorkspaceRebase,
+    TransactionCommit, WorkspaceError, WorkspaceRebase,
 };
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
@@ -267,6 +267,92 @@ three
             assert_eq!(conflicts, vec![MergeConflict::File(original)], "{case}");
             assert_eq!(unbounded!(agent, head())?.id(), before, "{case}");
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("main-conflict"))?;
+    main.write_text("/shared", "base").await?;
+    let agent = fork_workspace(
+        &main,
+        "agent-conflict",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    agent.write_text("/shared", "local").await?;
+    let before = unbounded!(agent, head())?.id();
+    main.write_text("/shared", "upstream").await?;
+    #[cfg(target_arch = "wasm32")]
+    assert!(matches!(
+        unbounded!(
+            agent,
+            live_rebase(IdempotencyKey::new(), Some(128), Some(128), Some(32))
+        )?,
+        WorkspaceRebase::Conflicted {
+            truncated: false,
+            ..
+        }
+    ));
+    #[cfg(not(target_arch = "wasm32"))]
+    let (original, baseline) = {
+        use acyclic_fs::CancellationToken;
+        use acyclic_fs_work::performance::WorkBudget;
+
+        let cancellation = CancellationToken::new();
+        let original =
+            acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes()?;
+        let WorkspaceRebase::Conflicted {
+            conflicts,
+            truncated,
+            allocation,
+        } = agent
+            .live_rebase(
+                IdempotencyKey::new(),
+                Some(128),
+                Some(128),
+                Some(32),
+                &original,
+                &cancellation,
+            )
+            .await?
+        else {
+            return Err("overlapping rebase did not retain original conflicts".into());
+        };
+        assert!(!truncated);
+        assert!(!conflicts.is_empty());
+        let allocation = allocation.ok_or("rebase conflicts lost original native custody")?;
+        assert!(allocation.work().shares_ledger(&original));
+        let live = original.live_allocation_bytes()?;
+        let bytes = allocation.bytes();
+        assert!(bytes > 0);
+        assert!(live > baseline + bytes);
+        drop((conflicts, allocation));
+        assert_eq!(original.live_allocation_bytes()?, live - bytes);
+        (original, baseline)
+    };
+    assert_eq!(unbounded!(agent, head())?.id(), before);
+    assert_eq!(
+        unbounded!(agent, read("/shared", 16))?,
+        OwnedBytes::from_static(b"local")
+    );
+    assert!(matches!(
+        unbounded!(
+            main,
+            live_rebase(IdempotencyKey::new(), Some(128), Some(128), Some(32))
+        ),
+        Err(WorkspaceError::NotFork)
+    ));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        drop((agent, main, fs));
+        assert_eq!(original.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
