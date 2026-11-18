@@ -9,8 +9,12 @@ extract_cargo_lints(
     workspace = "//:Cargo.toml",
 )
 
-_SRCS = glob(["src/**/*.rs"])
+_SRCS = glob(["src/**/*.rs"], exclude = ["src/tests/**"])
 _FLAGS = ["--check-cfg=cfg(feature, values(\"test-support\"))"]
+_NATIVE_DEPS = [
+    "@sdk_crates//serde-1.0.229",
+    "@sdk_crates//thiserror-2.0.21",
+]
 
 rust_library(
     name = "acyclic_fs_work",
@@ -18,14 +22,25 @@ rust_library(
     srcs = _SRCS,
     edition = "2024",
     version = "0.2.0",
+    rustc_flags = _FLAGS,
+    lint_config = ":lints",
+    deps = _NATIVE_DEPS,
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "acyclic_fs_work_observations",
+    crate_name = "acyclic_fs_work",
+    crate_root = "src/lib.rs",
+    srcs = _SRCS,
+    edition = "2024",
+    version = "0.2.0",
     crate_features = ["test-support"],
     rustc_flags = _FLAGS,
     lint_config = ":lints",
-    deps = [
-        "@sdk_crates//serde-1.0.229",
-        "@sdk_crates//thiserror-2.0.21",
-    ],
-    visibility = ["//visibility:public"],
+    deps = _NATIVE_DEPS,
+    visibility = ["//rust/crates/filesystem:__pkg__"],
+    tags = ["manual"],
 )
 
 rust_library(
@@ -47,12 +62,13 @@ rust_library(
 
 rust_test(
     name = "acyclic_fs_work_test_cases",
-    crate = ":acyclic_fs_work",
+    crate_root = "src/lib.rs",
+    srcs = _SRCS + glob(["src/tests/**/*.rs"]),
     edition = "2024",
     version = "0.2.0",
     rustc_flags = _FLAGS,
     lint_config = ":lints",
-    deps = [
+    deps = _NATIVE_DEPS + [
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//serde_json-1.0.154",
     ],

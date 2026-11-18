@@ -747,15 +747,10 @@ mod tests;
 
 #[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
-/// Thread-local accounting observation used by conformance tests.
-pub static VERIFICATION_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-
-#[cfg(any(test, feature = "test-support"))]
-std::thread_local! {
-/// Thread-local accounting observation used by conformance tests.
-pub static ADDITIVE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-
-#[cfg(any(test, feature = "test-support"))]
-std::thread_local! {
-/// Thread-local accounting observation used by conformance tests.
-pub static VERIFICATION_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+    /// Number of budget verifications on this thread.
+    pub static VERIFICATION_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Number of additive counter steps on this thread.
+    pub static ADDITIVE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Address of the last budget observed by verification on this thread.
+    pub static VERIFICATION_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
