@@ -400,6 +400,7 @@ rust_binary(
     crate_root = "fuzz_targets/git_markers.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/filesystem:src/git_compat/merge_markers.rs",
+        "//rust/crates/filesystem:tests/git_marker_contracts/git_compat/merge_markers/tests/oracle.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
