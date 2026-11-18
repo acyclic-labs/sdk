@@ -1,3 +1,4 @@
+import { bazelExecutables } from "../../../../scripts/bazel-executables.mjs";
 // Real Chrome HTTPS qualification. Trust is limited to this fixture's ephemeral
 // public key in a private browser profile; customer transport security is unchanged.
 import assert from "node:assert/strict";
@@ -20,14 +21,16 @@ import { StreamClient } from "../../stream/dist/client.js";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const require = createRequire(import.meta.url);
-function rustRoutes(packageName, example) {
-  const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", packageName, "--example", example], { cwd: root, encoding: "utf8" });
-  assert.equal(generated.status, 0, generated.stderr);
-  return Object.fromEntries(JSON.parse(generated.stdout));
-}
-const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
-const protobufRoot = resolve(require.resolve("@bufbuild/protobuf"), "../../..");
-const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
+const [routesBinary, certificateBinary] = bazelExecutables(root, [
+  "//rust/crates/actors:actors-http-routes_example",
+  "//rust/crates/actors:conformance-certificate_example",
+]);
+const routes = spawnSync(routesBinary, [], { cwd: root, encoding: "utf8" });
+if (routes.error) throw routes.error;
+assert.equal(routes.status, 0, routes.stderr);
+const actorRoutes = Object.fromEntries(JSON.parse(routes.stdout));
+
+const generated = spawnSync(certificateBinary, [], { cwd: root, encoding: "utf8" });
 assert.equal(generated.status, 0, generated.stderr);
 const identity = JSON.parse(generated.stdout);
 const spki = new X509Certificate(identity.certificate).publicKey.export({ type: "spki", format: "der" });
