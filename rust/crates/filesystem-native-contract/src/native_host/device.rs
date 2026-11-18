@@ -61,6 +61,10 @@ fn widen(device: libc::dev_t) -> u64 {
 }
 
 /// Checks arbitrary native bit patterns and component pairs against the OS codec.
+///
+/// # Panics
+///
+/// Panics if the native codec disagrees with the OS or accepts an unrepresentable pair.
 #[cfg(all(feature = "fuzzing", any(target_os = "linux", target_os = "macos")))]
 pub fn check_device_codec(input: &[u8]) {
     let Some((native, input)) = input.split_first_chunk::<8>() else {
