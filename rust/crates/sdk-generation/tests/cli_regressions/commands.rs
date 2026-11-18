@@ -74,8 +74,8 @@ fn query(command: &Command) -> Option<Key> {
 // feature/target/owner arguments have different keys. Build scripts and examples
 // in mutation controls never enter this scope.
 fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)>> {
-    let args = command.get_args().collect::<Vec<_>>();
-    if args.first().and_then(|arg| arg.to_str()) != Some("rustdoc") {
+    let mut args = command.get_args();
+    if args.next().and_then(|arg| arg.to_str()) != Some("rustdoc") {
         return Ok(Vec::new());
     }
     let directory = command
@@ -84,7 +84,7 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
         .and_then(|(_, value)| value)
         .map(PathBuf::from)
         .unwrap();
-    let target = args.windows(2).find(|pair| pair[0] == "--target").unwrap()[1];
+    let target = args.skip_while(|arg| *arg != "--target").nth(1).unwrap();
     let mut artifacts = Vec::new();
     for directory in [directory.join("doc"), directory.join(target).join("doc")] {
         if !directory.is_dir() {
@@ -96,7 +96,8 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
                 .extension()
                 .is_some_and(|extension| extension == "json")
             {
-                artifacts.push((path.clone(), fs::read(path)?));
+                let bytes = fs::read(&path)?;
+                artifacts.push((path, bytes));
             }
         }
     }
