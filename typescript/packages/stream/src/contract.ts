@@ -2,7 +2,7 @@ import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { wasmSource, wasmSourceSync } from "@acyclic-labs/core/wasm";
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeHttpResponse as decodeHttpResponseWasm, decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { decodeHttpResponse as decodeHttpResponseWasm, decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
@@ -213,9 +213,14 @@ export function validateHeadsRequest(options: import("./types.js").HeadsRequest)
   return validateWireRequest({ ...options, kind: "heads" });
 }
 
-export function invalidResponse(operation: string, error: unknown): StreamError {
+function invalidResponse(operation: string, error: unknown): StreamError {
   const message = error instanceof Error ? error.message : String(error);
   return new StreamError("invalid_response", `invalid ${operation} response${message ? `: ${message}` : ""}`);
+}
+
+export function decodeUnaryResponse<T>(operation: string, input: Uint8Array): T {
+  try { return projectMemoryResponse(operation, input) as T; }
+  catch (error) { throw invalidResponse(operation, error); }
 }
 
 export function decodeTailResponse(input: Uint8Array): bigint {

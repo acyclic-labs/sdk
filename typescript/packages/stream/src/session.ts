@@ -1,7 +1,7 @@
-import { validateHeadsRequest, validateReadRequest, wireRequest, wireWhenAbsent } from "./contract.js";
+import { decodeUnaryResponse, validateHeadsRequest, validateReadRequest, wireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
-import { projectMemoryResponse, WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
+import { WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
@@ -81,7 +81,7 @@ export class StreamSessions {
   async heads(options: import("./types.js").HeadsRequest, credential = 0): Promise<import("./types.js").Heads> {
     validateCredentialSlot(credential);
     const input = await validateHeadsRequest(options);
-    try { return projectMemoryResponse("heads", await this.#inner.heads(input, credential)) as import("./types.js").Heads; }
+    try { return decodeUnaryResponse("heads", await this.#inner.heads(input, credential)); }
     catch (error) { throw streamError(error, "heads"); }
   }
 

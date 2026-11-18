@@ -1,10 +1,10 @@
 import { streamError } from "./wasm-error.js";
-import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { decodeTailResponse, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { decodeUnaryResponse, decodeTailResponse, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -36,11 +36,7 @@ class RustStreamProvider implements StreamProvider {
 
   async #project<Result>(operation: string, request: Uint8Array): Promise<Result> {
     const response = await this.#dispatch(operation, request);
-    try { return projectMemoryResponse(operation, response) as Result; }
-    catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new StreamError("invalid_response", `Rust ${operation} response is invalid: ${message}`);
-    }
+    return decodeUnaryResponse(operation, response);
   }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
