@@ -46,7 +46,7 @@ def _rustdoc_fixture_impl(ctx):
         "manifest_path": ctx.attr.manifest_path,
         "owner_path": ctx.attr.owner_path,
         "selected_lock": ctx.attr.selected_lock,
-        "library_name": ctx.attr.library_name or ctx.attr.package.replace("-", "_"),
+        "receipt_name": receipt_name,
         "binary_name": binary_name,
         "proc_macro": ctx.attr.proc_macro,
         "cargo_flags": ctx.attr.cargo_flags,

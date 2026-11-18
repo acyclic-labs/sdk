@@ -111,7 +111,10 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
     Ok(artifacts)
 }
 
-thread_local! { static ACTIVE: Cell<bool> = const { Cell::new(false) }; }
+thread_local! {
+    static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    pub(super) static DECLARED_RUSTDOC_HITS: Cell<usize> = const { Cell::new(0) };
+}
 
 pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
     if ACTIVE.get() {
@@ -122,6 +125,7 @@ pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
 
 fn execute_command(command: &mut Command) -> std::io::Result<Output> {
     if let Some(output) = declared_rustdoc(command)? {
+        DECLARED_RUSTDOC_HITS.set(DECLARED_RUSTDOC_HITS.get() + 1);
         return Ok(output);
     }
     command.output()
@@ -368,11 +372,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         };
         let output = output_dir.join(format!(
             "{}.json",
-            if binary.is_empty() {
-                metadata["library_name"].as_str().unwrap().to_owned()
-            } else {
-                binary.replace("-", "_")
-            }
+            metadata["receipt_name"].as_str().unwrap()
         ));
         fs::create_dir_all(output.parent().unwrap())?;
         fs::write(output, serde_json::to_vec(&json)?)?;

@@ -630,8 +630,12 @@ fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims
         &fixture.root,
         &["commit", "--quiet", "-m", "binary-only fixture"],
     );
+    let hits = commands::DECLARED_RUSTDOC_HITS.get();
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
+    if std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
+        assert_eq!(commands::DECLARED_RUSTDOC_HITS.get() - hits, 1);
+    }
     let data: Value = serde_json::from_slice(
         &fs::read(
             fixture
