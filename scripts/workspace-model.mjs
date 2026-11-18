@@ -45,6 +45,14 @@ export function versionMatches(version, requirement) {
   });
 }
 
+function lockedEdges(resolve, item) {
+  return (item.dependencies ?? []).map(reference => {
+    const candidates = resolve(reference);
+    if (candidates.length !== 1) throw Error(`ambiguous or missing Cargo.lock dependency ${reference}`);
+    return candidates[0];
+  });
+}
+
 export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFile} = {}) {
   root = path.resolve(root);
   sourceRoot = path.resolve(sourceRoot);
@@ -101,11 +109,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
         if (toml(root, file).package?.version !== item.version) continue;
         if (!manifests.has(file)) {manifests.add(file); pending.push(file);}
       }
-      return (item.dependencies ?? []).map(dependency => {
-        const candidates = resolveLocked(dependency);
-        if (candidates.length !== 1) throw Error(`ambiguous or missing Cargo.lock dependency ${dependency}`);
-        return candidates[0];
-      });
+      return lockedEdges(resolveLocked, item);
     });
   };
   for (const file of pending) if (!withinSource(path.dirname(path.resolve(root, file)))) throw Error(`workspace dependency escapes source root: ${file}`);
@@ -226,18 +230,15 @@ function defaultWorkspaceMembers(root, local) {
 export function workspaceProfileMetadata(root, {workspaceOnly = false, sourceRoot = root, additionalInputs = [], patchConfig, lockFile, universeFile} = {}) {
   root = path.resolve(root);
   sourceRoot = path.resolve(sourceRoot);
-  // The resolved variant uses the same lock-validated graph as the Bazel
-  // generator; the workspace-only view matches Cargo's no-deps selection.
-  const options = {sourceRoot, patchConfig, lockFile, universeFile};
-  const resolved = workspaceOnly ? null : workspaceGraph(root, null, options);
-  const packages = workspaceOnly ? workspacePackages(root, options) : resolved.packages.filter(p => p.source === null);
-  const members = packages.filter(p => p.workspace_member).map(p => p.id);
+  const selectedLock = lockFile ?? slash(path.relative(sourceRoot, path.join(root, 'Cargo.lock')));
+  const packages = workspacePackages(root, {sourceRoot, patchConfig, lockFile: workspaceOnly ? lockFile : selectedLock});
+  const members = packages.filter(p => p.workspace_member);
   const manifest = slash(path.relative(sourceRoot, path.join(root, 'Cargo.toml')));
   const inputs = new Set([manifest, ...additionalInputs, ...packages.map(p => slash(path.relative(sourceRoot, p.manifest_path)))]);
   if (exists(path.join(root, 'Cargo.lock'))) inputs.add(slash(path.relative(sourceRoot, path.join(root, 'Cargo.lock'))));
   if (patchConfig) inputs.add(slash(patchConfig));
   if (lockFile) inputs.add(slash(lockFile));
-  if (!workspaceOnly) inputs.add(universeFile ? slash(universeFile) : slash(path.relative(sourceRoot, path.join(root, 'cargo-bazel-lock.json'))));
+  if (!workspaceOnly && universeFile) inputs.add(slash(universeFile));
   const digests = Object.fromEntries([...inputs].sort().map(file => {
     if (path.isAbsolute(file) || file.split('/').some(part => !part || part === '.' || part === '..') || file.includes('\\')) throw Error(`workspace graph input escapes root: ${file}`);
     return [file, `sha256:${createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, file))).digest('hex')}`];
@@ -247,27 +248,23 @@ export function workspaceProfileMetadata(root, {workspaceOnly = false, sourceRoo
   if (Object.hasOwn(metadata, 'acyclic_profile_manifest_v1')) throw Error('workspace metadata uses the reserved profile manifest key');
   if (Object.hasOwn(metadata, 'acyclic_profile_local_resolution_v1')) throw Error('workspace metadata uses the reserved profile resolution key');
   if (Object.hasOwn(metadata, 'acyclic_profile_selection_v1')) throw Error('workspace metadata uses the reserved profile selection key');
-  let reached;
-  if (resolved) {
-    const nodes = new Map(resolved.resolve.nodes.map(node => [node.id, node]));
-    reached = reachable(members, id => {
-      const node = nodes.get(id);
-      if (!node || node.incomplete) throw Error(`workspace graph has an incomplete resolution for ${id}`);
-      return node.deps.map(dependency => dependency.pkg);
-    });
-  }
+  // Cargo.lock is the all-platform resolution. Bazel's target-specific pins
+  // omit registry dependencies that aren't compiled in that configuration.
+  const lock = workspaceOnly ? null : toml(sourceRoot, selectedLock);
+  const reached = lock && reachable(members.map(p => lockedOwner(lock, p)),
+    lockedEdges.bind(null, lockDependencyIndex(lock.package)));
   return {
     packages: packages.filter(p => !workspaceOnly || p.workspace_member)
       .map(({workspace_member, ...p}) => p),
-    workspace_members: members,
+    workspace_members: members.map(p => p.id),
     workspace_default_members: defaultWorkspaceMembers(root, packages),
     workspace_root: sourceRoot,
     target_directory: path.join(root, 'target'),
     version: 1,
     metadata: {...metadata, acyclic_profile_inputs_v1: digests, acyclic_profile_manifest_v1: manifest,
       acyclic_profile_selection_v1: {patch_config: patchConfig ? slash(patchConfig) : null,
-        lock_file: lockFile ? slash(lockFile) : slash(path.relative(sourceRoot, path.join(root, 'Cargo.lock')))},
-      ...(resolved ? {acyclic_profile_local_resolution_v1: packages.filter(p => reached.has(p.id)).map(p => p.id)} : {})},
+        lock_file: slash(selectedLock)},
+      ...(lock && reached ? {acyclic_profile_local_resolution_v1: packages.filter(p => reached.has(lockedOwner(lock, p))).map(p => p.id)} : {})},
     resolve: null,
   };
 }

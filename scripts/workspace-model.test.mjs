@@ -157,6 +157,7 @@ test('retained lock reaches transitive patches without making patches workspace 
   assert.deepEqual(node('bridge').deps.map(dep => dep.name), ['transitive']);
   assert.deepEqual(node('direct').features, []);
   assert.deepEqual(node('direct').deps, []);
+  write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
   assert.deepEqual(workspaceProfileMetadata(root, options).packages.map(p => p.name), ['app', 'direct', 'transitive']);
 });
 
