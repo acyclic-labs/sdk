@@ -93,7 +93,7 @@ type WireRequest =
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
-  | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly offset?: bigint; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
+  | { readonly kind: "children_page"; readonly tailStream?: string | undefined; readonly parent?: string | undefined; readonly after?: string | undefined; readonly offset?: bigint | undefined; readonly hierarchyVersion?: Uint8Array | undefined; readonly limit: number };
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
@@ -202,15 +202,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
 
 export function validateChildrenPageRequest(request: import("./types.js").ChildrenPageRequest): Promise<Uint8Array> {
   const { offset, tailStream, parent, after, hierarchyVersion, limit } = request;
-  return validateWireRequest({
-    kind: "children_page",
-    ...(offset === undefined ? {} : { offset }),
-    ...(tailStream === undefined ? {} : { tailStream }),
-    ...(parent === undefined ? {} : { parent }),
-    ...(after === undefined ? {} : { after }),
-    ...(hierarchyVersion === undefined ? {} : { hierarchyVersion }),
-    limit,
-  });
+  return validateWireRequest({ kind: "children_page", offset, tailStream, parent, after, hierarchyVersion, limit });
 }
 
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
