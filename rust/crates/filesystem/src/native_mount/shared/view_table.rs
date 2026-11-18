@@ -21,7 +21,7 @@
 //! Retirement must not run from a callback that holds a lease on the same
 //! view; the harness retires views from its own threads.
 
-use crate::sync::native::{Arc, Condvar, Mutex, RwLock};
+use crate::native_sync::{Arc, Condvar, Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::PoisonError;
 

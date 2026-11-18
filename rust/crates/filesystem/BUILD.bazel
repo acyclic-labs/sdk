@@ -845,6 +845,7 @@ rust_test(
         "src/native_mount/projfs/tests/enumeration.rs",
         "src/native_mount/shared/view_table.rs",
         "src/native_mount/shared/views.rs",
+        "src/native_sync.rs",
         "src/sync.rs",
         "tests/access_binding.rs",
         "tests/access_input.rs",
@@ -1591,7 +1592,7 @@ rust_test(
     crate_root = "tests/native_view_table.rs",
     srcs = [
         "src/native_mount/shared/view_table.rs",
-        "src/sync.rs",
+        "src/native_sync.rs",
         "tests/native_view_table.rs",
         "tests/native_view_table/native_mount.rs",
         "tests/native_view_table/shared/mod.rs",
@@ -1610,9 +1611,6 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    deps = [
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-    ],
     tags = ["manual"],
 )
 

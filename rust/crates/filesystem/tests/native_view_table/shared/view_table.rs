@@ -1,5 +1,5 @@
 mod tests {
-    use crate::sync::native::Arc;
+    use crate::native_sync::Arc;
     use crate::table::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

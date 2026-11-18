@@ -169,7 +169,7 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
     let before = work.receipt().unwrap();
     let same = slot.open(&directory, &mut &work)?;
     assert!(
-        crate::sync::native::Arc::ptr_eq(&registry, &same),
+        crate::native_sync::Arc::ptr_eq(&registry, &same),
         "each mount reopened the registry directory and lock"
     );
     assert_eq!(
@@ -192,7 +192,7 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
         )?;
         let guard = guard.unwrap();
         assert!(
-            crate::sync::native::Arc::ptr_eq(&registry, guard.registry_file.as_ref().unwrap()),
+            crate::native_sync::Arc::ptr_eq(&registry, guard.registry_file.as_ref().unwrap()),
             "destination guard owns a separate registry directory or lock"
         );
         guards.push(guard);

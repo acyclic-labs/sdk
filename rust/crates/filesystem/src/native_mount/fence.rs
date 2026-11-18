@@ -67,7 +67,7 @@ pub(super) struct MountDestinationGuard {
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
     // Directory and lock custody belong to the sole process-wide registry.
-    pub(super) registry_file: Option<crate::sync::native::Arc<registry::Registry>>,
+    pub(super) registry_file: Option<crate::native_sync::Arc<registry::Registry>>,
     pub(super) cleanup_name:
         Option<crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
@@ -234,7 +234,7 @@ impl MountDestinationGuard {
         registry: impl FnOnce(
             &NativeMaterializationWork,
         )
-            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
+            -> Result<crate::native_sync::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         if guard.is_some() {
             return Err(NativeMountError::ControlPending);
@@ -280,7 +280,7 @@ impl MountDestinationGuard {
         registry: impl FnOnce(
             &NativeMaterializationWork,
         )
-            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
+            -> Result<crate::native_sync::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
@@ -568,7 +568,7 @@ impl MountDestinationGuard {
         registry: impl FnOnce(
             &NativeMaterializationWork,
         )
-            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
+            -> Result<crate::native_sync::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         let (cleanup_name, birth_cleanup) = cleanup;
         let work = &mut &*native;
@@ -594,7 +594,7 @@ impl MountDestinationGuard {
             lock_path: PathBuf::new(),
             parent_directory,
             fence_name: Some(name),
-            registry_file: Some(crate::sync::native::Arc::clone(&registry)),
+            registry_file: Some(crate::native_sync::Arc::clone(&registry)),
             cleanup_name,
             birth_cleanup,
             destination_cleanup: None,

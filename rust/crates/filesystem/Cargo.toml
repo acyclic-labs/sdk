@@ -39,7 +39,7 @@ build-script-inputs = [
 acyclic-fs-work = "observations"
 
 [package.metadata.bazel.test-dependencies]
-native_view_table = ["acyclic_native_runtime"]
+native_view_table = []
 native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
 wire_error_contracts = ["acyclic_fs", "acyclic_auth", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "tokio", "tonic"]

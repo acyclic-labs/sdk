@@ -130,6 +130,10 @@ mod public_conformance;
 #[path = "../src/sync.rs"]
 mod sync;
 
+#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[path = "../src/native_sync.rs"]
+mod native_sync;
+
 #[cfg(not(loom))]
 mod fs_concurrency_bench;
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
