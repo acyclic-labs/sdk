@@ -28,6 +28,7 @@ mod flushes;
 mod grants;
 mod oracle;
 mod protective;
+mod provider;
 mod publication;
 mod records;
 mod recovery;

@@ -42,24 +42,32 @@ mod scenario_data;
 #[path = "../../harness/tests/e2e/stall.rs"]
 mod stall;
 
-#[tokio::test]
+async fn run_scenario(root: std::path::PathBuf, path: std::path::PathBuf) -> TestResult {
+    let mut value = scenario_data::load_value(&root, &path)?;
+    assert_eq!(
+        value.as_object_mut().ok_or("scenario")?.remove("driver"),
+        Some("provider".into())
+    );
+    let case = serde_json::from_value(value)?;
+    stall::guarded(&path, providers::run(case))
+        .await?
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    println!("PASS {}", path.strip_prefix(&root)?.display());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_scenarios() -> TestResult {
+    use futures::{StreamExt as _, TryStreamExt as _};
     let root = acyclic_test_support::crate_path!("tests/scenarios");
     let mut paths = Vec::new();
     scenario_data::discover(&root, &mut paths)?;
     paths.sort();
     assert!(!paths.is_empty());
-    for path in paths {
-        let mut value = scenario_data::load_value(&root, &path)?;
-        assert_eq!(
-            value.as_object_mut().ok_or("scenario")?.remove("driver"),
-            Some("provider".into())
-        );
-        let case = serde_json::from_value(value)?;
-        stall::guarded(&path, providers::run(case))
-            .await?
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        println!("PASS {}", path.strip_prefix(&root)?.display());
-    }
+    futures::stream::iter(paths)
+        .map(|path| run_scenario(root.clone(), path))
+        .buffer_unordered(8)
+        .try_collect::<Vec<_>>()
+        .await?;
     Ok(())
 }

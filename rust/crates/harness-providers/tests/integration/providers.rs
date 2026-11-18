@@ -24,6 +24,11 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub(super) fn check_events(expected: &[Value], events: &[ModelEvent]) -> TestResult {
+    // Trace records are request-path observations, never model output.
+    let events: Vec<_> = events
+        .iter()
+        .filter(|event| !matches!(event, ModelEvent::Trace { .. }))
+        .collect();
     if expected.len() != events.len() {
         return Err(format!(
             "provider events differ: expected {} got {}",

@@ -28,6 +28,7 @@ impl StockExecution<'_> {
         range: std::ops::Range<usize>,
         previous: Option<&crate::context::ContextSummary>,
         instruction: Option<&ModelContent>,
+        prefix: &[ModelMessage],
     ) -> Result<(crate::context::Context, ModelContent)> {
         let start = range.start;
         let (mut source, _) = with_history_io(self.io, |work| {
@@ -36,8 +37,16 @@ impl StockExecution<'_> {
         if let Some(previous) = previous {
             let file = crate::model::clone_file(&previous.output, self.io)?;
             stock_vec_reserve(&mut source.messages, 1, self.io)?;
+            // The summary follows the leading system header so the recorded
+            // request prefix can replace that header and leave the summary
+            // as the first source message after the prefix.
+            let leading = source
+                .messages
+                .iter()
+                .take_while(|message| message.role == ModelRole::System)
+                .count();
             source.messages.insert(
-                0,
+                leading,
                 ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(crate::model::ModelContentPart::File {
@@ -54,18 +63,69 @@ impl StockExecution<'_> {
             })?;
             return Ok((source, instruction));
         }
+        let leading = super::summary::replaced_leading(&source, prefix);
+        let final_count = prefix
+            .len()
+            .checked_add(source.messages.len().checked_sub(leading).ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "context manager source count underflows",
+                )
+            })?)
+            .ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "context manager request count overflows",
+                )
+            })?;
         let instruction = with_history_io(self.io, |work| {
             preparation_format(
                 format_args!(
-                    "{}\nSource count: {}.\nThe first {} message is the rolling summary of original messages [0,{start}); preserve its useful facts when incorporating the following complete source groups.",
+                    "{}\nSource count: {}.\nThe first {} messages are the request prefix.{}",
                     crate::seed::CONTEXT_MANAGER,
-                    source.messages.len(),
-                    usize::from(previous.is_some()),
+                    final_count,
+                    prefix.len(),
+                    match previous {
+                        Some(_) => format!(
+                            " The message at index {} is the rolling summary of original messages [0,{start}); preserve its useful facts when incorporating the following complete source groups.",
+                            prefix.len(),
+                        ),
+                        None => " The source begins after the prefix.".to_owned(),
+                    },
                 ),
                 work,
             )
         })?;
         Ok((source, ModelContent::Text(instruction)))
+    }
+
+    /// The exact leading messages the worker already sent, loaded from the
+    /// request recorded with its response projection. The request is never
+    /// rebuilt or re-transformed.
+    pub(super) async fn response_prefix(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+    ) -> Result<Vec<ModelMessage>> {
+        let Some(reference) = self
+            .response_projection(journal, input.operation_id, step)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        let (_, prepared) = self.load_response_projection(journal, &reference).await?;
+        let messages = &prepared.request().messages;
+        // The agent prefix is the worker request's leading system header.
+        // Appended tool notices and later history follow it, so a message
+        // count difference would pull history into the prefix.
+        let prefix = messages
+            .iter()
+            .take_while(|message| message.role == ModelRole::System)
+            .count();
+        crate::model::clone_messages(&messages[..prefix], self.io)
     }
 
     pub(super) async fn manager_window(
@@ -117,9 +177,10 @@ impl StockExecution<'_> {
             // selected immutable window escapes this preparation scope.
             let scope = crate::filesystem::PreparationScope::new(self.io)?;
             let session = self.preparing(scope.io());
-            let material = session.manager_material(context, start..end, previous, instruction)?;
+            let (source, instruction) =
+                session.manager_material(context, start..end, previous, instruction, prefix)?;
             let admitted = session
-                .admit_summary_window(journal, turn, (material.0, prefix), material.1, purpose)
+                .admit_summary_window(journal, turn, (source, prefix), instruction, purpose)
                 .await;
             drop(session);
             scope.finish(0)?;
@@ -170,14 +231,29 @@ impl StockExecution<'_> {
         let (eligible, message_limit) = selection;
         let (part, previous, _) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
+        let prefix = self.response_prefix(journal, input, step).await?;
         let end = self
-            .manager_window(journal, turn, context, (eligible, None, &[]), progress)
+            .manager_window(journal, turn, context, (eligible, None, &prefix), progress)
             .await?;
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         let session = self.preparing(scope.io());
+        let invalid = |reason| stock_boundary(session.io, crate::wire::ErrorCode::Invalid, reason);
         let (source, instruction) =
-            session.manager_material(context, start..end, previous, None)?;
-        let supplied = source.messages.len();
+            session.manager_material(context, start..end, previous, None, &prefix)?;
+        // The request replaces the source's leading system messages with the
+        // recorded worker prefix, so its message count is the prefix plus the
+        // source after those leading messages. An empty prefix replaces none.
+        let leading = super::summary::replaced_leading(&source, &prefix);
+        let supplied = prefix
+            .len()
+            .checked_add(
+                source
+                    .messages
+                    .len()
+                    .checked_sub(leading)
+                    .ok_or_else(|| invalid("context manager source count underflows"))?,
+            )
+            .ok_or_else(|| invalid("context manager request count overflows"))?;
         let purpose = if part == 0 {
             ModelPurpose::Summary
         } else {
@@ -191,11 +267,11 @@ impl StockExecution<'_> {
                 input.operation_id,
                 step,
                 (source, instruction),
+                &prefix,
                 &mut phase,
                 purpose,
             )
             .await?;
-        let invalid = |reason| stock_boundary(session.io, crate::wire::ErrorCode::Invalid, reason);
         let rewrite: ManagerRewrite = match session.io {
             Some(io) => retain_preparation({
                 let (value, hold) = io.decode(
@@ -212,7 +288,18 @@ impl StockExecution<'_> {
         if rewrite.version != 1 || selected == 0 || selected > supplied {
             return Err(invalid("context manager selected an invalid source range"));
         }
-        let through = start + selected - usize::from(previous.is_some());
+        // `leading` counts the replaced header messages. The model's count
+        // also includes the synthetic rolling summary, which is not an
+        // original context message, so remove its offset before mapping the
+        // cut back to the original history.
+        let selected = selected
+            .checked_sub(prefix.len())
+            .and_then(|selected| selected.checked_add(leading))
+            .and_then(|selected| selected.checked_sub(usize::from(previous.is_some())))
+            .ok_or_else(|| invalid("context manager selected the request prefix"))?;
+        let through = start
+            .checked_add(selected)
+            .ok_or_else(|| invalid("context manager source range overflows"))?;
         if through == start
             && previous.is_none_or(|old| {
                 rewrite.summary.len() as u64 >= old.output.descriptor().byte_length()
