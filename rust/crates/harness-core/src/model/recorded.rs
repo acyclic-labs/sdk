@@ -979,7 +979,7 @@ mod tests {
             0
         );
         assert!(
-            work.receipt().items_examined > 0,
+            work.receipt()?.items_examined > 0,
             "cursor lookup must spend the original work credit"
         );
         assert!(work.live_allocation_bytes()? > retained);
@@ -1093,7 +1093,7 @@ mod tests {
                     step: 2,
                     ..dispatch(operation)
                 };
-                let before = funded.receipt();
+                let before = funded.receipt()?;
                 let mut preparation = None;
                 let physical = acyclic_test_support::measure(|| {
                     preparation = Some(trial.prepare(&request, current, Some(&funded), |_| Ok(())));
@@ -1101,7 +1101,7 @@ mod tests {
                 let ReplayPreparation::Live(admission) = preparation.unwrap()? else {
                     return Err(Error::Invalid("empty recording selected an answer".into()));
                 };
-                let prepared = funded.receipt();
+                let prepared = funded.receipt()?;
                 assert!(
                     physical.count_total
                         <= prepared.allocation_operations - before.allocation_operations,
@@ -1117,7 +1117,7 @@ mod tests {
                     0,
                     "live acceptance allocated after admission"
                 );
-                assert_eq!(funded.receipt(), prepared, "acceptance spent new work");
+                assert_eq!(funded.receipt()?, prepared, "acceptance spent new work");
             }
             assert!(funded.live_allocation_bytes()? > retained);
             assert_eq!(
@@ -1214,18 +1214,18 @@ mod tests {
         )
         .map_err(|(error, _)| error)?;
         let probe_trial = trial();
-        let before = probe.receipt();
+        let before = probe.receipt()?;
         let mut prepared = None;
         let physical = acyclic_test_support::measure(|| {
             prepared = Some(probe_trial.generate_with_native_work(&request, dispatch, &probe));
         });
-        let admitted = probe.receipt().allocation_operations - before.allocation_operations;
+        let admitted = probe.receipt()?.allocation_operations - before.allocation_operations;
         assert!(
             physical.count_total <= admitted,
             "replay admission allocated without original funding: physical={physical:?}, admitted={admitted}"
         );
         let stream = prepared.unwrap()?.await?;
-        let complete_allocations = probe.receipt().allocation_operations;
+        let complete_allocations = probe.receipt()?.allocation_operations;
         drop(stream);
         assert!(complete_allocations > 1);
         for allocations in 1..complete_allocations {
@@ -1371,9 +1371,9 @@ mod tests {
         .map_err(|(error, _)| error)?;
         let hash_items = {
             let io = crate::filesystem::PreparationIo::from_native_work(&hash_work)?;
-            let before = hash_work.receipt().items_examined;
+            let before = hash_work.receipt()?.items_examined;
             tool_key(dispatch.operation_id, "original-0", Some(&io))?;
-            hash_work.receipt().items_examined - before
+            hash_work.receipt()?.items_examined - before
         };
         let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
         budget.items_examined = hash_items + 48 + "original-0".len() as u64 + 2;
@@ -1735,14 +1735,14 @@ mod tests {
                 )
                 .map_err(|(error, _)| error)?;
                 let baseline = work.live_allocation_bytes()?;
-                let before = work.receipt();
+                let before = work.receipt()?;
                 let copied = trial
                     .recorded_tool_result(operation, call_id, Some(&work))?
                     .unwrap();
                 assert_eq!(copied.0, original);
                 assert!(copied.1.as_ref().unwrap().work().shares_ledger(&work));
                 assert_eq!(
-                    work.receipt().bytes_copied - before.bytes_copied,
+                    work.receipt()?.bytes_copied - before.bytes_copied,
                     size as u64,
                     "one payload copy, with no lookup or document copy"
                 );
@@ -1815,12 +1815,12 @@ mod tests {
 
                 // A plain clone allocates but charges none of the original
                 // work: this detects the previous unaccounted-copy path.
-                let before = work.receipt();
+                let before = work.receipt()?;
                 let unaccounted = acyclic_test_support::measure(|| {
                     std::hint::black_box(original.clone());
                 });
                 assert!(unaccounted.count_total > 0);
-                assert_eq!(work.receipt(), before);
+                assert_eq!(work.receipt()?, before);
             }
         }
         Ok(())
