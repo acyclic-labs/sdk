@@ -168,7 +168,7 @@ async fn private_working_cut_retains_only_original_custody_through_value_drop() 
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         #[cfg(target_arch = "wasm32")]
         let baseline = 0;
         #[cfg(target_arch = "wasm32")]
@@ -190,7 +190,7 @@ async fn private_working_cut_retains_only_original_custody_through_value_drop() 
         let held = io.owned_bytes()?;
         #[cfg(not(target_arch = "wasm32"))]
         let held = if _native {
-            work.live_allocation_bytes()
+            work.live_allocation_bytes()?
         } else {
             io.owned_bytes()?
         };
@@ -207,7 +207,7 @@ async fn private_working_cut_retains_only_original_custody_through_value_drop() 
         drop(execution);
         drop(io);
         #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -227,7 +227,7 @@ async fn cancelled_private_working_cut_load_releases_all_original_custody() -> R
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         #[cfg(target_arch = "wasm32")]
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -253,7 +253,7 @@ async fn cancelled_private_working_cut_load_releases_all_original_custody() -> R
         assert_eq!(io.owned_bytes()?, 0);
         drop(io);
         #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

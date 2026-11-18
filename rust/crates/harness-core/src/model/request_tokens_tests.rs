@@ -173,18 +173,18 @@ proptest! {
             let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, _)| TestCaseError::fail(cause.to_string()))?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?;
             let (native, custody) = prepared.serialized_token_upper_bound(Some(&work)).unwrap();
             prop_assert_eq!(&native, &count);
-            prop_assert_eq!(work.live_allocation_bytes(), baseline
+            prop_assert_eq!(work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, baseline
                 + std::mem::size_of::<crate::context::ModelTokenCount>() as u64
                 + (native.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64);
             drop(native);
             drop(custody);
-            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            prop_assert_eq!(work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, baseline);
             cancellation.cancel();
             prop_assert!(prepared.serialized_token_upper_bound(Some(&work)).is_err());
-            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            prop_assert_eq!(work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, baseline);
             count
         };
         #[cfg(target_arch = "wasm32")]

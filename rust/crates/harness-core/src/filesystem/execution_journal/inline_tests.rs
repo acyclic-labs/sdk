@@ -900,7 +900,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let read = journal.load_range(&file, range, Some(&io))?;
-    let setup_bytes = work.live_allocation_bytes();
+    let setup_bytes = work.live_allocation_bytes()?;
     let bytes = read.await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
     {
