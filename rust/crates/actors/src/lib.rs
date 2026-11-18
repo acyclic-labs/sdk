@@ -15,8 +15,6 @@ pub use acyclic_actors_contract::{
 pub use acyclic_actors_contract::contract;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub use acyclic_actors_contract::guest;
-/// Event-owned hosting of an arbitrary Handler over injected storage.
-pub use acyclic_actors_contract::hosting;
 /// Deployment versions, cohort selection, call provenance and durable handoff.
 pub use acyclic_actors_contract::live_update;
 /// Rust-owned Actors v1 wire types and schema metadata.
@@ -34,6 +32,8 @@ pub mod client;
 pub mod conformance;
 /// Per-agent spend balances staged in the original actor step transaction.
 pub mod escrow;
+/// Event-owned hosting of an arbitrary Handler over injected storage.
+pub mod hosting;
 mod identity;
 /// Inbox invocation protocol shared by native and hosted actors.
 pub mod invocation;

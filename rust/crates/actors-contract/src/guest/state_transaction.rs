@@ -64,7 +64,8 @@ pub struct ActorStateHost {
 }
 
 #[derive(Debug)]
-pub(crate) enum StateCommand {
+#[doc(hidden)]
+pub enum StateCommand {
     Seed(tokio::sync::oneshot::Sender<Result<ActorStateSeed, super::GuestError>>),
     Commit(
         ActorStateCommit,

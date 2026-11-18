@@ -28,8 +28,6 @@ pub use contract::{
 pub mod contract;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
-/// Event-owned hosting of an arbitrary Handler over injected storage.
-pub mod hosting;
 /// Deployment versions, cohort selection, call provenance and durable handoff.
 pub mod live_update;
 
