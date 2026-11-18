@@ -10,7 +10,7 @@ fn main() -> std::process::ExitCode {
         Err(error) => {
             eprintln!(
                 "Writing configuration declarations failed: {error}\n\
-                 Recovery: cargo run --locked -p acyclic-harness-core --example config-types"
+                 Recovery: bazel run //rust/crates/harness-core:config-types_example"
             );
             std::process::ExitCode::FAILURE
         }
