@@ -105,7 +105,7 @@ impl CallProvider for Endpoint {
 
 /// A session on the fixture endpoint, with an invoking credential in slot 7.
 fn session() -> Result<WasmStream, JsValue> {
-    let provider = Arc::new(MemoryStream::default());
+    let provider = acyclic_stream::ProviderOwner::new(MemoryStream::default());
     let client = Client::in_process_with_products(
         provider.clone(),
         testing::authority(),

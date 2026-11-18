@@ -448,7 +448,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let provider = Arc::new(MemoryStream::default());
+        let provider = Rc::new(MemoryStream::default());
         append_sibling(&provider).await;
         let (requests, incoming) = futures::channel::mpsc::unbounded();
         let responses = crate::session::serve(

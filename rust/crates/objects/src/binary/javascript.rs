@@ -147,12 +147,13 @@ impl Request {
         }
         let maximum = maximum
             .as_f64()
-            .filter(|value| {
-                *value >= 1.0 && *value <= 9_007_199_254_740_991.0 && value.fract() == 0.0
-            })
+            .filter(|value| (1.0..=9_007_199_254_740_991.0).contains(value))
+            .and_then(acyclic_stream::wasm_unsigned_integer)
             .ok_or_else(|| Error::from(wire::ErrorCode::InvalidArgument))?;
         Ok(Some(
-            maximum.min(acyclic_stream::MAX_COMMAND_BYTES as f64) as usize
+            usize::try_from(maximum)
+                .unwrap_or(usize::MAX)
+                .min(acyclic_stream::MAX_COMMAND_BYTES),
         ))
     }
 

@@ -12,7 +12,6 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt;
 use js_sys::{Function, Promise, Uint8Array};
-use std::sync::Arc;
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 

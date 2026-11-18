@@ -933,7 +933,9 @@ pub trait UnixMillisClock: Send + Sync + 'static {
 pub struct SystemUnixMillisClock;
 
 #[cfg(any(test, target_arch = "wasm32"))]
-pub(crate) fn wasm_unsigned_integer(value: f64) -> Option<u64> {
+/// Converts an exact nonnegative JavaScript integer without truncation.
+#[must_use]
+pub fn wasm_unsigned_integer(value: f64) -> Option<u64> {
     if !value.is_finite() || value.is_sign_negative() || value.fract() != 0.0 {
         return None;
     }
