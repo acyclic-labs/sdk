@@ -301,7 +301,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         }
         let sources = &metadata.sources;
         let artifacts = metadata.artifacts.as_deref();
-        let mut relative_sources = Vec::new();
+        let mut source_paths = Vec::new();
         for source in sources {
             let relative = source.relative.as_path();
             let Some(actual) = optional_io(fs::read(root.join(relative)))? else {
@@ -322,7 +322,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 }
             }
             if relative.extension() == Some(OsStr::new("rs")) {
-                relative_sources.push(relative);
+                source_paths.push((relative, root.join(relative).to_string_lossy().into_owned()));
             }
         }
         let output_path = &metadata.output;
@@ -347,11 +347,11 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 referenced.insert(relative);
             } else if matches!(kind, rustdoc_paths::Kind::Source) {
                 let filename = Path::new(path);
-                if let Some(source) = relative_sources.iter().find(|source| {
+                if let Some((_, replacement)) = source_paths.iter().find(|(source, _)| {
                     filename.ends_with(source)
                         || filename == entrypoint && **source == owner_entrypoint.as_path()
                 }) {
-                    *path = root.join(source).to_string_lossy().into_owned();
+                    path.clone_from(replacement);
                 }
             }
         });
