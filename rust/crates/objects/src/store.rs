@@ -474,13 +474,10 @@ impl<M: Medium> Pages<'_, M> {
         Ok(keys)
     }
 
-    async fn next(&mut self) -> Result<Option<Vec<(String, u64)>>, Error> {
-        if self.done {
-            return Ok(None);
-        }
+    async fn read(&self, limit: usize) -> Result<Vec<(String, u64)>, Error> {
         let page = self
             .medium
-            .list(&self.prefix, self.after.as_deref(), PAGE)
+            .list(&self.prefix, self.after.as_deref(), limit)
             .await
             .map_err(medium)?;
         let overlaps = self.after.as_ref().is_some_and(|after| {
@@ -489,9 +486,17 @@ impl<M: Medium> Pages<'_, M> {
                 .flatten()
                 .any(|(key, _)| key <= after)
         });
-        if page.len() > PAGE || overlaps {
+        if page.len() > limit || overlaps {
             return Err(corrupt());
         }
+        Ok(page)
+    }
+
+    async fn next(&mut self) -> Result<Option<Vec<(String, u64)>>, Error> {
+        if self.done {
+            return Ok(None);
+        }
+        let page = self.read(PAGE).await?;
         self.done = page.len() < PAGE;
         if !self.done {
             self.after = page.last().map(|(key, _)| key.clone());
@@ -1895,11 +1900,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 // is still pending. A sparse page retains the last inspected
                 // cursor so the caller can continue without an account scan.
                 let mut digests = Vec::new();
-                let keys = self
-                    .medium
-                    .list(&self.namespace_prefix('e'), after.as_deref(), limit)
-                    .await
-                    .map_err(medium)?;
+                let mut pages = self.pages(self.namespace_prefix('e'));
+                pages.after = after;
+                let keys = pages.read(limit).await?;
                 let full = keys.len() == limit;
                 let mut last = None;
                 for (key, _) in keys {
