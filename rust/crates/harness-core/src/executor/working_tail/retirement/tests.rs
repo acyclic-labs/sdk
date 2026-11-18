@@ -44,7 +44,7 @@ fn retiring_a_cut_releases_original_payload_custody_on_both_ledgers() -> Result<
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             #[cfg(not(target_arch = "wasm32"))]
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             #[cfg(target_arch = "wasm32")]
             let io = PreparationIo::from_budget(budget, &cancellation)?;
             #[cfg(not(target_arch = "wasm32"))]
@@ -117,7 +117,7 @@ fn retiring_a_cut_releases_original_payload_custody_on_both_ledgers() -> Result<
             assert_eq!(io.owned_bytes()?, 0);
             drop(io);
             #[cfg(not(target_arch = "wasm32"))]
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
@@ -136,7 +136,7 @@ fn invalid_or_unfunded_retirement_leaves_values_and_offset_intact() -> Result<()
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         #[cfg(target_arch = "wasm32")]
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -165,7 +165,7 @@ fn invalid_or_unfunded_retirement_leaves_values_and_offset_intact() -> Result<()
         drop(original);
         drop(io);
         #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

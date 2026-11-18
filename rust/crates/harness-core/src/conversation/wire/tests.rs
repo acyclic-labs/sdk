@@ -197,7 +197,7 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
         let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             crate::executor::PreparationIo::from_native_work(&work)?
         } else {
@@ -230,7 +230,7 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
         drop(loaded);
         drop(hold);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

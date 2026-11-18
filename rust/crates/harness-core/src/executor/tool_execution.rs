@@ -1427,7 +1427,7 @@ mod refusal_admission_tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes()?;
         let mut refusal = None;
         let allocated = acyclic_test_support::measure(|| {
             refusal = Some(ToolCallRejection::Unavailable.into_failure(Some(&io)));
@@ -1436,13 +1436,13 @@ mod refusal_admission_tests {
         assert_eq!(kind, ToolFailureKind::Unavailable);
         assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
         assert_eq!(allocated.count_total, 0);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         // Negative control: the former portable error allocated without any ledger claim.
         let portable = acyclic_test_support::measure(|| {
             std::hint::black_box(Error::NotFound("tool is not available".into()));
         });
         assert!(portable.count_total > 0);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         Ok(())
     }
 }
