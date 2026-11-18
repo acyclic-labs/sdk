@@ -100,12 +100,17 @@ fn archive_locks_override_foreign_cargo_authority() {
                     );
                     let mut manifest: Value =
                         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-                    let frontier = manifest["registryCorpus"]["frontier"].take();
+                    let frontier: Vec<sdk_generation::historical::RegistryOwnerSource> =
+                        serde_json::from_value(manifest["registryCorpus"]["frontier"].take())
+                            .expect("generation must publish a typed discovery frontier");
                     // Each case gets a new admission: its discovery context differs.
                     // Retain the exact source, receipts and compiler directory only.
                     fs::remove_file(&manifest_path).unwrap();
                     fs::remove_file(&manifest_digest).unwrap();
                     frontier
+                        .into_iter()
+                        .map(|owner| owner.discovery)
+                        .collect::<Vec<_>>()
                 });
                 let (recorded, replayed_compilers) = queries.compiler_counts();
                 assert!(
