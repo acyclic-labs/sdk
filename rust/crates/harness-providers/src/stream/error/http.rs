@@ -1,5 +1,6 @@
 //! A fixed-size projection through the original JSON parser, with funded escape scratch.
 use acyclic_harness_core::Result;
+use acyclic_harness_provider_protocol::refusal::is_context_overflow;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 /// No remote string or container survives the classification.
@@ -79,14 +80,9 @@ impl<'de> Visitor<'de> for Position {
     fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Projection, E> {
         Ok(Projection {
             present: true,
-            context: matches!(self, Self::Text)
-                && super::is_context_overflow(Some(text), None, None),
+            context: matches!(self, Self::Text) && is_context_overflow(Some(text), None, None),
             invalid_request: text == "invalid_request_error",
-            long_prompt: super::is_context_overflow(
-                None,
-                Some("invalid_request_error"),
-                Some(text),
-            ),
+            long_prompt: is_context_overflow(None, Some("invalid_request_error"), Some(text)),
             response_error: None,
         })
     }
