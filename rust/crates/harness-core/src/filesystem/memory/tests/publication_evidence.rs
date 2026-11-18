@@ -212,12 +212,12 @@ async fn publication_witness_failure_releases_every_allocation_boundary() -> Res
         let probe = ledger(budget)?;
         probe.retain_owned(17)?;
         let setup = budget.allocation_operations - probe.remaining()?.allocation_operations;
-        let setup_peak = probe.receipt().peak_allocation_bytes;
+        let setup_peak = probe.receipt()?.peak_allocation_bytes;
         drop(storage.host.seal_publication(file.clone(), Some(&probe))?);
         let required =
             budget.allocation_operations - setup - probe.remaining()?.allocation_operations;
         assert!(required > 0);
-        let peak = probe.receipt().peak_allocation_bytes;
+        let peak = probe.receipt()?.peak_allocation_bytes;
         assert!(peak > setup_peak);
         let mut cuts = Vec::new();
         for operations in 0..required {
