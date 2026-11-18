@@ -217,7 +217,7 @@ pub(super) fn sqlite_wal_child(path: &Path) -> Result<(), String> {
                 if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
             outcome => {
                 return Err(format!(
-                    "step=sqlite-held-writer expected typed Busy, got {outcome:?}; recovery command: cargo run --locked -p acyclic-conformance --features local-runner --bin qualify -- --sqlite-verify-child {path:?}"
+                    "step=sqlite-held-writer expected typed Busy, got {outcome:?}; recovery command: bazel run //rust/crates/conformance:qualify -- --sqlite-verify-child {path:?}"
                 ));
             }
         }

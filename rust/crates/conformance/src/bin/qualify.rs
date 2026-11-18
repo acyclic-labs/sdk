@@ -278,7 +278,7 @@ fn main() {
 
 fn refuse_configuration(reason: &str) -> ! {
     eprintln!(
-        "step=qualification-configuration {reason}; recovery command: cargo run -p acyclic-conformance --features local-runner --bin qualify --"
+        "step=qualification-configuration {reason}; recovery command: bazel run //rust/crates/conformance:qualify --"
     );
     std::process::exit(2);
 }
