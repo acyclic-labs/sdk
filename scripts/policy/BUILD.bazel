@@ -104,9 +104,7 @@ node_test(
 node_test(
     name = "workspace_model_test",
     srcs = [
-        "//:scripts/check-crate-tests.mjs",
         "//:scripts/policy-core.mjs",
-        "//:scripts/run-command.mjs",
         "//:scripts/workspace-defaults.mjs",
         "//:scripts/workspace-model.mjs",
         "//:scripts/workspace-model.test.mjs",
