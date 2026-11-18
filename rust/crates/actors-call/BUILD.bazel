@@ -108,10 +108,7 @@ rust_library(
     deps = [
         "//rust/crates/stream:acyclic_stream_wasm",
         "@wasm_crates//bytes-1.12.1",
-        "@wasm_crates//futures-0.3.34",
-        "@wasm_crates//prost-0.14.4",
         "@wasm_crates//thiserror-2.0.21",
-        "@wasm_crates//tokio-1.54.1",
     ],
     visibility = ["//visibility:public"],
 )

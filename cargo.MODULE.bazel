@@ -2746,17 +2746,12 @@ crate.spec(
     repositories = [
         "wasm_crates",
     ],
-    default_features = True,
+    default_features = False,
     features = [
-        "fs",
         "io-util",
         "macros",
-        "net",
         "rt",
-        "rt-multi-thread",
-        "signal",
         "sync",
-        "test-util",
         "time",
     ],
 )
