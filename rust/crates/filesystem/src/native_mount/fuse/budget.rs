@@ -196,7 +196,7 @@ pub(super) fn fuse_path<'a>(
         path.push(copied);
         work.record_admitted(Copy.delta(std::mem::size_of::<Vec<u8>>() as u64))?;
     }
-    Ok(path.map(|components| MountPath::from_components(components)))
+    Ok(path.map(MountPath::from_components))
 }
 
 pub(super) fn fuse_clone_path(
