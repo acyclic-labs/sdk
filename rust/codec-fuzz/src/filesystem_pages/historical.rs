@@ -1,7 +1,8 @@
 //! Evidence projection preserves original facts; it grants no storage custody.
 use sha2::{Digest as _, Sha256};
 use {
-    acyclic_fs::{DurableCommit, Epoch, Sequence, authority_commit_digest, kernel::*},
+    acyclic_fs::{DurableCommit, authority_commit_digest, kernel::*},
+    acyclic_fs_format::authority::{Epoch, Sequence},
     acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
 };
 mod original;

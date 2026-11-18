@@ -5,11 +5,12 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::runtime::Runtime;
 use {
     acyclic_fs::{
-        AppendOutcome, AsyncAuthorityStore, AuthorityWork, CancellationToken, Epoch, GuardedAppend,
+        AppendOutcome, AsyncAuthorityStore, AuthorityWork, CancellationToken, GuardedAppend,
         NativeMaterializationWork, OperationLease, OperationLeaseId, OperationWindowCoordinator,
         OperationWindowPhase, OperationWindowSnapshot, OperationWindowStore, ProposedCommit,
         PublicationPermit, StreamAuthorityStore, StreamOperationWindowStore, WorkspaceId,
     },
+    acyclic_fs_format::authority::Epoch,
     acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
     acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_work::performance::WorkCounters,

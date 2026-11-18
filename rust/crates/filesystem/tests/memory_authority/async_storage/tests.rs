@@ -1,10 +1,11 @@
 use acyclic_fs::async_storage::read_many_sequential;
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityStoreError, AuthorityWork,
-    CancellationToken, CreateAuthorityOutcome, Epoch, FenceOutcome, GuardedAppend, Head,
+    CancellationToken, CreateAuthorityOutcome, FenceOutcome, GuardedAppend, Head,
     MemoryAuthorityStore, MemoryObjectStore, ObjectReadRequest, ObjectStoreError, ProposedCommit,
-    PublicationPermit, ReplayLimit, Sequence, object_digest,
+    PublicationPermit, ReplayLimit, object_digest,
 };
+use acyclic_fs_format::authority::{Epoch, Sequence};
 use acyclic_fs_format::{
     identity::{AuthorityId, Digest, OperationId},
     object_reference::{ObjectId, ObjectKind},

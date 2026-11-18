@@ -195,6 +195,7 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
+use acyclic_fs_format::authority::{Epoch, Sequence};
 use acyclic_fs_format::identity::{
     AuthorityId, CheckoutId, Digest, FileId, MountId, OperationId, VolumeId, WatchId,
 };
@@ -248,7 +249,7 @@ pub use facade::{
 };
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
-    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, DurableCommit, Epoch, Head, ProposedCommit, Sequence,
+    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, DurableCommit, Head, ProposedCommit,
     authority_commit_digest,
 };
 pub use git_compat::{

@@ -1,9 +1,10 @@
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AuthorityFailure, AuthorityStoreError, AuthorityWork,
-    CancellationError, CancellationToken, CreateAuthorityOutcome, Epoch, FsError, Head,
+    CancellationError, CancellationToken, CreateAuthorityOutcome, FsError, Head,
     MemoryAuthorityStore, NativeAuthorityGuard, NativeMaterializationWork, ProposedCommit,
-    PublicationPermit, ReplayLimit, Sequence,
+    PublicationPermit, ReplayLimit,
 };
+use acyclic_fs_format::authority::{Epoch, Sequence};
 use acyclic_fs_format::identity::{AuthorityId, Digest, OperationId};
 use acyclic_fs_work::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 use std::sync::atomic::{AtomicBool, Ordering};

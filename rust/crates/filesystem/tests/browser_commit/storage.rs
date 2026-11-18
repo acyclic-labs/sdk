@@ -10,10 +10,11 @@ use wasm_bindgen::JsCast;
 use {
     acyclic_fs::{
         AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CreateAuthorityOutcome,
-        DurableCommit, Epoch, FenceOutcome, GuardedAppend, Head, ProposedCommit, PublicationPermit,
-        PublicationReservation, ReplayLimit, ReservationOutcome, Sequence, WorkspaceForkCommit,
+        DurableCommit, FenceOutcome, GuardedAppend, Head, ProposedCommit, PublicationPermit,
+        PublicationReservation, ReplayLimit, ReservationOutcome, WorkspaceForkCommit,
         WorkspaceForkOutcome,
     },
+    acyclic_fs_format::authority::{Epoch, Sequence},
     acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
     acyclic_fs_format::object_reference::ObjectKind,
     acyclic_fs_work::performance::WorkError,

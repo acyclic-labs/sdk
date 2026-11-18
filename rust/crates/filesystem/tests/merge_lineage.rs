@@ -20,9 +20,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use {
     acyclic_fs::{
         AppendOutcome, ApplyOptions, AsyncAuthorityStore, CancellationToken, DrivenJoinError,
-        Epoch, FenceOutcome, ForkOptions, Fs, Head, IdempotencyKey, JoinOutcome, ProposedCommit,
+        FenceOutcome, ForkOptions, Fs, Head, IdempotencyKey, JoinOutcome, ProposedCommit,
         StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceLineageError,
     },
+    acyclic_fs_format::authority::Epoch,
     acyclic_fs_format::identity::{AuthorityId, Digest, FileId, OperationId},
     acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_merge::merge_driver::AttributeRule,

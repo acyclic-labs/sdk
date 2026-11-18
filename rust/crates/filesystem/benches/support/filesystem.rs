@@ -154,7 +154,8 @@ fn authority_head_shared(bencher: Bencher) {
 
 fn authority_head_bench(bencher: Bencher, native_accounting: bool, shared: bool) {
     use {
-        acyclic_fs::{AsyncAuthorityStore, AuthorityWork, Epoch},
+        acyclic_fs::{AsyncAuthorityStore, AuthorityWork},
+        acyclic_fs_format::authority::Epoch,
         acyclic_fs_format::identity::AuthorityId,
     };
     let runtime = Runtime::new().unwrap();

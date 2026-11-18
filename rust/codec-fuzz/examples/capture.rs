@@ -1129,9 +1129,10 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     capture_actors(manifest)?;
     use {
         acyclic_fs::{
-            DurableCommit, Epoch, ProposedCommit, Sequence,
+            DurableCommit, ProposedCommit,
             streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
         },
+        acyclic_fs_format::authority::{Epoch, Sequence},
         acyclic_fs_format::identity::{Digest, OperationId},
     };
     let proposed = ProposedCommit {

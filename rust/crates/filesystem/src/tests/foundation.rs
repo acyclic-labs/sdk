@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs_format::authority::IdentityError;
 use acyclic_fs_format::object_reference::GenerationId;
 
 #[test]

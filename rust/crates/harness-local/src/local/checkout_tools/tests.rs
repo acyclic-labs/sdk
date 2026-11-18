@@ -31,7 +31,7 @@ fn publication_after_revocation(broken: bool, fork: bool) {
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let head = match loom::future::block_on(Box::pin(authority.create_authority::<()>(
         authority_id,
-        acyclic_fs::Epoch::GENESIS,
+        acyclic_fs_format::authority::Epoch::GENESIS,
         &mut work,
         None,
     )))

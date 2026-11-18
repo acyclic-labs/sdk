@@ -23,10 +23,11 @@ use tokio::sync::Notify;
 use {
     acyclic_fs::{
         AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityStoreError,
-        CancellationToken, CreateAuthorityOutcome, EmbeddedCapabilities, Epoch, FenceOutcome,
-        ForkOptions, Fs, GenerationFork, GenerationForkSource, Head, IdempotencyKey,
-        ProposedCommit, ReplayLimit, Sequence, WorkspaceDelete, object_digest,
+        CancellationToken, CreateAuthorityOutcome, EmbeddedCapabilities, FenceOutcome, ForkOptions,
+        Fs, GenerationFork, GenerationForkSource, Head, IdempotencyKey, ProposedCommit,
+        ReplayLimit, WorkspaceDelete, object_digest,
     },
+    acyclic_fs_format::authority::{Epoch, Sequence},
     acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
     acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_format::object_reference::{ObjectId, ObjectKind},

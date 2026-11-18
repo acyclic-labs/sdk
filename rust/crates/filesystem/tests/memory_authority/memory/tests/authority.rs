@@ -1,8 +1,8 @@
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AuthorityFailure, AuthorityStoreError,
-    CreateAuthorityOutcome, Epoch, FenceOutcome, Head, MemoryAuthorityStore, ProposedCommit,
-    ReplayLimit, Sequence,
+    CreateAuthorityOutcome, FenceOutcome, Head, MemoryAuthorityStore, ProposedCommit, ReplayLimit,
 };
+use acyclic_fs_format::authority::{Epoch, Sequence};
 use acyclic_fs_format::identity::{AuthorityId, Digest, OperationId};
 use acyclic_fs_work::performance::WorkBudget;
 

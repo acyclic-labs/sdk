@@ -159,7 +159,7 @@ impl Fixture {
             .authority
             .replay(
                 self.pin,
-                acyclic_fs::Sequence::GENESIS,
+                acyclic_fs_format::authority::Sequence::GENESIS,
                 acyclic_fs::ReplayLimit {
                     records: 2,
                     payload_bytes: 4096,

@@ -15,70 +15,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) fn usize_to_u64(value: usize) -> u64 {
     value as u64
 }
-use thiserror::Error;
-
-/// Monotonic authority incarnation used to fence stale writers.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Epoch(u64);
-
-impl Epoch {
-    /// Genesis authority epoch.
-    pub const GENESIS: Self = Self(1);
-
-    /// Constructs a non-zero epoch.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityError::ZeroEpoch`] when `value` is zero.
-    pub const fn new(value: u64) -> Result<Self, IdentityError> {
-        if value == 0 {
-            Err(IdentityError::ZeroEpoch)
-        } else {
-            Ok(Self(value))
-        }
-    }
-
-    /// Returns the wire integer.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-/// Dense one-based sequence within an authority history; zero denotes genesis.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Sequence(u64);
-
-impl Sequence {
-    /// Empty stream position.
-    pub const GENESIS: Self = Self(0);
-
-    /// Constructs a sequence from its wire integer.
-    #[must_use]
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    /// Returns the wire integer.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-
-    /// Returns the next sequence, failing closed at exhaustion.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityError::SequenceExhausted`] at `u64::MAX`.
-    pub const fn checked_next(self) -> Result<Self, IdentityError> {
-        match self.0.checked_add(1) {
-            Some(value) => Ok(Self(value)),
-            None => Err(IdentityError::SequenceExhausted),
-        }
-    }
-}
+pub(crate) use acyclic_fs_format::authority::{Epoch, Sequence};
 
 /// Durable authority head.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -171,17 +108,6 @@ pub fn authority_commit_digest(
     );
     hasher.update(payload);
     Digest::from_bytes(*hasher.finalize().as_bytes())
-}
-
-/// Errors constructing portable identities.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum IdentityError {
-    /// Epoch zero is reserved and never valid.
-    #[error("authority epoch must be non-zero")]
-    ZeroEpoch,
-    /// No further sequence can be represented.
-    #[error("authority sequence exhausted")]
-    SequenceExhausted,
 }
 
 #[cfg(test)]

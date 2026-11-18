@@ -78,8 +78,8 @@ cases! {
     authority_rejected_static: authority(AuthorityStoreError::RejectedStatic("rejected")) => FailedPrecondition;
     authority_replay_limit: authority(AuthorityStoreError::InvalidReplayLimit) => InvalidArgument;
     authority_poisoned: authority(AuthorityStoreError::MemoryAuthorityPoisoned) => Internal;
-    authority_replay_ahead: authority(AuthorityStoreError::ReplayCursorAhead {after: acyclic_fs::Sequence::new(2), head: acyclic_fs::Sequence::new(1)}) => FailedPrecondition;
-    authority_cursor_overflow: authority(AuthorityStoreError::ReplayCursorProcessOverflow {after: acyclic_fs::Sequence::new(2)}) => InvalidArgument;
+    authority_replay_ahead: authority(AuthorityStoreError::ReplayCursorAhead {after: acyclic_fs_format::authority::Sequence::new(2), head: acyclic_fs_format::authority::Sequence::new(1)}) => FailedPrecondition;
+    authority_cursor_overflow: authority(AuthorityStoreError::ReplayCursorProcessOverflow {after: acyclic_fs_format::authority::Sequence::new(2)}) => InvalidArgument;
     authority_allocation: authority(AuthorityStoreError::MemoryReplayAllocationFailed(allocation()?)) => ResourceExhausted;
     authority_record_bound: authority(AuthorityStoreError::ReplayRecordTooLarge {observed: 2, maximum: 1}) => ResourceExhausted;
     authority_payload_bound: authority(AuthorityStoreError::PayloadTooLarge {observed: 2, maximum: 1}) => ResourceExhausted;
@@ -264,7 +264,7 @@ cases! {
     fs_normalization: fs(FsError::NonNormalizedName) => InvalidArgument;
     fs_unsupported_checkout: fs(FsError::UnsupportedCheckout) => FailedPrecondition;
     fs_live_authority: fs(FsError::LiveRequiresSerializedAuthority) => FailedPrecondition;
-    fs_exclusive_writer: fs(FsError::ExclusiveWriterConflict { actual: acyclic_fs::Head::genesis(acyclic_fs::Epoch::GENESIS) }) => Aborted;
+    fs_exclusive_writer: fs(FsError::ExclusiveWriterConflict { actual: acyclic_fs::Head::genesis(acyclic_fs_format::authority::Epoch::GENESIS) }) => Aborted;
     fs_pending_live: fs(FsError::PendingLiveMutation) => FailedPrecondition;
     fs_live_conflict: fs(FsError::LiveConflict { conflicts: Vec::new(), truncated: true }) => Aborted;
     fs_authority: authority(AuthorityStoreError::Missing) => NotFound;
