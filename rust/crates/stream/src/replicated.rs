@@ -174,17 +174,6 @@ pub(crate) trait ReplayObserver: ProviderPlatform {
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a;
 }
-impl<T: ReplayObserver + ?Sized> ReplayObserver for &mut T {
-    fn observe<'a>(
-        &'a mut self,
-        provider: &'a MemoryStream,
-        command: &'a WriteRequest,
-        cursor: u64,
-        after: bool,
-    ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
-        (**self).observe(provider, command, cursor, after)
-    }
-}
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
 struct NoopObserver;
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
@@ -420,7 +409,7 @@ impl<J: CommandJournal> Replicated<J> {
         deadline: Option<u64>,
         page: usize,
     ) -> Result<Execution, StreamError> {
-        self.execute_with(command, deadline, page, NoopObserver)
+        self.execute_with(command, deadline, page, &mut NoopObserver)
             .await
     }
 
@@ -429,7 +418,7 @@ impl<J: CommandJournal> Replicated<J> {
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
-        mut observe: impl ReplayObserver,
+        observe: &mut impl ReplayObserver,
     ) -> Result<Execution, StreamError> {
         self.check()?;
         if page == 0 {
@@ -462,7 +451,7 @@ impl<J: CommandJournal> Replicated<J> {
         };
         let fresh = !self.acceptance_clock || self.stale;
         if fresh {
-            self.refresh_with(page, &mut observe).await?;
+            self.refresh_with(page, observe).await?;
         }
         observe
             .observe(&self.provider, command, self.cursor, false)
@@ -505,7 +494,7 @@ impl<J: CommandJournal> Replicated<J> {
                 }) | Err(StreamError::IdempotencyMismatch)
             );
         if !attempt.started && !fresh && !immutable {
-            self.refresh_with(page, &mut observe).await?;
+            self.refresh_with(page, observe).await?;
             if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
                 return Err(StreamError::DeadlineElapsed);
             }
