@@ -131,7 +131,7 @@ impl AsyncRead for Stdin {
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests {
-    use crate::lines::AsyncLines;
+    use acyclic_native_lines::lines::AsyncLines;
     use std::io::{self, Read as _, Write as _};
     use std::sync::{
         Arc,

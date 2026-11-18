@@ -40,7 +40,7 @@ struct Running {
     claim: TurnClaim,
     /// The first spawn, stdin or readiness failure, settled as the turn's failure.
     failure: Option<String>,
-    events: acyclic_native_runtime::lines::LineBuffer,
+    events: acyclic_native_lines::lines::LineBuffer,
     answer: NativeAnswer,
     /// The settlement once decided. A retry after an unknown outcome resends
     /// exactly it, under the same claim.
@@ -63,7 +63,7 @@ impl Running {
             process,
             claim,
             failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(None),
+            events: acyclic_native_lines::lines::LineBuffer::new(None),
             answer: NativeAnswer::default(),
             settlement: None,
             wake: Waker::from(Arc::new(ChildWake {

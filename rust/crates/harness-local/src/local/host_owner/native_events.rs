@@ -10,14 +10,14 @@ use std::{
 /// Recovery uses the same complete-line policy as live ingestion, retaining only the last
 /// valid resume identity. A malformed event never hides a later valid event.
 struct Resume {
-    lines: acyclic_native_runtime::lines::LineBuffer,
+    lines: acyclic_native_lines::lines::LineBuffer,
     id: Option<String>,
 }
 
 impl Resume {
     fn new() -> Self {
         Self {
-            lines: acyclic_native_runtime::lines::LineBuffer::new(None),
+            lines: acyclic_native_lines::lines::LineBuffer::new(None),
             id: None,
         }
     }
