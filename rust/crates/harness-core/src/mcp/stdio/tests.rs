@@ -218,7 +218,7 @@ fn native_work() -> acyclic_fs::NativeMaterializationWork {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
+fn original_native_all_seven_methods_preserve_protocol_and_result_custody() -> crate::Result<()> {
     let (initialization, operation) = ids();
     for (method, params, expected) in [
         ("tools/list", json!({}), json!({"tools":[]})),
@@ -253,7 +253,7 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
             maximum_bytes: 4096,
         };
         let work = native_work();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let probe = work
             .claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)
             .unwrap();
@@ -289,14 +289,15 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
         assert_eq!(value, expected);
         assert!(guard.as_ref().unwrap().shares_ledger(&probe));
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             baseline + guard.as_ref().unwrap().bytes()
         );
         drop(value);
         drop(guard);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        work.receipt().verify(finite_budget()).unwrap();
+        assert_eq!(work.live_allocation_bytes()?, baseline);
+        work.receipt()?.verify(finite_budget()).unwrap();
     }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
