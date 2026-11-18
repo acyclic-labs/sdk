@@ -208,12 +208,14 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
                     Node::Leaf { .. } => LEAF_HEADER_BYTES,
                     Node::Branch { .. } => encoded.len(),
                 };
-                let framed = encoded.get(..required).ok_or_else(malformed)?;
-                for end in 0..framed.len() {
-                    let truncated = framed.get(..end).ok_or_else(malformed)?;
+                let invalid_encoding =
+                    || invalid(None, "admitted journal node encoded without its header");
+                let mut framed = encoded.get(..required).ok_or_else(invalid_encoding)?;
+                while let Some((_, truncated)) = framed.split_last() {
                     assert!(Node::decode(truncated, sequence, None).is_err());
+                    framed = truncated;
                 }
-                let kind = encoded.first().ok_or_else(malformed)? & 15;
+                let kind = encoded.first().copied().ok_or_else(invalid_encoding)? & 15;
                 for version in [0, 1, 15] {
                     let header = [kind | (version << 4)];
                     assert!(Node::decode(&header, sequence, None)
