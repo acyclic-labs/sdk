@@ -55,7 +55,14 @@ def build(label, command):
 
 # Independently initialized parsers compare full canonical bytes, exact errors,
 # every observed operation/failure prefix, all counters and six heap statistics.
-test = args.test_binary or build('ordinary', ['cargo', 'test'] + base + ['--lib', '--no-run'])['acyclic_fs']
+test = args.test_binary
+if test is None:
+    target = '//rust/crates/filesystem:acyclic_fs_test_cases'
+    run('ordinary-build', ['bazel', 'build', '--remote_download_toplevel', target])
+    files = run('ordinary-binary', ['bazel', 'cquery', '--output=files', target]).stdout.splitlines()
+    if len(files) != 1:
+        raise RuntimeError(f'expected one executable for {target}, got {files}')
+    test = pathlib.Path(files[0]).resolve()
 run('differential-and-physical-controls', [test, 'workspace::identity::name_tests::'], timeout=9)
 if args.reuse_release_dir:
     bins = {stage: {n: args.reuse_release_dir / (stage + '-' + n)
