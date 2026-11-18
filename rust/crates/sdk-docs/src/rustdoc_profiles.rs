@@ -190,19 +190,27 @@ pub struct ProfileId(pub String);
 
 impl ProfileSpec {
     pub fn id(&self) -> ProfileId {
-        let features = self
-            .features
-            .iter()
-            .map(|feature| crate::format_digest(&[], feature.as_bytes(), ""))
-            .collect::<Vec<_>>()
-            .join(",");
-        ProfileId(format!(
-            "p{};t{};d{};f{}",
-            crate::format_digest(&[], self.package.as_bytes(), ""),
-            crate::format_digest(&[], self.target.as_bytes(), ""),
-            u8::from(self.default_features),
-            features
-        ))
+        let mut id = String::new();
+        let mut append = |prefix: &str, value: &str| {
+            id.push_str(prefix);
+            for byte in value.bytes() {
+                crate::digest::push_hex_byte(&mut id, byte);
+            }
+        };
+        append("p", &self.package);
+        append(";t", &self.target);
+        append(
+            if self.default_features {
+                ";d1;f"
+            } else {
+                ";d0;f"
+            },
+            "",
+        );
+        for (index, feature) in self.features.iter().enumerate() {
+            append(if index == 0 { "" } else { "," }, feature);
+        }
+        ProfileId(id)
     }
 }
 
