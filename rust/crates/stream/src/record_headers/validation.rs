@@ -1,7 +1,9 @@
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::*;
+    use super::super::PreparedHeaderControls;
+    use crate::OwnedBytes;
     use crate::test_meter::Meter;
+    use std::sync::Arc;
 
     #[test]
     fn prepared_ingress_rejects_noncanonical_key_order() -> Result<(), Box<dyn std::error::Error>> {
