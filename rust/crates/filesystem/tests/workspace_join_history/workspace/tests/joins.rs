@@ -197,13 +197,7 @@ async fn a_join_goes_stale_once_when_the_target_changes_its_keys() -> Result<(),
         apply_planned(&replanned, IdempotencyKey::new()).await?,
         JoinOutcome::Applied(_)
     ));
-    assert_eq!(
-        unbounded!(main, read("/agent", 16))?,
-        OwnedBytes::from_static(b"agent")
-    );
-    assert_eq!(
-        unbounded!(main, read("/shared", 16))?,
-        OwnedBytes::from_static(b"same")
-    );
+    assert_eq!(unbounded!(main, read("/agent", 16))?.as_ref(), b"agent");
+    assert_eq!(unbounded!(main, read("/shared", 16))?.as_ref(), b"same");
     Ok(())
 }
