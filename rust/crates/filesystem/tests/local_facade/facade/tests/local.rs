@@ -259,3 +259,109 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     );
     Ok(())
 }
+
+/// Counts one local commit of `files` new files: the ordering barriers and
+/// the full device drains its durable trace issues.
+#[cfg(any(unix, windows))]
+async fn local_commit_flushes(files: u8) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    let driver = tokio::spawn(async move {
+        while let Some(boundary) = events.recv().await {
+            boundary.release();
+        }
+    });
+    let counted = schedule
+        .scope(async {
+            let cancellation = CancellationToken::new();
+            let durable = VolumeConfig::portable(Lifecycle::Durable);
+            let fs = Fs::local(LocalOptions::new(directory.path())).await?;
+            let volume = fs
+                .create_volume_with_id(
+                    VolumeId::from_bytes([51; 16]),
+                    durable,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            let mut checkout = volume
+                .checkout(
+                    GenerationSelector::Head,
+                    writable_pinned(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            for file in 0..files {
+                checkout
+                    .create(
+                        AuthoredMutation::CreateFile {
+                            file_id: None,
+                            path: path(&format!("f{file}.txt"))?,
+                            bytes: OwnedBytes::from(vec![file; 4096]),
+                            metadata: FileMetadata::default(),
+                        },
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await?;
+            }
+            let before = schedule.durable_write_count();
+            checkout
+                .commit(
+                    OperationId::from_bytes([51; 16]),
+                    None,
+                    None,
+                    None,
+                    PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    allow::<FsError>,
+                )
+                .await?;
+            let trace = schedule.durable_writes();
+            let commit = trace.get(before..).ok_or("durable trace lost its prefix")?;
+            let barrier = |call: &acyclic_native_runtime::testing::DurableWrite| {
+                call.operation.ends_with("_barrier")
+            };
+            let drain = |call: &acyclic_native_runtime::testing::DurableWrite| {
+                matches!(
+                    call.operation,
+                    "file:sync" | "file:sync_data" | "file:sync_all" | "file:sync_parent"
+                )
+            };
+            let counted = (
+                commit.iter().filter(|call| barrier(call)).count(),
+                commit.iter().filter(|call| drain(call)).count(),
+            );
+            assert!(
+                commit.iter().rposition(barrier) < commit.iter().rposition(drain),
+                "the acknowledging drain must follow every ordering barrier: {commit:?}"
+            );
+            drop(checkout);
+            drop(volume);
+            drop(fs);
+            Ok::<_, Box<dyn std::error::Error>>(counted)
+        })
+        .await?;
+    schedule.drained().await;
+    driver.abort();
+    let _ = driver.await;
+    Ok(counted)
+}
+
+/// A commit's objects are only ordered ahead of its Stream frame, and the
+/// frame's flush is the commit's one device drain, at any commit size.
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn a_local_commit_drains_the_device_once_at_any_size()
+-> Result<(), Box<dyn std::error::Error>> {
+    let small = local_commit_flushes(1).await?;
+    let large = local_commit_flushes(64).await?;
+    eprintln!("LOCAL_COMMIT_FLUSHES files=1 {small:?} files=64 {large:?}");
+    assert_eq!(small, (1, 1), "unexpected flush counts for one file");
+    assert_eq!(large, (1, 1), "unexpected flush counts for 64 files");
+    Ok(())
+}
