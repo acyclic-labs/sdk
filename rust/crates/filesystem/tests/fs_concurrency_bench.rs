@@ -22,8 +22,12 @@ use {
         LivePublicationObservation, PublicationPermit,
     },
     acyclic_fs_format::identity::OperationId,
-    acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters},
+    acyclic_fs_work::performance::WorkBudget,
 };
+
+#[path = "support/allow_publication.rs"]
+mod allow_publication;
+use allow_publication::allow;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Volume =
@@ -49,15 +53,6 @@ fn path(parts: &[String]) -> Result<NamespacePath> {
         config.limits,
     )?)
 }
-async fn allow(
-    _: WorkBudget,
-) -> acyclic_fs_work::performance::MeasuredResult<OperationReceipt<()>, FsError> {
-    Ok(OperationReceipt {
-        value: (),
-        work: WorkCounters::UNCHARGED,
-    })
-}
-
 #[derive(Default)]
 struct Worker {
     committed: bool,
@@ -172,7 +167,7 @@ async fn seed_volume(
             PublicationPermit::Unrestricted,
             B,
             cancel,
-            allow,
+            allow::<FsError>,
         )
         .await?
         .value
@@ -204,7 +199,7 @@ async fn measure(
                         PublicationPermit::Unrestricted,
                         B,
                         cancel,
-                        allow,
+                        allow::<FsError>,
                     )
                     .await?
                     .value
