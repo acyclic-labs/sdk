@@ -1,0 +1,23 @@
+diff --git a/util/process_wrapper/options.rs b/util/process_wrapper/options.rs
+index 29467a6..7b9baf1 100644
+--- a/util/process_wrapper/options.rs
++++ b/util/process_wrapper/options.rs
+@@ -180,13 +180,11 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+         }
+     };
+ 
+-    let exec_root = {
+-        let workspace_name = std::path::Path::new(&current_dir)
+-            .file_name()
+-            .and_then(|n| n.to_str())
+-            .unwrap_or("_main");
+-        format!("{}/execroot/{}", output_base, workspace_name)
+-    };
++    // An action runs in its execution root under every strategy (local, linux-sandbox,
++    // darwin-sandbox, Windows): `${exec_root}` is that working directory, so every path derived
++    // from it names an input or output the action declared, never the shared tree outside its
++    // sandbox.
++    let exec_root = current_dir.clone();
+ 
+     let mut subst_mappings = subst_mapping_raw
+         .unwrap_or_default()

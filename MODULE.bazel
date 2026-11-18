@@ -12,18 +12,19 @@ bazel_dep(name = "toolchains_musl", version = "0.2.0")
 # - a transitive module's crate lockfile labels resolve in that module's repository;
 # - rust_check_aspect type-checks crates to metadata, as cargo check does;
 # - the clippy_driver patch below runs the Rust compile action through clippy-driver, so lints are part of
-#   compilation and no separate clippy aspect type-checks the same tree again;
+#   compilation and no separate clippy aspect type-checks the same tree again; a crate's pipelined metadata
+#   action runs the same driver as its rlib action, so both carry one crate hash;
 # - build scripts see the toolchain's extra rustc flags in CARGO_ENCODED_RUSTFLAGS and CARGO_CFG_*, as
 #   Cargo's do with RUSTFLAGS, so cc-rs compiles C for the static CRT a crt-static target links;
-# - the pipelined patch below names the real execution root and OUT_DIR, so a crate's metadata and rlib
-#   actions embed the same paths and the same crate hash.
+# - the exec-root patch below makes `${exec_root}` the action's working directory, its execution root under
+#   every sandbox, so a path derived from it names the action's own inputs and outputs.
 git_override(
     module_name = "rules_rust",
     remote = "https://github.com/acyclic-labs/rules_rust.git",
     commit = "4f0293883980add60314edace130d285b89f5941",
     patches = [
         "//:rules_rust-clippy-driver.patch",
-        "//:rules_rust-pipelined.patch",
+        "//:rules_rust-exec-root.patch",
     ],
     patch_strip = 1,
 )

@@ -23,6 +23,11 @@ and tuple wrappers share the existing newtype generator; serialization skips and
 still take precedence. Invalid marker assignments and transparent containers
 without exactly one serialized field are rejected.
 
+A derive's dependency and where-clause sets keep first-insertion order instead of
+hash order, so one input expands to the same tokens in every compiler process.
+Pipelined compilation compiles a crate's metadata and its rlib in two processes;
+with hash order their crate hashes differed and dependents failed with E0460.
+
 `cargo test --locked --manifest-path rust/vendor/ts-rs-macros-12.0.1/Cargo.toml --features serde-compat container_serialization_preserves_transparent_fields`
 checks the actual generated representation. The retained production mutations in
 `tests/mutations` remove container recognition, enum ingress recognition, or the
