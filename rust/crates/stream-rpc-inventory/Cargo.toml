@@ -1,0 +1,22 @@
+[package]
+name = "stream-rpc-inventory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reports the RPC methods implemented by the Stream transport adapters"
+publish = false
+
+[[bin]]
+name = "stream-rpc-inventory"
+path = "src/main.rs"
+test = false
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-stream = { path = "../stream" }
+acyclic-stream-wire = { path = "../stream-wire" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

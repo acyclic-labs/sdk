@@ -8911,6 +8911,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "stream-rpc-inventory"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "acyclic-stream-wire",
+ "serde_json",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
