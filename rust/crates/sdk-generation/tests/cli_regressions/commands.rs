@@ -74,6 +74,13 @@ fn argument_value<'a>(args: impl Iterator<Item = &'a OsStr>, name: &str) -> Opti
     args.skip_while(|arg| *arg != name).nth(1)
 }
 
+fn command_env<'a>(command: &'a Command, name: &str) -> Option<&'a OsStr> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == name)
+        .and_then(|(_, value)| value)
+}
+
 // Replay exactly the JSON that this real Cargo invocation produced. Different
 // feature/target/owner arguments have different keys. Build scripts and examples
 // in mutation controls never enter this scope.
@@ -82,12 +89,7 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
     if args.next().and_then(|arg| arg.to_str()) != Some("rustdoc") {
         return Ok(Vec::new());
     }
-    let directory = command
-        .get_envs()
-        .find(|(key, _)| *key == "CARGO_TARGET_DIR")
-        .and_then(|(_, value)| value)
-        .map(PathBuf::from)
-        .unwrap();
+    let directory = Path::new(command_env(command, "CARGO_TARGET_DIR").unwrap());
     let target = argument_value(args, "--target").unwrap();
     let mut artifacts = Vec::new();
     for directory in [directory.join("doc"), directory.join(target).join("doc")] {
@@ -162,7 +164,7 @@ fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
 // The action's metadata names every source and Cargo flag in its key. Reuse
 // its output only for byte-identical source and the same complete profile.
 fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
-    if command.get_args().next() != Some(std::ffi::OsStr::new("rustdoc")) {
+    if command.get_args().next() != Some(OsStr::new("rustdoc")) {
         return Ok(None);
     }
     let args = command.get_args().collect::<Vec<_>>();
@@ -182,18 +184,13 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     let Some(target) = value("--target").and_then(|arg| arg.to_str()) else {
         return Ok(None);
     };
-    let env = |name: &str| {
-        command
-            .get_envs()
-            .find(|(key, _)| *key == name)
-            .and_then(|(_, value)| value)
-    };
+    let env = |name: &str| command_env(command, name);
     let rustflags = if cfg!(windows) {
         "-C\u{1f}prefer-dynamic"
     } else {
         ""
     };
-    if env("CARGO_ENCODED_RUSTFLAGS").and_then(std::ffi::OsStr::to_str) != Some(rustflags) {
+    if env("CARGO_ENCODED_RUSTFLAGS").and_then(OsStr::to_str) != Some(rustflags) {
         return Ok(None);
     }
     if env("CARGO_HOME")
@@ -203,7 +200,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         return Ok(None);
     }
     let Some(selected_toolchain) = env("RUSTUP_TOOLCHAIN")
-        .and_then(std::ffi::OsStr::to_str)
+        .and_then(OsStr::to_str)
         .and_then(|selected| selected.strip_suffix(target))
         .and_then(|selected| selected.strip_suffix('-'))
     else {
