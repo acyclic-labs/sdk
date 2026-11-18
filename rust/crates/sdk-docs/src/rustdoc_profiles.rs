@@ -214,6 +214,12 @@ impl ProfileSpec {
     }
 }
 
+fn order_profiles(mut profiles: Vec<ProfileSpec>) -> Vec<ProfileSpec> {
+    profiles.sort_by_cached_key(ProfileSpec::id);
+    profiles.dedup();
+    profiles
+}
+
 /// Derive the bounded profile matrix from the package's actual Cargo feature
 /// map. Every returned profile is intended to compile; a failed profile is a
 /// qualification failure rather than a reason to omit an API.
@@ -266,9 +272,7 @@ pub fn profiles_for_package(
             features: declared,
         });
     }
-    profiles.sort_by_key(ProfileSpec::id);
-    profiles.dedup_by_key(|profile| profile.id());
-    Ok(profiles)
+    Ok(order_profiles(profiles))
 }
 
 /// Select the browser profile from Cargo declarations without enabling native
@@ -418,9 +422,7 @@ pub fn historical_profiles_for_package(
             features,
         });
     }
-    profiles.sort_by_key(ProfileSpec::id);
-    profiles.dedup_by_key(|profile| profile.id());
-    Ok(profiles)
+    Ok(order_profiles(profiles))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
