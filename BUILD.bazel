@@ -170,6 +170,7 @@ filegroup(
         "//rust/crates/harness/tests/ui/native-environment:Cargo.toml",
         "//rust/crates/host-platform:Cargo.toml",
         "//rust/crates/inference-wasm:Cargo.toml",
+        "//rust/crates/implementation-inventory:Cargo.toml",
         "//rust/crates/inference:Cargo.toml",
         "//rust/crates/log-frame:Cargo.toml",
         "//rust/crates/machines-daytona:Cargo.toml",
@@ -391,7 +392,7 @@ typescript_packages(
         "//rust/crates/machines-limits:machines-managed-oci-contract": "//rust/crates/machines-limits:machines-managed-oci-contract",
         "//rust/crates/machines:machines-authorization_example": "//rust/crates/machines:machines-authorization_example",
         "//rust/crates/objects:objects-authorization_example": "//rust/crates/objects:objects-authorization_example",
-        "//rust/crates/objects:objects-rpc-inventory": "//rust/crates/objects:objects-rpc-inventory",
+        "//rust/crates/objects:objects-rpc-inventory_example": "//rust/crates/objects:objects-rpc-inventory_example",
         "//rust/crates/proto-codegen:sdk-proto-codegen": "//rust/crates/proto-codegen:sdk-proto-codegen",
     },
 )

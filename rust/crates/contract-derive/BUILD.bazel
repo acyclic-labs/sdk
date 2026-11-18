@@ -33,6 +33,7 @@ rust_proc_macro(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/implementation-inventory:acyclic_implementation_inventory",
         "@sdk_crates//heck-0.5.0",
         "@sdk_crates//proc-macro2-1.0.107",
         "@sdk_crates//quote-1.0.47",
@@ -64,6 +65,7 @@ rust_test(
     deps = [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/implementation-inventory:acyclic_implementation_inventory",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//heck-0.5.0",
         "@sdk_crates//proc-macro2-1.0.107",

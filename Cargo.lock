@@ -331,6 +331,7 @@ name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-implementation-inventory",
  "acyclic-proto-build",
  "acyclic-test-support",
  "async-trait",
@@ -1410,6 +1411,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-implementation-inventory"
+version = "0.2.0"
+dependencies = [
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
@@ -1728,6 +1736,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-auth-action",
  "acyclic-contract-derive",
+ "acyclic-implementation-inventory",
  "acyclic-log-frame",
  "acyclic-native-runtime",
  "acyclic-observability",
@@ -1759,6 +1768,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "sha2 0.11.1",
+ "syn 3.0.9",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

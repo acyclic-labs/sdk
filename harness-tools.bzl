@@ -13,7 +13,7 @@ HARNESS_TOOLS = {
     "//rust/crates/machines:machines-authorization_example": Label("//rust/crates/machines:machines-authorization_example"),
     "//rust/crates/manifest:deployment-manifest_example": Label("//rust/crates/manifest:deployment-manifest_example"),
     "//rust/crates/objects:objects-authorization_example": Label("//rust/crates/objects:objects-authorization_example"),
-    "//rust/crates/objects:objects-rpc-inventory": Label("//rust/crates/objects:objects-rpc-inventory"),
+    "//rust/crates/objects:objects-rpc-inventory_example": Label("//rust/crates/objects:objects-rpc-inventory_example"),
     "//rust/crates/proto-codegen:sdk-proto-codegen": Label("//rust/crates/proto-codegen:sdk-proto-codegen"),
     "//rust/crates/stream-wire:stream-authorization_example": Label("//rust/crates/stream-wire:stream-authorization_example"),
     "//rust/crates/stream-wire:stream-http-contract": Label("//rust/crates/stream-wire:stream-http-contract"),

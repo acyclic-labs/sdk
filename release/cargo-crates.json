@@ -12,6 +12,7 @@
   "acyclic-process-identity",
   "acyclic-process-resources",
   "acyclic-native-runtime",
+  "acyclic-implementation-inventory",
   "acyclic-contract-derive",
   "acyclic-auth",
   "acyclic-protobuf-json",

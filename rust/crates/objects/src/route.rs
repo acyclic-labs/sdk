@@ -63,26 +63,7 @@ macro_rules! http_routes {
     };
 }
 
-http_routes! {
-    unary {
-        PutBlob => ("blobs/put", PutBlobRequest, PutResponse),
-        PutBlobs => ("blobs/put-batch", PutBlobsRequest, PutBlobsResponse),
-        PutManifest => ("blobs/put-manifest", PutManifestRequest, PutResponse),
-        GetBlob => ("blobs/get", GetBlobRequest, GetBlobResponse),
-        HeadBlob => ("blobs/head", HeadBlobRequest, BlobInfo),
-        DeleteBlob => ("blobs/delete", DeleteBlobRequest, DeleteBlobResponse),
-        ListBlobs => ("blobs/list", ListBlobsRequest, ListBlobsResponse),
-        Retain => ("blobs/retain", RetainRequest, RetainResponse),
-        Release => ("blobs/release", ReleaseRequest, ReleaseResponse),
-        RetainFenced => ("blobs/retain-fenced", RetainFencedRequest, RetainResponse),
-        ReleaseTerminal => ("blobs/release-terminal", ReleaseTerminalRequest, ReleaseResponse),
-        Collect => ("blobs/collect", CollectRequest, CollectResponse),
-        Usage => ("blobs/usage", UsageRequest, UsageResponse),
-    }
-    streaming {
-        Availability => ("blobs/availability", AvailabilityRequest, AvailabilityCursor),
-    }
-}
+crate::route_inventory::objects_http_routes!(http_routes);
 
 impl ObjectsMethod {
     /// The exact authorization action declared by this method's contract.

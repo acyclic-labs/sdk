@@ -43,6 +43,7 @@ mod operation;
 mod ownership;
 mod provider;
 pub mod route;
+mod route_inventory;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;
 mod store;

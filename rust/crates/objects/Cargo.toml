@@ -19,15 +19,12 @@ test-build-script = ["objects-authorization"]
 
 [package.metadata.bazel.test-dependencies]
 objects-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
+objects-rpc-inventory = ["acyclic_implementation_inventory", "serde_json", "syn"]
 
 [[bench]]
 name = "objects"
 harness = false
 
-[[bin]]
-name = "objects-rpc-inventory"
-path = "src/bin/objects-rpc-inventory.rs"
-test = false
 [features]
 # The original JavaScript request owner over canonical binary messages.
 javascript = ["acyclic-auth/javascript", "acyclic-stream/js-bytes", "dep:wasm-bindgen"]
@@ -96,6 +93,8 @@ tower = { workspace = true, features = ["util"] }
 workspace = true
 
 [dev-dependencies]
+acyclic-implementation-inventory = { version = "=0.2.0", path = "../implementation-inventory" }
+syn = { version = "3", features = ["full"] }
 acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }
