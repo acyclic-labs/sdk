@@ -76,12 +76,11 @@ fn browser_profiles_follow_cargo_features_and_binding_policy() {
 
     package.metadata = serde_json::Value::Null;
     package.features.clear();
-    assert!(browser_profile_for_package(&package, false, &targets)
-        .unwrap()
-        .is_none());
-    assert!(browser_profile_for_package(&package, true, &targets)
-        .unwrap()
-        .is_some());
+    for has_target_dependencies in [false, true] {
+        let profile =
+            browser_profile_for_package(&package, has_target_dependencies, &targets).unwrap();
+        assert_eq!(profile.is_some(), has_target_dependencies);
+    }
 }
 
 #[test]
