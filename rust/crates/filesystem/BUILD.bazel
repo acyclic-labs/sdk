@@ -1769,10 +1769,6 @@ rust_test(
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//unicode-normalization-0.1.26",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
     tags = ["manual"],
 )
 
@@ -1899,10 +1895,6 @@ rust_test(
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
     tags = ["manual"],
 )
 
@@ -1962,10 +1954,6 @@ rust_test(
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
     ],
     tags = ["manual"],
 )
@@ -2223,10 +2211,6 @@ rust_test(
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
     ],
     tags = ["manual"],
 )
@@ -3274,10 +3258,6 @@ rust_test(
         ":build_script",
     ] + [
         "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
     ],
     tags = ["manual"],
 )

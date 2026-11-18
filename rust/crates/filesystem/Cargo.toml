@@ -109,6 +109,11 @@ test-narrow-runfiles = [
     "memory_authority",
     "memory_objects",
     "mount_routing",
+    "workspace_context_contracts",
+    "workspace_contracts",
+    "workspace_fork_selection",
+    "workspace_join_history",
+    "workspace_merge",
 ]
 
 [package.metadata.bazel.platform-sources]
