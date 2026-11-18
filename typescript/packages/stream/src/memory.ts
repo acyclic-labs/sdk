@@ -9,7 +9,7 @@ import type { Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -54,19 +54,16 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
-    const request = { kind: "heads" as const, ...structuredClone(options) };
-    await validateWireRequest(request);
-    return this.#project("heads", wireRequest(request));
+    const input = await validateWireRequest({ kind: "heads" as const, ...structuredClone(options) });
+    return this.#project("heads", input);
   }
   async head(path: string): Promise<import("./types.js").PathHead> {
-    const request = { kind: "head" as const, path };
-    await validateWireRequest(request);
-    return this.#project("head", wireRequest(request));
+    const input = await validateWireRequest({ kind: "head" as const, path });
+    return this.#project("head", input);
   }
   async tail(path: string): Promise<Sequence> {
-    const request = { kind: "tail" as const, path };
-    await validateWireRequest(request);
-    return fromBinary(TailResponseSchema, await this.#dispatch("tail", wireRequest(request))).tail;
+    const input = await validateWireRequest({ kind: "tail" as const, path });
+    return fromBinary(TailResponseSchema, await this.#dispatch("tail", input)).tail;
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
@@ -77,8 +74,7 @@ class RustStreamProvider implements StreamProvider {
 
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
     const authored = structuredClone(options);
-    await validateWireRequest({ kind: "fork", source, destination, options: authored });
-    const request = wireRequest({ kind: "fork", source, destination, options: authored });
+    const request = await validateWireRequest({ kind: "fork", source, destination, options: authored });
     return this.#project<ForkReceipt>("fork", request);
   }
 
