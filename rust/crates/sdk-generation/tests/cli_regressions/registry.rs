@@ -52,28 +52,25 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                 // captured source and compiler output immutable between the two runs.
                 let mut discovery = Vec::new();
                 let queries = commands::Queries::default();
+                let directory = support.join("automatic-config");
+                let foreign = support.join("foreign-automatic");
+                fs::create_dir_all(&foreign).unwrap();
+                let foreign = foreign.canonicalize().unwrap().join("Cargo.lock");
+                let foreign_bytes = b"invalid foreign automatic lock must not be selected\n";
+                fs::write(&foreign, foreign_bytes).unwrap();
+                let config = format!(
+                    "[resolver]\nlockfile-path = {}\n",
+                    serde_json::to_string(foreign.to_str().unwrap()).unwrap()
+                );
+                let archive = support.join("registry/demo-1.0.0.crate");
+                let original_archive = fs::read(&archive).unwrap();
                 for cargo_home in [true, false] {
-                    let directory = support.join("automatic-config");
                     let config_directory = if cargo_home {
                         directory.clone()
                     } else {
                         directory.join(".cargo")
                     };
                     fs::create_dir_all(&config_directory).unwrap();
-                    let foreign = support.join("foreign-automatic/Cargo.lock");
-                    fs::create_dir_all(foreign.parent().unwrap()).unwrap();
-                    let foreign = foreign
-                        .parent()
-                        .unwrap()
-                        .canonicalize()
-                        .unwrap()
-                        .join("Cargo.lock");
-                    let foreign_bytes = b"invalid foreign automatic lock must not be selected\n";
-                    fs::write(&foreign, foreign_bytes).unwrap();
-                    let config = format!(
-                        "[resolver]\nlockfile-path = {}\n",
-                        serde_json::to_string(foreign.to_str().unwrap()).unwrap()
-                    );
                     fs::write(config_directory.join("config.toml"), &config).unwrap();
                     // Negative control: maintained Cargo really discovers this automatic config.
                     let mut control = Command::new(&*runtime::cargo());
@@ -105,8 +102,6 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                         "{}",
                         output_message(&rejected)
                     );
-                    let archive = support.join("registry/demo-1.0.0.crate");
-                    let original_archive = fs::read(&archive).unwrap();
                     let result = queries.run(|| {
                         run_historical_generate_mode_with_authority(
                             &fixture,
