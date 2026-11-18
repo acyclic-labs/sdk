@@ -169,10 +169,10 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
         fs::read(relocated.path().join("Cargo.lock")).unwrap(),
         original
     );
-    let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
-    let imported_lock = fixture.path().join(directory).join("Cargo.lock");
+    let entry = fixture.stage_archive(&"a".repeat(40), "", false);
+    let imported_lock = entry.join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
-    release.checksum = pack_registry_archive(&fixture.path().join(directory), &archive);
+    let (release, archive) = fixture.pack_archive(&entry);
     let mut identity = ArchiveSource {
         package: release.package.clone(),
         version: release.num.clone(),
@@ -256,13 +256,15 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
 }
 
 #[test]
-fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
+fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
     let (release, archive) = fixture.archive(&revision, "");
-    let accepted =
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
+    let verify = |revision: &str, release: &RegistryVersion, archive: &Path| {
+        verify_archive(&metadata, fixture.path(), revision, release, archive)
+    };
+    let accepted = verify(&revision, &release, &archive).unwrap();
     assert!(accepted.0.yanked);
     assert_eq!(
         accepted.1.get("src/lib.rs"),
@@ -273,11 +275,9 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
         "//! Divergent checkout Rust bytes.\n",
     )
     .unwrap();
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("source bytes differ")
-    );
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("source bytes differ"));
     fs::copy(
         fixture.path().join("historical-fixture-0.1.0/src/lib.rs"),
         fixture.path().join("src/lib.rs"),
@@ -285,38 +285,36 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
     .unwrap();
     let mut wrong = release.clone();
     wrong.checksum = "b".repeat(64);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &wrong, &archive)
-            .unwrap_err()
-            .contains("checksum differs")
-    );
-    assert!(verify_archive(
-        &metadata,
-        fixture.path(),
-        &"c".repeat(40),
-        &release,
-        &archive
-    )
-    .unwrap_err()
-    .contains("revision differs"));
-    let (dirty, dirty_archive) = fixture.archive_with_dirty(&revision, "", true);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &dirty, &dirty_archive)
-            .unwrap_err()
-            .contains("dirty source")
-    );
-    let (escaping, archive) = fixture.archive(&revision, "../outside");
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &escaping, &archive)
-            .unwrap_err()
-            .contains("escapes")
-    );
-    let (release, archive) = fixture.archive(&revision, "examples");
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("differs from Cargo")
-    );
+    assert!(verify(&revision, &wrong, &archive)
+        .unwrap_err()
+        .contains("checksum differs"));
+    assert!(verify(&"c".repeat(40), &release, &archive)
+        .unwrap_err()
+        .contains("revision differs"));
+    let manifest = fixture.path().join("Cargo.toml");
+    fs::write(&manifest, "different manifest").unwrap();
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("source bytes differ"));
+    let entry = fixture.path().join("historical-fixture-0.1.0");
+    fs::copy(entry.join("Cargo.toml.orig"), manifest).unwrap();
+    fs::remove_file(entry.join("src/lib.rs")).unwrap();
+    let (release, archive) = fixture.pack_archive(&entry);
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("missing Cargo Rust source"));
+    fs::copy(fixture.path().join("src/lib.rs"), entry.join("src/lib.rs")).unwrap();
+    for (path, dirty, expected) in [("", true, "dirty source"), ("../outside", false, "escapes")] {
+        write_archive_vcs(&entry, &revision, path, dirty);
+        let (release, archive) = fixture.pack_archive(&entry);
+        let error = verify(&revision, &release, &archive).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    write_archive_vcs(&entry, &revision, "examples", false);
+    let (release, archive) = fixture.pack_archive(&entry);
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("differs from Cargo"));
     let mut metadata = metadata;
     metadata.packages[0].version = "0.1.1".parse().unwrap();
     assert!(
@@ -330,30 +328,6 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
         verify_archive(&metadata, fixture.path(), &revision, &invalid, &archive)
             .unwrap_err()
             .contains("invalid registry version")
-    );
-}
-#[test]
-fn archive_rejects_missing_target_source_and_changed_original_manifest() {
-    let fixture = Fixture::new();
-    let metadata = fixture.metadata();
-    let revision = "a".repeat(40);
-    let (mut release, archive) = fixture.archive(&revision, "");
-    let manifest = fixture.path().join("Cargo.toml");
-    let original_manifest = fs::read(&manifest).unwrap();
-    fs::write(&manifest, "different manifest").unwrap();
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("source bytes differ")
-    );
-    fs::write(manifest, original_manifest).unwrap();
-    fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
-    release.checksum =
-        pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("missing Cargo Rust source")
     );
 }
 #[test]
@@ -459,32 +433,36 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
-    for name in [
+    let names = [
         "descriptor.bin",
         "input.json",
         "schema.proto",
         "build.rs",
         ".cargo/config.toml",
-    ] {
-        let path = fixture.path().join(name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, b"original archived input").unwrap();
-        let (mut release, archive) = fixture.archive(&revision, "");
-        let archived = fixture.path().join("historical-fixture-0.1.0").join(name);
-        fs::create_dir_all(archived.parent().unwrap()).unwrap();
-        fs::copy(&path, &archived).unwrap();
-        release.checksum =
-            pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
-        let (_, files) =
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
+    ];
+    let entry = fixture.stage_archive(&revision, "", false);
+    let original = b"original archived input";
+    for root in [fixture.path(), entry.as_path()] {
+        for name in names {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, original).unwrap();
+        }
+    }
+    let (release, archive) = fixture.pack_archive(&entry);
+    let (_, files) =
+        verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
+    for name in names {
         assert!(files.contains_key(name));
+        let path = fixture.path().join(name);
         fs::write(&path, b"changed source input").unwrap();
+        let error =
+            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap_err();
         assert!(
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-                .unwrap_err()
-                .contains("source bytes differ")
+            error.contains("source bytes differ") && error.ends_with(name),
+            "{name}: {error}"
         );
-        fs::copy(&archived, &path).unwrap();
+        fs::write(path, original).unwrap();
     }
 }
 
