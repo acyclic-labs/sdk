@@ -19,7 +19,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "step=capture-native-hooks: {error}; recovery: cargo run --locked -p acyclic-sdk-fuzz --example capture_native_hooks -- rust/fuzz/corpus/native_hooks"
+            "step=capture-native-hooks: {error}; recovery: bazel run //rust/fuzz:capture_native_hooks_example -- rust/fuzz/corpus/native_hooks"
         );
         std::process::exit(1);
     }
