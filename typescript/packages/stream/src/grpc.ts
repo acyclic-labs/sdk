@@ -17,7 +17,7 @@ import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/p
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { StreamError, type StreamRefusal } from "./types.js";
 import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
@@ -51,13 +51,14 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const follow: Follow = async function* (request, callOptions) {
     const { signal, timeoutMs } = callOptions ?? {};
     const { path, from, filter, whenAbsent } = create(wire.FollowRequestSchema, structuredClone(request));
-    await validateWireRequest({ kind: "follow", path, from });
+    if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");
+    const authored: FollowOptions = { from, whenAbsent: whenAbsent === wire.WhenAbsent.WAIT ? "wait" : "not_found",
+      ...(filter === undefined ? {} : { filter }) };
+    await validateFollowRequest(path, authored);
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
     const controller = createLinkedAbortController(deadline.signal, signal);
     try {
-      if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");
-      for await (const record of sessions.follow(path, { from, signal: controller.signal, whenAbsent: whenAbsent === wire.WhenAbsent.WAIT ? "wait" : "not_found",
-        ...(filter === undefined ? {} : { filter }) })) {
+      for await (const record of sessions.follow(path, { ...authored, signal: controller.signal })) {
         const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
         yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
       }
