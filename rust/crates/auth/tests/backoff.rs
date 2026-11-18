@@ -54,7 +54,8 @@ proptest! {
         doublings in prop_oneof![0..=65_u32, any::<u32>()],
         draw in 0.0_f64..=1.0,
     ) {
-        let upper = (base * 2.0_f64.powi(i32::try_from(doublings.min(52)).unwrap())).min(maximum);
+        let exponent = i32::try_from(doublings).map_or(52, |count| count.min(52));
+        let upper = (base * 2.0_f64.powi(exponent)).min(maximum);
         let actual = Backoff::fractional_delay_ms_at(base, maximum, doublings, draw);
         prop_assert_eq!(actual, (upper * (0.5 + draw / 2.0)).ceil());
         prop_assert!((upper * 0.5).ceil() <= actual && actual <= upper.ceil());
