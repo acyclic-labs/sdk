@@ -487,9 +487,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
     fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
         decode(bytes).map_err(|_| unavailable())
     }
-    let checked = match ObjectsMethod::from_http_route(route)
-        .ok_or(wire::ErrorCode::InvalidArgument)?
-    {
+    match ObjectsMethod::from_http_route(route).ok_or(wire::ErrorCode::InvalidArgument)? {
         ObjectsMethod::PutBlob => {
             let request: wire::PutBlobRequest = decode(input)?;
             let digest = convert::digest(request.digest.as_ref())?;
@@ -540,9 +538,8 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         }
         ObjectsMethod::Collect => reply::<wire::CollectResponse>(output).map(drop),
         ObjectsMethod::Usage => reply::<wire::UsageResponse>(output).map(drop),
-        ObjectsMethod::Availability => return Err(wire::ErrorCode::InvalidArgument.into()),
-    };
-    checked.map_err(|_| unavailable())
+        ObjectsMethod::Availability => Err(wire::ErrorCode::InvalidArgument.into()),
+    }
 }
 
 #[cfg(test)]

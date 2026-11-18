@@ -1283,7 +1283,12 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
                 status: status as i32,
                 ..reply.clone()
             };
-            assert!(crate::convert::delete(&invalid, None).is_err());
+            assert_eq!(
+                crate::convert::delete(&invalid, None)
+                    .expect_err("malformed reply")
+                    .code,
+                crate::wire::ErrorCode::Unavailable
+            );
         }
     }
     assert_eq!(
