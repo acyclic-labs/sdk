@@ -2,7 +2,9 @@
 
 mod contract_errors {
     mod cleanup_tests {
-        use acyclic_harness_core::{Error, wire::ErrorCode};
+        use acyclic_harness_core::Error;
+        #[cfg(not(target_arch = "wasm32"))]
+        use acyclic_harness_core::wire::ErrorCode;
 
         #[test]
         fn classified_refusals_retain_original_parser_categories()
@@ -47,7 +49,13 @@ mod contract_errors {
                 assert_eq!(error.code(), ErrorCode::Storage);
                 assert_eq!(error.uncertain(), uncertain);
                 assert_eq!(error.leaves_outcome_uncertain(), uncertain);
-                assert_eq!(error.leaves_effect_uncertain(), uncertain);
+                let classification = serde_json::to_value(error.classification())?;
+                assert_eq!(
+                    classification
+                        .get("effect_uncertain")
+                        .and_then(serde_json::Value::as_bool),
+                    Some(uncertain)
+                );
                 let mut before = retained.source();
                 let original = loop {
                     let cause = before.ok_or("original stream source disappeared")?;
