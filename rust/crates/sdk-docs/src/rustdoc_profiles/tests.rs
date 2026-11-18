@@ -292,24 +292,20 @@ fn real_binding_rustdoc_preserves_documentation_and_ownership_when_requested() {
         &owner.rustdoc_package.replace('-', "_"),
     )
     .unwrap();
-    assert!(!items.is_empty());
     assert!(items.iter().all(|item| {
         item.rustdoc_package == "acyclic-fs-napi" && item.published_owner == "acyclic-fs"
     }));
-    let top_level = items
+    let mut top_level = items
         .iter()
         .filter(|item| item.key.path.matches("::").count() == 1)
-        .collect::<Vec<_>>();
-    assert!(!top_level.is_empty());
-    assert!(top_level.iter().all(|item| item.docs_present));
+        .peekable();
+    assert!(top_level.peek().is_some());
+    assert!(top_level.all(|item| item.docs_present));
 
     // These types belong to the binding crate. A projection through the
     // published core owner would lose the binding namespace entirely.
     assert!(items.iter().any(|item| {
-        item.key.kind == "struct"
-            && item.key.path.starts_with("acyclic_fs_napi::Native")
-            && item.rustdoc_package == "acyclic-fs-napi"
-            && item.published_owner == "acyclic-fs"
+        item.key.kind == "struct" && item.key.path.starts_with("acyclic_fs_napi::Native")
     }));
 }
 
