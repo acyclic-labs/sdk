@@ -54,10 +54,15 @@ path = "tests/conversation_contract.rs"
 name = "model_usage_cost"
 path = "tests/model_usage_cost.rs"
 
+[[test]]
+name = "context_manifest"
+path = "tests/context_manifest.rs"
+
 [package.metadata.bazel]
-test-narrow-runfiles = ["conversation_contract", "model_usage_cost"]
+test-narrow-runfiles = ["context_manifest", "conversation_contract", "model_usage_cost"]
 
 [package.metadata.bazel.test-dependencies]
+context_manifest = ["acyclic_fs", "acyclic_fs_work", "acyclic_harness_core", "blake3", "proptest", "serde_json", "serde_saphyr", "tokio"]
 contract_error_cases = ["acyclic_fs", "acyclic_fs_work", "acyclic_harness_core", "acyclic_stream", "acyclic_test_support", "proptest", "prost", "serde_json", "tempfile", "tracing", "tracing_subscriber"]
 conversation_contract = ["acyclic_harness_core", "serde_json", "uuid"]
 model_usage_cost = ["acyclic_harness_core", "acyclic_test_support", "proptest", "serde_json"]
