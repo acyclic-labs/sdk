@@ -13,11 +13,11 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
         .create_volume_with_id(id, config(), B, &cancel)
         .await?
         .value;
-    let head = open_checkout(&first, pinned(), &cancel).await?;
+    let head = open_checkout(&first, CheckoutMode::read_only_pinned(), &cancel).await?;
     let exact = retry
         .checkout(
             GenerationSelector::Exact(head.generation_id()),
-            pinned(),
+            CheckoutMode::read_only_pinned(),
             B,
             &cancel,
         )
@@ -68,7 +68,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                 assert_eq!(spent.authority_records_appended, 0);
             } else {
                 let first = result?;
-                let head = open_checkout(&first, pinned(), &cancel).await?;
+                let head = open_checkout(&first, CheckoutMode::read_only_pinned(), &cancel).await?;
                 let published_head = head
                     .base_authority_head()
                     .ok_or("head checkout lost its authority observation")?;
@@ -79,13 +79,14 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                     .create_volume_with_id(id, config(), &restricted, &cancel)
                     .await?;
                 let retried = original.receipt().unwrap();
-                let retry_head = open_checkout(&retry, pinned(), &cancel).await?;
+                let retry_head =
+                    open_checkout(&retry, CheckoutMode::read_only_pinned(), &cancel).await?;
                 assert_eq!(retry_head.generation_id(), head.generation_id());
                 assert_eq!(retry_head.base_authority_head(), Some(published_head));
                 let exact = retry
                     .checkout(
                         GenerationSelector::Exact(head.generation_id()),
-                        pinned(),
+                        CheckoutMode::read_only_pinned(),
                         B,
                         &cancel,
                     )

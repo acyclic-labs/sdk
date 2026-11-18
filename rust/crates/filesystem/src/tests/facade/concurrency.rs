@@ -94,7 +94,7 @@ async fn disjoint_rebase_composes_directory_bindings_without_losing_siblings() -
     let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
     assert!(matches!(decision, RebaseDecision::Safe { .. }));
     commit(&mut local, &cancel).await?;
-    let mut final_tree = open_checkout(&volume, pinned(), &cancel).await?;
+    let mut final_tree = open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancel).await?;
     for (name, bytes) in [
         ("anchor", b"base".as_slice()),
         ("left", b"L"),

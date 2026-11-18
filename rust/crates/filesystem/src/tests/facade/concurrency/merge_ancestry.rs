@@ -129,11 +129,16 @@ async fn composed_merge(stale: bool, native: bool) -> TestResult {
         "composition discarded the original prepared merge ancestry"
     );
     let original_merge = volume
-        .checkout(GenerationSelector::Exact(prepared), pinned(), B, &cancel)
+        .checkout(
+            GenerationSelector::Exact(prepared),
+            CheckoutMode::read_only_pinned(),
+            B,
+            &cancel,
+        )
         .await?
         .value;
     assert_eq!(original_merge.root().parents, parents);
-    let mut final_tree = open_checkout(&volume, pinned(), &cancel).await?;
+    let mut final_tree = open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancel).await?;
     assert_eq!(final_tree.generation_id(), merge.generation_id());
     for name in ["a", "b"] {
         assert_eq!(

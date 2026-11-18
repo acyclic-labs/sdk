@@ -248,11 +248,13 @@ async fn every_post_put_creation_fault_retries_from_a_complete_authenticated_clo
                     (fs.create_volume_with_id(volume_id, config(), B, &cancellation)).await?;
                 assert_eq!(retried.value.id(), volume_id);
                 let reopened = (fs.open_volume(volume_id, B, &cancellation)).await?;
-                let checkout =
-                    (reopened
-                        .value
-                        .checkout(GenerationSelector::Head, pinned(), B, &cancellation))
-                    .await?;
+                let checkout = (reopened.value.checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode::read_only_pinned(),
+                    B,
+                    &cancellation,
+                ))
+                .await?;
                 assert_eq!(checkout.value.volume_id(), volume_id);
                 assert!(!checkout.value.has_pending_mutations());
             }
@@ -311,7 +313,14 @@ async fn every_pre_object_fault_preserves_creation_and_checkout_retry()
     let mut checkout = None;
     for cut in 1..=64 {
         control.arm(cut);
-        match (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation)).await {
+        match (volume.checkout(
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
+            B,
+            &cancellation,
+        ))
+        .await
+        {
             Ok(receipt) => {
                 checkout = Some(receipt.value);
                 break;

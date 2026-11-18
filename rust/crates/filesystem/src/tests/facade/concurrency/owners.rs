@@ -407,7 +407,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
             .value,
         LivePublicationObservation::AlreadyCommitted { .. }
     ));
-    let mut current = open_checkout(&volume, pinned(), &cancel).await?;
+    let mut current = open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancel).await?;
     for name in ["a", "b"] {
         assert_eq!(
             current

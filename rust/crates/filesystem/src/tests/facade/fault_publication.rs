@@ -426,8 +426,13 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
             .count(),
         1
     );
-    let mut reopened =
-        (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation)).await?;
+    let mut reopened = (volume.checkout(
+        GenerationSelector::Head,
+        CheckoutMode::read_only_pinned(),
+        B,
+        &cancellation,
+    ))
+    .await?;
     let bytes = (reopened.value.read_file_range(
         &path("indeterminate-file")?,
         ByteRange {

@@ -25,14 +25,6 @@ use live_fixture::writable_live;
 mod checkout_serialized;
 use checkout_serialized::serialized_config;
 
-fn pinned() -> CheckoutMode {
-    CheckoutMode::read_only_pinned()
-}
-
-fn root_path() -> Result<NamespacePath, Box<dyn std::error::Error>> {
-    Ok(NamespacePath::new(Vec::new(), config().limits)?)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CheckoutState {
     base_generation_root: ObjectId,

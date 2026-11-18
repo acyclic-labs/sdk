@@ -193,7 +193,7 @@ async fn disjoint_proposals_with_different_bases_share_one_append_and_original_r
         ),
         "normalization replaced the original operation identity"
     );
-    let mut current = open_checkout(&volume, pinned(), &cancel).await?;
+    let mut current = open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancel).await?;
     for name in ["a", "b", "c"] {
         assert_eq!(
             current
