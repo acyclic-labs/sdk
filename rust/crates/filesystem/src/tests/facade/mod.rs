@@ -6,9 +6,9 @@ use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[path = "../../../tests/support/checkout_modes.rs"]
-mod checkout_modes;
-use checkout_modes::writable_pinned;
+#[path = "../../../tests/support/checkout_fixture.rs"]
+mod checkout_fixture;
+use checkout_fixture::{path, writable_pinned};
 
 fn config() -> VolumeConfig {
     VolumeConfig::portable(Lifecycle::Ephemeral)
@@ -70,16 +70,6 @@ fn writable_live() -> CheckoutMode {
         consistency: ConsistencyMode::Live,
         mutations: MutationMode::DirectLive,
     }
-}
-
-fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
-    Ok(NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            value.as_bytes().to_vec(),
-        )?],
-        config().limits,
-    )?)
 }
 
 fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {

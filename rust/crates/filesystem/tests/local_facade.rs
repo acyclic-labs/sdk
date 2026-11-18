@@ -1,7 +1,9 @@
 //! Public durable filesystem reopening and shared object-cache contracts.
-#![cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#![cfg(not(target_arch = "wasm32"))]
 
-#[path = "support/checkout_modes.rs"]
-mod checkout_modes;
+#[path = "support/allow_publication.rs"]
+mod allow_publication;
+#[path = "support/checkout_fixture.rs"]
+mod checkout_fixture;
 #[path = "local_facade/facade/mod.rs"]
 mod facade;
