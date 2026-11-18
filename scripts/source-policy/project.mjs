@@ -235,6 +235,17 @@ export function projectPollingSites(sources, {historical = false} = {}) {
     const local = index === undefined ? digest(node.getText()) : index - scope.start;
     return {position: scope.position + ':local:' + node.kind + ':' + local, unit: scope.unit};
    }
+   if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+    && ts.isVariableDeclarationList(node.parent) && (node.parent.flags & ts.NodeFlags.Const)
+    && ts.isVariableStatement(node.parent.parent) && ts.isSourceFile(node.parent.parent.parent)) {
+    const value = node.initializer;
+    // A primitive const cannot be mutated through an alias. Other initializers
+    // retain their file context until the graph models their writes and effects.
+    if (ts.isStringLiteralLike(value) || ts.isNumericLiteral(value) || ts.isBigIntLiteral(value)
+     || value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword
+     || value.kind === ts.SyntaxKind.NullKeyword)
+     return {position: file + ':const:' + node.name.text, unit: digest([value.kind, value.getText()])};
+   }
    // Type-only JSDoc bindings and empty module declarations have no executable token.
    return {position: file + ':' + node.kind + ':' + (index ?? digest(node.getText())), unit: source.fingerprint};
   });
