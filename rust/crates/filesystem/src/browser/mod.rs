@@ -71,7 +71,7 @@ pub async fn open_authority(
     objects.close();
     let provider =
         acyclic_stream::BrowserStream::open(&authority_database_name(name), limits).await?;
-    let provider: std::sync::Arc<dyn acyclic_stream::StreamProvider> =
-        std::sync::Arc::new(provider);
+    let provider: acyclic_stream::ProviderOwner<dyn acyclic_stream::StreamProvider> =
+        acyclic_stream::ProviderOwner::new(provider);
     Ok(crate::StreamAuthorityStore::new(provider))
 }
