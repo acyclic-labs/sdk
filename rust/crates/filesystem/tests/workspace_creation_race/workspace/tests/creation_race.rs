@@ -6,7 +6,14 @@
 //! different, reproducible number of times before every provider call while
 //! both forks run on one task, which exhaustively perturbs where the two
 //! operations interleave.
-use super::*;
+use acyclic_fs::{
+    EmbeddedCapabilities, ForkOptions, Fs, FsError, IdempotencyKey, LogicalObjectStore,
+    StreamAuthorityStore, WorkspaceError,
+};
+use acyclic_stream::OwnedBytes;
+use std::{error::Error, sync::Arc};
+
+use crate::fixtures::fork_workspace;
 use acyclic_stream::StreamProviderExt as _;
 use std::cell::Cell;
 use std::future::Future;
@@ -161,10 +168,8 @@ impl acyclic_stream::StreamProvider for YieldStream {
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::NativeStreamProvider for YieldStream {}
 
-type RaceFs = Fs<
-    crate::distributed::StreamAuthorityStore<YieldStream>,
-    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
->;
+type RaceFs =
+    Fs<StreamAuthorityStore<YieldStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>;
 
 /// Races two forks of one pinned generation into the same destination.
 /// Returns how many operations won and whether their provider calls interleaved.
@@ -176,9 +181,9 @@ async fn race(seed: u64, keys: [IdempotencyKey; 2]) -> Result<(usize, bool), Box
     });
     let objects = acyclic_objects::MemoryObjects::memory();
     let fs: RaceFs = Fs::new(
-        crate::distributed::StreamAuthorityStore::new(Arc::clone(&stream)),
-        crate::LogicalObjectStore::new(Arc::new(objects)),
-        crate::EmbeddedCapabilities::MEMORY,
+        StreamAuthorityStore::new(Arc::clone(&stream)),
+        LogicalObjectStore::new(Arc::new(objects)),
+        EmbeddedCapabilities::MEMORY,
     );
     let parent = unbounded!(fs, create_workspace("race-parent"))?;
     parent.write_text("/base.txt", "base").await?;
