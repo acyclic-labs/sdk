@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, cmp::Ordering, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -38,6 +38,76 @@ pub struct Layout {
     pub rows: Vec<Row>,
     /// Effective display width (at least one).
     pub width: usize,
+}
+
+/// Prompt display state shared by painting and pointer input.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Viewport {
+    /// First displayed visual row.
+    pub scroll: usize,
+    /// Horizontal cell offset when wrapping is disabled.
+    pub horizontal: usize,
+    /// Absolute cursor cell supplied by the renderer, if visible.
+    pub cursor: Option<(u16, u16)>,
+}
+
+impl Viewport {
+    /// Reveal the editor cursor and return its cell relative to the viewport.
+    pub fn follow_cursor(
+        &mut self,
+        layout: &Layout,
+        offset: usize,
+        width: u16,
+        height: u16,
+        wrap: bool,
+    ) -> Option<(u16, u16)> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let (row, column) = layout.position(offset);
+        let (width, height) = (usize::from(width), usize::from(height));
+        self.horizontal = if wrap {
+            0
+        } else {
+            self.horizontal
+                .min(column)
+                .max(column.saturating_sub(width - 1))
+        };
+        self.scroll = self
+            .scroll
+            .min(row)
+            .max(row.saturating_sub(height - 1))
+            .min(layout.rows.len().saturating_sub(height));
+        let y = row.checked_sub(self.scroll)?;
+        let x = column.checked_sub(self.horizontal)?;
+        if y >= height || x >= width {
+            return None;
+        }
+        Some((u16::try_from(x).ok()?, u16::try_from(y).ok()?))
+    }
+
+    /// Resolve a clipped, relative pointer cell, scrolling one row for a drag
+    /// above (`Less`) or below (`Greater`) the viewport.
+    pub fn hit_test(
+        &mut self,
+        layout: &Layout,
+        column: u16,
+        row: u16,
+        drag: Ordering,
+        wrap: bool,
+    ) -> usize {
+        self.scroll = match drag {
+            Ordering::Less => self.scroll.saturating_sub(1),
+            Ordering::Greater => self
+                .scroll
+                .saturating_add(1)
+                .min(layout.rows.len().saturating_sub(1)),
+            Ordering::Equal => self.scroll,
+        };
+        let row = self.scroll.saturating_add(usize::from(row));
+        let horizontal = if wrap { 0 } else { self.horizontal };
+        layout.hit_test(row, horizontal.saturating_add(usize::from(column)))
+    }
 }
 
 impl Default for Layout {

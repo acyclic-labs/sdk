@@ -6,6 +6,7 @@ use crate::term::Capabilities;
 use crate::{Action, CompletionMenu, Editor, InputKeymap, Motion, Viewport};
 use acyclic_harness_tui_core::{ChordContinuation, DecodedKey, PendingChord, decode_key};
 use ratatui::layout::Rect;
+use std::cmp::Ordering;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Effects requiring application context or operating-system access.
@@ -720,21 +721,20 @@ impl PromptInput {
         self.last_interrupt = None;
         self.finish_search(now_ms, true, &mut effects);
         let layout = self.editor.layout(usize::from(area.width));
-        if drag && event.row < area.y {
-            viewport.scroll = viewport.scroll.saturating_sub(1);
-        }
-        if drag && event.row >= area.bottom() {
-            viewport.scroll = (viewport.scroll + 1).min(layout.rows.len().saturating_sub(1));
-        }
-        let row =
-            usize::from(event.row.saturating_sub(area.y).min(area.height - 1)) + viewport.scroll;
-        let column = usize::from(event.column.saturating_sub(area.x).min(area.width))
-            + if self.editor.settings().wrap {
-                0
-            } else {
-                viewport.horizontal
-            };
-        let offset = layout.hit_test(row, column);
+        let scroll = if drag && event.row < area.y {
+            Ordering::Less
+        } else if drag && event.row >= area.bottom() {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        };
+        let offset = viewport.hit_test(
+            &layout,
+            event.column.saturating_sub(area.x).min(area.width),
+            event.row.saturating_sub(area.y).min(area.height - 1),
+            scroll,
+            self.editor.settings().wrap,
+        );
         self.last_activity = now_ms;
         if down {
             let count = self

@@ -57,6 +57,8 @@ pub use transcript::{BlockKind, TranscriptRows};
 #[cfg(not(target_arch = "wasm32"))]
 mod widget;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use acyclic_harness_tui_core::Viewport;
 pub use acyclic_harness_tui_core::{
     ACTIONS, Action, AppAction, Binding, Cell, DEFAULT_SETTINGS, Editor, KEYMAP, Layout, Motion,
     NotificationPolicy, Row, UiSettings, keymap_help, named_action,
@@ -84,7 +86,7 @@ pub use prompt_input::{InputEffect, PromptInput};
 #[cfg(not(target_arch = "wasm32"))]
 pub use ratatui;
 #[cfg(not(target_arch = "wasm32"))]
-pub use widget::{PromptWidget, Viewport};
+pub use widget::PromptWidget;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use screen::{Screen, ScreenAreas};
