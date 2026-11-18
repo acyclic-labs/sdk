@@ -1707,6 +1707,7 @@ rust_test(
         "tests/workspace_contracts/tests/generation.rs",
         "tests/workspace_contracts/tests/identity.rs",
         "tests/workspace_contracts/tests/mod.rs",
+        "tests/workspace_contracts/tests/reads.rs",
         "tests/workspace_contracts/workspace.rs",
     ],
     edition = "2024",
