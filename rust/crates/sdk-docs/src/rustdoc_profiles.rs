@@ -193,9 +193,7 @@ impl ProfileSpec {
         let mut id = String::new();
         let mut append = |prefix: &str, value: &str| {
             id.push_str(prefix);
-            for byte in value.bytes() {
-                crate::digest::push_hex_byte(&mut id, byte);
-            }
+            crate::digest::push_hex(&mut id, value.as_bytes());
         };
         append("p", &self.package);
         append(";t", &self.target);
