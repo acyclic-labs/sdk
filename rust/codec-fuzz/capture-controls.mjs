@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {readFile, writeFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
 
 if (process.platform === 'win32') throw Error('Capture controls require POSIX process-group signals');
 const directory = fileURLToPath(new URL('.', import.meta.url));
+const repository = resolve(directory, '../..');
 let active, interrupted, stopFailure;
 function stop(signal) {
   interrupted ??= signal;
@@ -20,7 +22,7 @@ process.on('SIGTERM', terminate);
 
 async function run(binary, args) {
   if (interrupted) throw Error(`controls interrupted by ${interrupted}`, {cause: stopFailure});
-  const child = spawn(binary, args, {cwd: directory, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
+  const child = spawn(binary, args, {cwd: directory, env: {...process.env, ACYCLIC_TEST_SOURCE_ROOT: repository}, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
   active = child;
   let stdout = '', stderr = '', launchError;
   child.stdout.on('data', bytes => { stdout += bytes; });
@@ -73,7 +75,7 @@ try {
     let bytes = altered.as_slice();
 `;
   await mutation(writer, originalWriter, originalWriter.replace(boundary, altered + boundary), async () => {
-    const result = await run('cargo', ['run', '--locked', '--example', 'capture', '--', '--only-actors']);
+    const result = await run('bazel', ['run', '//rust/codec-fuzz:capture_example', '--', '--only-actors']);
     assert.equal(result.code, 1, result.output);
     assert.match(result.output, /encoder changed golden corpus\/actor_codecs\/state-acs-v1/);
     console.log('ACTOR_WRITER_CONTROL_DETECTED');

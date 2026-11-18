@@ -22,15 +22,16 @@ exploring larger valid frames or snapshots. Reproduce a crash with
 `cargo +nightly fuzz run --fuzz-dir . TARGET artifacts/TARGET/crash-HASH`; retain its bytes
 and fix the production decoder before treating the campaign as complete.
 
-Capture and replay SDK writer output:
+Capture and replay SDK writer output against this checkout:
 
 ```sh
-cargo run --locked --example capture
-cargo run --locked --example replay
+export ACYCLIC_TEST_SOURCE_ROOT="$(git rev-parse --show-toplevel)"
+bazel run //rust/codec-fuzz:capture_example
+bazel run //rust/codec-fuzz:replay_example
 ```
 
 Pass a target name to replay only its retained corpus, for example
-`cargo run --locked --example replay -- actor_codecs`. The Actors oracle first
+`bazel run //rust/codec-fuzz:replay_example -- actor_codecs`. The Actors oracle first
 requires admission of the production writers shared with capture, including
 their original invocation, checkpoint and effect values. The current invocation
 wire capture comes from `Store::enqueue_invoke` and the returned ticket's original
@@ -63,7 +64,7 @@ record. This finite provider model does not establish physical
 recovery, distributed ownership or complete branch coverage.
 
 Call schedules reuse the original Actors corpus and its provenance without
-copying it: `cargo run --locked --example replay -- actor_codecs call_record`
+copying it: `bazel run //rust/codec-fuzz:replay_example -- actor_codecs call_record`
 or `cargo +nightly fuzz run --fuzz-dir . call_record corpus/actor_codecs`.
 These bytes select arbitrary schedules; they are not a call wire format.
 Decoder replay performs no per-input call commits. Keep schedule exploration
@@ -75,7 +76,7 @@ that the earlier `Keep`-only producer/corpus misses lost `Set`, requires the sam
 expanded oracle to reject both mutations, then captures and replays the original
 writers. Captures include zero, ordinary and maximum unsigned deadlines through
 the shared transition encoder. Refresh only these Actors captures with
-`cargo run --locked --example capture -- --only-actors --extend-goldens`.
+`bazel run //rust/codec-fuzz:capture_example -- --only-actors --extend-goldens`.
 To retain one new case without recapturing unrelated historical writers, add
 `--actor-seed=transition-paused`. This selects the same original producer and
 golden checks; all other corpus frames and provenance remain retained.
@@ -84,7 +85,7 @@ repeating source mutations already qualified on unchanged decoder/oracle paths.
 On a POSIX host, run `node capture-actors.mjs` to refresh the actual Runtime socket deliveries,
 capture current Actors writers and replay the retained corpus. The temporary
 socket observer is restored before codec capture, including on SIGINT and SIGTERM
-after the owned Cargo process stops. Run `node --test capture-actors-interruption.mjs`
+after the owned Bazel command stops. Run `node --test capture-actors-interruption.mjs`
 to check interruption and exact source restoration. Windows capture is refused
 before any source mutation; the same regression checks that refusal there without
 sending a force-termination signal. Runtime packets are addressed
@@ -116,7 +117,7 @@ It compares selected entries with the canonical full decoder, preserves context,
 attributes and publication identity, and checks idempotence. Three-entry v1,
 v2 and opaque writer outputs exercise partial selection and whole-record
 authority. Refresh only those additions with
-`cargo run --locked --example capture -- --only-stream-projection --extend-goldens`.
+`bazel run //rust/codec-fuzz:capture_example -- --only-stream-projection --extend-goldens`.
 The retained production mutation and scoped replay command are documented in
 [`projection-fuzz`](../proofs/projection-fuzz/README.md).
 The [whole-record](../proofs/projection-cost/README.md) and
@@ -149,13 +150,13 @@ The thirty-one `harness_codecs/agent-v14-*` files retain the original version-14
 Refresh only the current agent record and checkpoint writers with:
 
 ```sh
-cargo run --locked --example capture -- --only-agents --extend-goldens
+bazel run //rust/codec-fuzz:capture_example -- --only-agents --extend-goldens
 ```
 
 Capture the public agent command, binding, invocation and reply writers with:
 
 ```sh
-cargo run --locked --example capture -- --only-agent-controls --extend-goldens
+bazel run //rust/codec-fuzz:capture_example -- --only-agent-controls --extend-goldens
 cargo +nightly fuzz run --fuzz-dir . agent_controls -- -runs=1000
 ```
 
@@ -215,7 +216,7 @@ These are SDK writer captures, not hosted traffic or
 evidence of authentication, dispatch, restart or distributed progress.
 
 Capture cache facts, summary references and epoch snapshots through their original
-writers with `cargo run --locked --example capture -- --only-resources --extend-goldens`.
+writers with `bazel run //rust/codec-fuzz:capture_example -- --only-resources --extend-goldens`.
 The existing `harness_codecs` target checks their public decoders, round trips,
 unsupported versions, mandatory portable text, native provenance and snapshot
 source/range/preparation identity. Its genesis envelope comes from a real
@@ -403,7 +404,7 @@ After a reviewed protobuf schema change, refresh only the named protobuf
 producers and their table selectors:
 
 ```sh
-cargo run --locked --example capture -- --only-protobuf --extend-goldens
+bazel run //rust/codec-fuzz:capture_example -- --only-protobuf --extend-goldens
 ```
 
 Existing payloads must still compare equal through the current descriptor.
@@ -415,7 +416,7 @@ Capture only the original Objects service writer outputs, without invoking other
 service producers or default-message writers:
 
 ```sh
-cargo run --locked --example capture -- --only-objects-protobuf --extend-goldens
+bazel run //rust/codec-fuzz:capture_example -- --only-objects-protobuf --extend-goldens
 ```
 
 This uses the same protobuf and protobuf JSON capture path, original Objects
@@ -430,9 +431,9 @@ and object member order is unspecified. Every other format compares exact bytes.
 Ordinary comparison retains the original captured packet and its provenance;
 it never replaces them with an equivalent ordering. Controls require a changed
 message value or selector to fail. After reviewing an intentional
-format change, run `cargo run --locked --example capture -- --accept-goldens`.
+format change, run `bazel run //rust/codec-fuzz:capture_example -- --accept-goldens`.
 To add successor frames while refusing changes to existing baselines, use
-`cargo run --locked --example capture -- --extend-goldens`. Both modes retain
+`bazel run //rust/codec-fuzz:capture_example -- --extend-goldens`. Both modes retain
 equivalent existing protobuf packets instead of replacing their map order.
 The producer records each path, byte count, SHA-256 and actual producing call in
 `corpus/SOURCES.tsv`. Regenerate the complete protobuf corpus when descriptors
@@ -443,7 +444,7 @@ Original v1 state-record captures retain their names and bytes as typed-refusal
 inputs; current writers use distinct `state-v2-` names for publication provenance.
 Objects envelopes likewise retain v1 captures and publish distinct `head-v2-`
 captures. Refresh only these original writer seeds with
-`cargo run --locked --example capture -- --only-objects --extend-goldens`.
+`bazel run //rust/codec-fuzz:capture_example -- --only-objects --extend-goldens`.
 The retired Actor timer capture remains historical input; it has no current
 production timer decoder or producer join.
 
@@ -486,7 +487,7 @@ node capture-mcp.mjs /tmp/mcp-capture/node_modules/@modelcontextprotocol/server-
 npm install --prefix /tmp/mcp-services --ignore-scripts --no-audit --no-fund --save-exact @modelcontextprotocol/server-everything@2.1.0
 node capture-mcp.mjs /tmp/mcp-services/node_modules/@modelcontextprotocol/server-everything stdio
 node capture-mcp.mjs /tmp/mcp-services/node_modules/@modelcontextprotocol/server-everything http
-cargo run --locked --example replay
+bazel run //rust/codec-fuzz:replay_example
 ```
 
 Filesystem discovery uses an empty temporary directory. Reference-server
@@ -515,7 +516,7 @@ and its `SOURCES.tsv` provenance remain unchanged. Neither hook establishes
 durable terminal authority.
 
 Regenerate that original usage frame and both manifests with
-`cargo run --locked --example capture -- --only-model-usage --extend-goldens`.
+`bazel run //rust/codec-fuzz:capture_example -- --only-model-usage --extend-goldens`.
 
 The actual metadata fuzz entry also refuses to skip JSON accepted by the
 production decoder. Its fallback parse runs only when the byte hook rejects;
@@ -562,7 +563,7 @@ root to change the actual decoder's logical byte count. The same corpus must
 reject the writer mismatch:
 
 ```sh
-cargo run --locked --example replay -- filesystem_pages/historical-
+bazel run //rust/codec-fuzz:replay_example -- filesystem_pages/historical-
 ```
 
 Run from `rust/codec-fuzz`, then reverse the patch and require the same replay to
@@ -602,7 +603,7 @@ The three `object_persistence/local-*` captures came from production
 `4042dd6d3213da1373a5293bdbb08b28f2ef34cc`, without redaction:
 
 ```sh
-cargo run --locked --features storage-schedules --example capture -- --only-objects --extend-goldens
+bazel run //rust/codec-fuzz:capture_example -- --only-objects --extend-goldens
 cargo +nightly fuzz run --fuzz-dir . --features storage-schedules object_persistence
 ```
 
@@ -687,12 +688,12 @@ regression covers payloads larger than that chunk, which otherwise need not
 trigger compaction and can cause a false fuzz crash.
 
 ```sh
-cargo run --features storage-schedules --example capture -- --accept-goldens
-cargo run --features storage-schedules --example capture -- --only-storage --extend-goldens
+bazel run //rust/codec-fuzz:capture_example -- --accept-goldens
+bazel run //rust/codec-fuzz:capture_example -- --only-storage --extend-goldens
 cargo +nightly fuzz run --fuzz-dir . --features storage-schedules object_schedule -- -max_total_time=30
-cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0
-cargo run --features storage-schedules --example object_schedules -- --all-sites --seed medium-false-0-1-0
-cargo run --features storage-schedules --example object_schedules -- --all-sites --seed compact-medium-false-1-0-1
+bazel run //rust/codec-fuzz:object_schedules_example -- corpus/object_schedule/medium-false-0-0-0
+bazel run //rust/codec-fuzz:object_schedules_example -- --all-sites --seed medium-false-0-1-0
+bazel run //rust/codec-fuzz:object_schedules_example -- --all-sites --seed compact-medium-false-1-0-1
 ```
 
 Capture uses the same provenance and golden mechanism as the syntax targets;
@@ -788,8 +789,8 @@ uses the public structural validator. These are codec checks, not deployment or
 handoff qualification.
 
 Regenerate these captures from the package directory with
-`cargo run --locked --example capture -- --only-live-update --extend-goldens`.
-Replay them with `cargo run --locked --example replay -- actor_codecs/live-update-`.
+`bazel run //rust/codec-fuzz:capture_example -- --only-live-update --extend-goldens`.
+Replay them with `bazel run //rust/codec-fuzz:replay_example -- actor_codecs/live-update-`.
 Removing canonical-byte rejection from the production decoder must make this
 oracle fail on `live-update-noncanonical`; omitting the oracle dispatch misses
 that mutation.
@@ -984,7 +985,7 @@ The Actors attribution corpus comes from `ServiceError` and the canonical
 `acyclic_actors::grpc::error_status` writer. Capture it with:
 
 ```sh
-cargo run --locked --manifest-path rust/codec-fuzz/Cargo.toml -p acyclic-codec-fuzz --example capture -- --only-actors-protobuf --extend-goldens
+bazel run //rust/codec-fuzz:capture_example -- --only-actors-protobuf --extend-goldens
 ```
 
 The shared protobuf and protobuf JSON oracles enter the owned client status

@@ -27,9 +27,10 @@ function interrupt(signal) {
 function requireUninterrupted() {
   if (interrupted) throw Error(`capture interrupted by ${interrupted}`, {cause: stopFailure});
 }
-async function cargo(args, cwd, observe = () => {}) {
+async function bazel(args, observe = () => {}) {
   requireUninterrupted();
-  const child = spawn('cargo', args, {cwd, stdio: ['ignore', 'pipe', 'inherit'],
+  const child = spawn('bazel', args, {cwd: repository, stdio: ['ignore', 'pipe', 'inherit'],
+    env: {...process.env, ACYCLIC_TEST_SOURCE_ROOT: repository},
     detached: true, windowsHide: true});
   active = child;
   let launchError;
@@ -37,7 +38,7 @@ async function cargo(args, cwd, observe = () => {}) {
     child.once('error', error => { launchError = error; });
     child.once('close', (code, signal) => accept({code, signal}));
   });
-  child.once('spawn', () => console.log(`capture: cargo ${args.join(' ')}`));
+  child.once('spawn', () => console.log(`capture: bazel ${args.join(' ')}`));
   try {
     for await (const line of createInterface({input: child.stdout})) {
       process.stdout.write(line + '\n');
@@ -46,7 +47,7 @@ async function cargo(args, cwd, observe = () => {}) {
     const {code, signal} = await ended;
     if (launchError) throw launchError;
     requireUninterrupted();
-    if (code !== 0) throw Error(`cargo ${args.join(' ')} failed: ${signal ?? code}`);
+    if (code !== 0) throw Error(`bazel ${args.join(' ')} failed: ${signal ?? code}`);
   } finally {
     stopChild('SIGTERM');
     await ended;
@@ -72,9 +73,8 @@ async function main() {
   const names = ['open', 'text', 'binary', 'close-peer', 'close-actor', 'close-runtime'];
   try {
     await writeFile(source, text.replace(boundary, observer + boundary));
-    await cargo(['test', '--locked', '-p', 'acyclic-actors', '--lib',
-      'local::sockets::tests::socket_conformance_passes_on_local_runtime', '--', '--exact', '--nocapture'],
-    repository, line => {
+    await bazel(['run', '//rust/crates/actors:acyclic_actors_test_cases', '--',
+      'local::sockets::tests::socket_conformance_passes_on_local_runtime', '--exact', '--nocapture'], line => {
       const marker = 'ACTOR_SOCKET_CAPTURE ';
       const start = line.indexOf(marker);
       if (start < 0) return;
@@ -91,8 +91,8 @@ async function main() {
   for (const name of names) if (!captures.has(name)) throw Error(`Runtime did not deliver ${name}`);
   await writeFile(join(directory, 'captures/socket-deliveries.capture'),
     JSON.stringify(Object.fromEntries(names.map(name => [`socket-input-${name}-cuts-v1`, captures.get(name)]))) + '\n');
-  await cargo(['run', '--locked', '--example', 'capture', '--', '--only-actors', '--extend-goldens'], directory);
-  await cargo(['run', '--locked', '--example', 'replay', '--', 'actor_codecs'], directory);
+  await bazel(['run', '//rust/codec-fuzz:capture_example', '--', '--only-actors', '--extend-goldens']);
+  await bazel(['run', '//rust/codec-fuzz:replay_example', '--', 'actor_codecs']);
 }
 
 const onInterrupt = () => interrupt('SIGINT');

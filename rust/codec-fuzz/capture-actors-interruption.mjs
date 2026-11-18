@@ -21,9 +21,9 @@ test('native captures restore their source or refuse unsupported signal ownershi
     const started = signal && new Promise((accept, refuse) => {
       const lines = createInterface({input: child.stdout});
       lines.on('line', line => {
-        if (line.startsWith('capture: cargo test ')) accept();
+        if (line.startsWith('capture: bazel run //rust/crates/actors:acyclic_actors_test_cases ')) accept();
       });
-      child.once('exit', () => refuse(Error(`capture ended before starting Cargo: ${stderr}`)));
+      child.once('exit', () => refuse(Error(`capture ended before starting the Bazel test binary: ${stderr}`)));
     });
     try {
       if (started) {
