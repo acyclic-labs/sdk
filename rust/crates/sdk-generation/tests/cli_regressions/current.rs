@@ -451,8 +451,12 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .output
         .join("preview/feature-profile-catalog/sdk-docs-data.v1.json");
     let data_bytes = fs::read(&data_path).unwrap();
-    let data: Value = serde_json::from_slice(&data_bytes).unwrap();
-    assert!(data.to_string().contains("FeatureOnly"));
+    let data: sdk_docs::DocsData = serde_json::from_slice(&data_bytes).unwrap();
+    assert!(data
+        .families
+        .iter()
+        .flat_map(|family| &family.items)
+        .any(|item| item.path == "demo::FeatureOnly"));
 
     let availability_bytes =
         fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap();
@@ -532,10 +536,10 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
             .any(|receipt| receipt["profile"] == feature_profile["profile"]),
         "sidecar profile must have an executed receipt row"
     );
-    assert_eq!(data["source"]["revision"], git_revision(&fixture.root));
+    assert_eq!(data.source.revision, git_revision(&fixture.root));
 
     let metadata = super::replay::metadata(&fixture);
-    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata, &receipts, &data_bytes);
+    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata, &receipts, &data);
     assert_eq!(serde_json::to_vec_pretty(&rebuilt).unwrap(), data_bytes);
     assert_eq!(
         serde_json::to_vec_pretty(&replayed).unwrap(),
@@ -711,12 +715,9 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
     let catalog = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
     let relocated_catalog = fs::read(relocated.output.join(catalog)).unwrap();
-    let (data, availability) = super::replay::project(
-        &relocated,
-        &metadata,
-        &relocated_receipts,
-        &relocated_catalog,
-    );
+    let template = serde_json::from_slice(&relocated_catalog).unwrap();
+    let (data, availability) =
+        super::replay::project(&relocated, &metadata, &relocated_receipts, &template);
     let host = original_receipts[0]["target"].as_str().unwrap();
     let available = BTreeSet::from([host.to_owned()]);
     let mut expected = BTreeSet::new();
