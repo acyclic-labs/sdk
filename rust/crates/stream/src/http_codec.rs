@@ -86,25 +86,12 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
 
 fn fork_json(request: &crate::ForkRequest) -> Result<Value> {
     crate::request::validate_fork(request).map_err(|error| error.code())?;
-    let mut value = serde_json::Map::from_iter([
-        ("source".into(), json!(request.source.to_string())),
-        ("destination".into(), json!(request.destination.to_string())),
-        (
-            "exclude".into(),
-            json!(
-                request
-                    .exclude
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            ),
-        ),
-    ]);
-    value.insert(
-        "options".into(),
-        options("atTail", request.at_tail, &request.idempotency_key),
-    );
-    Ok(Value::Object(value))
+    Ok(json!({
+        "source": request.source.as_str(),
+        "destination": request.destination.as_str(),
+        "exclude": request.exclude.iter().map(crate::StreamPath::as_str).collect::<Vec<_>>(),
+        "options": options("atTail", request.at_tail, &request.idempotency_key),
+    }))
 }
 
 /// One effect, `{conditions, mutations, soft}`; Head conditions were refused.
