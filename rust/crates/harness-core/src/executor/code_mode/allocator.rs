@@ -54,10 +54,10 @@ mod tests {
     {
         let original = native_work(64 * 1024 * 1024)?;
         let baseline = original.live_allocation_bytes();
-        let ledger_operations = original.receipt().allocation_operations;
+        let ledger_operations = original.receipt()?.allocation_operations;
         let runtime = rquickjs::AsyncRuntime::new_with_alloc(EngineAllocator::new(Some(&original)))
             .expect("funded runtime construction");
-        let startup_operations = original.receipt().allocation_operations - ledger_operations;
+        let startup_operations = original.receipt()?.allocation_operations - ledger_operations;
         drop(runtime);
         assert_eq!(original.live_allocation_bytes(), baseline);
         assert!(startup_operations > 0);
