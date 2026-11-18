@@ -470,8 +470,8 @@ pub(super) fn create_special(
                 } else {
                     u32::from(libc::S_IFBLK)
                 };
-                let device_number = acyclic_fs_native_contract::device::join_device(major, minor)
-                    .map_err(|errno| {
+                use acyclic_fs_native_contract::device::join_device;
+                let device_number = join_device(major, minor).map_err(|errno| {
                     MaterializeError::Io(std::io::Error::from_raw_os_error(errno))
                 })?;
                 host_root
