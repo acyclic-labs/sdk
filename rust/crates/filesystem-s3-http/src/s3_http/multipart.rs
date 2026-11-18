@@ -29,7 +29,7 @@ where
         upload_id: &str,
         expected_tail: u64,
         record: Bytes,
-        operation: acyclic_stream::IdempotencyKey,
+        operation: IdempotencyKey,
     ) -> S3Result<bool> {
         workspace
             .append_multipart_record(upload_id, expected_tail, record, operation)
@@ -66,13 +66,7 @@ where
                         upload_id,
                         snapshot.tail,
                         encode_multipart_completing(requested).map_err(multipart_storage_error)?,
-                        multipart_cas_operation(
-                            upload_id,
-                            b"complete-intent\0",
-                            operation,
-                            snapshot.tail,
-                        )
-                        .map_err(multipart_storage_error)?,
+                        operation,
                     )
                     .await?
                 {
@@ -108,13 +102,7 @@ where
                         upload_id,
                         latest.tail,
                         encode_multipart_completed(generation),
-                        multipart_cas_operation(
-                            upload_id,
-                            b"complete-terminal\0",
-                            operation,
-                            latest.tail,
-                        )
-                        .map_err(multipart_storage_error)?,
+                        operation,
                     )
                     .await?
                 {

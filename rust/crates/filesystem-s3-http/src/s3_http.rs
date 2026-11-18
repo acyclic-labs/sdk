@@ -14,7 +14,6 @@ use acyclic_fs::s3_multipart::{
     MultipartPart, MultipartSnapshot, MultipartStorageError, MultipartTerminal,
     StreamBackedAuthority, encode_multipart_aborted, encode_multipart_completed,
     encode_multipart_completing, encode_multipart_created, encode_multipart_part,
-    multipart_cas_operation,
 };
 #[cfg(test)]
 use acyclic_fs::s3_multipart::{MultipartStorageResult, decode_multipart};

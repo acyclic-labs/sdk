@@ -34,7 +34,7 @@ impl<P: crate::distributed::AuthorityProvider> StreamBackedAuthority for StreamA
 const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
 
 /// Derives the retry identity for a conditional upload record.
-pub fn multipart_cas_operation(
+fn multipart_cas_operation(
     upload_id: &str,
     phase: &[u8],
     operation: IdempotencyKey,
@@ -158,15 +158,23 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
         upload_id: &str,
         expected_tail: u64,
         record: Bytes,
-        operation: acyclic_stream::IdempotencyKey,
+        operation: IdempotencyKey,
     ) -> MultipartStorageResult<bool> {
+        let phase: &[u8] = match RecordCursor::new(&record).any_header()? {
+            2 => b"part\0",
+            3 => b"complete-intent\0",
+            4 => b"complete-terminal\0",
+            5 => b"abort\0",
+            _ => return Err(MultipartStorageError::Malformed),
+        };
+        let idempotency_key = multipart_cas_operation(upload_id, phase, operation, expected_tail)?;
         match self
             .multipart_stream_provider()
             .append(acyclic_stream::AppendRequest {
                 path: self.multipart_path(upload_id)?,
                 records: vec![record.into()],
                 if_tail: Some(expected_tail),
-                idempotency_key: operation,
+                idempotency_key,
             })
             .await
             .map_err(MultipartStorageError::StreamWrite)?

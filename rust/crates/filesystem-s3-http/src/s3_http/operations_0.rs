@@ -229,13 +229,7 @@ where
                     operation,
                     &etag_value,
                 ),
-                multipart_cas_operation(
-                    &request.input.upload_id,
-                    b"part\0",
-                    operation,
-                    snapshot.tail,
-                )
-                .map_err(multipart_storage_error)?,
+                operation,
             )
             .await?
         {
@@ -430,13 +424,7 @@ where
                         &request.input.upload_id,
                         snapshot.tail,
                         encode_multipart_aborted(),
-                        multipart_cas_operation(
-                            &request.input.upload_id,
-                            b"abort\0",
-                            operation,
-                            snapshot.tail,
-                        )
-                        .map_err(multipart_storage_error)?,
+                        operation,
                     )
                     .await?
                 {
