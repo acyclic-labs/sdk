@@ -495,3 +495,185 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
     assert_eq!(failure.work()?.backend_write_operations, 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = memory_objects();
+    let mut source = std::io::Cursor::new(b"abcdefghi");
+    let built = build_blob(
+        &store,
+        &mut source,
+        BlobBuildOptions {
+            chunk_bytes: 2,
+            page_items: 2,
+            page_bytes: 129,
+            maximum_blob_bytes: Some(9),
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(built.logical_bytes, 9);
+    assert_eq!(built.work.source_bytes_read, 9);
+    let read = read_blob_range(
+        &store,
+        built.root,
+        ByteRange {
+            offset: 1,
+            length: 7,
+        },
+        DecodeLimits {
+            maximum_page_items: 2,
+            ..DecodeLimits::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(read.bytes.as_ref(), b"bcdefgh");
+    assert!(read.work.page_reads >= 3);
+    let narrow = read_blob_range(
+        &store,
+        built.root,
+        ByteRange {
+            offset: 4,
+            length: 1,
+        },
+        DecodeLimits {
+            maximum_page_items: 2,
+            ..DecodeLimits::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(narrow.bytes.as_ref(), b"e");
+    assert!(narrow.work.object_probes < read.work.object_probes);
+
+    let shallow = read_blob_range(
+        &store,
+        built.root,
+        ByteRange {
+            offset: 0,
+            length: 1,
+        },
+        DecodeLimits {
+            maximum_page_items: 2,
+            maximum_page_height: 1,
+            ..DecodeLimits::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("multilevel blob unexpectedly fit a one-page height bound")?;
+    assert!(matches!(shallow.error, BlobReadError::CycleOrHeight));
+    assert!(shallow.work()?.page_reads > 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    for options in [
+        BlobBuildOptions {
+            chunk_bytes: 0,
+            page_items: 2,
+            page_bytes: 129,
+            maximum_blob_bytes: Some(1),
+        },
+        BlobBuildOptions {
+            chunk_bytes: 1,
+            page_items: 1,
+            page_bytes: 129,
+            maximum_blob_bytes: Some(1),
+        },
+        BlobBuildOptions {
+            chunk_bytes: 1,
+            page_items: 2,
+            page_bytes: 129,
+            maximum_blob_bytes: Some(0),
+        },
+    ] {
+        let mut source = std::io::Cursor::new(b"x");
+        let failure = build_blob(
+            &store,
+            &mut source,
+            options,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .ok_or("invalid blob options unexpectedly succeeded")?;
+        assert!(matches!(failure.error, BlobBuildError::InvalidOptions));
+        assert_eq!(*failure.work()?, WorkCounters::default());
+        assert_eq!(source.position(), 0);
+    }
+    let mut invalid_source = std::io::Cursor::new(b"abc");
+    let invalid = build_blob(
+        &store,
+        &mut invalid_source,
+        BlobBuildOptions {
+            chunk_bytes: 1,
+            page_items: 2,
+            page_bytes: 128,
+            maximum_blob_bytes: Some(3),
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("undersized blob page unexpectedly succeeded")?;
+    assert!(matches!(invalid.error, BlobBuildError::InvalidOptions));
+    assert_eq!(invalid_source.position(), 0);
+    assert_eq!(*invalid.work()?, WorkCounters::default());
+
+    let options = BlobBuildOptions {
+        chunk_bytes: 2,
+        page_items: 2,
+        page_bytes: 129,
+        maximum_blob_bytes: Some(8),
+    };
+    let mut baseline_source = std::io::Cursor::new(b"abcdefgh");
+    let baseline = build_blob(
+        &store,
+        &mut baseline_source,
+        options,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let maximum = baseline.work.peak_allocation_bytes - 1;
+    let mut limited_source = std::io::Cursor::new(b"abcdefgh");
+    let failure = build_blob(
+        &memory_objects(),
+        &mut limited_source,
+        options,
+        WorkBudget {
+            peak_allocation_bytes: maximum,
+            ..WorkBudget::UNBOUNDED
+        },
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("one-byte-short blob peak budget unexpectedly succeeded")?;
+    assert!(
+        matches!(
+            failure.error,
+            BlobBuildError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                observed,
+                maximum: observed_maximum,
+            }) if observed > observed_maximum && observed_maximum <= maximum
+        ),
+        "{failure:?}"
+    );
+    assert!(failure.work()?.peak_allocation_bytes <= maximum);
+    Ok(())
+}
