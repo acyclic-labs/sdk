@@ -73,6 +73,7 @@ workspace_context_contracts = ["acyclic_fs", "tokio"]
 workspace_contracts = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "sha2", "tokio"]
 workspace_join_history = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
 workspace_merge = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
+workspace_rebase = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
 workspace_restore = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
 
 [[test]]
@@ -136,6 +137,10 @@ path = "tests/workspace_contracts.rs"
 [[test]]
 name = "workspace_join_history"
 path = "tests/workspace_join_history.rs"
+
+[[test]]
+name = "workspace_rebase"
+path = "tests/workspace_rebase.rs"
 
 [[test]]
 name = "workspace_restore"
