@@ -125,11 +125,11 @@ async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
         let work =
             NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
         let prior_unused = trial.unused();
-        let retained = work.live_allocation_bytes();
+        let retained = work.live_allocation_bytes()?;
         let occurrence = match trial.generate_with_native_work(request, dispatch, &work) {
             Err(crate::Error::NativeWork { .. }) => {
                 assert_eq!(
-                    work.live_allocation_bytes(),
+                    work.live_allocation_bytes()?,
                     retained,
                     "refused replay retained index funding"
                 );
