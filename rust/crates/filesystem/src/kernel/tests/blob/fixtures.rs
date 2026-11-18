@@ -6,39 +6,11 @@ use crate::memory::MemoryObjectStore;
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 
-struct ScriptedSource {
-    bytes: OwnedBytes,
-    position: usize,
-    maximum_per_read: usize,
-    fail_after: Option<usize>,
-    cancel_at: Option<usize>,
-}
-
-impl AsyncBlobSource for ScriptedSource {
-    async fn read<'a>(
-        &'a mut self,
-        destination: &'a mut [u8],
-        _budget: WorkBudget,
-        cancellation: &'a CancellationToken,
-    ) -> std::io::Result<usize> {
-        if self.fail_after.is_some_and(|limit| self.position >= limit) {
-            return Err(std::io::Error::other("scripted source failure"));
-        }
-        if self.position == self.bytes.len() {
-            return Ok(0);
-        }
-        let count = self
-            .maximum_per_read
-            .min(destination.len())
-            .min(self.bytes.len() - self.position);
-        destination[..count].copy_from_slice(&self.bytes[self.position..self.position + count]);
-        self.position += count;
-        if self.cancel_at.is_some_and(|offset| self.position >= offset) {
-            cancellation.cancel();
-        }
-        Ok(count)
-    }
-}
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../../../../tests/support/blob_source.rs"]
+mod blob_source;
+#[cfg(not(target_arch = "wasm32"))]
+use blob_source::ScriptedSource;
 
 use crate::test_support::{put_blob_page, put_object as put};
 
