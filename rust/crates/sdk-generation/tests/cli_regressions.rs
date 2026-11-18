@@ -379,18 +379,26 @@ fn invoke(command: &mut Command) -> std::process::Output {
     }
 }
 
-fn drift_command(fixture: &Fixture) -> Command {
+fn sdk_command(subcommand: &str, root: &Path, rustdoc: Option<&Path>, output: &Path) -> Command {
     let mut command = Command::new(runtime::binary("sdk-generation"));
-    command.args([
-        "drift",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--rustdoc-dir",
-        fixture.rustdoc.to_str().unwrap(),
-    ]);
     command
+        .args([subcommand, "--root"])
+        .arg(root)
+        .arg("--output")
+        .arg(output);
+    if let Some(rustdoc) = rustdoc {
+        command.arg("--rustdoc-dir").arg(rustdoc);
+    }
+    command
+}
+
+fn drift_command(fixture: &Fixture) -> Command {
+    sdk_command(
+        "drift",
+        &fixture.root,
+        Some(&fixture.rustdoc),
+        &fixture.output,
+    )
 }
 
 fn run_drift(fixture: &Fixture) -> std::process::Output {
@@ -420,15 +428,7 @@ fn generate_command(
     channel: &str,
     skip_scenarios: bool,
 ) -> Command {
-    let mut command = Command::new(runtime::binary("sdk-generation"));
-    command
-        .args(["generate", "--root"])
-        .arg(root)
-        .arg("--output")
-        .arg(output);
-    if let Some(rustdoc) = rustdoc {
-        command.arg("--rustdoc-dir").arg(rustdoc);
-    }
+    let mut command = sdk_command("generate", root, rustdoc, output);
     command.args(["--version", version, "--channel", channel]);
     if skip_scenarios {
         command.arg("--skip-scenarios");
