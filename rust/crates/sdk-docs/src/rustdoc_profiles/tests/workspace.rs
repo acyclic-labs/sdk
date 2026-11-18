@@ -54,10 +54,13 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
                 assert!(ids.insert(profile.id()));
                 assert!(profile.features.is_subset(&declared));
             }
+            let covered = profiles
+                .iter()
+                .filter(|profile| !profile.default_features)
+                .flat_map(|profile| &profile.features)
+                .collect::<BTreeSet<_>>();
             for feature in &declared {
-                assert!(profiles.iter().any(|profile| {
-                    !profile.default_features && profile.features.contains(feature)
-                }));
+                assert!(covered.contains(feature), "{package_name}: {feature}");
             }
             assert!(profiles
                 .iter()
