@@ -80,6 +80,13 @@ build-script-inputs = [
 ]
 
 test-build-script = ["operation_claim_model"]
+test-narrow-runfiles = [
+    "checkout_cancellation",
+    "checkout_reconciliation",
+    "memory_authority",
+    "memory_objects",
+    "mount_routing",
+]
 
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]

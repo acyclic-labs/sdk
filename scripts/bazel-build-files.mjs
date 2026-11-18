@@ -746,9 +746,12 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     const direct = directTestDependencies(target);
     return direct !== undefined && !direct.includes(lib && crateName(lib));
   };
+  // In-memory suites need their own detected reads and explicit test-data only.
+  const narrowTestRunfiles = target => standaloneTest(target)
+    || p.metadata?.bazel?.["test-narrow-runfiles"]?.includes(target.name);
   const runtimeData = target => {
-    const standalone = standaloneTest(target);
-    const libraries = standalone ? [] : [...(lib ? [p] : []), ...devLibraries(p)];
+    const narrow = narrowTestRunfiles(target);
+    const libraries = narrow ? [] : [...(lib ? [p] : []), ...devLibraries(p)];
     const all = [readsOf(dir(p), repoRelative(target)), ...libraries.map(other => readsOf(dir(other), repoRelative(libOf(other))))];
     const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
     if (files.has(".cargo/config.toml")) for (const file of cargoConfigInputs) files.add(file);
@@ -756,7 +759,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     for (const file of files) {
       const owner = ownerOf(file);
       if (owner !== dir(p)) labels.add(fileLabel(file));
-      else if (standalone || file.endsWith(".rs")) labels.add(within(owner, file));
+      else if (narrow || file.endsWith(".rs")) labels.add(within(owner, file));
     }
     return [...labels].sort();
   };
@@ -774,7 +777,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // A suite whose cases each start Cargo runs fewer at once, so they do not contend for the same
   // cores and exceed the per-case limit.
   const workers = p.metadata?.bazel?.["test-workers"];
-  const test = (wanted, attrs, reads, binaries, id, standalone = false) => {
+  const test = (wanted, attrs, reads, binaries, id, narrowRunfiles = false) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
     reads = [...new Set([...reads, ...testData(p, wanted)])];
     let name = wanted;
@@ -790,7 +793,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     };
     rules.push(
-      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(standalone ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
+      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(narrowRunfiles ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
       isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
       ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => isolated(`${name}_${profile}`, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined]], ["manual"], wrapper ? { "@nodejs//:node": "node" } : {})),
     );
@@ -925,7 +928,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     const reads = runtimeData(target);
     const consumer = wasm?.testConsumers?.[p.name];
     if (consumer) reads.push(wasmNodeModulesTarget(consumer));
-    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`, standaloneTest(target));
+    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`, narrowTestRunfiles(target));
   }
   for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;
