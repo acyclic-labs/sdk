@@ -1076,8 +1076,20 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    deps = SEPARATE_DEPS,
-    proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
+    deps = [
+        ":acyclic_fs",
+        ":build_script",
+    ] + [
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//tempfile-3.27.0",
+        "@sdk_crates//tokio-1.54.1",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/objects:acyclic_objects",
+        "//rust/crates/stream:acyclic_stream",
+    ],
+    proc_macro_deps = [
+        "@sdk_crates//async-trait-0.1.92",
+    ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
         "//rust/crates/filesystem:tree/src",
