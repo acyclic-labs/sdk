@@ -159,7 +159,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             let io = native
                 .then(|| PreparationIo::from_native_work(&work))
                 .transpose()?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             assert_eq!(
                 load_request(journal, &reference, Limits::default(), io.as_ref())
                     .await
@@ -168,7 +168,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
                     .code(),
                 crate::wire::ErrorCode::Unsupported
             );
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
             if let Some(io) = &io {
                 assert_eq!(io.owned_bytes()?, 0);
             }
@@ -176,7 +176,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             // The original ledger remains alive through `work`; only its
             // accounting state may remain after decoder custody is dropped.
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
             );
         }
@@ -304,7 +304,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         drop(funded_storage);
         drop(io);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
         );
         for scoped in [false, true] {

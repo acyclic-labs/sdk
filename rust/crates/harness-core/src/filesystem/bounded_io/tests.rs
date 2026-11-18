@@ -29,7 +29,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
             &CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&native)?;
         let mut decoded = None;
         let physical = acyclic_test_support::measure(|| {
@@ -64,7 +64,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         drop((actual_capability, actual_policy));
         drop((capability_custody, policy_custody));
         drop(io);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
 
         // Every strict prefix of this real policy record is incomplete. The
         // same native Value entrance used by tool arguments must own the
@@ -76,7 +76,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = native.live_allocation_bytes();
+            let baseline = native.live_allocation_bytes()?;
             let io = PreparationIo::from_native_work(&native)?;
             let mut refused = None;
             let physical = acyclic_test_support::measure(|| {
@@ -119,10 +119,10 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
                 native.receipt()
             );
             drop(io);
-            assert_eq!(native.live_allocation_bytes(), baseline + retained);
+            assert_eq!(native.live_allocation_bytes()?, baseline + retained);
             cancellation.cancel();
             drop(refusal);
-            assert_eq!(native.live_allocation_bytes(), baseline);
+            assert_eq!(native.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
@@ -178,11 +178,11 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
         budget.allocation_operations = 1;
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let before = native.live_allocation_bytes();
+        let before = native.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&native)?;
         denied(&mut io.history_io())?;
         denied(&mut crate::store::HistoryWork::new(io.scoped()?))?;
-        assert_eq!(native.live_allocation_bytes(), before);
+        assert_eq!(native.live_allocation_bytes()?, before);
     }
     Ok(())
 }
@@ -441,9 +441,9 @@ fn released_on_drop(
     work: &acyclic_fs::NativeMaterializationWork,
     bytes: crate::conversation::Custody,
 ) -> Result<u64> {
-    let held = work.live_allocation_bytes();
+    let held = work.live_allocation_bytes()?;
     drop(bytes);
-    held.checked_sub(work.live_allocation_bytes())
+    held.checked_sub(work.live_allocation_bytes()?)
         .ok_or_else(|| Error::Invalid("dropping a read grew its original ledger".into()))
 }
 #[cfg(not(target_arch = "wasm32"))]
