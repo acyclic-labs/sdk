@@ -35,23 +35,21 @@ impl MediumKey {
     /// # Errors
     /// Returns `InvalidArgument` when the key is outside the engine format.
     pub fn parse(key: &str) -> Result<Self, Error> {
-        fn hash(text: &str) -> Result<Digest, Error> {
-            if text.len() != 64
-                || !text
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        fn fixed_hex<const N: usize>(text: &str) -> Result<[u8; N], Error> {
+            let mut bytes = [0; N];
+            if hex::decode_to_slice(text, &mut bytes).is_err()
+                || text.as_bytes().iter().any(u8::is_ascii_uppercase)
             {
                 return Err(ErrorCode::InvalidArgument.into());
             }
-            Digest::from_hex(text)
+            Ok(bytes)
         }
         fn sharded(text: &str) -> Result<Digest, Error> {
             let (shard, digest) = text.split_once('/').ok_or(ErrorCode::InvalidArgument)?;
-            let parsed = hash(digest)?;
             if shard.len() != 2 || !digest.starts_with(shard) {
                 return Err(ErrorCode::InvalidArgument.into());
             }
-            Ok(parsed)
+            Ok(Digest::from_bytes(fixed_hex(digest)?))
         }
         if matches!(key, "epoch" | "incarnation") {
             return Ok(Self::Control);
@@ -61,22 +59,12 @@ impl MediumKey {
             "e" => Ok(Self::Envelope(sharded(rest)?)),
             "p" => {
                 let (path, version) = rest.rsplit_once('.').ok_or(ErrorCode::InvalidArgument)?;
-                if version.len() != 32
-                    || !version
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                {
-                    return Err(ErrorCode::InvalidArgument.into());
-                }
-                let mut bytes = [0; 16];
-                hex::decode_to_slice(version, &mut bytes)
-                    .map_err(|_| ErrorCode::InvalidArgument)?;
                 Ok(Self::Payload {
+                    version: fixed_hex(version)?,
                     digest: sharded(path)?,
-                    version: bytes,
                 })
             }
-            "t" => Ok(Self::Terminal(hash(rest)?)),
+            "t" => Ok(Self::Terminal(Digest::from_bytes(fixed_hex(rest)?))),
             "r" | "i" | "f" if !rest.is_empty() => Ok(Self::Control),
             _ => Err(ErrorCode::InvalidArgument.into()),
         }
