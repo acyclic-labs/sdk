@@ -5,6 +5,10 @@ use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, Obje
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "../../../tests/support/checkout_modes.rs"]
+mod checkout_modes;
+use checkout_modes::writable_pinned;
+
 fn config() -> VolumeConfig {
     VolumeConfig::portable(Lifecycle::Ephemeral)
 }
@@ -24,19 +28,7 @@ fn exclusive_config() -> VolumeConfig {
 }
 
 fn pinned() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadOnly,
-        consistency: ConsistencyMode::Pinned,
-        mutations: MutationMode::None,
-    }
-}
-
-fn writable_pinned() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Pinned,
-        mutations: MutationMode::PrivateOverlay,
-    }
+    CheckoutMode::read_only_pinned()
 }
 
 fn manual() -> CheckoutMode {
