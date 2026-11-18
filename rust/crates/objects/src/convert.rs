@@ -169,7 +169,7 @@ impl From<&Verified> for wire::Verified {
     }
 }
 
-pub(crate) fn put(value: &wire::PutResponse) -> Result<Put, Error> {
+fn put(value: &wire::PutResponse) -> Result<Put, Error> {
     use wire::put_response::Outcome;
     match value.outcome.as_ref().ok_or_else(invalid)? {
         Outcome::Created(value) => Ok(Put::Created {
@@ -194,7 +194,7 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     }
 }
 
-pub(crate) fn head(value: &wire::BlobInfo, revision: Option<Revision>) -> Result<Head, Error> {
+fn head(value: &wire::BlobInfo, revision: Option<Revision>) -> Result<Head, Error> {
     if value.kind == wire::Kind::Blob as i32 && value.sha256.is_some() {
         return Err(invalid());
     }
