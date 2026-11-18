@@ -483,7 +483,7 @@ fn cohort_publisher_anchors_require_immutable_archive_checksum_lineage() {
     fs::create_dir(&archives).unwrap();
     let name = "historical-fixture-0.1.0.crate";
     let retained = archives.join(name);
-    fs::copy(&archive, &retained).unwrap();
+    fs::rename(archive, &retained).unwrap();
     let inventory = BTreeMap::from([(
         "historical-fixture".into(),
         RegistryOwnerVersions {
