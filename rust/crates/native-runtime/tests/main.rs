@@ -8,3 +8,5 @@ mod native_report_port;
 mod node_process;
 mod seeded_runtime;
 mod signing_custody;
+#[path = "positional/mod.rs"]
+mod tests;

@@ -343,6 +343,8 @@ rust_test(
         "tests/native_report_port.rs",
         "tests/node_process.rs",
         "tests/owner_codec/oracle.rs",
+        "tests/positional/mod.rs",
+        "tests/positional/positional.rs",
         "tests/report_port/oracle.rs",
         "tests/seeded_runtime.rs",
         "tests/signing_custody.rs",

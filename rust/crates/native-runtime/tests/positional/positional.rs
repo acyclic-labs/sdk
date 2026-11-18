@@ -1,4 +1,14 @@
-use super::*;
+#[cfg(windows)]
+use acyclic_native_runtime::InlineBlocking;
+use acyclic_native_runtime::{
+    Durability, NativeFile, OwnedRead, OwnedWrite, read_at, read_batch_async, sync_file,
+    write_all_at,
+};
+use acyclic_test_support::waker::complete;
+use bytes::Bytes;
+#[cfg(any(windows, target_vendor = "apple"))]
+use std::fs::OpenOptions;
+use std::io::{self, Seek as _, SeekFrom};
 
 #[test]
 fn positional_io_preserves_cursor_and_bounds_ranges() -> io::Result<()> {
