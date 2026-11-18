@@ -294,15 +294,12 @@ pub fn browser_profile_for_package(
     {
         return Ok(None);
     }
-    let napi = package.metadata.get("napi");
-    let own_binding = napi
-        .and_then(|value| value.get("wasm-package"))
-        .and_then(serde_json::Value::as_str)
-        == Some(package.name.as_str());
+    let binding = package.metadata.get("napi").filter(|napi| {
+        napi.get("wasm-package").and_then(serde_json::Value::as_str) == Some(package.name.as_str())
+    });
     let mut features = BTreeSet::new();
     let mut default_features = false;
-    if own_binding {
-        let napi = napi.expect("binding policy was found");
+    if let Some(napi) = binding {
         if let Some(value) = napi.get("wasm-features") {
             let values = value.as_array().ok_or_else(|| {
                 ProfileError::InvalidRustdoc("wasm-features must be an array".into())
