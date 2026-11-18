@@ -545,14 +545,11 @@ fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
         );
     }
 
-    let first_manifest: Value = serde_json::from_slice(
-        &fs::read(first.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
-    let second_manifest: Value = serde_json::from_slice(
-        &fs::read(second.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let first_manifest: Value =
+        serde_json::from_slice(&fs::read(first.output.join(GENERATION_MANIFEST)).unwrap()).unwrap();
+    let second_manifest: Value =
+        serde_json::from_slice(&fs::read(second.output.join(GENERATION_MANIFEST)).unwrap())
+            .unwrap();
     assert_eq!(
         first_manifest["sourceSha256"], second_manifest["sourceSha256"],
         "source digest must survive checkout relocation"
