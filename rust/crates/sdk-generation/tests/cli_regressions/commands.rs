@@ -170,13 +170,13 @@ struct FixtureMetadata {
     proc_macro: bool,
     cargo_flags: Vec<String>,
     sources: Vec<FixtureSource>,
-    output: String,
+    output: PathBuf,
     artifacts: Option<PathBuf>,
 }
 
 #[derive(serde::Deserialize)]
 struct FixtureSource {
-    file: String,
+    file: PathBuf,
     relative: PathBuf,
 }
 
@@ -325,7 +325,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 relative_sources.push(relative);
             }
         }
-        let output_path = metadata.output.as_str();
+        let output_path = &metadata.output;
         let mut json: Value =
             serde_json::from_slice(&fs::read(acyclic_test_support::source_path(output_path))?)?;
         if json["target"]["triple"].as_str() != Some(target) {
@@ -333,7 +333,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         }
         let target_dir = Path::new(env("CARGO_TARGET_DIR").unwrap());
         let mut referenced = std::collections::BTreeSet::new();
-        let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
+        let artifact_target = target_dir.join(output_path.file_stem().unwrap());
         let owner = &metadata.owner_path;
         let entrypoint = metadata.entrypoint.as_path();
         let owner_entrypoint = owner.join(entrypoint);
