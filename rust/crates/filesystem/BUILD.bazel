@@ -556,6 +556,7 @@ rust_test(
         "tests/support/checkout_manual.rs",
         "tests/support/checkout_serialized.rs",
         "tests/support/checkout_tracking.rs",
+        "tests/support/codec_association.rs",
         "tests/support/codec_properties.rs",
         "tests/support/creation_budget.rs",
         "tests/support/extent_objects.rs",
@@ -2794,11 +2795,16 @@ rust_test(
     crate_root = "tests/extent_codec.rs",
     srcs = [
         "tests/extent_codec.rs",
+        "tests/extent_codec/kernel/codec/mod.rs",
+        "tests/extent_codec/kernel/codec/tests.rs",
         "tests/extent_codec/kernel/extent/mod.rs",
         "tests/extent_codec/kernel/extent/tests.rs",
         "tests/extent_codec/kernel/mod.rs",
         "tests/extent_codec/kernel/types/mod.rs",
         "tests/extent_codec/kernel/types/tests.rs",
+        "tests/support/codec_association.rs",
+        "tests/support/codec_page_limit.rs",
+        "tests/support/codec_properties.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -2817,6 +2823,7 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "@sdk_crates//proptest-1.12.0",
     ],
     tags = ["manual"],
 )
@@ -3084,6 +3091,7 @@ rust_test(
     name = "tree_codec_cases",
     crate_root = "tests/tree_codec.rs",
     srcs = [
+        "tests/support/codec_page_limit.rs",
         "tests/support/codec_properties.rs",
         "tests/support/memory_objects.rs",
         "tests/support/put_object.rs",

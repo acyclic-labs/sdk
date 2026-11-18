@@ -162,16 +162,19 @@ fn decoder_rejects_version_and_bounded_field_overclaims_before_allocation()
     Ok(())
 }
 
+#[path = "../../../tests/support/codec_association.rs"]
+mod codec_association;
 #[path = "../../../tests/support/codec_properties.rs"]
 mod codec_properties;
 
 mod properties {
     use super::super::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
+    use super::codec_association::association;
     use super::codec_properties::{change, check_canonical};
     use crate::foundation::Digest;
     use crate::kernel::{
-        Extent, ExtentKind, ExtentPage, FileMetadata, MetadataField, decode_extent_page,
-        decode_file_metadata, decode_tree_page, encode_extent_page, encode_file_metadata,
+        FileMetadata, MetadataField, decode_extent_page, decode_file_metadata, decode_tree_page,
+        encode_file_metadata,
     };
     use crate::storage::{ObjectId, ObjectKind};
     use proptest::prelude::*;
@@ -241,36 +244,6 @@ mod properties {
         Ok(fields)
     }
 
-    fn extents() -> impl Strategy<Value = Vec<Extent>> {
-        let kind = prop_oneof![
-            Just(ExtentKind::Hole),
-            Just(ExtentKind::AllocatedZero),
-            (any::<u8>(), 0_u64..1_000).prop_map(|(byte, object_offset)| ExtentKind::Content {
-                object: ObjectId {
-                    storage: association(byte),
-                    kind: ObjectKind::Blob,
-                    digest: Digest::from_bytes([byte; 32]),
-                },
-                object_offset,
-            }),
-        ];
-        let spans = prop::collection::vec((1_u64..100, kind), 0..10);
-        (0_u64..1_000, spans).prop_map(|(mut offset, spans)| {
-            spans
-                .into_iter()
-                .map(|(length, kind)| {
-                    let extent = Extent {
-                        offset,
-                        length,
-                        kind,
-                    };
-                    offset += length;
-                    extent
-                })
-                .collect()
-        })
-    }
-
     fn field_of<T: Clone + std::fmt::Debug>(
         value: impl Strategy<Value = T>,
     ) -> impl Strategy<Value = MetadataField<T>> {
@@ -284,14 +257,6 @@ mod properties {
             kind,
             digest: Digest::from_bytes([byte; 32]),
         }))
-    }
-
-    fn association(byte: u8) -> Option<crate::ObjectStorage> {
-        (byte & 1 != 0).then_some(crate::ObjectStorage {
-            locator: Digest::from_bytes([byte.wrapping_add(1); 32]),
-            root_file_id: crate::FileId::from_bytes([byte; 16]),
-            origin_generation: Digest::from_bytes([byte; 32]),
-        })
     }
 
     fn metadata() -> impl Strategy<Value = FileMetadata> {
@@ -330,10 +295,6 @@ mod properties {
         )
     }
 
-    fn fewer(count: usize) -> Option<u32> {
-        u32::try_from(count).ok()?.checked_sub(1)
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
@@ -355,23 +316,6 @@ mod properties {
             let _ = decode_tree_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
             let _ = decode_extent_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
             let _ = decode_file_metadata(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
-        }
-
-        #[test]
-        fn extent_pages_round_trip_canonically_within_limits(
-            extents in extents(),
-            change in change(),
-        ) {
-            let limits = DecodeLimits::default();
-            let count = extents.len();
-            let page = ExtentPage::Leaf(extents);
-            let decode = |bytes: &[u8]| decode_extent_page(bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
-            let encoded = check_canonical(&page, |page| encode_extent_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
-            if let Some(maximum_page_items) = fewer(count) {
-
-                let tight = DecodeLimits { maximum_page_items, ..limits };
-                prop_assert!(decode_extent_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
-            }
         }
 
         #[test]
