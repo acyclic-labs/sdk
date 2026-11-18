@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { bazelCommand } from "../../scripts/bazel-executables.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const nativeHarness = ["--features", "test-support"];
@@ -29,8 +30,9 @@ const claims = {
     "rust/crates/actors/src/live_update.rs", "acyclic-codec-fuzz", "",
     "live-update document admission differs from canonical writer", [],
     { oracle: "rust/codec-fuzz/src/lib.rs",
-      command: ["run", "--locked", "-p", "acyclic-codec-fuzz", "--example", "replay", "--", "actor_codecs"],
-      invoked: "Running ", negativeExit: 1, failed: "corpus replay failed:",
+      runner: [bazelCommand(), "run", "//rust/codec-fuzz:replay_example", "--", "actor_codecs"],
+      env: { ACYCLIC_TEST_SOURCE_ROOT: root },
+      invoked: "Running command line:", negativeExit: 1, failed: "corpus replay failed:",
       completed: ["replayed ", " captured inputs"],
       mutations: [{ patch: "rust/proofs/actors-live-update-canonical/mutation.patch",
         priorOraclePatch: "rust/proofs/actors-live-update-canonical/prior-oracle.patch",
