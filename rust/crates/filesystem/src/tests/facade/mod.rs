@@ -8,11 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "../../../tests/support/checkout_fixture.rs"]
 mod checkout_fixture;
-use checkout_fixture::{path, writable_pinned};
-
-fn config() -> VolumeConfig {
-    VolumeConfig::portable(Lifecycle::Ephemeral)
-}
+use checkout_fixture::{config, path, path_parts, writable_pinned};
 
 fn serialized_config() -> VolumeConfig {
     VolumeConfig {
@@ -70,14 +66,6 @@ fn writable_live() -> CheckoutMode {
         consistency: ConsistencyMode::Live,
         mutations: MutationMode::DirectLive,
     }
-}
-
-fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
-    let components = values
-        .iter()
-        .map(|value| LogicalName::new(NameEncoding::Utf8, value.as_bytes().to_vec()))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(NamespacePath::new(components, config().limits)?)
 }
 
 fn root_path() -> Result<NamespacePath, Box<dyn std::error::Error>> {
