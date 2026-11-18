@@ -97,7 +97,7 @@ pub fn project_historical_generation_evidence<E>(
     evidence: &HistoricalGenerationEvidence,
     maximum_bytes: u64,
     maximum_objects: u64,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<HistoricalGenerationProjection, E>
 where
     E: From<PublicationEvidenceError>
@@ -106,7 +106,7 @@ where
         + From<super::VolumeCreatedError>
         + From<super::RetentionCreatedError>,
 {
-    use super::ReadAllocationStep;
+    use acyclic_fs_work::read_allocation::ReadAllocationStep;
     if maximum_bytes == 0 || u64::try_from(evidence.bytes.len()).unwrap_or(u64::MAX) > maximum_bytes
     {
         return Err(PublicationEvidenceError::TooLarge.into());
@@ -219,7 +219,7 @@ pub(crate) fn decode_historical_generation_evidence_observed<E>(
     record: &DurableCommit,
     maximum_bytes: u64,
     maximum_objects: u64,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<HistoricalGenerationProjection, E>
 where
     E: From<PublicationEvidenceError>
@@ -245,7 +245,7 @@ where
     {
         return Err(PublicationEvidenceError::Mismatch.into());
     }
-    observe(super::ReadAllocationStep::BeforeHash(hash_bytes))?;
+    observe(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeHash(hash_bytes))?;
     let digest = crate::authority_commit_digest(
         authority_id,
         record.epoch,
@@ -255,7 +255,7 @@ where
         record.previous_digest,
         &record.payload,
     );
-    observe(super::ReadAllocationStep::Hashed(hash_bytes))?;
+    observe(acyclic_fs_work::read_allocation::ReadAllocationStep::Hashed(hash_bytes))?;
     if digest != record.digest {
         return Err(PublicationEvidenceError::Mismatch.into());
     }
@@ -266,7 +266,7 @@ fn validate_projection<E>(
     value: &HistoricalGenerationProjection,
     plaintext_root: Digest,
     maximum_bytes: u64,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<(), E>
 where
     E: From<PublicationEvidenceError>

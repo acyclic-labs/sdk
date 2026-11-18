@@ -22,7 +22,7 @@ fn copy_once<const BROKEN: bool>(
     // The witness counts the actual producer's completion before cancellation
     // or a failed ledger callback can return it to the caller.
     let result = super::super::super::codec::copy_bytes(b"contents", 1, &mut |step| {
-        if let super::super::super::codec::ReadAllocationStep::Copied(bytes) = &step {
+        if let acyclic_fs_work::read_allocation::ReadAllocationStep::Copied(bytes) = &step {
             actual.fetch_add(*bytes as usize, Ordering::Relaxed);
         }
         observed.observe(step)

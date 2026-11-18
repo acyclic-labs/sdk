@@ -73,7 +73,9 @@ impl SourceReference {
     }
     pub(crate) fn decode(
         decoder: &mut crate::kernel::Decoder<'_>,
-        observe: &mut impl FnMut(crate::kernel::ReadAllocationStep) -> Result<(), crate::FsError>,
+        observe: &mut impl FnMut(
+            acyclic_fs_work::read_allocation::ReadAllocationStep,
+        ) -> Result<(), crate::FsError>,
     ) -> Result<Self, crate::FsError> {
         let identity = decoder.fixed(observe)?;
         let epoch = decoder.u64(observe)?;

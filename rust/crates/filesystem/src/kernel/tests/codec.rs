@@ -2,8 +2,8 @@ use super::{CanonicalDecodeError, Decoder, EncodeAllocationStep, Encoder};
 
 #[test]
 fn canonical_object_prefix_preserves_original_copy_admission_and_stops_at_denial() {
-    use super::ReadAllocationStep;
     use crate::storage::{ObjectId, ObjectKind, ObjectStorage};
+    use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
     for storage in [
         None,

@@ -89,7 +89,7 @@ pub(crate) fn decode_generation_export_manifest_observed<E>(
     bytes: &[u8],
     maximum_bytes: impl Into<Option<u64>>,
     maximum_objects: impl Into<Option<u64>>,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<GenerationExportManifest, E>
 where
     E: From<CanonicalDecodeError> + From<GenerationExportManifestError>,
@@ -120,9 +120,9 @@ where
     let mut objects = Vec::new();
     super::file_read::reserve_decoded_items(&mut objects, capacity, observe)?;
     for _ in 0..count {
-        observe(super::ReadAllocationStep::BeforeItem)?;
+        observe(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeItem)?;
         objects.push(decoder.any_object(observe)?);
-        observe(super::ReadAllocationStep::Item)?;
+        observe(acyclic_fs_work::read_allocation::ReadAllocationStep::Item)?;
     }
     decoder.finish()?;
     let manifest = GenerationExportManifest {

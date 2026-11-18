@@ -1,6 +1,6 @@
 //! Canonical path-independent file records and authenticated file-table pages.
 
-use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, ReadAllocationStep};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::file_table_mutation::FileTableFormat;
 use super::persistent_batch;
@@ -14,6 +14,7 @@ use crate::heap_future::in_heap_measured;
 use crate::kernel::Child;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use std::fmt;
 use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;

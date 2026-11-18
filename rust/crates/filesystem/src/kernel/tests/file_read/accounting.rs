@@ -1,5 +1,5 @@
 use super::*;
-use crate::kernel::codec::ReadAllocationStep;
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use proptest::prelude::*;
 
 // Independent scalar model: before-effects denial leaves the prefix unchanged;

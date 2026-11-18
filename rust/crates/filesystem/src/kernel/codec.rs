@@ -16,8 +16,7 @@ pub(crate) struct DecodedPageShape {
     pub(crate) items: usize,
     pub(crate) nested_bytes: u64,
 }
-mod read_step;
-pub use read_step::ReadAllocationStep;
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 pub(crate) fn copy_bytes<E: From<CanonicalDecodeError>>(
     source: &[u8],

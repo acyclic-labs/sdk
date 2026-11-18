@@ -155,8 +155,7 @@ pub use closure::{
 };
 pub(crate) use codec::Encoder;
 pub use codec::{
-    CanonicalDecodeError, DecodeLimits, EncodeAllocationStep, EncodeError, EncodeWorkStep,
-    ReadAllocationStep, encode,
+    CanonicalDecodeError, DecodeLimits, EncodeAllocationStep, EncodeError, EncodeWorkStep, encode,
 };
 pub(crate) use codec::{CanonicalInvariant, Decoder};
 pub use export::{

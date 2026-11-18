@@ -554,7 +554,8 @@ proptest::proptest! {
         text in "[a-zA-Z0-9é中𝄞]{1,24}",
         raw in proptest::collection::vec(1_u8..=255, 1..48),
     ) {
-        use crate::kernel::codec::{CanonicalDecodeError, ReadAllocationStep};
+        use crate::kernel::codec::CanonicalDecodeError;
+        use acyclic_fs_work::read_allocation::ReadAllocationStep;
         let mut posix = vec![b'n', 0xff];
         posix.extend(raw.into_iter().map(|byte| if byte == b'/' { b'x' } else { byte }));
         let mut wide: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();

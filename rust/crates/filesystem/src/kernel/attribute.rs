@@ -2,12 +2,12 @@
 
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder,
-    ReadAllocationStep,
 };
 use crate::foundation::usize_to_u64;
 use crate::kernel::Child;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{WorkCounters, WorkError};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use thiserror::Error;
 
 /// Encodes one canonical page with before-effect admission.
@@ -90,7 +90,7 @@ impl AttributeName {
 
     pub(crate) fn try_clone<E: From<CanonicalDecodeError>>(
         &self,
-        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
         let bytes = super::codec::copy_bytes(&self.bytes, 1, steps)?;
         Self::new(self.class, bytes).map_err(|error| E::from(invariant(error)))

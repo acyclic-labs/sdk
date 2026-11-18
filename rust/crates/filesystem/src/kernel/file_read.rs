@@ -523,27 +523,31 @@ mod accounting;
 pub(crate) fn reserve_decoded_items<T, E: From<super::CanonicalDecodeError>>(
     values: &mut Vec<T>,
     count: usize,
-    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<(), E> {
     let admitted = count
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(super::CanonicalDecodeError::LengthOverflow)?;
-    observe(super::codec::ReadAllocationStep::Allocate {
-        bytes: usize_to_u64(admitted),
-        operations: u64::from(count != 0),
-    })?;
+    observe(
+        acyclic_fs_work::read_allocation::ReadAllocationStep::Allocate {
+            bytes: usize_to_u64(admitted),
+            operations: u64::from(count != 0),
+        },
+    )?;
     if let Err(error) = values.try_reserve_exact(count) {
-        observe(super::codec::ReadAllocationStep::ReserveFailed(error))?;
+        observe(acyclic_fs_work::read_allocation::ReadAllocationStep::ReserveFailed(error))?;
         return Err(super::CanonicalDecodeError::AllocationFailed.into());
     }
     let actual = values
         .capacity()
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(super::CanonicalDecodeError::LengthOverflow)?;
-    observe(super::codec::ReadAllocationStep::Capacity {
-        admitted_bytes: usize_to_u64(admitted),
-        actual_bytes: usize_to_u64(actual),
-    })?;
+    observe(
+        acyclic_fs_work::read_allocation::ReadAllocationStep::Capacity {
+            admitted_bytes: usize_to_u64(admitted),
+            actual_bytes: usize_to_u64(actual),
+        },
+    )?;
     Ok(())
 }
 
@@ -665,7 +669,7 @@ mod tests;
 pub(crate) fn decode_owned<T>(
     accounting: &mut KernelAccounting<'_>,
     create: impl FnOnce(
-        &mut dyn FnMut(super::codec::ReadAllocationStep) -> Result<(), FsError>,
+        &mut dyn FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), FsError>,
     ) -> Result<T, FsError>,
 ) -> Result<(T, KernelOwnedAllocation), FsError> {
     let mut observed = OriginalReadAccounting::new(accounting)?;

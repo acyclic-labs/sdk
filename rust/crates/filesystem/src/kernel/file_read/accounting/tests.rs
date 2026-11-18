@@ -33,9 +33,9 @@ proptest! {
         let work = if mode == 2 { &recheck } else { &work };
         let mut accounting = KernelAccounting::native(work, &cancellation);
         let mut observed = OriginalReadAccounting::new(&mut accounting).unwrap();
-        observed.observe(super::super::super::codec::ReadAllocationStep::BeforeCopy(reserved)).unwrap();
+        observed.observe(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeCopy(reserved)).unwrap();
         if cancel { cancellation.cancel(); }
-        let result = observed.observe(super::super::super::codec::ReadAllocationStep::Copied(completed));
+        let result = observed.observe(acyclic_fs_work::read_allocation::ReadAllocationStep::Copied(completed));
         prop_assert_eq!(result.is_err(), cancel);
         match exit {
             0 => drop(observed),
@@ -123,7 +123,7 @@ proptest! {
         let expected = expected.map_err(|error| format!("{error:?}"));
         let before = original.receipt();
         let before_budget = work.state(|state| state.budget);
-        let preflight = observed.observe(super::super::super::codec::ReadAllocationStep::CheckCopy(amount));
+        let preflight = observed.observe(acyclic_fs_work::read_allocation::ReadAllocationStep::CheckCopy(amount));
         prop_assert_eq!(preflight.map_err(|error| format!("{error:?}")), expected.clone());
         prop_assert_eq!(original.receipt(), before);
         prop_assert_eq!(work.state(|state| state.budget), before_budget);

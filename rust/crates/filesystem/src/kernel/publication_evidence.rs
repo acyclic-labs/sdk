@@ -70,7 +70,7 @@ pub(super) struct OriginalAppendHeader {
 
 pub(super) fn decode_original_append_header<E>(
     decoder: &mut Decoder<'_>,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<OriginalAppendHeader, E>
 where
     E: From<CanonicalDecodeError> + From<PublicationEvidenceError>,
@@ -234,15 +234,15 @@ pub(crate) fn decode_generation_publication_evidence_observed<E>(
     expected_sha256: &[u8; 32],
     maximum_bytes: u64,
     maximum_objects: u64,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<GenerationPublicationProjection, E>
 where
     E: From<CanonicalDecodeError>
         + From<PublicationEvidenceError>
         + From<GenerationExportManifestError>,
 {
-    use super::ReadAllocationStep;
     use crate::foundation::{ProposedCommit, VolumeId};
+    use acyclic_fs_work::read_allocation::ReadAllocationStep;
     if bytes.len() as u64 > maximum_bytes || maximum_bytes == 0 {
         return Err(PublicationEvidenceError::TooLarge.into());
     }
@@ -375,7 +375,7 @@ pub(super) fn encode_publication_permit(value: PublicationPermit) -> Vec<u8> {
 pub(super) fn decode_publication_permit<E>(
     permit_bytes: &[u8],
     maximum_bytes: u64,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublicationPermit, E>
 where
     E: From<CanonicalDecodeError> + From<PublicationEvidenceError>,

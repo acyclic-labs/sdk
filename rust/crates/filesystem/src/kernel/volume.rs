@@ -1,6 +1,7 @@
 //! Canonical volume-creation facts and deterministic authority ownership.
 
-use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep};
+use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 use crate::WorkCounters;
 use crate::foundation::{AuthorityId, VolumeId};

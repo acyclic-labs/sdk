@@ -1,7 +1,7 @@
 //! Typed invariants shared by authenticated namespace algorithms.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::codec::{CanonicalDecodeError, ReadAllocationStep};
+use super::codec::CanonicalDecodeError;
 use super::file_read::OriginalReadAccounting;
 use super::namespace_path::{NamespacePathError, finish_owned};
 #[cfg(test)]
@@ -11,6 +11,7 @@ use crate::kernel::Child;
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
 use crate::{CancellationToken, WorkCounters};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use thiserror::Error;
 
 mod name;

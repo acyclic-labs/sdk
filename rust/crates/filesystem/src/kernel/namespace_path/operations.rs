@@ -1,5 +1,6 @@
-use super::super::{codec::ReadAllocationStep, file_read::OriginalReadAccounting};
+use super::super::file_read::OriginalReadAccounting;
 use super::*;
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 fn components(path: &str) -> impl Iterator<Item = &str> {
     path.strip_prefix('/')

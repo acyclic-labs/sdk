@@ -3,13 +3,14 @@
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::codec::{
     CanonicalDecodeError, CanonicalInvariant, DecodeLimits, DecodedPageKind, DecodedPageShape,
-    Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
+    Decoder, EncodeWorkStep, Encoder,
 };
 use super::persistent_btree::{Child, Format, Page, PageRef};
 use super::types::LogicalName;
 use crate::foundation::{FileId, usize_to_u64};
 use crate::storage::{ObjectId, ObjectKind};
 use crate::{FsError, WorkCounters};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 const DOMAIN: &[u8; 8] = b"ACYFSBND";
 const VERSION: u16 = 1;

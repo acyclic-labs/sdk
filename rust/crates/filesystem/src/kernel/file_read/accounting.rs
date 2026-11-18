@@ -16,9 +16,9 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
 
     pub(crate) fn observe(
         &mut self,
-        step: super::super::codec::ReadAllocationStep,
+        step: acyclic_fs_work::read_allocation::ReadAllocationStep,
     ) -> Result<(), FsError> {
-        use super::super::codec::ReadAllocationStep;
+        use acyclic_fs_work::read_allocation::ReadAllocationStep;
         match step {
             ReadAllocationStep::Allocate { bytes, operations } => {
                 let next = self

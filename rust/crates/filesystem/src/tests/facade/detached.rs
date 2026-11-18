@@ -32,7 +32,8 @@ async fn metadata_reads_preserve_the_original_decoder_work() -> TestResult {
 }
 
 async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
-    use crate::kernel::{DecodeLimits, ReadAllocationStep, decode_file_metadata};
+    use crate::kernel::{DecodeLimits, decode_file_metadata};
+    use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
     let cancel = CancellationToken::new();
     let (volume, mut checkout) = fixture(config(), &cancel).await?;

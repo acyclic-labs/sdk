@@ -306,7 +306,7 @@ async fn assert_native_sparse_copy_budget(
 #[cfg(not(target_arch = "wasm32"))]
 fn original_decode_completion_survives_cancellation_after_the_copy()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::codec::ReadAllocationStep;
+    use acyclic_fs_work::read_allocation::ReadAllocationStep;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;

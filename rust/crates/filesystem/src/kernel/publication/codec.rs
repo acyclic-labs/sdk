@@ -34,7 +34,7 @@ pub(crate) struct PublicationEvidence {
 pub fn decode_published_generation<E: From<CanonicalDecodeError>>(
     bytes: &[u8],
     maximum_payload_bytes: u64,
-    observe: impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublishedGeneration, E> {
     decode_publication_evidence(bytes, maximum_payload_bytes, None, observe)
         .map(|decoded| decoded.publication)
@@ -44,7 +44,7 @@ pub(crate) fn decode_publication_evidence<E: From<CanonicalDecodeError>>(
     bytes: &[u8],
     maximum_payload_bytes: u64,
     maximum_evidence_bytes: Option<u64>,
-    mut observe: impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
+    mut observe: impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublicationEvidence, E> {
     let mut decoder = Decoder::new(
         bytes,
@@ -108,7 +108,7 @@ pub(crate) fn decode_publication_evidence<E: From<CanonicalDecodeError>>(
 
 fn read_origin<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
-    observe: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublicationOrigin, E> {
     let epoch = Epoch::new(decoder.u64(observe)?).map_err(|_| {
         E::from(CanonicalDecodeError::Invariant(

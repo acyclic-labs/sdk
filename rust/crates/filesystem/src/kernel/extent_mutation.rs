@@ -321,7 +321,7 @@ impl Format for ExtentFormat {
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
-        observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
         Ok(
             match super::extent::decode_extent_page(bytes, limits, observe)? {
@@ -381,14 +381,14 @@ impl Format for ExtentFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &u64,
-        _steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        _steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<u64, E> {
         Ok(*key)
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Extent,
-        _steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        _steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Extent, E> {
         Ok(value.clone())
     }

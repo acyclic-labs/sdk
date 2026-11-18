@@ -16,11 +16,14 @@ pub(crate) fn visit_object_references(
                 let (value, allocation) = file_read::decode_owned(work, |observe| {
                     $decoder(bytes, limits, &mut |step| {
                         match &step {
-                            codec::ReadAllocationStep::Allocate { bytes, .. } => {
+                            acyclic_fs_work::read_allocation::ReadAllocationStep::Allocate {
+                                bytes,
+                                ..
+                            } => {
                                 allocated =
                                     allocated.checked_add(*bytes).ok_or(WorkError::Overflow)?
                             }
-                            codec::ReadAllocationStep::Capacity {
+                            acyclic_fs_work::read_allocation::ReadAllocationStep::Capacity {
                                 admitted_bytes,
                                 actual_bytes,
                             } => {

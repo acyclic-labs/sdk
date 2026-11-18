@@ -106,12 +106,12 @@ pub(crate) fn retention_authority_id_observed<E>(
     volume_id: VolumeId,
     kind: RetentionKind,
     label: &str,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<AuthorityId, E> {
     let bytes = (ID_DOMAIN.len() + 16 + 1 + 8 + label.len()) as u64;
-    observe(super::ReadAllocationStep::BeforeHash(bytes))?;
+    observe(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeHash(bytes))?;
     let id = retention_authority_id(volume_id, kind, label);
-    observe(super::ReadAllocationStep::Hashed(bytes))?;
+    observe(acyclic_fs_work::read_allocation::ReadAllocationStep::Hashed(bytes))?;
     Ok(id)
 }
 
@@ -204,7 +204,7 @@ pub(crate) struct RetentionCreatedRef<'a> {
 pub(crate) fn decode_retention_created_ref<'a, E>(
     bytes: &'a [u8],
     maximum_payload_bytes: u64,
-    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<RetentionCreatedRef<'a>, E>
 where
     E: From<CanonicalDecodeError> + From<RetentionCreatedError>,

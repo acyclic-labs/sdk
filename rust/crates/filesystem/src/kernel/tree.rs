@@ -1,13 +1,12 @@
 //! Canonical authenticated directory-page encoding.
 
-use super::codec::{
-    CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
-};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder};
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::types::{FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, TreePageError};
 use crate::foundation::{FileId, usize_to_u64};
 use crate::kernel::Child;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 use crate::WorkCounters;
 

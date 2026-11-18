@@ -6,7 +6,7 @@
 //! can reconstruct the FS hash chain without a private side index.
 
 use crate::foundation::{Digest, DurableCommit, Epoch, OperationId, ProposedCommit, Sequence};
-use crate::kernel::ReadAllocationStep;
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use bytes::Bytes;
 use thiserror::Error;
 

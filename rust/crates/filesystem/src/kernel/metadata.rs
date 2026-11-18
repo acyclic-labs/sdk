@@ -173,10 +173,10 @@ pub(crate) fn read_file_metadata_with_accounting<'task, 'accounting, S: AsyncObj
 pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
     bytes: &[u8],
     limits: DecodeLimits,
-    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<FileMetadata, E> {
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
-    observe(super::codec::ReadAllocationStep::BeforeItem)?;
+    observe(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeItem)?;
     let metadata = FileMetadata {
         posix_mode: decode_u32(&mut decoder, "posix_mode", observe)?,
         posix_uid: decode_u32(&mut decoder, "posix_uid", observe)?,
@@ -203,7 +203,7 @@ pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
     };
     decoder.finish()?;
     validate(metadata)?;
-    observe(super::codec::ReadAllocationStep::Item)?;
+    observe(acyclic_fs_work::read_allocation::ReadAllocationStep::Item)?;
     Ok(metadata)
 }
 
@@ -264,7 +264,7 @@ fn encode_object(encoder: &mut Encoder, field: MetadataField<ObjectId>) {
 fn decode_u32<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     field: &'static str,
-    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<u32>, E> {
     match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
@@ -276,7 +276,7 @@ fn decode_u32<E: From<CanonicalDecodeError>>(
 fn decode_u64<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     field: &'static str,
-    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<u64>, E> {
     match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
@@ -288,7 +288,7 @@ fn decode_u64<E: From<CanonicalDecodeError>>(
 fn decode_i64<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     field: &'static str,
-    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<i64>, E> {
     match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
@@ -301,7 +301,7 @@ fn decode_object<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     kind: ObjectKind,
     field: &'static str,
-    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<ObjectId>, E> {
     match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),

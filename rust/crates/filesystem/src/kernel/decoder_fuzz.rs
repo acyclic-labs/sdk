@@ -1,10 +1,11 @@
 //! Shared byte-input oracle for the real canonical decoder accounting boundary.
 use super::allocation::KernelAccounting;
-use super::codec::{CanonicalInvariant, DecodedPageKind, DecodedPageShape, ReadAllocationStep};
+use super::codec::{CanonicalInvariant, DecodedPageKind, DecodedPageShape};
 use super::file_read::OriginalReadAccounting;
 use super::*;
 use crate::storage::{ObjectId, ObjectKind};
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use {
     crate::foundation::{Digest, FileId, VolumeId},
     acyclic_fs_format::object_reference::GenerationId,

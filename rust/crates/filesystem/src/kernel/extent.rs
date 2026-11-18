@@ -1,11 +1,11 @@
 //! Canonical authenticated sparse-file extent-page encoding.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::codec::ReadAllocationStep;
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::file_read::{ReadOwned, reserve_decoded_items};
 use super::types::{Extent, ExtentChild, ExtentItems, ExtentKind, ExtentPage, ExtentPageError};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 const DOMAIN: &[u8; 8] = b"ACYFSEXT";
 /// A child ends at the next child's first offset; v1 has one strict layout.

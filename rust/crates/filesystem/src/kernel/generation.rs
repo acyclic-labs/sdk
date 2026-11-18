@@ -1,12 +1,11 @@
 //! Canonical immutable volume-generation roots and parent lineage.
 
-use super::codec::{
-    CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
-};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder};
 #[cfg(test)]
 use crate::Digest;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{CancellationToken, WorkCounters};
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use {
     crate::foundation::{FileId, VolumeId},
     acyclic_fs_format::object_reference::GenerationId,

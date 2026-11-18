@@ -1,8 +1,9 @@
 use super::*;
 use crate::kernel::{
     CanonicalDecodeError, CanonicalInvariant, Decoder, EncodeAllocationStep, EncodeWorkStep,
-    Encoder, ReadAllocationStep,
+    Encoder,
 };
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v5\0";
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[path = "directory_cursor_fuzz.rs"]

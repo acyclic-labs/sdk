@@ -38,7 +38,7 @@ impl Format for AttributeFormat {
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
-        observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
         Ok(
             match super::attribute::decode_attribute_page(bytes, limits, observe)? {
@@ -126,14 +126,14 @@ impl Format for AttributeFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
         key.try_clone(steps)
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(AttributeEntry {
             name: Self::try_clone_key(&value.name, steps)?,

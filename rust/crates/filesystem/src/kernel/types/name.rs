@@ -96,7 +96,7 @@ impl LogicalName {
 
     pub(crate) fn try_clone<E: From<CanonicalDecodeError>>(
         &self,
-        steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
         // The original name owns its canonical spelling and width proof.
         // Charge the destination allocation and copy through its original owner.

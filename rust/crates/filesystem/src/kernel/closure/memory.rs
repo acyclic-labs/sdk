@@ -201,7 +201,9 @@ impl<'a> ProofMeter<'a> {
     pub(super) fn decode_steps<T>(
         &self,
         decode: impl FnOnce(
-            &mut dyn FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), crate::FsError>,
+            &mut dyn FnMut(
+                acyclic_fs_work::read_allocation::ReadAllocationStep,
+            ) -> Result<(), crate::FsError>,
         ) -> Result<T, crate::FsError>,
     ) -> Result<(T, ProofGuard), crate::FsError> {
         self.owned(|accounting| {

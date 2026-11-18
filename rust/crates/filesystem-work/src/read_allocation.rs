@@ -1,3 +1,5 @@
+//! Work events reported by canonical readers.
+
 /// Admission, actual reserve failures, and completion points of canonical owned-buffer readers.
 pub enum ReadAllocationStep {
     /// Admit owned capacity before reservation.

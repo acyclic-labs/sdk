@@ -56,8 +56,8 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             assert!(matches!(
                 steps.as_slice(),
                 [
-                    crate::kernel::codec::ReadAllocationStep::BeforeCopy(2),
-                    crate::kernel::codec::ReadAllocationStep::Copied(2)
+                    acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeCopy(2),
+                    acyclic_fs_work::read_allocation::ReadAllocationStep::Copied(2)
                 ]
             ));
         }
@@ -99,8 +99,8 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
                     |step| {
                         hashing |= matches!(
                             step,
-                            crate::kernel::codec::ReadAllocationStep::BeforeHash(_)
-                                | crate::kernel::codec::ReadAllocationStep::Hashed(_)
+                            acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeHash(_)
+                                | acyclic_fs_work::read_allocation::ReadAllocationStep::Hashed(_)
                         );
                         Ok(())
                     },

@@ -34,7 +34,7 @@ impl Format for FileTableFormat {
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
-        observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
         Ok(
             match super::file_table::decode_file_table_page(bytes, limits, observe)? {
@@ -110,23 +110,23 @@ impl Format for FileTableFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
         let copied_bytes = std::mem::size_of::<Self::Key>() as u64;
-        steps(super::codec::ReadAllocationStep::BeforeCopy(copied_bytes))?;
+        steps(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeCopy(copied_bytes))?;
         let copied = *key;
-        steps(super::codec::ReadAllocationStep::Copied(copied_bytes))?;
+        steps(acyclic_fs_work::read_allocation::ReadAllocationStep::Copied(copied_bytes))?;
         Ok(copied)
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         let copied_bytes = std::mem::size_of::<Self::Value>() as u64;
-        steps(super::codec::ReadAllocationStep::BeforeCopy(copied_bytes))?;
+        steps(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeCopy(copied_bytes))?;
         let copied = *value;
-        steps(super::codec::ReadAllocationStep::Copied(copied_bytes))?;
+        steps(acyclic_fs_work::read_allocation::ReadAllocationStep::Copied(copied_bytes))?;
         Ok(copied)
     }
 }

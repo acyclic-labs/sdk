@@ -1,11 +1,13 @@
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, DecodeLimits, GenerationRoot, ReadAllocationStep, decode_generation_root,
+    CanonicalDecodeError, DecodeLimits, GenerationRoot, decode_generation_root,
     encode_generation_root, generation_root_id,
 };
 use acyclic_fs_format::{
     identity::{Digest, FileId, VolumeId},
     object_reference::{GenerationId, ObjectId, ObjectKind, ObjectStorage},
 };
+
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 fn root() -> GenerationRoot {
     GenerationRoot {

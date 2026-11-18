@@ -1,10 +1,12 @@
 use super::*;
-use crate::kernel::codec::ReadAllocationStep;
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn clone_page<F: Format>(
     page: &Page<F>,
-    observe: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), FsError>,
+    observe: &mut impl FnMut(
+        acyclic_fs_work::read_allocation::ReadAllocationStep,
+    ) -> Result<(), FsError>,
 ) -> Result<Page<F>, FsError> {
     match page {
         Page::Leaf(values) => {

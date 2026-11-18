@@ -12,7 +12,7 @@ pub(crate) trait Format: acyclic_collections::page::Format<Reference = ObjectId>
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
-        observe: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
+        observe: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E>
     where
         Self: Sized;
@@ -67,11 +67,11 @@ pub(crate) trait Format: acyclic_collections::page::Format<Reference = ObjectId>
     fn value_owned_bytes(value: &Self::Value) -> u64;
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E>;
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
+        steps: &mut impl FnMut(acyclic_fs_work::read_allocation::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E>;
     fn encode_with_accounting(
         page: &PageRef<'_, Self>,

@@ -2,7 +2,6 @@
 
 use super::allocation::{AllocationError, LogicalVecCapacity, VisitedObjectSet};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::codec::ReadAllocationStep;
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::file_read::{
     ReadOwned, allocate_read_buffer, owned_read_bytes, read_object_with_accounting,
@@ -18,6 +17,7 @@ use crate::storage::{
     ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError,
     object_digest,
 };
+use acyclic_fs_work::read_allocation::ReadAllocationStep;
 use std::future::Future;
 use std::io::Read;
 use std::mem::size_of;
