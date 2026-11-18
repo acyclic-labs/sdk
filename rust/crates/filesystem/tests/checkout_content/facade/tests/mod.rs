@@ -5,8 +5,10 @@ mod allow_publication;
 #[path = "../../../support/checkout_fixture.rs"]
 mod checkout_fixture;
 mod content;
+mod detached;
 #[path = "../../../support/volume_fixture.rs"]
 mod fixtures;
+mod identity;
 #[path = "../../../support/volume_commit.rs"]
 mod volume_commit;
 #[path = "../../../support/volume_read.rs"]

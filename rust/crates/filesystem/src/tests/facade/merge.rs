@@ -109,7 +109,8 @@ async fn checkout_rebase_merges_an_edit_onto_the_file_the_head_saved_over_it() -
         )
         .await?;
         commit(&mut seed, &cancel).await?;
-        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut local =
+            open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
         let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
         let saved: &'static [u8] = if overlapping {
             b"uno two three"
@@ -169,7 +170,7 @@ async fn checkout_rebase_conflicts_on_a_later_head_rewrite_of_bytes_merged_onto_
     )
     .await?;
     commit(&mut seed, &cancel).await?;
-    let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+    let mut local = open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
     let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
     let saved = OwnedBytes::from_static(b"one two THREE");
     atomic_save(&mut remote, original, saved, &cancel).await?;
@@ -216,7 +217,8 @@ async fn checkout_rebase_merges_a_head_edit_into_the_file_the_checkout_saved_ove
         )
         .await?;
         commit(&mut seed, &cancel).await?;
-        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut local =
+            open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
         let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
         let saved: &'static [u8] = if overlapping {
             b"uno two three"
@@ -285,7 +287,8 @@ async fn checkout_rebase_merges_the_bytes_of_a_saved_rewrite() -> TestResult {
             let base: Vec<u8> = (b'a'..=b'z').cycle().take(length).collect();
             let original = create(&mut seed, "doc.txt", base.clone().into(), &cancel).await?;
             commit(&mut seed, &cancel).await?;
-            let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+            let mut local =
+                open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
             let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
             let saved: Vec<u8> = (base.iter().enumerate())
                 .map(|(at, byte)| {
@@ -356,7 +359,8 @@ async fn checkout_rebase_merges_a_save_that_appended_or_cut_a_suffix() -> TestRe
             let base: Vec<u8> = (b'a'..=b'z').cycle().take(length).collect();
             let original = create(&mut seed, "doc.txt", base.clone().into(), &cancel).await?;
             commit(&mut seed, &cancel).await?;
-            let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+            let mut local =
+                open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
             let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
             let mut saved = base;
             if appends {
@@ -420,7 +424,8 @@ async fn checkout_rebase_checks_a_read_against_the_file_the_head_saved_over_it()
         )
         .await?;
         commit(&mut seed, &cancel).await?;
-        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut local =
+            open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
         let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
         let read = local
             .read_file_range(

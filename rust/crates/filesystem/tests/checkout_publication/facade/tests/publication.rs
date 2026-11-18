@@ -1,4 +1,29 @@
-use super::*;
+use acyclic_fs::kernel::{
+    DependencyRegion, FileKind, FilePayload, FileRecord, InlineFileData, Mutation, NamespacePath,
+    RebaseDecision,
+};
+use acyclic_fs::model::{CheckoutMode, ConcurrencyMode, GenerationSelector};
+use acyclic_fs::{
+    AuthoredMutation, CancellationToken, Fs, FsError, LivePublicationObservation,
+    PublicationPermit, VolumeConfig,
+};
+use acyclic_fs_format::identity::{FileId, OperationId, VolumeId};
+use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+use acyclic_stream::OwnedBytes;
+
+use super::checkout_fixture::{config, path, writable_pinned};
+use super::checkout_manual::{manual, writable_manual};
+use super::checkout_serialized::serialized_config;
+use super::checkout_tracking::tracking;
+use super::fixtures::{TestResult, create, fixture, open_checkout};
+use super::{B, allow};
+
+fn exclusive_config() -> VolumeConfig {
+    VolumeConfig {
+        concurrency: ConcurrencyMode::ExclusiveWriter,
+        ..config()
+    }
+}
 
 #[tokio::test]
 async fn only_serialized_non_pinned_overlays_compose_disjoint_publications() -> TestResult {
@@ -56,7 +81,8 @@ async fn only_serialized_non_pinned_overlays_compose_disjoint_publications() -> 
                     + usize::from(second.has_pending_mutations()),
                 2 - committed
             );
-            let mut current = open_checkout(&volume, pinned(), &cancel).await?;
+            let mut current =
+                open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancel).await?;
             let mut published = 0;
             for name in ["left", "right"] {
                 published += usize::from(
@@ -190,7 +216,13 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     ));
     assert!(stale.has_pending_mutations());
 
-    let mut head = (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation)).await?;
+    let mut head = (volume.checkout(
+        GenerationSelector::Head,
+        CheckoutMode::read_only_pinned(),
+        B,
+        &cancellation,
+    ))
+    .await?;
     assert!(
         (head.value.lookup_no_follow(&path("a")?, B, &cancellation,))
             .await?
@@ -331,7 +363,8 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     let mut dirty = open_checkout(&volume, writable_manual(), &cancellation).await?;
     let mut conflicted = open_checkout(&volume, writable_manual(), &cancellation).await?;
     let mut writer = open_checkout(&volume, writable_pinned(), &cancellation).await?;
-    let mut pinned_checkout = open_checkout(&volume, pinned(), &cancellation).await?;
+    let mut pinned_checkout =
+        open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancellation).await?;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
     let metadata = (writer.lookup_no_follow(&root_path, B, &cancellation))
         .await?

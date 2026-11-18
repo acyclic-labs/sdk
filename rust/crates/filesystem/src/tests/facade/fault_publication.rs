@@ -24,7 +24,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     .value;
     let mut rebasing = (volume.checkout(
         GenerationSelector::Head,
-        writable_tracking(),
+        CheckoutMode::tracking_transaction(),
         B,
         &cancellation,
     ))

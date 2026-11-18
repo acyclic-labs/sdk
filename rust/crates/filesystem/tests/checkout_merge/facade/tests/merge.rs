@@ -1,11 +1,10 @@
-use acyclic_fs::kernel::{
-    FileKind, FilePayload, FileRecord, InlineFileData, MetadataField, Mutation,
-};
+use acyclic_fs::kernel::{FileKind, FilePayload, FileRecord, InlineFileData, Mutation};
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
     CancellationToken, ContentChange, ContentTimes, FsError, MergeConflict, MergePreparation,
 };
 use acyclic_fs_format::identity::FileId;
+use acyclic_fs_format::metadata::MetadataField;
 use acyclic_fs_work::performance::WorkCounters;
 use acyclic_stream::OwnedBytes;
 

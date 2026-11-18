@@ -278,7 +278,8 @@ async fn pre_cancelled_facade_operations_perform_zero_work() -> TestResult {
 async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> TestResult {
     let active = CancellationToken::new();
     let (volume, _) = fixture(config(), &active).await?;
-    let mut checkout = open_checkout(&volume, writable_tracking(), &active).await?;
+    let mut checkout =
+        open_checkout(&volume, CheckoutMode::tracking_transaction(), &active).await?;
     let file = path("cancelled-file")?;
     let id = create(
         &mut checkout,

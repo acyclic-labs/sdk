@@ -1,6 +1,6 @@
 use super::*;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
-use crate::model::{ConcurrencyMode, FilesystemProfile};
+use crate::model::FilesystemProfile;
 use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite};
 use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
@@ -10,58 +10,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod checkout_fixture;
 use checkout_fixture::{config, path, path_parts, writable_pinned};
 
+#[path = "../../../tests/support/checkout_manual.rs"]
+mod checkout_manual;
+use checkout_manual::{manual, writable_manual};
+
 #[path = "../../../tests/support/checkout_tracking.rs"]
 mod checkout_tracking;
 use checkout_tracking::tracking;
 
-fn serialized_config() -> VolumeConfig {
-    VolumeConfig {
-        concurrency: ConcurrencyMode::SerializedAuthority,
-        ..config()
-    }
-}
-
-fn exclusive_config() -> VolumeConfig {
-    VolumeConfig {
-        concurrency: ConcurrencyMode::ExclusiveWriter,
-        ..config()
-    }
-}
+#[path = "../../../tests/support/checkout_live_fixture.rs"]
+mod live_fixture;
+use live_fixture::writable_live;
+#[path = "../../../tests/support/checkout_serialized.rs"]
+mod checkout_serialized;
+use checkout_serialized::serialized_config;
 
 fn pinned() -> CheckoutMode {
     CheckoutMode::read_only_pinned()
-}
-
-fn manual() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadOnly,
-        consistency: ConsistencyMode::Manual,
-        mutations: MutationMode::None,
-    }
-}
-
-fn writable_manual() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Manual,
-        mutations: MutationMode::PrivateOverlay,
-    }
-}
-
-fn writable_tracking() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::TrackingSafe,
-        mutations: MutationMode::PrivateOverlay,
-    }
-}
-
-fn writable_live() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Live,
-        mutations: MutationMode::DirectLive,
-    }
 }
 
 fn root_path() -> Result<NamespacePath, Box<dyn std::error::Error>> {
@@ -570,8 +535,6 @@ mod local;
 mod merge;
 mod profiles;
 mod protocol_helpers;
-mod publication;
-mod read;
 mod selection;
 mod special;
 mod tracking;
