@@ -19,8 +19,11 @@ mounts-fuse = true
 share-separate-deps = true
 unit-test-only-sources = [
     "src/git_compat/tests/**",
+    "src/kernel/tests/**",
     "src/multi_root/tests/**",
     "src/native_mount/fixture_access.rs",
+    "src/speculation/tests/**",
+    "src/staged_objects/tests/**",
     "src/tests/**",
     "src/wire_service/access_tests.rs",
     "src/wire_service/errors/tests.rs",
