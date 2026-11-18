@@ -35,3 +35,23 @@ test('Bash substitutions and heredocs preserve the following command', () => {
  assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));
  assert.throws(() => pollingSites('control.sh', "cat <<'EOF'\nunterminated"), /unterminated shell here-document/);
 });
+
+test('shell heredocs match the complete delimiter word', () => {
+ for (const word of ['END-TEXT', "END'-TEXT'", String.raw`END\-TEXT`]) {
+  const source = ['cat <<' + word, "payload can't open a quote", 'END-TEXT', 'sleep 1'].join('\n');
+  assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));
+ }
+});
+
+test('shell command substitutions consume heredoc bodies before scanning quotes', () => {
+ const source = [
+  'text="$(cat <<-\'EOF\' <<END-TEXT',
+  "\tpayload can't open a quote or close the substitution: )",
+  '\tEOF',
+  'more text with an unmatched "',
+  'END-TEXT',
+  ')"',
+  'sleep 1',
+ ].join('\n');
+ assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));
+});

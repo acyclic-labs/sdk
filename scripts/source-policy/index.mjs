@@ -123,7 +123,26 @@ function scriptTokens(file, source, parser) {
  return {stream: out, parsed};
 }
 
-function shellQuoteEnd(source, end, quote, escaped) {
+function shellHereRedirect(source, start) {
+ const match = /^<<(-?)[ \t]*((?:'[^'\r\n]*'|"[^"\r\n]*"|\\[^\r\n]|[^ \t\r\n;&|()<>'"\\])+)/.exec(source.slice(start));
+ if (!match) return undefined;
+ const delimiter = match[2].replace(/'([^']*)'|"([^"]*)"|\\(.)/g, (_, single, double, escaped) => single ?? double ?? escaped);
+ return {delimiter, tabs: match[1] === '-', end: start + match[0].length};
+}
+
+function shellHereEnd(source, body, {delimiter, tabs}) {
+ while (body < source.length) {
+  const newline = source.indexOf('\n', body);
+  const last = newline < 0 ? source.length : newline;
+  const text = source.slice(body, last).replace(/\r$/, '');
+  const end = newline < 0 ? last : last + 1;
+  if ((tabs ? text.replace(/^\t+/, '') : text) === delimiter) return {body, end};
+  body = end;
+ }
+ return undefined;
+}
+
+function shellQuoteEnd(source, end, quote, escaped, malformed) {
  const scopes = [{quote, escaped}];
  while (end < source.length) {
   const scope = scopes[scopes.length - 1];
@@ -134,8 +153,21 @@ function shellQuoteEnd(source, end, quote, escaped) {
     if (!scopes.length) return end;
    } else if (scope.escaped && character === '\\') end++;
    else if (scope.quote === '"' && character === '$' && source[end] === '(') {
-    scopes.push({depth: 1});
+    scopes.push({depth: 1, arithmetic: source[end + 1] === '(', hereDocuments: []});
     end++;
+   }
+  } else if (character === '<' && !scope.arithmetic) {
+   if (source.startsWith('<<', end)) { end += 2; continue; }
+   const redirect = shellHereRedirect(source, end - 1);
+   if (redirect) {
+    scope.hereDocuments.push(redirect);
+    end = redirect.end;
+   }
+  } else if (character === '\n') {
+   for (const redirect of scope.hereDocuments.splice(0)) {
+    const result = shellHereEnd(source, end, redirect);
+    if (!result) throw malformed('unterminated shell here-document');
+    end = result.end;
    }
   } else if (character === "'" || character === '"')
    scopes.push({quote: character, escaped: character === '"' || source[end - 2] === '$'});
@@ -199,28 +231,19 @@ function nativeTokens(source, file) {
   if (arithmeticDepth && tail[0] === '(') arithmeticDepth++;
   if (arithmeticDepth && tail[0] === ')') arithmeticDepth--;
   if (shell && !arithmeticDepth && tail.startsWith('<<<')) { emit(at + 3, 'punctuation'); continue; }
-  const redirect = shell && !arithmeticDepth && tail.match(/^<<(-?)[ \t]*(?:'([^'\r\n]+)'|"([^"\r\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/);
+  const redirect = shell && !arithmeticDepth && tail.startsWith('<<') && shellHereRedirect(source, at);
   if (redirect) {
-   hereDocuments.push({delimiter: redirect[2] ?? redirect[3] ?? redirect[4], tabs: redirect[1] === '-'});
-   emit(at + redirect[0].length, 'punctuation');
+   hereDocuments.push(redirect);
+   emit(redirect.end, 'punctuation');
    continue;
   }
   if (hereDocuments.length && (tail.startsWith('\n') || tail.startsWith('\r\n'))) {
    emit(at + (tail.startsWith('\r') ? 2 : 1));
-   for (const {delimiter, tabs} of hereDocuments.splice(0)) {
-    let end = at;
-    while (end < source.length) {
-     const newline = source.indexOf('\n', end);
-     const last = newline < 0 ? source.length : newline;
-     const content = source.slice(end, last).replace(/\r$/, '');
-     if ((tabs ? content.replace(/^\t+/, '') : content) === delimiter) {
-      emit(end, 'literal');
-      emit(newline < 0 ? last : last + 1);
-      break;
-     }
-     end = newline < 0 ? source.length : newline + 1;
-    }
-    if (end >= source.length) throw malformed('unterminated shell here-document');
+   for (const pending of hereDocuments.splice(0)) {
+    const result = shellHereEnd(source, at, pending);
+    if (!result) throw malformed('unterminated shell here-document');
+    emit(result.body, 'literal');
+    emit(result.end);
    }
    continue;
   }
@@ -288,7 +311,7 @@ function nativeTokens(source, file) {
   const character = rust && quote === "'" && tail.match(/^'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\r\n])'/u);
   if (character) { emit(at + character[0].length, 'literal'); continue; }
   if (shell && (quote === '"' || quote === "'")) {
-   const end = shellQuoteEnd(source, at + 1, quote, quote === '"' || source[at - 1] === '$');
+   const end = shellQuoteEnd(source, at + 1, quote, quote === '"' || source[at - 1] === '$', malformed);
    if (end > source.length) throw malformed('unterminated quoted string');
    emit(end, 'literal');
    continue;
