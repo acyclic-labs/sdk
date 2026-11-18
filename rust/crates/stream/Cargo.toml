@@ -156,3 +156,7 @@ required-features = ["conformance"]
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[test]]
+name = "session-contracts"
+path = "tests/session_contracts.rs"
