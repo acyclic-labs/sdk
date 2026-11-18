@@ -38,10 +38,7 @@ mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     use proptest::prelude::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
+    use std::sync::{Arc, Mutex};
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
@@ -55,7 +52,7 @@ mod tests {
                     acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
                     &CancellationToken::new(),
                 ).unwrap();
-                let baseline = work.live_allocation_bytes();
+                let baseline = work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let bytes = vec![b'c'; length];
                 let capacity = bytes.capacity() as u64;
                 let control = acyclic_auth::operation::bytes_owner_allocation_bytes::<Owned<Vec<u8>>>() as u64;
@@ -75,15 +72,15 @@ mod tests {
                 });
                 prop_assert_eq!(allocated.count_total, 1);
                 prop_assert_eq!(allocated.bytes_total, control);
-                let credited = work.live_allocation_bytes() - baseline;
+                let credited = work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))? - baseline;
                 prop_assert_eq!(credited == capacity + allocated.bytes_total, complete_control);
                 let body = body.unwrap();
                 let retained = body.slice(length - 1..);
                 drop(body);
                 prop_assert_eq!(retained.as_ref(), b"c");
-                prop_assert_eq!(work.live_allocation_bytes() - baseline, credited);
+                prop_assert_eq!(work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))? - baseline, credited);
                 drop(retained);
-                prop_assert_eq!(work.live_allocation_bytes(), baseline);
+                prop_assert_eq!(work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, baseline);
             }
         }
     }
@@ -91,7 +88,7 @@ mod tests {
     struct Observed {
         bytes: Option<acyclic_auth::operation::ProtectedBytes>,
         work: NativeMaterializationWork,
-        retired_at: Arc<AtomicU64>,
+        retired_at: Arc<Mutex<Option<std::result::Result<u64, acyclic_fs::WorkObservationError>>>>,
     }
 
     impl AsRef<[u8]> for Observed {
@@ -106,8 +103,9 @@ mod tests {
     impl Drop for Observed {
         fn drop(&mut self) {
             drop(self.bytes.take());
-            self.retired_at
-                .store(self.work.live_allocation_bytes(), Ordering::SeqCst);
+            if let Ok(mut sample) = self.retired_at.lock() {
+                *sample = Some(self.work.live_allocation_bytes());
+            }
         }
     }
 
@@ -121,7 +119,7 @@ mod tests {
             let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
                 .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
             let custody = work.claim(CAPACITY, 0, WorkCounters::UNCHARGED)?;
-            let retired_at = Arc::new(AtomicU64::new(u64::MAX));
+            let retired_at = Arc::new(Mutex::new(None));
             let payload = Observed {
                 bytes: Some(acyclic_auth::operation::ProtectedBytes::new(
                     zeroize::Zeroizing::new(vec![b'Z'; CAPACITY as usize]),
@@ -129,11 +127,20 @@ mod tests {
                 work: work.clone(),
                 retired_at: retired_at.clone(),
             };
+            let sample = || -> Result<u64> {
+                Ok(retired_at
+                    .lock()
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?
+                    .take()
+                    .ok_or_else(|| {
+                        crate::Error::Invalid("payload retirement was not observed".into())
+                    })??)
+            };
             if release_first {
                 // Restore the former parameter drop order on admission refusal.
                 drop(custody);
                 drop(payload);
-                assert_eq!(retired_at.load(Ordering::SeqCst), baseline);
+                assert_eq!(sample()?, baseline);
             } else {
                 let error = owned(payload, custody).expect_err("control needs overlapping credit");
                 assert!(matches!(
@@ -148,9 +155,9 @@ mod tests {
                         ..
                     }
                 ));
-                assert_eq!(retired_at.load(Ordering::SeqCst), baseline + CAPACITY);
+                assert_eq!(sample()?, baseline + CAPACITY);
             }
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
         Ok(())
     }
