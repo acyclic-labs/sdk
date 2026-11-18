@@ -24,7 +24,7 @@ async fn attribute_class_bound_skips_annotation_only_subtrees()
         AttributeClass::MacResourceFork,
     ];
     for (index, class) in classes.into_iter().enumerate() {
-        let mut value = entry("native", u8::try_from(index + 1)?)?;
+        let mut value = entry("native", 1, u8::try_from(index + 1)?)?;
         value.name = AttributeName::new(class, b"native".to_vec())?;
         children.push(Child {
             first: value.name.clone(),

@@ -12,19 +12,19 @@ use super::super::attribute_objects::put_attribute_page as put;
 async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let a = put(
         store,
-        &AttributePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
+        &AttributePage::Leaf(vec![entry("a", 1, 1)?, entry("b", 1, 2)?]),
         8,
     )
     .await?;
     let c = put(
         store,
-        &AttributePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
+        &AttributePage::Leaf(vec![entry("c", 1, 3)?, entry("d", 1, 4)?]),
         8,
     )
     .await?;
     let e = put(
         store,
-        &AttributePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?]),
+        &AttributePage::Leaf(vec![entry("e", 1, 5)?, entry("f", 1, 6)?]),
         8,
     )
     .await?;
@@ -59,6 +59,7 @@ async fn four_leaf_tree(
             store,
             &AttributePage::Leaf(vec![entry(
                 value,
+                1,
                 u8::try_from(index + 1).map_err(|_| "fixture index overflow")?,
             )?]),
             8,
@@ -250,7 +251,7 @@ async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Err
     let store = MemoryObjectStore::default();
     let leaf = put(
         &store,
-        &AttributePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
+        &AttributePage::Leaf(vec![entry("c", 1, 3)?, entry("d", 1, 4)?]),
         8,
     )
     .await?;
@@ -445,7 +446,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
 
     let leaf = put(
         &store,
-        &AttributePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
+        &AttributePage::Leaf(vec![entry("a", 1, 1)?, entry("b", 1, 2)?]),
         8,
     )
     .await?;

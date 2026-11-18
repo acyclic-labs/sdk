@@ -4,17 +4,21 @@ use acyclic_fs_format::{
     object_reference::{ObjectId, ObjectKind},
 };
 
-pub(crate) fn name(value: &str) -> Result<AttributeName, Box<dyn std::error::Error>> {
+pub(crate) fn name(value: impl AsRef<[u8]>) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         AttributeClass::PosixXattr,
-        value.as_bytes().to_vec(),
+        value.as_ref().to_vec(),
     )?)
 }
 
-pub(crate) fn entry(value: &str, byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Error>> {
+pub(crate) fn entry(
+    value: impl AsRef<[u8]>,
+    value_bytes: u64,
+    byte: u8,
+) -> Result<AttributeEntry, Box<dyn std::error::Error>> {
     Ok(AttributeEntry {
         name: name(value)?,
-        value_bytes: 1,
+        value_bytes,
         value: ObjectId {
             storage: None,
             kind: ObjectKind::Blob,
