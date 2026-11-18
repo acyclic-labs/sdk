@@ -1,6 +1,14 @@
-use super::*;
+#[cfg(unix)]
+use acyclic_fs::kernel::{FileMetadata, MetadataField};
+use acyclic_fs::{
+    CancellationToken, Fs, HostPathReplacement, HostPathRestore, IdempotencyKey,
+    MaterializeOptions, TransactionCommit,
+};
+use acyclic_fs_work::performance::WorkBudget;
+use std::{error::Error, path::Path};
 
-#[cfg(not(target_arch = "wasm32"))]
+use crate::transaction::commit;
+
 #[tokio::test]
 async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 -> Result<(), Box<dyn Error>> {
@@ -17,7 +25,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
         set_metadata(
             "/output/nested",
             FileMetadata {
-                posix_mode: crate::kernel::MetadataField::Value(0o700),
+                posix_mode: MetadataField::Value(0o700),
                 ..FileMetadata::default()
             }
         )
@@ -29,7 +37,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
     let receipt = generation
         .materialize(
             std::iter::once("/output/nested/status"),
-            &crate::MaterializeOptions {
+            &MaterializeOptions {
                 materialized_view: None,
                 destination: destination.path().to_path_buf(),
                 expected_root_identity: None,
@@ -37,8 +45,8 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
                 maximum_extent_spans: Some(32),
                 transfer_bytes: 4096,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
         .await?;
     assert_eq!(receipt.value.files, 1);
@@ -50,7 +58,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
     generation
         .materialize(
             std::iter::once("/output/nested"),
-            &crate::MaterializeOptions {
+            &MaterializeOptions {
                 materialized_view: None,
                 destination: directory_destination.path().to_path_buf(),
                 expected_root_identity: None,
@@ -58,8 +66,8 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
                 maximum_extent_spans: Some(32),
                 transfer_bytes: 4096,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
         .await?;
     assert_eq!(
@@ -77,7 +85,6 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn public_generation_materialize_paths_shares_parents_and_hard_link_identity()
 -> Result<(), Box<dyn Error>> {
@@ -95,9 +102,9 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
     let receipt = generation
         .materialize(
             ["/nested/a", "/nested/b", "/nested/c"].into_iter(),
-            &crate::MaterializeOptions::native(destination.path()),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            &MaterializeOptions::native(destination.path()),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
         .await?;
     assert_eq!(receipt.value.files, 3);
@@ -113,7 +120,6 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_path()
 -> Result<(), Box<dyn Error>> {
@@ -131,7 +137,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     std::fs::create_dir(destination.path().join("nested"))?;
     std::fs::write(destination.path().join("nested/file"), b"stale")?;
     std::fs::write(destination.path().join("sibling"), b"untouched")?;
-    let options = crate::MaterializeOptions {
+    let options = MaterializeOptions {
         materialized_view: None,
         destination: destination.path().to_path_buf(),
         expected_root_identity: None,
@@ -142,13 +148,13 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     let restored = generation
         .restore_host_path(
             Path::new("nested/file"),
-            crate::HostPathReplacement::Atomic,
+            HostPathReplacement::Atomic,
             &options,
             selected_transaction_budget(),
-            &crate::CancellationToken::new(),
+            &CancellationToken::new(),
         )
         .await?;
-    assert_eq!(restored.value, crate::HostPathRestore::Restored);
+    assert_eq!(restored.value, HostPathRestore::Restored);
     assert_eq!(
         std::fs::read(destination.path().join("nested/file"))?,
         b"authenticated"
@@ -162,23 +168,23 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     let removed = generation
         .restore_host_path(
             Path::new("missing"),
-            crate::HostPathReplacement::Atomic,
+            HostPathReplacement::Atomic,
             &options,
             selected_transaction_budget(),
-            &crate::CancellationToken::new(),
+            &CancellationToken::new(),
         )
         .await?;
-    assert_eq!(removed.value, crate::HostPathRestore::Removed);
+    assert_eq!(removed.value, HostPathRestore::Removed);
     assert!(!destination.path().join("missing").exists());
     for invalid in [Path::new(""), Path::new("../escape"), destination.path()] {
         assert!(
             generation
                 .restore_host_path(
                     invalid,
-                    crate::HostPathReplacement::Atomic,
+                    HostPathReplacement::Atomic,
                     &options,
                     selected_transaction_budget(),
-                    &crate::CancellationToken::new(),
+                    &CancellationToken::new(),
                 )
                 .await
                 .is_err()
@@ -187,7 +193,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(unix)]
 #[tokio::test]
 async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Result<(), Box<dyn Error>>
 {
@@ -200,8 +206,8 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
     let result = generation
         .restore_host_path(
             Path::new("escape/file"),
-            crate::HostPathReplacement::Atomic,
-            &crate::MaterializeOptions {
+            HostPathReplacement::Atomic,
+            &MaterializeOptions {
                 materialized_view: None,
                 destination: destination.path().to_path_buf(),
                 expected_root_identity: None,
@@ -209,8 +215,8 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
                 maximum_extent_spans: Some(32),
                 transfer_bytes: 4096,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
         .await;
     assert!(result.is_err());
@@ -218,7 +224,7 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(windows)]
 #[tokio::test]
 async fn public_generation_restore_host_path_rejects_reparse_parent_when_available()
 -> Result<(), Box<dyn Error>> {
@@ -238,8 +244,8 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
     let result = generation
         .restore_host_path(
             Path::new("escape/file"),
-            crate::HostPathReplacement::Atomic,
-            &crate::MaterializeOptions {
+            HostPathReplacement::Atomic,
+            &MaterializeOptions {
                 materialized_view: None,
                 destination: destination.path().to_path_buf(),
                 expected_root_identity: None,
@@ -247,8 +253,8 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
                 maximum_extent_spans: Some(32),
                 transfer_bytes: 4096,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
         .await;
     assert!(result.is_err());

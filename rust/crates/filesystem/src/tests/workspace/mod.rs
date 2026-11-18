@@ -8,9 +8,6 @@ use acyclic_stream::OwnedBytes;
 
 use std::error::Error;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-
 use std::sync::Arc;
 
 macro_rules! value {
@@ -46,8 +43,6 @@ mod generation;
 mod identity;
 
 mod joins;
-
-mod materialization;
 
 mod merge_drivers;
 
