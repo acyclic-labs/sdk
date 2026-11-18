@@ -1,10 +1,9 @@
+import { bazelExecutable } from "../../../../scripts/bazel-executables.mjs";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
@@ -34,10 +33,9 @@ if (process.argv.includes("--client")) {
 } else {
   await MemoryObjectsV1.create();
   const certificate = process.env.ACYCLIC_CONFORMANCE_CERTIFICATE_BIN
-    ?? join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", "examples", `conformance-certificate${process.platform === "win32" ? ".exe" : ""}`);
-  const generated = existsSync(certificate)
-    ? spawnSync(certificate, [], { cwd: root, encoding: "utf8" })
-    : spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
+    ?? bazelExecutable(root, "//rust/crates/actors:conformance-certificate_example");
+  const generated = spawnSync(certificate, [], { cwd: root, encoding: "utf8" });
+  if (generated.error) throw generated.error;
   if (generated.status !== 0) throw new Error(generated.stderr);
   const identity = JSON.parse(generated.stdout);
   let memory;
