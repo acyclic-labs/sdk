@@ -1,7 +1,8 @@
 use super::*;
+use acyclic_executable_search::ExecutableSearch;
 use acyclic_native_runtime::{
-    CaptureHandler, CaptureSchedule, ExecutableSearch, OwnedCaptureInput, ProcessCommand,
-    ProcessInput, ProcessOutput, ProcessStdio, ProcessTree, run_blocking_io, shell_command,
+    CaptureHandler, CaptureSchedule, OwnedCaptureInput, ProcessCommand, ProcessInput,
+    ProcessOutput, ProcessStdio, ProcessTree, run_blocking_io, shell_command,
 };
 use std::{
     collections::BTreeMap,

@@ -1,4 +1,4 @@
-use crate::ExecutableSearch;
+use acyclic_executable_search::ExecutableSearch;
 use acyclic_host_platform::shell::PLATFORM;
 use std::{
     io,

@@ -87,7 +87,7 @@ proptest! {
         prop_assert!(Path::new(original.get_program()).is_absolute());
         prop_assert_eq!(Path::new(original.get_program()), a.join(name));
         prop_assert_eq!(Path::new(replaced.get_program()), b.join(name));
-        prop_assert_eq!(acyclic_native_runtime::ExecutableSearch::from_environment(root.path(), |_| None).resolve(original.get_program()).unwrap(), Path::new(original.get_program()));
+        prop_assert_eq!(acyclic_executable_search::ExecutableSearch::from_environment(root.path(), |_| None).resolve(original.get_program()).unwrap(), Path::new(original.get_program()));
         let revision = |command| {
             let binding = native::command_binding(command, &config);
             let (tools, _) = register("fixture".into(), &config, Connected {

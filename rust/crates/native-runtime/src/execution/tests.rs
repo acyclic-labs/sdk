@@ -2215,9 +2215,10 @@ fn local_socket_unavailability_probe() -> io::Result<()> {
 fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
     crate::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
-    let node =
-        crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-            .resolve_native(acyclic_test_support::host_tool!("node"))?;
+    let node = acyclic_executable_search::ExecutableSearch::from_environment(root.path(), |name| {
+        std::env::var_os(name)
+    })
+    .resolve_native(acyclic_test_support::host_tool!("node"))?;
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::WorkspaceWrite,

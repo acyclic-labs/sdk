@@ -142,14 +142,12 @@ mod directory;
 pub use directory::remove_child_directory;
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
-mod command;
 #[cfg(windows)]
 mod executable;
 /// Host-authorized native execution capabilities and their OS enforcement.
 pub mod execution;
 mod service;
 mod shell;
-pub use command::ExecutableSearch;
 pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
     process_output, process_status, spawn_service_process, take_service_ready_signal,

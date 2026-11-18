@@ -29,7 +29,7 @@ pub(super) fn gather(
         let environment =
             crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)
                 .map_err(crate::Error::process_io)?;
-        let search = acyclic_native_runtime::ExecutableSearch::from_environment(cwd, |name| {
+        let search = acyclic_executable_search::ExecutableSearch::from_environment(cwd, |name| {
             environment.get(name).map(std::ffi::OsString::from)
         });
         facts.tool_path = environment.get("PATH").cloned();
