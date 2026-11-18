@@ -22,7 +22,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                 );
                 let archive = support.join("registry/demo-1.0.0.crate");
                 let original_archive = fs::read(&archive).unwrap();
-                let original_checksum = hex::encode(Sha256::digest(&original_archive));
+                let original_digest = hash_bytes(&original_archive);
                 let output = fixture.output.join("releases/1.0.0");
                 let packaged_manifest = support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml");
                 let cargo_home = fixture_cargo_home(&fixture);
@@ -96,7 +96,10 @@ fn archive_locks_override_foreign_cargo_authority() {
                     let [archive] = archives.as_slice() else {
                         panic!("the fixture must admit exactly one registry archive");
                     };
-                    assert_eq!(archive.registry_checksum, original_checksum);
+                    assert_eq!(
+                        archive.registry_checksum,
+                        original_digest.strip_prefix("sha256:").unwrap()
+                    );
                     assert!(matches!(
                         (&archive.resolution_lock, published),
                         (ResolutionLock::Published { .. }, true)
