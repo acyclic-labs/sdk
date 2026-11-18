@@ -27,7 +27,9 @@ fn assert_recoverable(error: Error, original: &acyclic_fs::NativeMaterialization
         crate::model::ToolResultContent::Error { .. }
     ));
     assert!(
-        original.live_allocation_bytes()
+        original
+            .live_allocation_bytes()
+            .map_err(|error| TestCaseError::fail(error.to_string()))?
             > acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
 }
@@ -52,7 +54,7 @@ proptest! {
                 assert_recoverable(error, &original);
             }
         }
-        prop_assert_eq!(original.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
+        prop_assert_eq!(original.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
     }
 
     // The shared text algorithms retain the same classifications in portable and native
@@ -84,7 +86,7 @@ proptest! {
                 pair => prop_assert!(false, "different outcomes: {pair:?}"),
             }
         }
-        prop_assert_eq!(original.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
+        prop_assert_eq!(original.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?, acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
     }
 }
 

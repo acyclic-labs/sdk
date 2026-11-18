@@ -366,7 +366,7 @@ mod tests {
                 &acyclic_fs::CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let mut custody = super::super::edit::allocation(Some(&work), 0)?;
             // An earlier caller allocation must survive every planner return.
             let mut earlier = String::new();
@@ -387,7 +387,7 @@ mod tests {
                 // Restoring the former retained hunk/line claims fails this
                 // exact equality on the first file, before any growth limit.
                 assert_eq!(custody.as_ref().unwrap().bytes(), retained);
-                assert_eq!(work.live_allocation_bytes(), baseline + retained);
+                assert_eq!(work.live_allocation_bytes()?, baseline + retained);
                 for invalid in [
                     "@@\n-one\n+two\n@@\n-missing\n+four\n",
                     "@@\n-one\n+two\n*** End of File\n+later\n",
@@ -399,13 +399,13 @@ mod tests {
                     // Both a later matching failure and a grammar failure
                     // release scratch without erasing earlier live outputs.
                     assert_eq!(custody.as_ref().unwrap().bytes(), retained);
-                    assert_eq!(work.live_allocation_bytes(), baseline + retained);
+                    assert_eq!(work.live_allocation_bytes()?, baseline + retained);
                 }
             }
             drop(outputs);
             drop(earlier);
             drop(custody);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
         Ok(())
     }
