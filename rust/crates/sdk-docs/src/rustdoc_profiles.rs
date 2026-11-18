@@ -218,13 +218,12 @@ fn validate_profile_target(
     target: &str,
     available_targets: &BTreeSet<String>,
 ) -> Result<(), ProfileError> {
-    if available_targets.contains(target) {
-        Ok(())
-    } else {
-        Err(ProfileError::UnsupportedTarget {
+    available_targets
+        .contains(target)
+        .then_some(())
+        .ok_or_else(|| ProfileError::UnsupportedTarget {
             target: target.to_owned(),
         })
-    }
 }
 
 fn declared_features(package: &Package) -> impl Iterator<Item = &String> {
