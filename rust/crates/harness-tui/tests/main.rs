@@ -3,20 +3,9 @@
 
 acyclic_test_support::counting_allocator!();
 
-static TERMINAL_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-pub(crate) fn terminal_owner() -> std::sync::MutexGuard<'static, ()> {
-    match TERMINAL_OWNER.lock() {
-        Ok(owner) => owner,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-#[path = "terminal_negotiation.rs"]
-mod terminal_negotiation;
-
-#[path = "terminal_frames.rs"]
-mod terminal_frames;
+#[path = "support/terminal_owner.rs"]
+mod terminal_owner_support;
+pub(crate) use terminal_owner_support::terminal_owner;
 
 #[path = "cases/completion.rs"]
 mod completion;

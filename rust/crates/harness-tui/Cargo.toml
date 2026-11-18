@@ -61,3 +61,7 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[test]]
+name = "terminal"
+path = "tests/terminal.rs"
