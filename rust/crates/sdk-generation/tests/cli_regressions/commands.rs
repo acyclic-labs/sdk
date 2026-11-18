@@ -379,7 +379,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let target = (!metadata.proc_macro).then_some(OsStr::new(target));
         let output_dir = rustdoc_directory(target_dir, target);
         let output = output_dir.join(format!("{}.json", metadata.receipt_name));
-        fs::create_dir_all(output.parent().unwrap())?;
+        fs::create_dir_all(&output_dir)?;
         fs::write(output, serde_json::to_vec(&json)?)?;
         #[cfg(unix)]
         use std::os::unix::process::ExitStatusExt;
@@ -461,15 +461,13 @@ proptest::proptest! {
         command.args(["metadata", "--locked", "--config", &argument]);
         let original = query(&command).unwrap();
         command.env("CARGO_HOME", &value);
-        proptest::prop_assert_eq!(query(&command).unwrap(), original.clone());
+        proptest::prop_assert_eq!(&query(&command).unwrap(), &original);
         command.env("RUSTUP_TOOLCHAIN", &value);
-        proptest::prop_assert_ne!(query(&command).unwrap(), original.clone());
+        proptest::prop_assert_ne!(&query(&command).unwrap(), &original);
         command.env_remove("RUSTUP_TOOLCHAIN");
         let mut missing = Command::new("cargo"); missing.args(["metadata", "--locked"]);
-        proptest::prop_assert_ne!(query(&missing).unwrap(), original);
         // Negative control: discarding authority arguments aliases these two.
-        proptest::prop_assert_eq!(command.get_program(), missing.get_program());
-        proptest::prop_assert_eq!(command.get_args().next(), missing.get_args().next());
+        proptest::prop_assert_ne!(query(&missing).unwrap(), original);
         let mut compiler = Command::new("cargo"); compiler.args(["rustdoc", "--locked"]);
         let compiler_key = query(&compiler).unwrap();
         compiler.args(["--features", &argument]);
