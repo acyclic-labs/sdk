@@ -177,12 +177,12 @@ fn project_inner(
     rows: &[Value],
     template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    let manifest: Value = serde_json::from_slice(
+    let mut manifest: Value = serde_json::from_slice(
         &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
     )
     .unwrap();
     // The CLI drift checks recompute the logical digests in this inventory.
-    let digests = manifest["rustdocFiles"].as_object().unwrap();
+    let digests = manifest["rustdocFiles"].as_object_mut().unwrap();
     let mut specs = BTreeMap::new();
     let mut items = Vec::new();
     let mut prepared = Vec::new();
@@ -202,7 +202,9 @@ fn project_inner(
         assert_eq!(id.0, row["profile"].as_str().unwrap());
         let receipt = receipt_path(&fixture.rustdoc, row);
         assert_eq!(
-            digests[row["rustdocFile"].as_str().unwrap()]
+            digests
+                .remove(row["rustdocFile"].as_str().unwrap())
+                .unwrap()
                 .as_str()
                 .unwrap(),
             row["rustdocSha256"].as_str().unwrap()
@@ -236,6 +238,10 @@ fn project_inner(
         assert!(specs.insert(id, spec).is_none());
         prepared.push((base, package_metadata));
     }
+    assert!(
+        digests.is_empty(),
+        "every declared Rustdoc receipt must have a profile row"
+    );
     let build = |selected: Vec<&(bool, sdk_docs::PackageMetadata)>| {
         let receipts = selected
             .iter()
