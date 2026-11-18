@@ -1,5 +1,15 @@
 import type { SessionOpened, SessionSelection } from "../generated/proto/stream/v1/session_pb.js";
-import { StreamError, type Record, type Revision } from "./types.js";
+import { StreamError, type FollowOptions, type Record, type Revision } from "./types.js";
+
+export function captureFollow(options: FollowOptions): FollowOptions {
+  const { from, filter, signal, whenAbsent } = options;
+  return {
+    from,
+    ...(filter === undefined ? {} : { filter: structuredClone(filter) }),
+    ...(signal === undefined ? {} : { signal }),
+    ...(whenAbsent === undefined ? {} : { whenAbsent }),
+  };
+}
 
 /** The original selection, available even when a read is empty or a follow is quiet. */
 export interface StreamOpening {

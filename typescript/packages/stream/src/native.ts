@@ -1,5 +1,5 @@
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
-import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
+import { Opened, captureFollow, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
@@ -184,7 +184,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   follow(path: string, options: FollowOptions): Opened {
-    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    const authored = captureFollow(options);
     return this.records("follow", path, authored, options.signal);
   }
 

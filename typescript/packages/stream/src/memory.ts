@@ -5,7 +5,7 @@ import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_str
 import {
   TailResponseSchema, FollowRequestSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
-import type { Opened } from "./opened.js";
+import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
@@ -82,7 +82,7 @@ class RustStreamProvider implements StreamProvider {
   }
 
   follow(path: string, options: FollowOptions): Opened {
-    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    const authored = captureFollow(options);
     return this.#records("follow", path, authored, options.signal);
   }
 

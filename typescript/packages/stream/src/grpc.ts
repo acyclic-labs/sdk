@@ -1,7 +1,7 @@
 import { isTransportEndpoint, validateByteLimit } from "@acyclic-labs/core";
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { refusalFromGrpcHeaders } from "@acyclic-labs/auth/grpc-refusal";
-import type { Opened } from "./opened.js";
+import { captureFollow, type Opened } from "./opened.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { StreamSessions } from "./session.js";
@@ -300,7 +300,7 @@ export class GrpcStreamProvider implements StreamProvider {
     yield* this.#sessions.followData(authored, options);
   }
   follow(path: string, options: FollowOptions): Opened {
-    const authored = { ...options, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }) };
+    const authored = captureFollow(options);
     return this.#sessions.follow(path, authored);
   }
 

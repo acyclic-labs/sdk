@@ -1,6 +1,6 @@
 import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { HttpStreamProvider } from "./http.js";
-import { Opened } from "./opened.js";
+import { Opened, captureFollow } from "./opened.js";
 import { StreamError, type StreamEnvironment, type StreamProvider } from "./types.js";
 
 type ProviderSelection = {
@@ -134,12 +134,7 @@ export class DefaultStreamProvider implements StreamProvider {
     });
   }
   follow(path: string, options: Parameters<StreamProvider["follow"]>[1]) {
-    const authored = {
-      from: options.from,
-      ...(options.whenAbsent === undefined ? {} : { whenAbsent: options.whenAbsent }),
-      ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    };
+    const authored = captureFollow(options);
     return Opened.defer(async signal => {
       const provider = await this.acquireProvider(signal);
       signal.throwIfAborted();

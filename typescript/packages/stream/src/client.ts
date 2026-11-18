@@ -1,7 +1,7 @@
 import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { isDirectChild, validateChildCursor } from "./child.js";
 import { DefaultStreamProvider } from "./default.js";
-import { Opened } from "./opened.js";
+import { Opened, captureFollow } from "./opened.js";
 import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
@@ -218,12 +218,7 @@ export class Stream<Value = Uint8Array> {
     }).map(item => ({ ...item, value: this.codec.decode(item.value) }));
   }
   follow(options: FollowOptions): Opened<Value> {
-    const authored = {
-      from: options.from,
-      ...(options.whenAbsent === undefined ? {} : { whenAbsent: options.whenAbsent }),
-      ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    };
+    const authored = captureFollow(options);
     return Opened.defer(async signal => {
       validateSequenceValue(authored.from);
       return this.provider.follow(this.path, { ...authored, signal });
