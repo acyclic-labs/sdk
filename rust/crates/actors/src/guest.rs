@@ -70,7 +70,7 @@ pub fn typescript() -> String {
         )+};
     }
     declarations!(
-        GuestState<()>, acyclic_actors_guest_wire::GuestContext<(), ()>, ActorDefinition<(), ()>);
+        GuestState<()>, acyclic_actors_guest_wire::GuestContext<(), ()>, acyclic_actors_guest_wire::ActorDefinition<(), (), (), ()>);
     output
         .lines()
         .map(str::trim_end)
