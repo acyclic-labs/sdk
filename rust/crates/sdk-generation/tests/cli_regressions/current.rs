@@ -750,6 +750,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         for receipt in receipts {
             let path = receipt_path(&checkout.rustdoc, receipt);
             let raw: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            let profile = receipt["profile"].as_str().unwrap();
             let before = paths.len();
             for record in raw["external_crates"].as_object().unwrap().values() {
                 if record["name"] == "relocation_helper" {
@@ -759,7 +760,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
                         Path::new(physical).is_file(),
                         "dependency artifact must exist: {physical}"
                     );
-                    paths.push(physical.to_string());
+                    paths.push((profile.to_owned(), physical.to_owned()));
                 }
             }
             if receipt["package"] == "demo" {
@@ -777,14 +778,9 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
         paths
     };
-    let original_dependencies = dependency_paths(&fixture, &original_receipts);
-    assert_ne!(
-        original_dependencies,
-        dependency_paths(&relocated, &relocated_receipts),
-        "raw Rustdoc must retain the relocated dependency artifacts"
-    );
-    for original in original_dependencies {
-        let relocated = super::paths::rebase(
+    let mut expected_dependencies = Vec::new();
+    for (profile, original) in dependency_paths(&fixture, &original_receipts) {
+        let rebased = super::paths::rebase(
             &original,
             fixture.output.to_str().unwrap(),
             relocated.output.to_str().unwrap(),
@@ -793,10 +789,17 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         .unwrap();
         assert_eq!(
             sdk_file_identity::stamp(Path::new(&original)).unwrap(),
-            sdk_file_identity::stamp(Path::new(&relocated)).unwrap(),
+            sdk_file_identity::stamp(Path::new(&rebased)).unwrap(),
             "completed compiler artifacts share their native file identity"
         );
+        expected_dependencies.push((profile, rebased));
     }
+    expected_dependencies.sort();
+    assert_eq!(
+        dependency_paths(&relocated, &relocated_receipts),
+        expected_dependencies,
+        "each profile must retain its exact rebased dependency paths"
+    );
     let replayed_catalog = serde_json::to_vec_pretty(&data).unwrap();
     assert_eq!(relocated_catalog, replayed_catalog);
     assert_eq!(
