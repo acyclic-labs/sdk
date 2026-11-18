@@ -1331,6 +1331,7 @@ rust_test(
     crate_root = "tests/dst_cases.rs",
     srcs = [
         "tests/dst/accounting.rs",
+        "tests/dst/child.rs",
         "tests/dst/clocks.rs",
         "tests/dst/compaction.rs",
         "tests/dst/configuration.rs",
@@ -1353,6 +1354,7 @@ rust_test(
         "tests/dst/refusal.rs",
         "tests/dst/settlement.rs",
         "tests/dst/swarm.rs",
+        "tests/dst/wait.rs",
         "tests/dst_cases.rs",
     ],
     compile_data = [

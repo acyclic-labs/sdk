@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod accounting;
+mod child;
 mod clocks;
 mod compaction;
 mod configuration;
@@ -36,6 +37,7 @@ mod redelivery;
 mod refusal;
 mod settlement;
 mod swarm;
+mod wait;
 
 // Keep each simulator layer independent of the production future's layout.
 type EntryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;

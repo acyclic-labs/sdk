@@ -133,6 +133,8 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
     let needles: Vec<_> = plans.iter().map(|plan| appears(&tag(plan.tag))).collect();
     let answer = move |request: &ModelRequest| {
         let messages: Vec<_> = model_visible_messages(&request.messages).collect();
+        // A plan is selected by the newest user brief, never by a tag that a
+        // tool result or a child's answer happens to quote.
         let found = messages
             .iter()
             .enumerate()
@@ -155,17 +157,36 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
                 serde_json::to_string(&last).unwrap_or_default()
             ));
         };
-        let step = messages
+        // The executor may record each tool call as its own assistant
+        // message, so a step is done once all of its calls appear.
+        let mut made = messages
             .iter()
             .skip(index)
-            .filter(|message| {
-                message
-                    .content
-                    .parts()
-                    .iter()
-                    .any(|part| matches!(part, ModelContentPart::ToolCall(_)))
-            })
+            .flat_map(|message| message.content.parts())
+            .filter(|part| matches!(part, ModelContentPart::ToolCall(_)))
             .count();
+        let mut failed = failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut step = 0;
+        while let Some(calls) = plan.steps.get(step) {
+            if calls.is_empty() {
+                // An empty step is one model answer with no calls. A one-shot
+                // failure on it must be emitted before the plan advances.
+                if plan.fail_once.as_ref().is_some_and(|(at, _)| {
+                    *at == usize::MAX || (*at == step && !failed.contains(&plan.tag))
+                }) {
+                    break;
+                }
+                step += 1;
+                continue;
+            }
+            if made < calls.len() {
+                break;
+            }
+            made -= calls.len();
+            step += 1;
+        }
         let Some(calls) = plan.steps.get(step) else {
             return ScriptedTurn::Text(done(plan.tag));
         };
@@ -173,15 +194,14 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
             .iter()
             .map(|call| ScriptedEvent::Event(ModelEvent::ToolCall(call.clone())))
             .collect();
-        let mut failed = failed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((_, failure)) = plan
+        if let Some((at, failure)) = plan
             .fail_once
             .as_ref()
-            .filter(|(at, _)| *at == step && !failed.contains(&plan.tag))
+            .filter(|(at, _)| *at == usize::MAX || (*at == step && !failed.contains(&plan.tag)))
         {
-            failed.push(plan.tag);
+            if *at != usize::MAX {
+                failed.push(plan.tag);
+            }
             events.push(failure.clone());
         } else {
             events.push(ScriptedEvent::Event(ModelEvent::Completed {
@@ -336,6 +356,7 @@ pub(super) struct World {
     pub seed: u64,
     incarnations: u64,
     entropy: bool,
+    complete: bool,
 }
 
 impl World {
@@ -397,7 +418,16 @@ impl World {
             seed,
             incarnations: 0,
             entropy,
+            complete: false,
         })
+    }
+
+    /// Completes each incarnation's runtime before it returns, so the next
+    /// incarnation opens a cleanly closed host on the same state.
+    #[must_use]
+    pub fn completing(mut self) -> Self {
+        self.complete = true;
+        self
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -455,6 +485,7 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
+            let complete = self.complete;
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
@@ -500,6 +531,10 @@ impl World {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
+                    }
+                    if complete {
+                        let (agents, _) = harness.agents().await?;
+                        entry(agents.runtime().complete()).await.map_err(storage)?;
                     }
                     // Retire every native mount and worker before the next
                     // replay can reuse this world's deterministic path.
