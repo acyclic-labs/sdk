@@ -55,7 +55,7 @@ where
 /// so independent CPU-heavy futures can progress together. Per-file fences
 /// retain physical operation ordering independently of executor scheduling.
 /// An open stdin, whose read may never return, is read on its own thread
-/// through [`crate::stdin`].
+/// through the `acyclic-native-stdin` crate.
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     let workers = crate::workers::parallelism();
     tokio::runtime::Builder::new_multi_thread()

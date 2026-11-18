@@ -1,0 +1,20 @@
+[package]
+name = "acyclic-native-stdin"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A process-owned async standard input stream"
+
+[dependencies]
+tokio = { workspace = true, features = ["io-util", "sync"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+acyclic-native-lines = { version = "=0.2.0", path = "../native-lines" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

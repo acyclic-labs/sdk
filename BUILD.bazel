@@ -178,6 +178,7 @@ filegroup(
         "//rust/crates/napi-progress-test:Cargo.toml",
         "//rust/crates/native-lines:Cargo.toml",
         "//rust/crates/native-runtime:Cargo.toml",
+        "//rust/crates/native-stdin:Cargo.toml",
         "//rust/crates/objects-wasm:Cargo.toml",
         "//rust/crates/objects:Cargo.toml",
         "//rust/crates/observability:Cargo.toml",

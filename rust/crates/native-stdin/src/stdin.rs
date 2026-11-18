@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn input_returns_the_first_failure_and_distinguishes_eof_from_producer_loss()
     -> std::io::Result<()> {
-        let runtime = crate::coordination_runtime()?;
+        let runtime = acyclic_native_runtime::coordination_runtime()?;
         for fail_at in [1, 2, 3] {
             let (original, calls, retired) = input(fail_at, false)?;
             let mut stream = super::reader(original)?;
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn an_open_input_never_holds_the_coordination_blocking_slot() -> std::io::Result<()> {
-        let runtime = crate::coordination_runtime()?;
+        let runtime = acyclic_native_runtime::coordination_runtime()?;
         let (input, mut writer) = std::io::pipe()?;
         runtime.block_on(async {
             let mut lines = AsyncLines::new(super::reader(input)?, None);
