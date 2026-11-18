@@ -94,6 +94,10 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
             .get(key)
             .map(|entry| entry.value.clone()))
     }
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    pub(crate) fn contains(&self, key: &K) -> Result<bool, StreamError> {
+        Ok(self.entries.lock()?.contains_key(key))
+    }
     /// Snapshot active subscriptions only, never the persisted namespace.
     pub(crate) fn keys_in<Q: Ord + ?Sized, R: std::ops::RangeBounds<Q>>(
         &self,

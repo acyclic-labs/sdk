@@ -125,7 +125,7 @@ impl Before {
                 continue;
             }
             keys.keys.insert(path.clone());
-            let followed = publications.follows.get(&path)?.is_some();
+            let followed = publications.follows.contains(&path)?;
             let Some(after) = after.filter(|_| followed) else {
                 continue;
             };
