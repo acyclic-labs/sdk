@@ -1,45 +1,21 @@
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, DecodeLimits, Extent, ExtentCloneError, ExtentCloneRequest, ExtentKind,
-    ExtentMutationError, ExtentPage, clone_extent_range, decode_extent_page,
+    DecodeLimits, Extent, ExtentCloneError, ExtentCloneRequest, ExtentKind, ExtentMutationError,
+    ExtentPage, clone_extent_range,
 };
-use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectStore,
-    ObjectStoreError,
-};
+use acyclic_fs::{ByteRange, CancellationToken, MemoryObjectStore, ObjectStoreError};
 use acyclic_fs_format::{
     identity::Digest,
     object_reference::{ObjectId, ObjectKind},
 };
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
-use super::super::extent_objects::put_extent_page;
+use super::super::{extent_objects::put_extent_page, leaf_extents};
 
 async fn put(
     store: &MemoryObjectStore,
     extents: Vec<Extent>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     put_extent_page(store, &ExtentPage::Leaf(extents), 16).await
-}
-
-async fn extents(
-    store: &MemoryObjectStore,
-    root: ObjectId,
-) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
-    let bytes = store
-        .read(
-            root,
-            u64::MAX,
-            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
-    let ExtentPage::Leaf(extents) =
-        decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| {
-            Ok::<_, CanonicalDecodeError>(())
-        })?
-    else {
-        return Err("clone result is not a leaf".into());
-    };
-    Ok(extents)
 }
 
 #[tokio::test]
@@ -107,7 +83,7 @@ async fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 1);
     assert_eq!(
-        extents(&store, receipt.root).await?,
+        leaf_extents(&store, receipt.root).await?,
         vec![
             Extent {
                 offset: 0,
@@ -182,7 +158,7 @@ async fn same_file_overlap_plans_source_before_destination_writes()
     )
     .await?;
     assert_eq!(
-        extents(&store, receipt.root).await?,
+        leaf_extents(&store, receipt.root).await?,
         vec![
             Extent {
                 offset: 0,

@@ -1,6 +1,6 @@
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentMutation,
-    ExtentMutationError, ExtentPage, apply_extent_mutations, decode_extent_page,
+    DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentMutation, ExtentMutationError, ExtentPage,
+    apply_extent_mutations,
 };
 use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectStore, ObjectStoreError,
@@ -13,6 +13,7 @@ use acyclic_fs_work::performance::{WorkBudget, WorkCounters, WorkError};
 
 use super::super::extent_objects::put_extent_page as put;
 use super::super::sparse_extents::{allocated, hole};
+use super::super::{leaf_extents, read_extent_page};
 
 async fn three_leaf_tree(
     store: &MemoryObjectStore,
@@ -48,42 +49,12 @@ async fn root_children(
     store: &MemoryObjectStore,
     root: ObjectId,
 ) -> Result<Vec<ExtentChild>, Box<dyn std::error::Error>> {
-    let bytes = store
-        .read(
-            root,
-            u64::MAX,
-            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
     let ExtentPage::Internal(children) =
-        decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| {
-            Ok::<_, CanonicalDecodeError>(())
-        })?
+        read_extent_page(store, root, DecodeLimits::default()).await?
     else {
         return Err("extent root is not internal".into());
     };
     Ok(children)
-}
-
-async fn leaf_extents(
-    store: &MemoryObjectStore,
-    page: ObjectId,
-) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
-    let bytes = store
-        .read(
-            page,
-            u64::MAX,
-            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
-    let ExtentPage::Leaf(extents) =
-        decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| {
-            Ok::<_, CanonicalDecodeError>(())
-        })?
-    else {
-        return Err("extent page is not a leaf".into());
-    };
-    Ok(extents)
 }
 
 #[tokio::test]
@@ -570,18 +541,9 @@ async fn extent_pages_split_on_byte_bound_before_item_bound()
         &CancellationToken::new(),
     )
     .await?;
-    let root_bytes = store
-        .read(
-            receipt.root,
-            u64::MAX,
-            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
     // Internal pages take two summaries whatever their bytes, so only the
     // leaves are held to the page bound.
-    let ExtentPage::Internal(children) = decode_extent_page(&root_bytes, limits, &mut |_| {
-        Ok::<_, CanonicalDecodeError>(())
-    })?
+    let ExtentPage::Internal(children) = read_extent_page(&store, receipt.root, limits).await?
     else {
         return Err("byte-bounded extent root is not internal".into());
     };
