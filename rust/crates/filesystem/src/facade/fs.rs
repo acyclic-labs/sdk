@@ -194,7 +194,10 @@ impl<P: ?Sized, O> Fs<crate::StreamAuthorityStore<P>, O> {
     pub fn authority_records(
         &self,
         volume: crate::VolumeId,
-    ) -> Result<(Arc<P>, acyclic_stream::StreamPath), crate::AuthorityStoreError> {
+    ) -> Result<
+        (acyclic_stream::ProviderOwner<P>, acyclic_stream::StreamPath),
+        crate::AuthorityStoreError,
+    > {
         Ok((
             self.inner.authority.provider(),
             self.inner

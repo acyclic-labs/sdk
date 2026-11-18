@@ -3,7 +3,7 @@ use super::resource;
 use crate::access::{Action, PathTrie};
 use crate::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, VolumeId, WorkBudget};
 use acyclic_stream::session::{ResourceFollowRequest, ResourceProvider, ResourceSubscription};
-use acyclic_stream::{FollowUpdate, StreamError, StreamProvider};
+use acyclic_stream::{FollowUpdate, ProviderOwner, StreamError, StreamProvider};
 use futures::{StreamExt, future};
 use std::sync::{Arc, Mutex};
 
@@ -14,7 +14,7 @@ mod subtree;
 /// Owning filesystem and its exact backing Streams provider. No policy query
 /// callback or caller-supplied principal can manufacture an allowing decision.
 pub struct ChangeProvider<P: ?Sized, A: 'static, O: 'static> {
-    streams: Arc<P>,
+    streams: ProviderOwner<P>,
     fs: Fs<A, O>,
 }
 impl<P: StreamProvider + ?Sized, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>
@@ -22,7 +22,7 @@ impl<P: StreamProvider + ?Sized, A: AsyncAuthorityStore + 'static, O: AsyncObjec
 {
     /// Binds the same backend owner. Each follow requires an enforceable
     /// policy fence before registering or disclosing any metadata.
-    pub fn new(fs: Fs<A, O>, streams: Arc<P>) -> Result<Self, StreamError> {
+    pub fn new(fs: Fs<A, O>, streams: ProviderOwner<P>) -> Result<Self, StreamError> {
         if fs.operation_claims().owner_identity()
             != streams.context().operation_claims().owner_identity()
         {
