@@ -726,7 +726,11 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         vec!["demo", "relocation-helper"]
     );
     super::replay::copy_profile_output(&fixture.output, &relocated.output);
-    super::replay::copy_tree(&fixture.root.join("target"), &relocated.root.join("target"));
+    let generated = "target/sdk-generation-generated-sources";
+    super::replay::copy_tree(
+        &fixture.root.join(generated),
+        &relocated.root.join(generated),
+    );
     super::replay::relocate_receipts(&fixture, &relocated);
     std::thread::scope(|scope| {
         for checkout in [&fixture, &relocated] {

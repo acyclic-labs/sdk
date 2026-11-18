@@ -61,6 +61,7 @@ pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
 pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
     fn rebase(value: &mut Value, original: &Fixture, relocated: &Fixture) {
         let scratch = relocated.output.join(".profile-build");
+        let cargo_target = relocated.root.join("target");
         rustdoc_paths::visit(value, |_, text| {
             for (old, new) in [
                 (&original.root, &relocated.root),
@@ -73,7 +74,7 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
                     cfg!(windows),
                 ) {
                     let destination = Path::new(&rebased);
-                    if destination.starts_with(&scratch)
+                    if (destination.starts_with(&scratch) || destination.starts_with(&cargo_target))
                         && !destination.exists()
                         && Path::new(text.as_str()).is_file()
                     {
