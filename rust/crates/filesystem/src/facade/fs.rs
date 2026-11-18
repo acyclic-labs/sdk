@@ -284,7 +284,7 @@ impl
     /// Creates the deterministic infrastructure-free composition from the exact public reference
     #[must_use]
     pub fn memory() -> Self {
-        let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
+        let stream = acyclic_stream::ProviderOwner::new(acyclic_stream::MemoryStream::default());
         Self::from_memory_providers(
             stream,
             std::sync::Arc::new(acyclic_objects::MemoryObjects::memory()),
@@ -294,7 +294,7 @@ impl
     /// Composes Filesystem over caller-owned public reference providers.
     #[must_use]
     pub fn from_memory_providers(
-        stream: std::sync::Arc<acyclic_stream::MemoryStream>,
+        stream: acyclic_stream::ProviderOwner<acyclic_stream::MemoryStream>,
         objects: std::sync::Arc<acyclic_objects::MemoryObjects>,
     ) -> Self {
         Self::new(
