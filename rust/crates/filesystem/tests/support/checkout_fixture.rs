@@ -1,19 +1,7 @@
 use acyclic_fs::kernel::{LogicalName, NameEncoding, NamespacePath};
-use acyclic_fs::model::{
-    AccessMode, CheckoutMode, ConsistencyMode, Lifecycle, MutationMode, VolumeConfig,
-};
-
-pub(crate) fn writable_pinned() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Pinned,
-        mutations: MutationMode::PrivateOverlay,
-    }
-}
-
-pub(crate) fn config() -> VolumeConfig {
-    VolumeConfig::portable(Lifecycle::Ephemeral)
-}
+#[path = "checkout_defaults.rs"]
+mod checkout_defaults;
+pub(crate) use checkout_defaults::{config, writable_pinned};
 
 pub(crate) fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
     path_parts(&[value])

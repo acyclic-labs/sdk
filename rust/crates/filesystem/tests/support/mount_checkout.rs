@@ -1,18 +1,17 @@
-use acyclic_fs::model::{
-    CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, VolumeConfig,
-};
+use acyclic_fs::model::{GenerationSelector, VolumeConfig};
 use acyclic_fs::{
     CancellationToken, Checkout, Fs, MemoryAuthorityBackend, MemoryObjectBackend, Volume,
 };
 use acyclic_fs_work::performance::WorkBudget;
 
+#[path = "checkout_defaults.rs"]
+mod checkout_defaults;
+pub(super) use checkout_defaults::config;
+use checkout_defaults::writable_pinned;
+
 pub(super) type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 pub(super) type TestCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
 type TestVolume = Volume<MemoryAuthorityBackend, MemoryObjectBackend>;
-
-pub(super) fn config() -> VolumeConfig {
-    VolumeConfig::portable(Lifecycle::Ephemeral)
-}
 
 pub(super) async fn checkout() -> TestResult<TestCheckout> {
     checkout_with_config(config()).await
@@ -33,10 +32,7 @@ pub(super) async fn open_checkout(volume: &TestVolume) -> TestResult<TestCheckou
     Ok(volume
         .checkout(
             GenerationSelector::Head,
-            CheckoutMode {
-                consistency: ConsistencyMode::Pinned,
-                ..CheckoutMode::tracking_transaction()
-            },
+            writable_pinned(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
