@@ -110,7 +110,7 @@ fn replay(selected: Option<&str>, entry: Option<&str>) -> Result<usize, Box<dyn 
             })
             .unwrap_or_else(|_| Err("panicked".into()))
             .map_err(|error| format!(
-                "decoder oracle {name} (entry {entry}) failed: {error}; recovery: cargo +nightly fuzz run --fuzz-dir . {entry} corpus/{name}"
+                "decoder oracle {name} (entry {entry}) failed: {error}; recovery: bazel run //rust/codec-fuzz:{entry} -- \"$PWD/rust/codec-fuzz/corpus/{name}\""
             ))?;
             count += 1;
         }

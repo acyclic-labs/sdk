@@ -323,8 +323,7 @@ def replay_diagnostics():
             diagnostic = re.search(
                 r"decoder oracle (actor_codecs/[^\s]+) \(entry call_record\) failed:", output)
             if (diagnostic is None or
-                "recovery: cargo +nightly fuzz run --fuzz-dir . call_record corpus/" +
-                    diagnostic[1] not in output or
+                f'recovery: bazel run //rust/codec-fuzz:call_record -- "$PWD/rust/codec-fuzz/corpus/{diagnostic[1]}"' not in output or
                 "recovery after correcting the reported mismatch: "
                     "cargo run --locked --example replay -- actor_codecs call_record" not in output):
                 raise RuntimeError("replay recovery lost the actual entry or captured input; "
