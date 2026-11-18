@@ -55,6 +55,7 @@ name = "model_usage_cost"
 path = "tests/model_usage_cost.rs"
 
 [package.metadata.bazel]
+build-script-inputs = ["proto"]
 test-narrow-runfiles = ["conversation_contract", "model_usage_cost"]
 
 [package.metadata.bazel.test-dependencies]
