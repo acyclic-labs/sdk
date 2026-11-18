@@ -36,8 +36,6 @@
   "scripts/build-native-family.mjs",
   "scripts/build-product.mjs",
   "scripts/build-wasm.mjs",
-  "scripts/check-crate-tests.mjs",
-  "scripts/check-crate-tests.test.mjs",
   "scripts/check-dev-build.mjs",
   "scripts/check-feature-matrix.mjs",
   "scripts/check-feature-matrix.test.mjs",
