@@ -64,6 +64,6 @@ fn node_process_bridge_owns_real_input_output_and_descendant_cancellation() {
         .expect("step=node-process-control; recovery=build the node tool target");
     assert!(
         status.success(),
-        "step=node-process-control; recovery=inspect the original Node control failure and rerun cargo test --locked -p acyclic-native-runtime --test main node_process:: after correction"
+        "step=node-process-control; recovery=inspect the original Node control failure and rerun bazel test //rust/crates/native-runtime:main --test_filter=node_process:: after correction"
     );
 }

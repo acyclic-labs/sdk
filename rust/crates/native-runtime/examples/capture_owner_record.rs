@@ -17,7 +17,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "owner-record capture: {error}; recovery: cargo run --locked -p acyclic-native-runtime --example capture_owner_record -- <corpus-directory>"
+            "owner-record capture: {error}; recovery: bazel run //rust/crates/native-runtime:capture_owner_record_example -- <corpus-directory>"
         );
         std::process::exit(1);
     }

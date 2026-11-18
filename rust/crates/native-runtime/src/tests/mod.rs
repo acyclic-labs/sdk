@@ -104,7 +104,7 @@ pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "exclusive-test-start: {test} did not claim its process; recovery: cargo test --locked -p acyclic-native-runtime --all-features --lib -- --list"
+                "exclusive-test-start: {test} did not claim its process; recovery: bazel run //rust/crates/native-runtime:acyclic_native_runtime_test_cases -- --list"
             ),
         ));
     }
