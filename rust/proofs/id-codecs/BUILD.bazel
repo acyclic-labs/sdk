@@ -29,6 +29,7 @@ rust_library(
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-windows:acyclic_fs_windows",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/objects:acyclic_objects",
