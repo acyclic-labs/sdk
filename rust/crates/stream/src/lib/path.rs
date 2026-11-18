@@ -237,7 +237,11 @@ impl StreamPath {
     /// Immediate parent, if any.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
-        self.as_str().rfind('/').map(|index| self.prefix(index))
+        Self::parent_text(self.as_str()).map(|parent| self.prefix(parent.len()))
+    }
+
+    pub(crate) fn parent_text(path: &str) -> Option<&str> {
+        path.rsplit_once('/').map(|(parent, _)| parent)
     }
 }
 
