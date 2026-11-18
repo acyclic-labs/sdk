@@ -163,20 +163,7 @@ impl DarwinMountContext {
         cause: NativeMountError,
         work: Result<WorkCounters, crate::WorkObservationError>,
     ) -> i32 {
-        let status = callback_errno(&cause);
-        if fatal(&cause) || work.is_err() {
-            let mut state = self
-                .handler_failure
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if let Err(error) = work {
-                state.completed_future_request_work.invalidate(error);
-            }
-            if state.first_fatal.is_none() {
-                state.first_fatal = Some((Some(cause), work));
-            }
-        }
-        status
+        DarwinCallbackState::record_failure(&self.handler_failure, cause, work)
     }
 
     pub(super) fn run<T>(
