@@ -32,6 +32,7 @@ test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "t
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 loom = { version = "=0.7.3", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-process-identity = { version = "=0.2.0", path = "../process-identity" }
 bytes.workspace = true
 dirs.workspace = true
 blake3.workspace = true
