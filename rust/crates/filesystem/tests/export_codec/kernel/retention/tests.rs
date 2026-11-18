@@ -3,9 +3,9 @@ use acyclic_fs::kernel::{
     decode_retention_created, decode_workspace_deleted, encode_retention_created,
     encode_workspace_deleted, retention_authority_id,
 };
-use acyclic_fs::{Lifecycle, VolumeConfig};
 use acyclic_fs_format::{
     identity::{Digest, VolumeId},
+    model::{Lifecycle, VolumeConfig},
     object_reference::{ObjectId, ObjectKind},
 };
 
