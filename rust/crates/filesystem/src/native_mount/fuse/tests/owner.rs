@@ -43,7 +43,7 @@ fn current_thread_embedder_writes_through_its_own_view() -> Result<(), Box<dyn s
         let source =
             crate::native_mount::adapter::tests::access::bind_test_access(source, vec![], None)?;
         let session = crate::mount_native(
-            crate::NativeMountRequest {
+            crate::native_mount::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
                 destination: destination.path().join("view"),

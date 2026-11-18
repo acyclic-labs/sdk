@@ -67,7 +67,7 @@ fn linux_dead_mountpoint_is_reclaimed_without_fusermount_with_negative_control()
     let (source, _) = shared_sources(posix_config())?;
     let volume_id = source.volume_id()?;
     let mut session = crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id,
             destination: root.clone(),
@@ -150,7 +150,7 @@ fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
         };
         let (source, _) = shared_sources(posix_config())?;
         let result = crate::mount_native(
-            crate::NativeMountRequest {
+            crate::native_mount::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
                 destination: destination.clone(),

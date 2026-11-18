@@ -325,7 +325,7 @@ async fn native_access_projection_start_paths_admit_before_host_effects()
                     )],
                 )?;
             }
-            let request = crate::NativeMountRequest {
+            let request = crate::native_mount::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
                 destination: destination.clone(),

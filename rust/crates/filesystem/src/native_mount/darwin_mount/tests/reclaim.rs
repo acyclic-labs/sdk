@@ -7,8 +7,8 @@ const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::startup_reclaim
 fn request(
     destination: &Path,
     source: &MemorySource,
-) -> Result<crate::NativeMountRequest, NativeMountError> {
-    Ok(crate::NativeMountRequest {
+) -> Result<crate::native_mount::NativeMountRequest, NativeMountError> {
+    Ok(crate::native_mount::NativeMountRequest {
         mount_id: crate::MountId::new(),
         volume_id: source.volume_id()?,
         destination: destination.to_path_buf(),

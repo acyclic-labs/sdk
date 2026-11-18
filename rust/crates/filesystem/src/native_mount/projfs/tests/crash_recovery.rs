@@ -22,7 +22,7 @@ async fn a_dead_provider_is_preserved_under_held_recovery_custody()
             source.volume_id()?.into_bytes(),
         )?;
         let session = crate::mount_native(
-            crate::NativeMountRequest {
+            crate::native_mount::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
                 destination: destination.clone(),
@@ -114,7 +114,7 @@ async fn a_dead_provider_is_preserved_under_held_recovery_custody()
     super::reject_stale_projection(&destination)?;
     let source = windows_checkout_source().await?;
     let mut session = crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id: source.volume_id()?,
             destination: destination.clone(),

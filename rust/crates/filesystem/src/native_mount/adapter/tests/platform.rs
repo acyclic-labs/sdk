@@ -398,7 +398,7 @@ fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error
     let identity = std::env::var("ACYCLIC_FS_UNIX_CHILD_ID")?;
     let source = Arc::new(source(FilesystemProfile::Posix)?);
     let mut mount = crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id: source.volume_id()?,
             destination: destination.clone().into(),

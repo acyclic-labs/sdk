@@ -17,7 +17,7 @@ async fn nested_destination_is_rejected_before_marking() -> Result<(), Box<dyn s
     let child = windows_checkout_source().await?;
     let started = std::time::Instant::now();
     let Err(NativeMountError::StartupFailed(mut failure)) = crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id: child.volume_id()?,
             destination: nested.clone(),
