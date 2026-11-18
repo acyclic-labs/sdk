@@ -559,6 +559,7 @@ rust_test(
         "tests/support/creation_budget.rs",
         "tests/support/export_manifest.rs",
         "tests/support/extent_objects.rs",
+        "tests/support/generation_root.rs",
         "tests/support/git_history.rs",
         "tests/support/join_plan.rs",
         "tests/support/memory_checkout.rs",
@@ -2844,8 +2845,11 @@ rust_test(
         "tests/export_codec.rs",
         "tests/export_codec/kernel/export/mod.rs",
         "tests/export_codec/kernel/export/tests.rs",
+        "tests/export_codec/kernel/generation/mod.rs",
+        "tests/export_codec/kernel/generation/tests.rs",
         "tests/export_codec/kernel/mod.rs",
         "tests/support/export_manifest.rs",
+        "tests/support/generation_root.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -2864,6 +2868,7 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "@sdk_crates//hex-0.4.3",
     ],
     tags = ["manual"],
 )
