@@ -2,8 +2,9 @@ diff --git a/rust/crates/harness-tui/tests/terminal_frames.rs b/rust/crates/harn
 index cc002eb8260..31470e74d21 100644
 --- a/rust/crates/harness-tui/tests/terminal_frames.rs
 +++ b/rust/crates/harness-tui/tests/terminal_frames.rs
-@@ -454,2 +454,22 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
+@@ -454,3 +454,23 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
  fn real_terminal_frame_cost() -> io::Result<()> {
+     let _terminal = crate::terminal_owner();
 +    #[cfg(windows)]
 +    #[allow(
 +        unsafe_code,
