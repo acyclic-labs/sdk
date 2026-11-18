@@ -263,10 +263,13 @@ const claims = {
     "first allocation event differs from physical trace", [],
   ],
   "native-line-eof": [
-    "rust/crates/native-runtime/src/lines.rs", "acyclic-native-runtime",
+    "rust/crates/native-lines/src/lines.rs", "acyclic-native-lines",
     "lines::tests::incremental_eof_matches_async_lines_at_every_split",
-    "incremental EOF lost the original final frame", ["--features", "test-support"],
+    "incremental EOF lost the original final frame", [],
     { additionalTests: ["lines::tests::oversize_and_invalid_frames_cannot_hide_the_next_complete_line"],
+      runner: ["bazel", "run", "//rust/crates/native-lines:acyclic_native_lines_test_cases", "--", "--exact", "--nocapture",
+        "lines::tests::incremental_eof_matches_async_lines_at_every_split",
+        "lines::tests::oversize_and_invalid_frames_cannot_hide_the_next_complete_line"],
       additionalDiagnostics: ["EOF discarded the recovered final frame"] },
   ],
   "terminal-drain-stop": [
