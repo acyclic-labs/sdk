@@ -3,7 +3,7 @@ use crate::agent::{AgentPath, Phase, StatusRecord};
 use acyclic_stream::{StreamPath, demand::Want};
 use std::{borrow::Cow, io::Write, ops::Range};
 
-pub(super) const ROOT_NODES: [(&str, bool); 10] = [
+pub(crate) const ROOT_NODES: [(&str, bool); 10] = [
     ("index.md", false),
     ("status.md", false),
     ("children", true),
@@ -15,6 +15,41 @@ pub(super) const ROOT_NODES: [(&str, bool); 10] = [
     ("age", false),
     ("glyph", false),
 ];
+
+/// Whether `path`, relative to the private `ui/` root, is a file the view
+/// actually renders. Only those files repeat the agent's context; an authored
+/// file under a view directory that the view cannot render is ordinary source.
+pub(crate) fn is_view_path(path: &str) -> bool {
+    if path.is_empty()
+        || matches!(
+            path,
+            "role"
+                | "title"
+                | "model"
+                | "cost"
+                | "age"
+                | "glyph"
+                | "status.md"
+                | "index.md"
+                | "children"
+                | "children/pages"
+                | "turns"
+                | "diagnostics"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("turns/") {
+        return page_number::<u64>(path, "turns/").is_ok();
+    }
+    if path.starts_with("children/pages/") {
+        return page_number::<u64>(path, "children/pages/").is_ok();
+    }
+    if path.starts_with("diagnostics/") {
+        return diagnostic_path(path).is_ok();
+    }
+    false
+}
 
 /// The selected rendering field of an original turn output. Other fields are
 /// parsed without constructing a duplicate transcript.
