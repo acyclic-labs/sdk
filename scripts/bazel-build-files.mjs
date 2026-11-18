@@ -881,22 +881,26 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const executables = !graph && workspace.has(p.id) ? p.targets : [];
   for (const bin of executables.filter(t => t.kind.includes("bin"))) {
     covered.add(`build bin ${bin.name}`);
+    const direct = bazel?.["bin-dependencies"]?.[bin.name];
+    const inputs = direct ? exactInputs : binInputs;
+    const binDeps = kinds => direct
+      ? deps(kinds, [], [], {}, direct)
+      : deps(kinds, [...ownLib, ...ownDeps], ownMacro);
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
-      ...binInputs(bin),
+      ...inputs(bin),
       ...common(bin),
-      ...deps([null], [...ownLib, ...ownDeps], ownMacro),
+      ...binDeps([null]),
       ["visibility", q(["//visibility:public"])],
     ]]);
     // A binary's own #[cfg(test)] cases, as `cargo test` runs them.
     const binCrate = bin.name.replaceAll("-", "_");
     if (bin.test) covered.add(`test bin ${bin.name}`), test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
-      ...binInputs(bin),
+      ...inputs(bin),
       ...common(bin),
-      ...deps([null, "dev"],
-        [...ownLib, ...ownDeps], ownMacro),
+      ...binDeps([null, "dev"]),
     ], runtimeData(bin), {}, `${p.name}::bin/${bin.name}`);
   }
   // Integration tests, examples and benches compile from their own directory and the package's
