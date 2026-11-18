@@ -85,7 +85,10 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     if let Ok(capabilities) =
         record::<crate::Capabilities>(&io, bytes, crate::wire::ErrorCode::Storage)
     {
-        for label in capabilities.0.with_prefix(acyclic_fs::access::SCOPE_PREFIX) {
+        for label in capabilities
+            .0
+            .with_prefix(acyclic_fs_format::capability::SCOPE_PREFIX)
+        {
             if let Ok(Some(capability)) = Capability::from_scope_label(label) {
                 crate::core::check_filesystem_refinement(&capability)?;
             }
@@ -94,18 +97,18 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
             capabilities
                 .0
                 .iter()
-                .filter(|label| label.starts_with(acyclic_fs::access::SCOPE_PREFIX)),
+                .filter(|label| label.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX)),
         );
         let legacy = crate::Capabilities::new(
             capabilities
                 .0
                 .iter()
-                .filter(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX)),
+                .filter(|label| !label.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX)),
         );
         if ceilings.iter().next().is_some()
             && legacy
                 .iter()
-                .any(acyclic_fs::access::is_filesystem_capability)
+                .any(acyclic_fs_format::capability::is_filesystem_capability)
         {
             assert!(!legacy.is_subset_of(&capabilities.0));
             assert!(
@@ -113,14 +116,14 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
                     .0
                     .without(&ceilings)
                     .iter()
-                    .all(|label| !acyclic_fs::access::is_filesystem_capability(label))
+                    .all(|label| !acyclic_fs_format::capability::is_filesystem_capability(label))
             );
             assert!(
                 capabilities
                     .0
                     .intersect(&legacy)
                     .iter()
-                    .all(|label| !acyclic_fs::access::is_filesystem_capability(label))
+                    .all(|label| !acyclic_fs_format::capability::is_filesystem_capability(label))
             );
         }
     }

@@ -2478,7 +2478,7 @@ fn within_parent(
         .capabilities()
         .iter()
         .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
-        .filter(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX))
+        .filter(|label| !label.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX))
         .map(str::to_owned)
         .collect::<Vec<_>>();
     if let Some(ceiling) = crate::core::filesystem_scope_label(parent.capabilities(), &mut None)? {
@@ -2490,7 +2490,7 @@ fn within_parent(
     Ok(derived.capabilities().iter().all(|label| {
         allowed.iter().any(|held| held == label)
             && label != crate::contract::capability::HARNESS_HOST
-            && !label.starts_with(acyclic_fs::access::SCOPE_PREFIX)
+            && !label.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX)
     }))
 }
 

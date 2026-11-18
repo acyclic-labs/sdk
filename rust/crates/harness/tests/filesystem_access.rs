@@ -192,7 +192,7 @@ proptest::proptest! {
         parent_expiry in proptest::option::of(proptest::prelude::any::<u64>()),
         child_expiry in proptest::option::of(proptest::prelude::any::<u64>()),
     ) {
-        use acyclic_fs::access::{DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation, is_filesystem_capability};
+        use acyclic_fs_format::capability::{DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation, is_filesystem_capability};
         let prefixes = [FILE_READ_PREFIX, DIRECTORY_READ_PREFIX,
             VolumeOperation::Read.capability_prefix(), VolumeOperation::Write.capability_prefix(), VolumeOperation::Delete.capability_prefix()];
         let prefix = prefixes.get(legacy_kind).ok_or(proptest::test_runner::TestCaseError::fail("missing fixture capability prefix"))?;

@@ -279,7 +279,7 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
                     .iter()
                     .filter(|label| {
                         *label != crate::contract::capability::HARNESS_HOST
-                            && !acyclic_fs::access::is_filesystem_capability(label)
+                            && !acyclic_fs_format::capability::is_filesystem_capability(label)
                     })
                     .map(str::to_owned)
                     .collect();
@@ -291,7 +291,7 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
                         .iter()
                         .filter(|label| {
                             matches!(
-                                acyclic_fs::access::ContentReadLabel::parse(label),
+                                acyclic_fs_format::capability::ContentReadLabel::parse(label),
                                 Ok(Some(read)) if volumes.contains(&read.volume)
                             )
                         })
@@ -699,8 +699,8 @@ pub(crate) fn ceiling_grants(
             .push(crate::conversation::OwnJournalRead::of(journal.provider(), owner)?.into_label());
     } else {
         denied.extend([
-            acyclic_fs::access::FILE_READ_PREFIX,
-            acyclic_fs::access::DIRECTORY_READ_PREFIX,
+            acyclic_fs_format::capability::FILE_READ_PREFIX,
+            acyclic_fs_format::capability::DIRECTORY_READ_PREFIX,
         ]);
     }
     Ok((grants, denied))

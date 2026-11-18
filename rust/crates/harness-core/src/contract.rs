@@ -346,12 +346,14 @@ impl Capabilities {
         }
         self.preserves_filesystem_ceiling(ancestor)
             && self.0.iter().all(|value| {
-                value.starts_with(acyclic_fs::access::SCOPE_PREFIX) || ancestor.0.contains(value)
+                value.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX)
+                    || ancestor.0.contains(value)
             })
     }
 
     fn preserves_filesystem_ceiling(&self, ancestor: &Self) -> bool {
-        use acyclic_fs::access::{Capability, SCOPE_PREFIX, is_filesystem_capability};
+        use acyclic_fs::access::Capability;
+        use acyclic_fs_format::capability::{SCOPE_PREFIX, is_filesystem_capability};
         if !self.iter().any(is_filesystem_capability) {
             return true;
         }
@@ -383,7 +385,7 @@ impl Capabilities {
         let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
             return false;
         };
-        self.with_prefix(acyclic_fs::access::SCOPE_PREFIX)
+        self.with_prefix(acyclic_fs_format::capability::SCOPE_PREFIX)
             .any(|value| {
                 acyclic_fs::access::Capability::from_scope_label(value).is_ok_and(|parent| {
                     parent.is_some_and(|parent| child.is_attenuation_of(&parent))
@@ -422,7 +424,7 @@ impl Capabilities {
         {
             intersection
                 .0
-                .retain(|label| !acyclic_fs::access::is_filesystem_capability(label));
+                .retain(|label| !acyclic_fs_format::capability::is_filesystem_capability(label));
         }
         intersection
     }
@@ -440,7 +442,7 @@ impl Capabilities {
         if !remaining.preserves_filesystem_ceiling(self) {
             remaining
                 .0
-                .retain(|label| !acyclic_fs::access::is_filesystem_capability(label));
+                .retain(|label| !acyclic_fs_format::capability::is_filesystem_capability(label));
         }
         remaining
     }

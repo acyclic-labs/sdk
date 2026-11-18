@@ -338,7 +338,7 @@ impl FileRef {
         let volume = self.volume.identity_digest(maximum, work)?;
         let target = self.identity_digest(maximum, work)?;
         super::volumes::content_read_label(
-            acyclic_fs::access::ContentRead::File,
+            acyclic_fs_format::capability::ContentRead::File,
             volume,
             target,
             work,

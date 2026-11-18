@@ -34,7 +34,7 @@ pub(crate) fn filesystem_scope_label<'a>(
         io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
     }
     let mut result = None;
-    for label in capabilities.with_prefix(acyclic_fs::access::SCOPE_PREFIX) {
+    for label in capabilities.with_prefix(acyclic_fs_format::capability::SCOPE_PREFIX) {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
             io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
@@ -91,7 +91,7 @@ pub(crate) fn file_read_grant<'f>(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Option<ReadGrant<'f>>> {
     if grants
-        .with_prefix(acyclic_fs::access::FILE_READ_PREFIX)
+        .with_prefix(acyclic_fs_format::capability::FILE_READ_PREFIX)
         .next()
         .is_some()
         && grants.contains(&file.read_capability(work)?)
@@ -115,7 +115,7 @@ pub(crate) fn directory_read_grant<'p>(
     path: &'p str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Option<ReadGrant<'p>>> {
-    use acyclic_fs::access::{DIRECTORY_READ_PREFIX, VolumeOperation};
+    use acyclic_fs_format::capability::{DIRECTORY_READ_PREFIX, VolumeOperation};
     if structured_grant(grants, volume, work)? {
         return Ok(Some(ReadGrant::Structured));
     }

@@ -179,7 +179,9 @@ mod tests {
             )?;
             match port.for_scope(&legacy) {
                 Err(Error::Unauthorized(message)) => assert!(
-                    message.ends_with(&acyclic_fs::access::UnversionedContentRead.to_string()),
+                    message.ends_with(
+                        &acyclic_fs_format::capability::UnversionedContentRead.to_string()
+                    ),
                     "{message}"
                 ),
                 Err(error) => panic!("an unversioned directory grant was not refused: {error}"),

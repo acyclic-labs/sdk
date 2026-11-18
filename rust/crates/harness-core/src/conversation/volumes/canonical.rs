@@ -81,8 +81,8 @@ mod tests {
             crate::executor::json::canonical_json_digest(&(volume, ""), None, &mut None)?;
         Ok([
             content_label("harness-", digest, &mut None)?,
-            acyclic_fs::access::ContentReadLabel {
-                kind: acyclic_fs::access::ContentRead::Directory,
+            acyclic_fs_format::capability::ContentReadLabel {
+                kind: acyclic_fs_format::capability::ContentRead::Directory,
                 volume: digest,
                 target: directory,
             }
@@ -119,8 +119,8 @@ mod tests {
             );
             for prefix in ["", "nested/path"] {
                 let bytes = crate::contract::canonical_json_bytes(&(&volume, prefix))?;
-                let expected = acyclic_fs::access::ContentReadLabel {
-                    kind: acyclic_fs::access::ContentRead::Directory,
+                let expected = acyclic_fs_format::capability::ContentReadLabel {
+                    kind: acyclic_fs_format::capability::ContentRead::Directory,
                     volume: *blake3::hash(&crate::contract::canonical_json_bytes(&volume)?)
                         .as_bytes(),
                     target: *blake3::hash(&bytes).as_bytes(),

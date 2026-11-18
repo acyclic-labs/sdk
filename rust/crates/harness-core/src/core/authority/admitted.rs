@@ -120,7 +120,7 @@ impl<'a> ScopeDerivation<'a> {
                     .capabilities
                     .iter()
                     .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
-                    .filter(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX))
+                    .filter(|label| !label.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX))
                     .map(str::to_owned)
                     .collect();
                 if let Some(ceiling) =

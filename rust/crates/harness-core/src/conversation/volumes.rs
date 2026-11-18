@@ -1,5 +1,5 @@
 use super::*;
-pub use acyclic_fs::access::VolumeOperation;
+pub use acyclic_fs_format::capability::VolumeOperation;
 pub(super) mod canonical;
 
 /// The three independently governed file namespaces.
@@ -299,7 +299,7 @@ impl VolumeRef {
             work,
         )?;
         content_read_label(
-            acyclic_fs::access::ContentRead::Directory,
+            acyclic_fs_format::capability::ContentRead::Directory,
             volume,
             target,
             work,
@@ -335,12 +335,12 @@ fn label_bytes(prefix: &str, digest: [u8; 32]) -> Option<([u8; 80], usize)> {
 
 /// The one constructor of directory and exact-file read labels.
 pub(crate) fn content_read_label(
-    kind: acyclic_fs::access::ContentRead,
+    kind: acyclic_fs_format::capability::ContentRead,
     volume: [u8; 32],
     target: [u8; 32],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    let label = acyclic_fs::access::ContentReadLabel {
+    let label = acyclic_fs_format::capability::ContentReadLabel {
         kind,
         volume,
         target,

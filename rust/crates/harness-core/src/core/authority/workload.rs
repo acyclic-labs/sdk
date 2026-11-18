@@ -459,7 +459,7 @@ pub(super) fn append(
 ) -> Result<()> {
     let filesystem = if let Some(label) = scope
         .capabilities
-        .with_prefix(acyclic_fs::access::SCOPE_PREFIX)
+        .with_prefix(acyclic_fs_format::capability::SCOPE_PREFIX)
         .next()
     {
         let (grant, certified) = admission::filesystem_grant(capability)?;
@@ -558,7 +558,7 @@ fn authorize_scope(
     // Directory and exact-file read labels have one format. Any other
     // spelling in their families grants nothing, so the scope is refused.
     for label in scope.capabilities.iter() {
-        acyclic_fs::access::ContentReadLabel::parse(label).map_err(unauthorized)?;
+        acyclic_fs_format::capability::ContentReadLabel::parse(label).map_err(unauthorized)?;
     }
     let name = resource(audience)?;
     let last = &authenticated.last;

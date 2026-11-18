@@ -1153,9 +1153,11 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
     let legacy_path_only = Capabilities::new(
         all.iter()
             .filter(|grant| {
-                !grant.starts_with(acyclic_fs::access::VolumeOperation::Read.capability_prefix())
-                    && !grant
-                        .starts_with(acyclic_fs::access::VolumeOperation::Write.capability_prefix())
+                !grant.starts_with(
+                    acyclic_fs_format::capability::VolumeOperation::Read.capability_prefix(),
+                ) && !grant.starts_with(
+                    acyclic_fs_format::capability::VolumeOperation::Write.capability_prefix(),
+                )
             })
             .chain([directory_grant.as_str()]),
     );

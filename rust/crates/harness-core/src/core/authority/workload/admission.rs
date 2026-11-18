@@ -19,7 +19,7 @@ pub(super) fn scope_facts(capability: &VerifiedCapability) -> Result<Claims> {
                     {
                         return Err(unauthorized("a block carries two scopes"));
                     }
-                    if label.starts_with(acyclic_fs::access::SCOPE_PREFIX)
+                    if label.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX)
                         && filesystem.replace(label.as_str()).is_some()
                     {
                         return Err(unauthorized("a block carries two filesystem refinements"));
@@ -58,7 +58,7 @@ pub(super) fn scope_facts(capability: &VerifiedCapability) -> Result<Claims> {
             }
             capabilities
                 .0
-                .retain(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX));
+                .retain(|label| !label.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX));
             capabilities.0.extend(refined.0);
         }
         if last
@@ -124,7 +124,7 @@ pub(super) fn filesystem_grant(capability: &VerifiedCapability) -> Result<(&Gran
         if let CaveatKind::Grants(grants) = &caveat.kind {
             for grant in &grants.grants {
                 if let Some(name) = capability_name(grant)?
-                    && name.starts_with(acyclic_fs::access::SCOPE_PREFIX)
+                    && name.starts_with(acyclic_fs_format::capability::SCOPE_PREFIX)
                 {
                     return Ok((grant, name));
                 }

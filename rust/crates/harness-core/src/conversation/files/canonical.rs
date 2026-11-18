@@ -120,8 +120,8 @@ mod tests {
             assert_eq!(current.unwrap()?, previous);
             assert_eq!(
                 file.read_capability(&mut None)?,
-                acyclic_fs::access::ContentReadLabel {
-                    kind: acyclic_fs::access::ContentRead::File,
+                acyclic_fs_format::capability::ContentReadLabel {
+                    kind: acyclic_fs_format::capability::ContentRead::File,
                     volume: crate::executor::json::canonical_json_digest(
                         file.volume(),
                         None,

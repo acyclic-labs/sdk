@@ -30,10 +30,7 @@ mod view;
 pub use view::AccessView;
 mod trie;
 
-pub use capability::{
-    ActionSet, Capability, ContentRead, ContentReadLabel, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX,
-    Grant, SCOPE_PREFIX, UnversionedContentRead, VolumeOperation, is_filesystem_capability,
-};
+pub use capability::{ActionSet, Capability, Grant};
 pub use decision::{Decision, Denial, decide};
 pub use mount::MountMode;
 use serde::{Deserialize, Serialize};

@@ -54,7 +54,7 @@ pub(crate) fn capability_payload<'a>(
 ) -> Result<&'a [u8]> {
     match label {
         Some(label) => label
-            .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
+            .strip_prefix(acyclic_fs_format::capability::SCOPE_PREFIX)
             .map(str::as_bytes)
             .ok_or_else(|| io.invalid("filesystem capability label is invalid")),
         None => whole_volume_payload(label_actions(operation)),

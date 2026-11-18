@@ -300,7 +300,7 @@ macro_rules! copy_layouts {
     )*};
 }
 copy_layouts!(
-    acyclic_fs::access::VolumeOperation,
+    acyclic_fs_format::capability::VolumeOperation,
     acyclic_fs::access::Action,
     acyclic_fs::access::Effect,
     acyclic_fs::access::PrincipalKind,

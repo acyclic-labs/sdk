@@ -5,7 +5,10 @@ use crate::context::CompactionPolicy;
 /// and the scope that grants writes to it.
 async fn admitted(writer: bool) -> Result<(crate::runtime::TaskContext, RuntimeScope)> {
     let volume = private_volume(7)?;
-    let write = volume.capability(acyclic_fs::access::VolumeOperation::Write, &mut None)?;
+    let write = volume.capability(
+        acyclic_fs_format::capability::VolumeOperation::Write,
+        &mut None,
+    )?;
     let scope = RuntimeScope::new(
         Capabilities::new(["model:generate".to_owned(), write]),
         Limits::default(),
