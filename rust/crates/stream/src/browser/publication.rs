@@ -1,5 +1,4 @@
 use super::*;
-use crate::StreamCategory;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -122,7 +121,8 @@ impl Before {
         }
         let mut before = BTreeMap::new();
         for path in paths {
-            before.insert(path.clone(), tail(provider, path).await?);
+            let tail = provider.publication_tail(&path).await?;
+            before.insert(path, tail);
         }
         Ok(Self(before))
     }
@@ -133,7 +133,7 @@ impl Before {
         publications: &notifications::Publications,
     ) -> Result<(), StreamError> {
         for (path, before) in self.0 {
-            let after = tail(provider, path.clone()).await?;
+            let after = provider.publication_tail(&path).await?;
             if after == before {
                 continue;
             }
@@ -173,13 +173,6 @@ impl Before {
             }
         }
         Ok(())
-    }
-}
-async fn tail(provider: &MemoryStream, path: StreamPath) -> Result<Option<u64>, StreamError> {
-    match provider.tail(path).await {
-        Ok(tail) => Ok(Some(tail)),
-        Err(error) if error.category() == StreamCategory::NotFound => Ok(None),
-        Err(error) => Err(error),
     }
 }
 
