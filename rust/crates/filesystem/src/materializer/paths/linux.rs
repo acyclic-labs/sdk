@@ -41,7 +41,7 @@ fn mount_entry(row: &[u8], root: &[u8]) -> Result<(u64, bool), NativeTreeMateria
     let field = fields.nth(3).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed mountinfo row")
     })?;
-    let mut decoded = acyclic_native_runtime::resources::mountinfo_path_bytes(field);
+    let mut decoded = acyclic_process_resources::resources::mountinfo_path_bytes(field);
     for byte in root {
         if decoded.next() != Some(*byte) {
             return Ok((identity, false));
