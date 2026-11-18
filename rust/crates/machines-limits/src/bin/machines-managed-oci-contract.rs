@@ -1,6 +1,6 @@
-#![allow(missing_docs, reason = "contract binary, not public API")]
+//! Emit the Machines OCI and pagination contract for TypeScript.
 
-use acyclic_machines::{
+use acyclic_machines_limits::{
     MANAGED_OCI_DIGEST_HEX_LENGTH, MANAGED_OCI_HEX_DIGITS, MANAGED_OCI_REFERENCE_SEPARATOR,
     MANAGED_OCI_ZERO_DIGIT, MAX_EVENT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
