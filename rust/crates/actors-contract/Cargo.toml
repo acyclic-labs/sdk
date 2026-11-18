@@ -60,6 +60,7 @@ ts-rs = "=12.0.1"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 loom = { version = "0.7.3", features = ["futures"], optional = true }
 tonic = { workspace = true, features = ["codegen", "router", "transport", "tls-ring"] }
+tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tonic = { workspace = true, features = ["codegen"] }
