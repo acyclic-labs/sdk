@@ -59,7 +59,7 @@ cargo_build_script(
 rust_library(
     name = "acyclic_harness_core",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/executor/json/item_budget_tests.rs","src/executor/json/tests.rs","src/executor/json/value_shape_tests.rs","src/filesystem/checkout_publication/transition_tests.rs","src/filesystem/execution_journal/activity_tests.rs","src/filesystem/execution_journal/claim_tests.rs","src/filesystem/execution_journal/inline_tests.rs","src/filesystem/execution_journal/publication_future_tests.rs","src/filesystem/execution_journal/replay_capacity_tests.rs","src/filesystem/execution_journal/request_prefix_tests.rs","src/filesystem/execution_journal/request_segments_tests.rs","src/filesystem/execution_journal/tests.rs","src/filesystem/execution_journal/tests/**"], allow_empty = True) + [
         "tests/conversation_contract/fixture.rs",
         "tests/projection/fixture.rs",
         "//rust/crates/harness-fuzz:fuzz_targets/recorded_invocation_input.rs",
@@ -1448,7 +1448,7 @@ rust_library(
     name = "acyclic_harness_core_wasm",
     crate_name = "acyclic_harness_core",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/executor/json/item_budget_tests.rs","src/executor/json/tests.rs","src/executor/json/value_shape_tests.rs","src/filesystem/checkout_publication/transition_tests.rs","src/filesystem/execution_journal/activity_tests.rs","src/filesystem/execution_journal/claim_tests.rs","src/filesystem/execution_journal/inline_tests.rs","src/filesystem/execution_journal/publication_future_tests.rs","src/filesystem/execution_journal/replay_capacity_tests.rs","src/filesystem/execution_journal/request_prefix_tests.rs","src/filesystem/execution_journal/request_segments_tests.rs","src/filesystem/execution_journal/tests.rs","src/filesystem/execution_journal/tests/**"], allow_empty = True) + [
         "tests/conversation_contract/fixture.rs",
         "tests/projection/fixture.rs",
         "//rust/crates/harness-fuzz:fuzz_targets/recorded_invocation_input.rs",
