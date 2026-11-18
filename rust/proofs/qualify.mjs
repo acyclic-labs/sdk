@@ -9,6 +9,9 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const nativeHarness = ["--features", "test-support"];
 const bindingFeatures = ["--features", "test-support"];
 const bindingNextest = ["--profile", "ci", "--retries", "0", "--no-tests=fail", "--no-fail-fast", "--failure-output", "final"];
+const settingsCase = "config::evaluate::model::tests::generated_settings_match_fresh_evaluation";
+const settingsRunner = ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases",
+  "--", settingsCase, "--exact", "--nocapture"];
 const cleanupTests = [
   "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
   "local::tests::agents::a_shell_call_stages_its_output_on_the_private_volume",
@@ -38,10 +41,10 @@ const claims = {
   ],
   "settings-read-producer": [
     "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
-    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "plugin composition cached an operational read failure", ["--features", "test-support"],
+    settingsCase,
+    "plugin composition cached an operational read failure", [],
     { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
-      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
+      runner: settingsRunner,
       mutations: [
         { patch: "rust/proofs/settings-read-producer/composition.patch", label: "plain-composition-read-became-semantic", diagnostic: "plugin composition cached an operational read failure" },
         { patch: "rust/proofs/settings-read-producer/plugin.patch", source: "rust/crates/harness-core/src/plugins.rs", label: "plain-plugin-read-became-semantic", diagnostic: "plugin decision cached an operational read failure" },
@@ -55,10 +58,10 @@ const claims = {
   ],
   "plugin-input-cut": [
     "rust/crates/harness-core/src/plugins.rs", "acyclic-harness-core",
-    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "plugin decision lost an original manifest or hook observation", ["--features", "test-support"],
+    settingsCase,
+    "plugin decision lost an original manifest or hook observation", [],
     { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
-      nextest: ["--profile", "ci", "--no-fail-fast", "--failure-output", "immediate-final", "--retries", "0", "--no-tests=fail"],
+      runner: settingsRunner,
       mutations: [
         { patch: "rust/proofs/plugin-input-cut/identity.patch", label: "discarded-original-hook-bytes", diagnostic: "plugin decision lost an original manifest or hook observation" },
         { patch: "rust/proofs/plugin-input-cut/operation.patch", label: "operational-plugin-read-became-semantic", diagnostic: "plugin decision cached an operational read failure" },
