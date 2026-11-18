@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkDescriptors } from "./check-baselines.mjs";
+import { compatibilityArtifacts } from "./generated-bindings.mjs";
 
 test("descriptor checking rejects breaking changes to a secondary root and an imported schema", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-proto-mutations-"));
   try {
-    for (const family of ["auth", "actors", "filesystem-wire", "inference", "machines", "objects", "stream"]) {
-      cpSync(`rust/crates/${family}/proto`, join(root, `rust/crates/${family}/proto`), { recursive: true });
+    for (const {schemaDigest} of Object.values(compatibilityArtifacts)) {
+      const proto = schemaDigest.split("/proto/")[0] + "/proto";
+      cpSync(proto, join(root, proto), { recursive: true });
     }
     for (const [relative, before, after, family] of [
       ["stream/proto/stream/v1/session.proto", "string destination_node = 3;", "string destination_node = 99;", "stream"],
