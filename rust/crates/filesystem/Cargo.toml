@@ -50,6 +50,7 @@ native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
 wire_error_contracts = ["acyclic_fs", "acyclic_auth", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "tokio", "tonic"]
 wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
+workspace_append = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "futures", "proptest", "tokio"]
 workspace_context_contracts = ["acyclic_fs", "tokio"]
 workspace_contracts = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "sha2", "tokio"]
 workspace_merge = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
@@ -83,6 +84,10 @@ required-features = ["browser"]
 [[test]]
 name = "wire_contracts"
 path = "tests/wire_contracts.rs"
+
+[[test]]
+name = "workspace_append"
+path = "tests/workspace_append.rs"
 
 [[test]]
 name = "workspace_contracts"
