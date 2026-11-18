@@ -18,7 +18,7 @@ fn every_objects_method_has_one_action_and_one_binary_route() {
     }
     assert_eq!(ObjectsMethod::from_http_route("blobs/unmapped"), None);
     assert_eq!(
-        ObjectsMethod::from_route("/acyclic.objects.v1.ObjectsService/Unmapped"),
+        ObjectsMethod::from_route("/acyclic.objects.v1.BlobsService/Unmapped"),
         None
     );
 }
