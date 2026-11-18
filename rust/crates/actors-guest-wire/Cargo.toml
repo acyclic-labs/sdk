@@ -13,6 +13,7 @@ acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 bytes = { workspace = true, features = ["serde"] }
 http.workspace = true
 http-body = "1.1.0"
+prost-reflect.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

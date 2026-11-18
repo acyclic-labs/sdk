@@ -50,11 +50,12 @@ impl DeploymentRequest {
     /// Cloud validates both call directions and all retained handoff obligations.
     pub fn with_publication(
         mut self,
-        publication: &crate::live_update::Publication,
-    ) -> Result<Self, crate::live_update::Error> {
-        self.publication = crate::live_update::encode(publication)?;
-        self.validate_from_proto()
-            .map_err(|_| crate::live_update::Error::Invalid("publication upload scope"))?;
+        publication: &acyclic_actors_guest_wire::live_update::Publication,
+    ) -> Result<Self, acyclic_actors_guest_wire::live_selection::Error> {
+        self.publication = acyclic_actors_guest_wire::live_selection::encode(publication)?;
+        self.validate_from_proto().map_err(|_| {
+            acyclic_actors_guest_wire::live_selection::Error::Invalid("publication upload scope")
+        })?;
         Ok(self)
     }
 

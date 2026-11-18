@@ -19,6 +19,8 @@ pub mod compatibility;
 pub use codec::{Checkpoint, CheckpointCodec, CodecIdentity, GuestError};
 /// Portable live-update selection contract.
 pub mod live_selection;
+/// Validated deployment publication.
+pub mod live_update;
 mod metadata;
 pub use metadata::{
     ActorRuntime, AdmittedCaller, CallerCapability, GuestMetadataError, RuntimeHandle,

@@ -1,4 +1,10 @@
 use super::*;
+use crate::{
+    CodecIdentity,
+    compatibility::{HandoffRequirements, Schema},
+    live_selection::{decode, encode},
+};
+use sha2::{Digest, Sha256};
 use std::cell::Cell;
 
 thread_local! {
@@ -11,7 +17,7 @@ fn decodes() -> u64 {
 }
 
 fn upload(code: u8) -> Result<Publication, Error> {
-    let codec = crate::guest::CodecIdentity {
+    let codec = CodecIdentity {
         name: "live-update-proof".into(),
         version: "1".into(),
     };
@@ -20,7 +26,10 @@ fn upload(code: u8) -> Result<Publication, Error> {
         messages: BTreeMap::from([(
             "proof.message".into(),
             Schema {
-                descriptor_set: crate::FILE_DESCRIPTOR_SET.to_vec(),
+                descriptor_set: include_bytes!(
+                    "../../../../../compatibility/descriptors/actors-v1.bin"
+                )
+                .to_vec(),
                 message: "acyclic.actors.v1.InvokeActorRequest".into(),
             },
         )]),

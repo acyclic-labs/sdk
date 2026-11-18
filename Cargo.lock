@@ -86,6 +86,7 @@ dependencies = [
  "bytes",
  "http",
  "http-body",
+ "prost-reflect",
  "serde",
  "serde_json",
  "sha2",
