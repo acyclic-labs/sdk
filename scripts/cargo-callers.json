@@ -51,7 +51,6 @@
   "scripts/full-cloud-qualification.test.mjs",
   "scripts/full-cloud-test.sh",
   "scripts/graphcoder-e2e/artifacts.test.mjs",
-  "scripts/graphcoder-e2e/process-report-windows.test.mjs",
   "scripts/node-tests.mjs",
   "scripts/publish-cargo-crates.mjs",
   "scripts/qualify-agent-host.sh",
