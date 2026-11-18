@@ -33,12 +33,12 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
-<<<<<<< HEAD
         "@sdk_crates//http-body-1.1.0",
         "@sdk_crates//pin-project-lite-0.2.17",
         "@sdk_crates//prettyplease-0.3.0",
@@ -48,18 +48,6 @@ rust_library(
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tracing-0.1.44",
-=======
-        "@crates//http-body-1.1.0",
-        "@crates//pin-project-lite-0.2.17",
-        "@crates//prettyplease-0.3.0",
-        "@crates//rcgen-0.14.10",
-        "@crates//syn_3_0_9-3.0.9",
-        "@crates//tempfile-3.27.0",
-        "@crates//tokio-1.54.1",
-        "@crates//tonic-0.14.9",
-        "@crates//tracing-0.1.44",
-        "@crates//tracing-subscriber-0.3.23",
->>>>>>> 96c9f8a44b (Split harness-core feature modules into facade crates)
     ],
     visibility = ["//visibility:public"],
 )
@@ -76,11 +64,11 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
-<<<<<<< HEAD
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//http-body-1.1.0",
         "@sdk_crates//rcgen-0.14.10",
@@ -89,16 +77,6 @@ rust_test(
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-subscriber-0.3.23",
-=======
-        "@crates//futures-0.3.34",
-        "@crates//http-body-1.1.0",
-        "@crates//rcgen-0.14.10",
-        "@crates//tempfile-3.27.0",
-        "@crates//tokio-1.54.1",
-        "@crates//tonic-0.14.9",
-        "@crates//tracing-0.1.44",
-        "@crates//tracing-subscriber-0.3.23",
->>>>>>> 96c9f8a44b (Split harness-core feature modules into facade crates)
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -108,7 +86,20 @@ isolated_test(
     name = "acyclic_grpc_observability_test",
     binary = ":acyclic_grpc_observability_test_cases",
     id = "acyclic-grpc-observability",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_grpc_observability_test_full-cloud",
+    binary = ":acyclic_grpc_observability_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-grpc-observability",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -117,6 +108,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",
