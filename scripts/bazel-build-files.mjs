@@ -889,6 +889,11 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // Integration tests, examples and benches compile from their own directory and the package's
   // library, with dev-dependencies. Cargo builds every example and runs those with `test = true`;
   // it builds a bench only when its `test = true`.
+  const separateDeps = () => deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro);
+  const sharedDeps = !graph && p.metadata?.bazel?.["share-separate-deps"]
+    ? separateDeps().filter(([, value]) => value !== undefined)
+    : [];
+  const depVariable = key => `SEPARATE_${key.toUpperCase()}`;
   const separate = target => {
     const crateRoot = local(target.src_path);
     const extra = extras(target, () => false);
@@ -897,7 +902,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["srcs", list(extra.srcs)],
       ["compile_data", list(extra.data)],
       ...common(target),
-      ...deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro),
+      ...(sharedDeps.length ? sharedDeps.map(([key]) => [key, depVariable(key)]) : separateDeps()),
     ];
   };
   for (const target of executables.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
@@ -919,7 +924,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     rules.push(["rust_binary", [["name", q(name)], ...separate(example),
       ["visibility", harnessTools.has(`${label(p)}:${name}`) ? q(["//visibility:public"]) : undefined]]]);
   }
-  return {rules, features:configured(features, list), env};
+  return {rules, features:configured(features, list), env,
+    bindings: sharedDeps.map(([key, value]) => [depVariable(key), value])};
 }
 function renderBuild(native, wasm) {
   const rules = [...native.rules, ...(wasm?.rules ?? [])];
@@ -931,6 +937,7 @@ function renderBuild(native, wasm) {
     `FEATURES = ${native.features}\n\n`,
     ...(wasm ? [`WASM_FEATURES = ${wasm.features}\n\n`] : []),
     `PACKAGE_ENV = ${q(native.env)}\n`,
+    ...native.bindings.map(([name, value]) => `\n${name} = ${value}\n`),
   ];
   return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
 }

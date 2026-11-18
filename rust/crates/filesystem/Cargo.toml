@@ -16,6 +16,7 @@ categories = ["filesystem", "data-structures"]
 # Tests that reach the FUSE mounts run outside Bazel's linux-sandbox.
 [package.metadata.bazel]
 mounts-fuse = true
+share-separate-deps = true
 
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]

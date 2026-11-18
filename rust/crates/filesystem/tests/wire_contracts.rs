@@ -70,7 +70,7 @@ mod compat_wire {
             let plan = root_plan();
             let root_id = *plan.roots.keys().next().expect("root");
             let generation = generation(42);
-            let publication = Publication::Applied(MultiRootPublication {
+            let mut record = MultiRootPublication {
                 version: 1,
                 revision: 2,
                 candidate: MultiRootMergeCandidate {
@@ -89,7 +89,8 @@ mod compat_wire {
                 projected_roots: BTreeMap::new(),
                 declared_conflicts: BTreeMap::new(),
                 paused_root: None,
-            });
+            };
+            let publication = Publication::Applied(record.clone());
             let encoded = encode_publication(&publication).expect("encode");
             assert!(encoded.contains("publishedGenerations"));
             assert_eq!(decode_publication(&encoded).expect("decode"), publication);
@@ -102,10 +103,13 @@ mod compat_wire {
             let wire: serde_json::Value = serde_json::from_str(&encoded).expect("encoded JSON");
             for field in ["publishedRoots", "publishedGenerations", "fences"] {
                 let mut repeated = wire.clone();
-                let entries = repeated["payload"]["value"][field]
-                    .as_array_mut()
+                let entries = repeated
+                    .get_mut("payload")
+                    .and_then(|payload| payload.get_mut("value"))
+                    .and_then(|value| value.get_mut(field))
+                    .and_then(serde_json::Value::as_array_mut)
                     .expect("entry array");
-                entries.push(entries[0].clone());
+                entries.push(entries.first().cloned().expect("one entry"));
                 assert!(matches!(
                     decode_publication(&serde_json::to_string(&repeated).expect("duplicate JSON")),
                     Err(CompatibilityWireError::InvalidValue)
@@ -114,11 +118,8 @@ mod compat_wire {
 
             // An Applied record without the fences of its roots cannot come from
             // the coordinator, whose recovery rejects it; neither may the decoder.
-            let Publication::Applied(mut unfenced) = publication else {
-                unreachable!("fixture is applied");
-            };
-            unfenced.fences.clear();
-            let encoded = encode_publication(&Publication::Applied(unfenced)).expect("encode");
+            record.fences.clear();
+            let encoded = encode_publication(&Publication::Applied(record)).expect("encode");
             assert!(matches!(
                 decode_publication(&encoded),
                 Err(CompatibilityWireError::InvalidValue)
