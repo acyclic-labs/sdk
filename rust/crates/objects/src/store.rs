@@ -959,18 +959,21 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .medium
             .volatile()
             .then(|| Vec::with_capacity(references.len() + 1));
-        match self.reference(references, tag, keys.as_mut()).await {
-            Ok(_) => {}
-            Err(error) if error.code == ErrorCode::OutcomeUnknown => {
-                return Err(Commit::Unknown(error));
+        let classify = |error: Error| {
+            if error.code == ErrorCode::OutcomeUnknown {
+                Commit::Unknown(error)
+            } else {
+                Commit::Failed(error)
             }
-            Err(error) => return Err(Commit::Failed(error)),
-        }
-        match self.medium.create(key, batch.into()).await {
-            Ok(_) => {}
-            Err(error @ MediumError::Ambiguous(_)) => return Err(Commit::Unknown(moved(error))),
-            Err(error) => return Err(Commit::Failed(medium(error))),
-        }
+        };
+        self.reference(references, tag, keys.as_mut())
+            .await
+            .map_err(classify)?;
+        self.medium
+            .create(key, batch.into())
+            .await
+            .map_err(moved)
+            .map_err(classify)?;
         let Some(mut keys) = keys else {
             return Ok(());
         };
