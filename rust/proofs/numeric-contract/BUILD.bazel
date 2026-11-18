@@ -1,19 +1,12 @@
 load("//toolchains/kani:defs.bzl", "kani_test")
-load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library")
-
-extract_cargo_lints(
-    name = "lints",
-    manifest = "//rust/crates/filesystem-base:Cargo.toml",
-    workspace = "//:Cargo.toml",
-)
 
 rust_library(
     name = "contracts",
     crate_root = "//rust/crates/filesystem-base:src/numeric.rs",
     srcs = ["//rust/crates/filesystem-base:src/numeric.rs"],
     edition = "2024",
-    lint_config = ":lints",
+    lint_config = "//:workspace_lints",
     rustc_flags = ["-Dwarnings"],
 )
 

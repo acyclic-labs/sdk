@@ -116,6 +116,13 @@ function checkCfgFlags(manifest, features) {
     ...Object.values(table).flatMap(lint => lint["check-cfg"] ?? []).map(cfg => `--check-cfg=${cfg}`)];
 }
 
+function workspaceLintLevels(group) {
+  const entries = Object.entries(cargo.workspace?.lints?.[group] ?? {}).sort(([a, left], [b, right]) =>
+    (left.priority ?? 0) - (right.priority ?? 0) || (a < b ? -1 : 1));
+  return entries.length ? starlarkDict(entries.map(([name, lint]) =>
+    [name, typeof lint === "string" ? lint : lint.level])) : undefined;
+}
+
 // .cargo/config.toml's [env], as Cargo gives it to every compile and build script. A relative
 // value is resolved against the repository root, which is the execution root of a Bazel action.
 const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.toml").env ?? {}).map(([name, entry]) => {
@@ -737,7 +744,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     ["crate_features", features],
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", opt === undefined && !checkCfg.length ? undefined : list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg])],
-    ["lint_config", q(":lints")],
+    ["lint_config", q(inheritedLints ? "//:workspace_lints" : ":lints")],
     ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : q(bazel?.["target-compatible-with"])],
   ];
   // Rendered dependencies of one target.
@@ -750,11 +757,9 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     ];
   };
   const rules = [], ownDeps = script ? [`:build_script${suffix}`] : [];
-  // Cargo's [lints] section, read by rules_rust from the same manifest (and workspace) Cargo reads.
-  if (!graph) rules.push(["extract_cargo_lints", [
+  if (!graph && !inheritedLints) rules.push(["extract_cargo_lints", [
     ["name", q("lints")],
     ["manifest", q("Cargo.toml")],
-    ["workspace", inheritedLints ? q("//:Cargo.toml") : undefined],
   ]]);
   // Targets that use the package's own library: a proc-macro library is a macro dependency.
   const ownLib = lib && !lib.kind.includes("proc-macro") ? [`:${crateName(lib)}`] : [];
@@ -1374,7 +1379,15 @@ const files = new Map([
   ["workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
+load("@rules_rust//rust:defs.bzl", "rust_lint_config")
+${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}
+${rule("rust_lint_config", [
+    ["name", q("workspace_lints")],
+    ["rustc", workspaceLintLevels("rust")],
+    ["clippy", workspaceLintLevels("clippy")],
+    ["rustdoc", workspaceLintLevels("rustdoc")],
+    ["visibility", list(["//:__subpackages__"])],
+  ])}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
