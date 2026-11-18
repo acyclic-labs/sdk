@@ -70,6 +70,7 @@ name = "acyclic-actors-call"
 version = "0.2.0"
 dependencies = [
  "acyclic-stream",
+ "acyclic-test-support",
  "bytes",
  "futures",
  "prost",

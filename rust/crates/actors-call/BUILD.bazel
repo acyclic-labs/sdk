@@ -61,6 +61,9 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    deps = [
+        "//rust/crates/test-support:acyclic_test_support",
+    ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )
