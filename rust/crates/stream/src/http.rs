@@ -440,17 +440,20 @@ impl StreamProvider for HttpStream {
             )),
             crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let source = request.source.clone();
-                    let destination = request.destination.clone();
-                    let wire = wire_codec::fork_to_wire(&request);
-                    self.request("fork", wire.encode_to_vec(), |value| {
-                        let result = parse_fork(&value)?;
-                        if result.source != source || result.destination != destination {
-                            return Err(StreamError::Unavailable);
-                        }
-                        self.revisions()?.observe(&result.revision);
-                        Ok(result)
-                    })
+                    self.request_json(
+                        "fork",
+                        || http_codec::encode_fork(&request),
+                        |value| {
+                            let result = parse_fork(&value)?;
+                            if result.source != request.source
+                                || result.destination != request.destination
+                            {
+                                return Err(StreamError::Unavailable);
+                            }
+                            self.revisions()?.observe(&result.revision);
+                            Ok(result)
+                        },
+                    )
                     .await
                 },
                 crate::WriteOutcome::Fork,

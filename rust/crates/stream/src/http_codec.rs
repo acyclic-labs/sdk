@@ -81,7 +81,11 @@ fn append_record_json(record: &crate::AppendRecord) -> Value {
 fn request_json_fork(input: &[u8]) -> Result<Value> {
     let request = wire::ForkRequest::decode(input).map_err(|_| "invalid_argument")?;
     let request = wire_codec::fork_from_wire(request).map_err(|error| error.code())?;
-    crate::request::validate_fork(&request).map_err(|error| error.code())?;
+    fork_json(&request)
+}
+
+fn fork_json(request: &crate::ForkRequest) -> Result<Value> {
+    crate::request::validate_fork(request).map_err(|error| error.code())?;
     let mut value = serde_json::Map::from_iter([
         ("source".into(), json!(request.source.to_string())),
         ("destination".into(), json!(request.destination.to_string())),
@@ -344,6 +348,11 @@ pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
     serde_json::to_string(&append_json(request)?).map_err(|_| "could not encode request")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn encode_fork(request: &crate::ForkRequest) -> Result<String> {
+    serde_json::to_string(&fork_json(request)?).map_err(|_| "could not encode request")
 }
 
 /// Adds the minimum cut, one entry per authority; the host serves at or above it.
