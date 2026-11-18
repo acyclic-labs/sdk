@@ -57,31 +57,49 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
     }
 }
 
+/// Version byte for persisted multipart upload records.
 pub const MULTIPART_RECORD_VERSION: u8 = 1;
 
+/// One uploaded part with its staged content and entity tag.
 #[derive(Clone, Debug)]
 pub struct MultipartPart {
+    /// Canonical staged content referenced by the record.
     pub staged: StagedContent,
+    /// Entity tag of the uploaded part.
     pub etag: String,
 }
 
+/// The current completion or abort state of an upload.
 #[derive(Clone, Debug)]
 pub enum MultipartTerminal {
+    /// Completion intent with the selected part numbers and entity tags.
     Completing(Vec<(u32, String)>),
+    /// Published generation for a completed upload.
     Completed(crate::GenerationId),
+    /// Durable abort that fences further parts and completion.
     Aborted,
 }
 
+/// Current multipart state reconstructed from the upload stream.
 #[derive(Clone, Debug)]
 pub struct MultipartSnapshot {
+    /// Object key to which the upload is bound.
     pub key: String,
+    /// Stream tail used for the next conditional append.
     pub tail: u64,
+    /// Minimum byte length for non-final parts.
     pub minimum_part_bytes: u64,
+    /// Maximum allowed part count, if configured.
     pub maximum_parts: Option<u32>,
+    /// Maximum bytes allowed per part, if configured.
     pub maximum_part_bytes: Option<u64>,
+    /// Current part by number, after applying replacements.
     pub parts: BTreeMap<u32, MultipartPart>,
+    /// Part upload operation identities and their accepted part and tag.
     pub operations: BTreeMap<[u8; 16], (u32, String)>,
+    /// Latest completion or abort state, if any.
     pub terminal: Option<MultipartTerminal>,
+    /// Provider reads and record work charged by replay.
     pub work: crate::WorkCounters,
 }
 

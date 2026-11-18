@@ -1,3 +1,4 @@
+/// Encodes the key and part bounds of a new upload.
 pub fn encode_multipart_created(
     key: &str,
     maximum_parts: Option<u32>,
@@ -15,6 +16,7 @@ pub fn encode_multipart_created(
     Ok(Bytes::from(output))
 }
 
+/// Encodes a part reference and the operation that uploaded it.
 pub fn encode_multipart_part(
     part_number: u32,
     root: ObjectId,
@@ -37,6 +39,7 @@ pub fn encode_multipart_part(
     Bytes::from(output)
 }
 
+/// Encodes the ordered set of parts selected for completion.
 pub fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageResult<Bytes> {
     let count = u32::try_from(parts.len()).map_err(|_| MultipartStorageError::TooManyParts)?;
     let mut output = Vec::with_capacity(6 + parts.len().saturating_mul(36));
@@ -52,6 +55,7 @@ pub fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageR
     Ok(Bytes::from(output))
 }
 
+/// Encodes the generation published by completion.
 pub fn encode_multipart_completed(generation: crate::GenerationId) -> Bytes {
     let mut output = Vec::with_capacity(2 + generation.object_id().encoded_len());
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 4]);
@@ -59,10 +63,12 @@ pub fn encode_multipart_completed(generation: crate::GenerationId) -> Bytes {
     Bytes::from(output)
 }
 
+/// Encodes an upload abort.
 pub fn encode_multipart_aborted() -> Bytes {
     Bytes::from_static(&[MULTIPART_RECORD_VERSION, 5])
 }
 
+/// Replays every record up to the observed upload stream tail.
 pub async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     provider: &P,
     path: acyclic_stream::StreamPath,
@@ -139,30 +145,42 @@ pub async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
 /// Persisted multipart refusal, projected only at the S3 service boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartStorageError {
+    /// Multipart record key is too long.
     #[error("multipart record key is too long")]
     KeyTooLong,
+    /// Multipart record has too many parts.
     #[error("multipart record has too many parts")]
     TooManyParts,
+    /// Multipart part digest is invalid.
     #[error("multipart part digest is invalid")]
     InvalidPartDigest,
+    /// Multipart limits are invalid.
     #[error("multipart limits are invalid")]
     InvalidLimits,
+    /// Multipart retention was cancelled.
     #[error("multipart retention was cancelled")]
     Cancelled,
+    /// Multipart retention exceeded its budget.
     #[error("multipart retention exceeded its budget")]
     BudgetExceeded,
+    /// Multipart upload does not exist.
     #[error("multipart upload does not exist")]
     NoSuchUpload,
+    /// Multipart record is malformed.
     #[error("multipart record is malformed")]
     Malformed,
+    /// Multipart record version number is unsupported.
     #[error("multipart record version {0} is unsupported")]
     UnsupportedVersion(u8),
+    /// Multipart stream read failed.
     #[error("multipart stream read failed")]
     Stream(#[source] acyclic_stream::StreamError),
+    /// Multipart stream returned inconsistent records or accounting.
     #[error("multipart stream returned inconsistent records or accounting")]
     InconsistentStream,
 }
 
+/// Result of a multipart record or storage operation.
 pub type MultipartStorageResult<T = ()> = Result<T, MultipartStorageError>;
 
 /// Decodes and validates the leading `created` record of a multipart record stream, returning the upload's key and its negotiated part bounds.
@@ -317,6 +335,7 @@ impl MultipartReplay {
     }
 }
 
+/// Replays supplied record bytes for codec checks.
 #[cfg(any(test, feature = "test-support"))]
 pub fn decode_multipart(
     records: Vec<acyclic_stream::OwnedBytes>,
@@ -332,12 +351,14 @@ pub fn decode_multipart(
     Ok(replay.snapshot)
 }
 
+/// Cursor for the versioned multipart record format.
 pub struct RecordCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
 impl<'a> RecordCursor<'a> {
+    /// Starts reading a record at its version byte.
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
@@ -401,6 +422,7 @@ impl<'a> RecordCursor<'a> {
             .map_err(|_| MultipartStorageError::Malformed)
     }
 
+    /// Validates the version and returns the record tag.
     pub fn any_header(&mut self) -> MultipartStorageResult<u8> {
         let version = self
             .bytes
