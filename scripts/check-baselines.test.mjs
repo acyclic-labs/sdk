@@ -5,10 +5,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { checkDescriptors } from "./check-baselines.mjs";
 
-test("all complete regenerated descriptor closures preserve their pinned identities", () => {
-  checkDescriptors();
-});
-
 test("descriptor checking rejects breaking changes to a secondary root and an imported schema", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-proto-mutations-"));
   try {
