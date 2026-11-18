@@ -1324,24 +1324,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
     }
 
-    async fn list_all(&self, prefix: &str) -> Result<Vec<(String, u64)>, Error> {
+    async fn list_all(&self, prefix: String) -> Result<Vec<(String, u64)>, Error> {
         let mut keys = Vec::new();
-        loop {
-            let page = self
-                .medium
-                .list(
-                    prefix,
-                    keys.last().map(|(key, _): &(String, u64)| key.as_str()),
-                    PAGE,
-                )
-                .await
-                .map_err(medium)?;
-            let done = page.len() < PAGE;
+        let mut pages = self.pages(prefix);
+        while let Some(page) = pages.next().await? {
             keys.extend(page);
-            if done {
-                return Ok(keys);
-            }
         }
+        Ok(keys)
     }
 
     /// Publishes the blob `wanted` describes: creates its envelope under a
@@ -1537,17 +1526,16 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             }
         };
         let mut references = Vec::new();
-        for (key, _) in self
-            .list_all(&format!("{}r/", self.state.prefix))
-            .await
-            .map_err(suspended)?
-        {
-            let batch = self
-                .batch(&key)
-                .await
-                .and_then(|batch| batch.ok_or_else(corrupt))
-                .map_err(suspended)?;
-            references.extend(batch);
+        let mut pages = self.pages(format!("{}r/", self.state.prefix));
+        while let Some(page) = pages.next().await.map_err(suspended)? {
+            for (key, _) in page {
+                let batch = self
+                    .batch(&key)
+                    .await
+                    .and_then(|batch| batch.ok_or_else(corrupt))
+                    .map_err(suspended)?;
+                references.extend(batch);
+            }
         }
         references.extend(self.fenced_rooted().await.map_err(suspended)?);
         Ok(references)
@@ -1927,7 +1915,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
                 let batches = self
-                    .list_all(&self.retention_key('r', root_hash, ""))
+                    .list_all(self.retention_key('r', root_hash, ""))
                     .await?;
                 let existed = !batches.is_empty();
                 let mut batch_keys = Vec::new();
