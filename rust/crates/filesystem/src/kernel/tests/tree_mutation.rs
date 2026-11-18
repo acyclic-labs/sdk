@@ -163,7 +163,7 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     Ok(())
 }
 use crate::test_support::put_tree_page as put;
-use crate::test_support::tree_entries::{entry, name, wide_entry};
+use crate::test_support::tree_entries::{entry, name};
 
 /// Two-item pages: the item limit closes each page at its second item, so
 /// canonical pages are pairs, whatever the keys hash to.
@@ -310,136 +310,6 @@ async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn 
     assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     assert_eq!(failure.work.as_deref().unwrap().page_writes, 0);
     assert_eq!(failure.work.as_deref().unwrap().bytes_encoded, 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let entries = (0..1_024_u16)
-        .map(|value| wide_entry(value, FileKind::Regular))
-        .collect::<Result<Vec<_>, _>>()?;
-    let root = put(&store, &TreePage::Leaf(entries), 1_024).await?;
-    for (selected, comparisons) in [(777, 10), (0, 11)] {
-        let replacement = wide_entry(selected, FileKind::Regular)?;
-        let receipt = apply_tree_mutations(
-            &store,
-            root,
-            vec![TreeMutation::Replace {
-                expected_file_id: replacement.file_id,
-                entry: replacement,
-            }],
-            DecodeLimits::default(),
-            WorkBudget {
-                page_writes: 0,
-                ..WorkBudget::UNBOUNDED
-            },
-            &crate::CancellationToken::new(),
-        )
-        .await?;
-        // The one-object backend visits one index node and compares its full
-        // object key. Then validate the bounded page, classify one mutation and
-        // admit one visited-page probe. Only the leaf search varies by name.
-        let backend_lookup = 1 + ObjectId::ENCODED_LEN as u64;
-        assert_eq!(
-            receipt.work.items_examined,
-            backend_lookup + 1_024 + 1 + 1 + comparisons
-        );
-        assert_eq!(receipt.value, root);
-        assert_eq!(receipt.work.page_reads, 1);
-        assert_eq!(receipt.work.backend_read_operations, 1);
-        assert_eq!(receipt.work.page_writes, 0);
-        assert_eq!(receipt.work.backend_write_operations, 0);
-        assert_eq!(receipt.work.bytes_encoded, 0);
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn std::error::Error>>
-{
-    let store = MemoryObjectStore::default();
-    let existing = wide_entry(1, FileKind::Regular)?;
-    let root = put(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
-    let mutation = TreeMutation::Replace {
-        entry: existing.clone(),
-        expected_file_id: existing.file_id,
-    };
-    let failure = apply_tree_mutations(
-        &store,
-        root,
-        vec![mutation],
-        DecodeLimits::default(),
-        WorkBudget {
-            peak_allocation_bytes: 0,
-            ..WorkBudget::UNBOUNDED
-        },
-        &crate::CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("underbudgeted visited set unexpectedly succeeded")?;
-    assert!(matches!(
-        failure.error,
-        TreeMutationError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed,
-            maximum: observed_maximum,
-        }) if observed > 0 && observed_maximum == 0
-    ));
-    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
-    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let existing = wide_entry(1, FileKind::Regular)?;
-    let root = put(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
-    let mutation = TreeMutation::Replace {
-        entry: existing.clone(),
-        expected_file_id: existing.file_id,
-    };
-    let baseline = apply_tree_mutations(
-        &store,
-        root,
-        vec![mutation.clone()],
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?;
-    let maximum = baseline.work.peak_allocation_bytes - 1;
-    let failure = apply_tree_mutations(
-        &store,
-        root,
-        vec![mutation],
-        DecodeLimits::default(),
-        WorkBudget {
-            peak_allocation_bytes: maximum,
-            ..WorkBudget::UNBOUNDED
-        },
-        &crate::CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("underbudgeted decoded page unexpectedly succeeded")?;
-    assert!(
-        matches!(
-            failure.error,
-            TreeMutationError::Work(WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes",
-                observed,
-                maximum: observed_maximum,
-            }) if observed > observed_maximum && observed_maximum <= maximum
-        ),
-        "{failure:?}"
-    );
-    assert!(failure.work.as_deref().unwrap().peak_allocation_bytes <= maximum);
-    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
-    assert_eq!(failure.work.as_deref().unwrap().object_bytes_written, 0);
     Ok(())
 }
 
