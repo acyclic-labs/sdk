@@ -161,6 +161,7 @@ acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util", "process", "io-util", "net"] }
+acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support", "conformance"] }
 

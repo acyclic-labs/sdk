@@ -56,7 +56,7 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     let paths = Vec::<PathBuf>::new();
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    if let Ok(selected) = crate::platform_shell() {
+    if let Ok(selected) = acyclic_executable_search::platform_shell() {
         // Use the host's once-selected shell, never a model-supplied program
         // or PATH. Its installation directory includes native runtime files
         // (for example PowerShell 7's .NET files beside pwsh.exe).

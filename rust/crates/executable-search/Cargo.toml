@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Native executable discovery and image classification"
 
+[dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 

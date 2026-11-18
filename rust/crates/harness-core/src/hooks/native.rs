@@ -329,7 +329,7 @@ mod tests {
         )?;
         assert_eq!(
             Path::new(command.get_program()),
-            acyclic_native_runtime::platform_shell().map_err(Error::process_io)?
+            acyclic_executable_search::platform_shell().map_err(Error::process_io)?
         );
         let args: Vec<_> = command.get_args().collect();
         let mut expected: Vec<_> = acyclic_native_runtime::shell_spec::PLATFORM

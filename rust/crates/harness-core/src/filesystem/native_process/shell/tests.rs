@@ -159,7 +159,7 @@ fn invocation(root: &Path) -> Invocation {
         #[cfg(unix)]
         executable: PathBuf::from("/bin/bash"),
         #[cfg(windows)]
-        executable: acyclic_native_runtime::platform_shell()
+        executable: acyclic_executable_search::platform_shell()
             .expect("native platform shell")
             .to_path_buf(),
         argv: Vec::new(),

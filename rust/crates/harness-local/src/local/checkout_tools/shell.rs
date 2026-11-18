@@ -247,5 +247,5 @@ impl Drop for StopOnDrop {
 }
 
 pub(in crate::local) fn executable() -> Result<&'static std::path::Path> {
-    acyclic_native_runtime::platform_shell().map_err(Error::process_io)
+    acyclic_executable_search::platform_shell().map_err(Error::process_io)
 }

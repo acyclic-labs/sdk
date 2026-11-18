@@ -313,6 +313,7 @@ rust_test(
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -638,6 +639,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -720,6 +722,7 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -801,6 +804,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1070,6 +1074,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1152,6 +1157,7 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1233,6 +1239,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1406,6 +1413,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1486,6 +1494,7 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1565,6 +1574,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1699,6 +1709,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1781,6 +1792,7 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1862,6 +1874,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1996,6 +2009,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2077,6 +2091,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2157,6 +2172,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2268,6 +2284,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2350,6 +2367,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2431,6 +2449,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2542,6 +2561,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2624,6 +2644,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2705,6 +2726,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2816,6 +2838,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2898,6 +2921,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -2979,6 +3003,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3090,6 +3115,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3172,6 +3198,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3253,6 +3280,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3365,6 +3393,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3447,6 +3476,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3528,6 +3558,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3640,6 +3671,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3722,6 +3754,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3803,6 +3836,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3914,6 +3948,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -3996,6 +4031,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -4077,6 +4113,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -4189,6 +4226,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -4271,6 +4309,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -4352,6 +4391,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -4463,6 +4503,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -4545,6 +4586,7 @@ rust_binary(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -4626,6 +4668,7 @@ rust_binary(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",

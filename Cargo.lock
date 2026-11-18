@@ -340,6 +340,7 @@ version = "0.2.0"
 name = "acyclic-executable-search"
 version = "0.2.0"
 dependencies = [
+ "acyclic-host-platform",
  "acyclic-test-support",
  "tempfile",
  "windows-sys 0.61.2",
@@ -603,6 +604,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
@@ -1687,6 +1689,7 @@ dependencies = [
 name = "acyclic-plugin"
 version = "0.2.0"
 dependencies = [
+ "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-client",

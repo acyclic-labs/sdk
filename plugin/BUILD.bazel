@@ -64,6 +64,7 @@ rust_library(
         ":build_script",
     ] + [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -180,6 +181,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -227,6 +229,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -252,6 +255,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -277,6 +281,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -352,6 +357,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -399,6 +405,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -424,6 +431,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -449,6 +457,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -530,6 +539,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -555,6 +565,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -580,6 +591,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -664,6 +676,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -689,6 +702,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -714,6 +728,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -790,6 +805,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -815,6 +831,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -840,6 +857,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -890,6 +908,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -915,6 +934,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",
@@ -940,6 +960,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//plugin/identity:acyclic_plugin_identity",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-providers:acyclic_harness_providers",

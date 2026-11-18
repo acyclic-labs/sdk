@@ -123,7 +123,7 @@ fn argv_channel(size: &str, bytes: usize) -> std::result::Result<(), String> {
     };
     // Resolve the host's supported shell through the same production fallback,
     // so a Windows host with only Windows PowerShell 5.1 uses `powershell.exe`.
-    let shell = acyclic_native_runtime::platform_shell().map_err(oracle::failed)?;
+    let shell = acyclic_executable_search::platform_shell().map_err(oracle::failed)?;
     let mut argv = vec![shell.to_string_lossy().into_owned()];
     argv.extend(arguments.into_iter().map(str::to_owned));
     argv.push(script.to_owned());
