@@ -187,6 +187,8 @@ test('crate test planning keeps default members and all wasm workspace members d
     write(`${name}/src/lib.rs`, '');
   }
   const metadata = workspaceProfileMetadata(root, {workspaceOnly: true});
+  const app = metadata.packages.find(item => item.name === 'app');
+  assert.deepEqual(metadata.workspace_default_members, [app.id]);
   assert.deepEqual(workspaceDefaults(metadata).map(item => item.name), ['app']);
   const tool = metadata.packages.find(item => item.name === 'tool');
   assert.ok(metadata.workspace_members.includes(tool?.id));
