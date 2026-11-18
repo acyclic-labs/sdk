@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(any(target_arch = "wasm32", test))]
-pub(in super::super) fn request_credential_status(
+pub fn request_credential_status(
     mut message: String,
     detail: Option<String>,
 ) -> tonic::Status {
@@ -34,7 +34,7 @@ fn uncertain_effect(status: &tonic::Status) -> bool {
         )
 }
 
-pub(in super::super) fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+pub fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     if credential_before_dispatch(&value) {
         return read_error(value);
     }
@@ -48,17 +48,17 @@ pub(in super::super) fn mutation_error(key: IdempotencyKey, value: tonic::Status
         )
         .with_cause(value)
 }
-pub(in super::super) fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+pub fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key).with_cause(value)
 }
-pub(in super::super) fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+pub fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     let classification = match value.code() {
         _ if uncertain_effect(&value) => ProviderError::Indeterminate(key),
         _ => ProviderError::Rejected(value.message().into()),
     };
     classification.with_cause(value)
 }
-pub(in super::super) fn read_error(value: tonic::Status) -> ProviderError {
+pub fn read_error(value: tonic::Status) -> ProviderError {
     let classification = match value.code() {
         code if code != tonic::Code::Internal && uncertain_effect(&value) => {
             ProviderError::Unavailable
@@ -71,7 +71,7 @@ pub(in super::super) fn read_error(value: tonic::Status) -> ProviderError {
 
 /// Guest command and file admission share transport semantics while retaining
 /// the original uncertain effect identity supplied by their caller.
-pub(in super::super) fn guest_error(
+pub fn guest_error(
     uncertain: ProviderError,
     value: tonic::Status,
 ) -> ProviderError {

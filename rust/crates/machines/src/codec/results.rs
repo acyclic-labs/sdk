@@ -44,7 +44,7 @@ impl TryFrom<wire::ResultCut> for ResultCut {
     }
 }
 
-pub(in super::super) fn decode_result_cut(
+pub fn decode_result_cut(
     value: Option<&wire::ResultCut>,
 ) -> Result<ResultCut, ProviderError> {
     let value = value.ok_or_else(|| invalid("result cut is missing"))?;
@@ -89,7 +89,7 @@ impl TryFrom<wire::ResultCursor> for ResultCursor {
     }
 }
 
-pub(in super::super) fn decode_result_cursor(
+pub fn decode_result_cursor(
     value: Option<&wire::ResultCursor>,
 ) -> Result<ResultCursor, ProviderError> {
     let value = value.ok_or_else(|| invalid("result cursor is missing"))?;
@@ -103,7 +103,7 @@ pub(in super::super) fn decode_result_cursor(
     })
 }
 
-pub(in super::super) fn decode_result_page(
+pub fn decode_result_page(
     value: wire::ResultPage,
     cursor: ResultCursor,
     credit: NonZeroU32,

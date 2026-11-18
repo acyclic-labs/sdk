@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in super::super) fn encode_image(value: &Image) -> Result<wire::Image, ProviderError> {
+pub fn encode_image(value: &Image) -> Result<wire::Image, ProviderError> {
     use wire::image::ImmutableReference;
     let (kind, immutable_reference) = match value {
         Image::ManagedOci(digest) => (
@@ -21,7 +21,7 @@ pub(in super::super) fn encode_image(value: &Image) -> Result<wire::Image, Provi
         immutable_reference: Some(immutable_reference),
     })
 }
-pub(in super::super) fn decode_image(value: Option<&wire::Image>) -> Result<Image, ProviderError> {
+pub fn decode_image(value: Option<&wire::Image>) -> Result<Image, ProviderError> {
     use wire::image::ImmutableReference;
     let value = value.ok_or_else(|| ProviderError::Rejected("image is missing".into()))?;
     match (
@@ -49,7 +49,7 @@ pub(in super::super) fn decode_image(value: Option<&wire::Image>) -> Result<Imag
         _ => Err(ProviderError::Rejected("image shape is invalid".into())),
     }
 }
-pub(in super::super) fn encode_capability(value: Capability) -> i32 {
+pub fn encode_capability(value: Capability) -> i32 {
     (match value {
         Capability::ElasticCpu => wire::Capability::ElasticCpu,
         Capability::ElasticMemory => wire::Capability::ElasticMemory,
@@ -60,7 +60,7 @@ pub(in super::super) fn encode_capability(value: Capability) -> i32 {
         Capability::DiskFork => wire::Capability::DiskFork,
     }) as i32
 }
-pub(in super::super) fn decode_capability(value: i32) -> Result<Capability, ProviderError> {
+pub fn decode_capability(value: i32) -> Result<Capability, ProviderError> {
     match wire::Capability::try_from(value)
         .map_err(|_| ProviderError::Rejected("capability is invalid".into()))?
     {
@@ -76,7 +76,7 @@ pub(in super::super) fn decode_capability(value: i32) -> Result<Capability, Prov
         }
     }
 }
-pub(in super::super) fn decode_capability_set(
+pub fn decode_capability_set(
     values: &[i32],
     duplicate: &str,
 ) -> Result<BTreeSet<Capability>, ProviderError> {
@@ -90,7 +90,7 @@ pub(in super::super) fn decode_capability_set(
     }
     Ok(capabilities)
 }
-pub(in super::super) fn encode_compatibility(
+pub fn encode_compatibility(
     value: &CompatibilityPolicy,
 ) -> Result<wire::CompatibilityPolicy, ProviderError> {
     let (mode, required) = match value {
@@ -110,7 +110,7 @@ pub(in super::super) fn encode_compatibility(
         required,
     })
 }
-pub(in super::super) fn decode_compatibility(
+pub fn decode_compatibility(
     value: Option<&wire::CompatibilityPolicy>,
     capabilities: &BTreeSet<Capability>,
 ) -> Result<CompatibilityPolicy, ProviderError> {
@@ -133,11 +133,11 @@ pub(in super::super) fn decode_compatibility(
         )),
     }
 }
-pub(in super::super) fn millis(value: Duration) -> Result<u64, ProviderError> {
+pub fn millis(value: Duration) -> Result<u64, ProviderError> {
     u64::try_from(value.as_millis())
         .map_err(|_| ProviderError::Invalid("duration exceeds protocol range".into()))
 }
-pub(in super::super) fn encode_suspension(
+pub fn encode_suspension(
     value: SuspensionPolicy,
 ) -> Result<wire::SuspensionPolicy, ProviderError> {
     use wire::suspension_policy::Policy;
@@ -156,7 +156,7 @@ pub(in super::super) fn encode_suspension(
         policy: Some(policy),
     })
 }
-pub(in super::super) fn decode_suspension(
+pub fn decode_suspension(
     value: Option<&wire::SuspensionPolicy>,
 ) -> Result<SuspensionPolicy, ProviderError> {
     use wire::suspension_policy::Policy;
@@ -170,7 +170,7 @@ pub(in super::super) fn decode_suspension(
         )),
     }
 }
-pub(in super::super) fn encode_expiration(
+pub fn encode_expiration(
     value: ExpirationPolicy,
 ) -> Result<wire::ExpirationPolicy, ProviderError> {
     let (kind, value_ms) = match value {
@@ -193,7 +193,7 @@ pub(in super::super) fn encode_expiration(
         value_ms,
     })
 }
-pub(in super::super) fn decode_expiration(
+pub fn decode_expiration(
     value: Option<&wire::ExpirationPolicy>,
 ) -> Result<ExpirationPolicy, ProviderError> {
     let value =

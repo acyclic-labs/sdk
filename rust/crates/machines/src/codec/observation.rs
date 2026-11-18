@@ -59,7 +59,7 @@ impl TryFrom<MachinePage> for wire::MachinePage {
     }
 }
 
-pub(in super::super) fn decode_machine_page(
+pub fn decode_machine_page(
     page: wire::MachinePage,
     after: Option<MachineId>,
     limit: u32,
@@ -209,7 +209,7 @@ impl From<OperationObservation> for wire::OperationState {
     }
 }
 
-pub(in super::super) fn decode_qualification(
+pub fn decode_qualification(
     value: wire::ImageQualification,
     expected: Option<&Image>,
 ) -> Result<ImageQualification, ProviderError> {
@@ -231,7 +231,7 @@ pub(in super::super) fn decode_qualification(
         compatibility_revision,
     })
 }
-pub(in super::super) fn decode_contract(
+pub fn decode_contract(
     value: Option<&wire::MachineContract>,
 ) -> Result<MachineContract, ProviderError> {
     let value =
@@ -301,7 +301,7 @@ fn decode_platform(value: Option<&wire::Platform>) -> Result<Platform, ProviderE
         },
     })
 }
-pub(in super::super) fn digest(value: &[u8], name: &str) -> Result<[u8; 32], ProviderError> {
+pub fn digest(value: &[u8], name: &str) -> Result<[u8; 32], ProviderError> {
     let value: [u8; 32] = value
         .try_into()
         .map_err(|_| ProviderError::Rejected(format!("{name} digest width is invalid")))?;
@@ -311,7 +311,7 @@ pub(in super::super) fn digest(value: &[u8], name: &str) -> Result<[u8; 32], Pro
         Ok(value)
     }
 }
-pub(in super::super) fn decode_machine_observation(
+pub fn decode_machine_observation(
     value: wire::MachineState,
     expected: MachineId,
 ) -> Result<MachineObservation, ProviderError> {
@@ -358,7 +358,7 @@ pub(in super::super) fn decode_machine_observation(
         changed_at_unix_ms: value.changed_at_unix_ms,
     })
 }
-pub(in super::super) fn decode_checkpoint_observation(
+pub fn decode_checkpoint_observation(
     value: &wire::CheckpointState,
     expected: CheckpointId,
 ) -> Result<CheckpointObservation, ProviderError> {
@@ -376,7 +376,7 @@ pub(in super::super) fn decode_checkpoint_observation(
         created_at_unix_ms: value.created_at_unix_ms,
     })
 }
-pub(in super::super) fn decode_event(
+pub fn decode_event(
     value: &wire::MachineEvent,
     expected: MachineId,
 ) -> Result<MachineEvent, ProviderError> {
@@ -414,7 +414,7 @@ pub(in super::super) fn decode_event(
         fact,
     })
 }
-pub(in super::super) fn decode_machine_state(value: i32) -> Result<MachineState, ProviderError> {
+pub fn decode_machine_state(value: i32) -> Result<MachineState, ProviderError> {
     match wire::MachineStatus::try_from(value)
         .map_err(|_| ProviderError::Rejected("machine state is invalid".into()))?
     {
@@ -433,7 +433,7 @@ pub(in super::super) fn decode_machine_state(value: i32) -> Result<MachineState,
         )),
     }
 }
-pub(in super::super) fn decode_operation_observation(
+pub fn decode_operation_observation(
     value: &wire::OperationState,
     expected: OperationId,
 ) -> Result<OperationObservation, ProviderError> {
@@ -474,7 +474,7 @@ pub(in super::super) fn decode_operation_observation(
     }
     Ok(OperationObservation { id, phase })
 }
-pub(in super::super) fn decode_usage_receipt(
+pub fn decode_usage_receipt(
     value: wire::UsageReceipt,
     machine: MachineId,
     start_unix_ms: u64,
