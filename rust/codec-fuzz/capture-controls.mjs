@@ -2,10 +2,12 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {readFile, writeFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 if (process.platform === 'win32') throw Error('Capture controls require POSIX process-group signals');
 const directory = fileURLToPath(new URL('.', import.meta.url));
+const repository = resolve(directory, '../..');
 let active, interrupted, stopFailure;
 function stop(signal) {
   interrupted ??= signal;
@@ -18,9 +20,10 @@ const interrupt = () => stop('SIGINT'), terminate = () => stop('SIGTERM');
 process.on('SIGINT', interrupt);
 process.on('SIGTERM', terminate);
 
-async function run(binary, args) {
+async function run(binary, args, cwd = directory) {
   if (interrupted) throw Error(`controls interrupted by ${interrupted}`, {cause: stopFailure});
-  const child = spawn(binary, args, {cwd: directory, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
+  const child = spawn(binary, args, {cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: {...process.env, ACYCLIC_TEST_SOURCE_ROOT: repository}});
   active = child;
   let stdout = '', stderr = '', launchError;
   child.stdout.on('data', bytes => { stdout += bytes; });
@@ -73,9 +76,12 @@ try {
     let bytes = altered.as_slice();
 `;
   await mutation(writer, originalWriter, originalWriter.replace(boundary, altered + boundary), async () => {
-    const result = await run('cargo', ['run', '--locked', '--example', 'capture', '--', '--only-actors']);
-    assert.equal(result.code, 1, result.output);
-    assert.match(result.output, /encoder changed golden corpus\/actor_codecs\/state-acs-v1/);
+    const result = await run('bazel', ['run', '//rust/codec-fuzz:capture_example', '--', '--only-actors'], repository);
+    const rejected = /encoder changed golden corpus\/actor_codecs\/state-acs-v1/.test(result.output);
+    if (result.code !== 1 || !rejected) {
+      process.stderr.write(result.output);
+      throw Error(`Actor writer control did not reach the golden comparison (exit ${result.code})`);
+    }
     console.log('ACTOR_WRITER_CONTROL_DETECTED');
   });
 } catch (error) {
