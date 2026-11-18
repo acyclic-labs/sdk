@@ -1,7 +1,16 @@
-use super::*;
-use crate::PublicationPermit;
+use acyclic_fs::{
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Digest, ForkOptions, Fs, FsError,
+    IdempotencyKey, OperationId, PublicationPermit, PublicationReservation, Transaction,
+    TransactionCommit, WorkspaceError,
+};
+use acyclic_fs_work::performance::{OperationFailure, WorkBudget};
+use acyclic_stream::OwnedBytes;
+use std::error::Error;
 
-fn permit(reservation: &crate::PublicationReservation) -> PublicationPermit {
+use crate::fixtures::{allow, fork_workspace};
+use crate::selected_budget::selected_transaction_budget;
+
+fn permit(reservation: &PublicationReservation) -> PublicationPermit {
     PublicationPermit::Reservation {
         operation_id: reservation.operation_id.into_bytes(),
         gate_tail: reservation.gate_tail,
@@ -14,21 +23,21 @@ async fn contextual_commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
     evidence: &'static [u8],
     permit: PublicationPermit,
 ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-    value!(
-        transaction
-            .commit::<WorkspaceError, _, _>(
-                Some((
-                    crate::Digest::from_bytes([0xc8; 32]),
-                    OwnedBytes::from_static(evidence),
-                    PublicationPermit::Unrestricted
-                )),
-                permit,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                allow,
-            )
-            .await
-    )
+    transaction
+        .commit::<WorkspaceError, _, _>(
+            Some((
+                Digest::from_bytes([0xc8; 32]),
+                OwnedBytes::from_static(evidence),
+                PublicationPermit::Unrestricted,
+            )),
+            permit,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            allow,
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
 }
 
 #[tokio::test]
@@ -49,20 +58,22 @@ async fn fork_retry_keeps_original_creation_after_both_heads_advance() -> Result
     parent.write_text("/file", "later parent").await?;
     child.write_text("/file", "later child").await?;
     let advanced = unbounded!(child, head())?;
-    let retry = value!(
-        parent
-            .fork::<_, _, WorkspaceError>(
-                "fork-child",
-                ForkOptions::from_generation(frozen, key),
-                PublicationPermit::Unrestricted,
-                selected_transaction_budget(),
-                &CancellationToken::new(),
-                &mut |_| std::future::ready(Err(crate::OperationFailure::before_work(
-                    FsError::CreationRejected
-                ))),
-            )
-            .await
-    )?;
+    let retry = parent
+        .fork::<_, _, WorkspaceError>(
+            "fork-child",
+            ForkOptions::from_generation(frozen, key),
+            PublicationPermit::Unrestricted,
+            selected_transaction_budget(),
+            &CancellationToken::new(),
+            &mut |_| {
+                std::future::ready(Err(OperationFailure::before_work(
+                    FsError::CreationRejected,
+                )))
+            },
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     assert_eq!(unbounded!(retry, head())?.id(), advanced.id());
     assert_eq!(
         unbounded!(retry, read("/file", 32))?.as_ref(),
@@ -70,7 +81,11 @@ async fn fork_retry_keeps_original_creation_after_both_heads_advance() -> Result
     );
     let creation = unbounded!(
         fs,
-        workspace_for_creation_operation("fork-child", child.volume.config, key.operation_id())
+        workspace_for_creation_operation(
+            "fork-child",
+            child.volume_config(),
+            OperationId::from_bytes(key.into_bytes())
+        )
     )?
     .ok_or("creation missing")?;
     assert_eq!(creation.id(), original.id());
@@ -91,10 +106,7 @@ async fn operation_recovery_survives_head_and_reservation_changes_but_rejects_ch
     transaction
         .write_text("/original", "original content")
         .await?;
-    let first = unbounded!(
-        workspace,
-        reserve_publication(IdempotencyKey::new().operation_id())
-    )?;
+    let first = unbounded!(workspace, reserve_publication(OperationId::new()))?;
     let TransactionCommit::Committed(original) =
         contextual_commit(&mut transaction, b"witness", permit(&first)).await?
     else {
@@ -111,10 +123,7 @@ async fn operation_recovery_survives_head_and_reservation_changes_but_rejects_ch
         original.id()
     );
     assert!(unbounded!(workspace, operation_generation(IdempotencyKey::new()))?.is_none());
-    let rotated = unbounded!(
-        workspace,
-        reserve_publication(IdempotencyKey::new().operation_id())
-    )?;
+    let rotated = unbounded!(workspace, reserve_publication(OperationId::new()))?;
     assert!(
         matches!(contextual_commit(&mut transaction, b"witness", permit(&rotated)).await?, TransactionCommit::AlreadyCommitted(generation) if generation.id() == original.id())
     );
@@ -143,14 +152,8 @@ async fn historical_context_never_authorizes_a_foreign_reservation() -> Result<(
     let key = IdempotencyKey::new();
     let mut transaction = unbounded!(target, begin_transaction(key))?;
     transaction.write_text("/value", "candidate").await?;
-    let target_reservation = unbounded!(
-        target,
-        reserve_publication(IdempotencyKey::new().operation_id())
-    )?;
-    let foreign_reservation = unbounded!(
-        foreign,
-        reserve_publication(IdempotencyKey::new().operation_id())
-    )?;
+    let target_reservation = unbounded!(target, reserve_publication(OperationId::new()))?;
+    let foreign_reservation = unbounded!(foreign, reserve_publication(OperationId::new()))?;
     assert!(matches!(
         contextual_commit(&mut transaction, b"witness", permit(&foreign_reservation)).await?,
         TransactionCommit::Fenced

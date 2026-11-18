@@ -8,9 +8,6 @@ use acyclic_stream::OwnedBytes;
 
 use std::error::Error;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-
 use std::sync::Arc;
 
 macro_rules! value {
@@ -47,21 +44,15 @@ mod identity;
 
 mod joins;
 
-mod materialization;
-
 mod merge_drivers;
 
 mod composition;
 
 mod populated_creation;
 
-mod operation_identity;
-
 mod proof_cache;
 
 mod publication;
-
-mod publication_guards;
 
 mod reads;
 
@@ -74,7 +65,8 @@ mod sibling_files;
 mod transactions;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod simulation;
+#[path = "../../../tests/support/simulation_image.rs"]
+mod simulation_image;
 
 #[path = "../../../tests/support/selected_budget.rs"]
 mod selected_budget;

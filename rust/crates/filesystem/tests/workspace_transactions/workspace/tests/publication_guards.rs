@@ -1,5 +1,16 @@
-use super::*;
-use crate::PublicationPermit;
+use acyclic_fs::{
+    CancellationToken, Fs, FsError, IdempotencyKey, PublicationPermit, TransactionCommit,
+    WorkspaceError,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs::{
+    ForkOptions, NativeAuthorityGuard, NativeMaterializationWork, OperationId, VolumeInitialization,
+};
+use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters};
+use std::error::Error;
+
+use crate::fixtures::{allow, commit};
+use crate::selected_budget::selected_transaction_budget;
 
 #[derive(Debug, thiserror::Error)]
 enum OwnerError {
@@ -30,9 +41,9 @@ async fn owner_errors_and_cancellation_do_not_publish_or_discard_candidate()
     let cancellation = CancellationToken::new();
     let mut candidate = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
     candidate.write_text("/file", "candidate").await?;
-    let callback_work = crate::WorkCounters {
+    let callback_work = WorkCounters {
         backend_read_operations: 3,
-        ..crate::WorkCounters::UNCHARGED
+        ..WorkCounters::UNCHARGED
     };
     for ticket in [912, 913] {
         let failure = candidate
@@ -42,7 +53,7 @@ async fn owner_errors_and_cancellation_do_not_publish_or_discard_candidate()
                 selected_transaction_budget(),
                 &cancellation,
                 |_| {
-                    std::future::ready(Err(crate::OperationFailure::new(
+                    std::future::ready(Err(OperationFailure::new(
                         OwnerError::Denied(ticket),
                         callback_work,
                     )))
@@ -52,15 +63,8 @@ async fn owner_errors_and_cancellation_do_not_publish_or_discard_candidate()
             .err()
             .ok_or("denied owner published")?;
         assert!(matches!(failure.error, OwnerError::Denied(observed) if observed == ticket));
-        assert!(
-            failure.work.as_deref().unwrap().backend_read_operations
-                >= callback_work.backend_read_operations
-        );
-        failure
-            .work
-            .as_deref()
-            .unwrap()
-            .verify(selected_transaction_budget())?;
+        assert!(failure.work()?.backend_read_operations >= callback_work.backend_read_operations);
+        failure.work()?.verify(selected_transaction_budget())?;
         assert_eq!(unbounded!(workspace, head())?.id(), head.id());
     }
     assert!(matches!(
@@ -103,23 +107,21 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
         source.write_text("/selected", "original").await?;
         let frozen = unbounded!(source, head())?;
         let cancellation = CancellationToken::new();
-        let original =
-            crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
-                .map_err(|(error, _)| error)?;
+        let original = NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+            .map_err(|(error, _)| error)?;
         let guard_work = original.clone();
-        let mut deny =
-            crate::NativeAuthorityGuard(move |observed: &crate::NativeMaterializationWork| {
-                assert!(observed.shares_ledger(&guard_work));
-                std::future::ready(Err(OwnerError::Denied(23)))
-            });
+        let mut deny = NativeAuthorityGuard(move |observed: &NativeMaterializationWork| {
+            assert!(observed.shares_ledger(&guard_work));
+            std::future::ready(Err(OwnerError::Denied(23)))
+        });
         let result = if create {
             fs.create_workspace_with_operation::<_, _, OwnerError>(
                 "denied",
-                crate::VolumeInitialization {
-                    config: source.volume.config,
+                VolumeInitialization {
+                    config: source.volume_config(),
                     access_policy: Some(b"owner policy"),
                 },
-                IdempotencyKey::new().operation_id(),
+                OperationId::new(),
                 &original,
                 &cancellation,
                 Some(&mut deny),
@@ -145,16 +147,14 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
             "create={create}: {result:?}"
         );
         assert!(unbounded!(fs, open_workspace("denied")).is_err());
-        original
-            .receipt()
-            .unwrap()
-            .verify(selected_transaction_budget())?;
+        original.receipt()?.verify(selected_transaction_budget())?;
     }
     Ok(())
 }
 
 /// The fork guard oracle: a source Reservation permit is rejected as a creation (lineage.rs admits only Unrestricted
 /// or a matching source Lease, #495), while the same fork under Unrestricted succeeds.
+#[cfg(not(target_arch = "wasm32"))]
 fn check_fork_guard(
     reserved: &Result<(), String>,
     unrestricted: &Result<(), String>,
@@ -181,15 +181,10 @@ async fn fork_cannot_rebind_a_source_reservation_to_destination() -> Result<(), 
     source.write_text("/value", "frozen").await?;
     let frozen = unbounded!(source, head())?;
     let cancellation = CancellationToken::new();
-    let original =
-        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
-            .map_err(|(error, _)| error)?;
+    let original = NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+        .map_err(|(error, _)| error)?;
     let reservation = source
-        .reserve_publication(
-            IdempotencyKey::new().operation_id(),
-            &original,
-            &cancellation,
-        )
+        .reserve_publication(OperationId::new(), &original, &cancellation)
         .await?;
     let permit = PublicationPermit::Reservation {
         operation_id: reservation.operation_id.into_bytes(),
@@ -203,7 +198,7 @@ async fn fork_cannot_rebind_a_source_reservation_to_destination() -> Result<(), 
             permit,
             &original,
             &cancellation,
-            crate::NativeAuthorityGuard(|_: &crate::NativeMaterializationWork| {
+            NativeAuthorityGuard(|_: &NativeMaterializationWork| {
                 std::future::ready(Ok::<_, WorkspaceError>(()))
             }),
         )
