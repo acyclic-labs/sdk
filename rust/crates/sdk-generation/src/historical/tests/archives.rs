@@ -255,6 +255,18 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     assert!(verify_producer_resolution(fixture.path(), directory, &producer).is_err());
 }
 
+fn assert_rejects_changed_source(root: &Path, relative: &str, verify: impl FnOnce() -> String) {
+    let path = root.join(relative);
+    let original = fs::read(&path).unwrap();
+    fs::write(&path, b"changed checkout bytes").unwrap();
+    let error = verify();
+    assert!(
+        error.contains("source bytes differ") && error.ends_with(relative),
+        "{relative}: {error}"
+    );
+    fs::write(path, original).unwrap();
+}
+
 #[test]
 fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     let fixture = Fixture::new();
@@ -271,18 +283,10 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
         accepted.1.get("src/lib.rs"),
         Some(&crate::sha256_file(&fixture.path().join("src/lib.rs")).unwrap())
     );
-    for (source, member) in [
-        ("src/lib.rs", "src/lib.rs"),
-        ("Cargo.toml", "Cargo.toml.orig"),
-    ] {
-        let path = fixture.path().join(source);
-        fs::write(&path, b"changed checkout bytes").unwrap();
-        let error = verify(&revision, &release, &archive).unwrap_err();
-        assert!(
-            error.contains("source bytes differ") && error.ends_with(source),
-            "{error}"
-        );
-        fs::copy(entry.join(member), path).unwrap();
+    for source in ["src/lib.rs", "Cargo.toml"] {
+        assert_rejects_changed_source(fixture.path(), source, || {
+            verify(&revision, &release, &archive).unwrap_err()
+        });
     }
     let mut wrong = release.clone();
     wrong.checksum = "b".repeat(64);
@@ -448,15 +452,9 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
         verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
     for name in names {
         assert!(files.contains_key(name));
-        let path = fixture.path().join(name);
-        fs::write(&path, b"changed source input").unwrap();
-        let error =
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap_err();
-        assert!(
-            error.contains("source bytes differ") && error.ends_with(name),
-            "{name}: {error}"
-        );
-        fs::write(path, original).unwrap();
+        assert_rejects_changed_source(fixture.path(), name, || {
+            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap_err()
+        });
     }
 }
 
