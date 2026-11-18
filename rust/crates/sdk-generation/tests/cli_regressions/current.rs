@@ -624,6 +624,17 @@ fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims
     if std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
         assert_eq!(commands::DECLARED_RUSTDOC_HITS.get() - hits, 1);
     }
+    let receipt = fixture.rustdoc.join("demo_cli.json");
+    let native = sdk_docs::rustdoc_profiles::observe_binary_rustdoc(&receipt).unwrap();
+    assert_eq!(native.format_version, 60);
+    assert_eq!(native.crate_version.as_deref(), Some("1.0.0"));
+    assert!(native.includes_private);
+    assert!(sdk_docs::rustdoc_profiles::observe_rustdoc(&receipt).is_err());
+    let raw: Value = serde_json::from_slice(&fs::read(receipt).unwrap()).unwrap();
+    assert_eq!(
+        raw["index"][raw["root"].to_string()]["docs"],
+        "Run the source-owned command guide."
+    );
     let data: Value = serde_json::from_slice(
         &fs::read(
             fixture
