@@ -298,7 +298,9 @@ const claims = {
   "append-invocation": [
     "rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs", "acyclic-harness-core",
     "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history",
-    "append inherited prior invocation work", ["--features", "test-support"],
+    "append inherited prior invocation work", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases", "--",
+      "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history", "--exact", "--nocapture"] },
   ],
   "task-binding-selection": [
     "rust/crates/harness-local/src/local/workspace/bindings.rs", "acyclic-harness-local",
