@@ -1,0 +1,398 @@
+use acyclic_harness_core::{
+    Error, Result,
+    context::{
+        ContextManifest, ContextRoot, DiscoveredContext, PinnedContextPath, SkillMetadata,
+        parse_skill_metadata,
+    },
+    conversation::Limits,
+    tool::ToolDefinition,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_core::{
+    context::{CONTEXT_CHANGED, ContextEpoch, SkillSummary},
+    filesystem::PreparationIo,
+    model::{ModelContent, ModelMessage, ModelRole},
+};
+use proptest::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use serde_json::Value;
+use serde_json::json;
+use std::collections::BTreeMap;
+
+fn skill(path: String) -> Result<SkillMetadata> {
+    use acyclic_harness_core::{
+        conversation::{VolumeClass, VolumeOwner, VolumeRef},
+        resources::{GenerationRef, ProviderRef},
+    };
+    let provider = ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?;
+    Ok(SkillMetadata {
+        name: "inspect".into(),
+        description: "Inspect files".into(),
+        fields: BTreeMap::new(),
+        identity: serde_json::to_string(&path)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        source: PinnedContextPath {
+            generation: GenerationRef::new(&provider, &[1], None, None)?.0,
+            root: ContextRoot {
+                volume: VolumeRef::new(
+                    provider,
+                    "v".into(),
+                    VolumeClass::Project,
+                    VolumeOwner::Project("test".into()),
+                    &mut None,
+                )?,
+                directory: "skills".into(),
+            },
+            path,
+        },
+    })
+}
+
+fn definition(name: String, description: String) -> ToolDefinition {
+    ToolDefinition {
+        name,
+        revision: "1".into(),
+        description,
+        input_schema: json!({"type":"object"}),
+        output_schema: json!({"type":"object"}),
+        projection_schema: acyclic_harness_core::tool::json_projection_schema(json!({})),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result<()> {
+    let mut entry = skill("skills/private/provenance/inspect/SKILL.md".into())?;
+    entry.fields.insert(
+        "opaque_metadata".into(),
+        json!("UNPULLED_METADATA".repeat(4096)),
+    );
+    entry.identity = "PRIVATE_ORIGINAL_SOURCE".into();
+    let expected = json!([{
+        "id":blake3::hash(b"skill:[\"inspect\",\"PRIVATE_ORIGINAL_SOURCE\"]").to_hex().as_str(),
+        "name":"inspect",
+        "description":"Inspect files"
+    }]);
+    let catalog_bytes = serde_json::to_vec(&expected)
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .len() as u64;
+    let identity_hash_bytes = 6 + serde_json::to_vec(&(&entry.name, &entry.identity))
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .len() as u64;
+    let discovery = DiscoveredContext {
+        skills: vec![entry],
+        ..Default::default()
+    };
+    let limits = Limits {
+        render_bytes: Some(catalog_bytes),
+        ..Limits::default()
+    };
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs_work::performance::work_budget(100_000, 1_000_000),
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let before_hashes = work.remaining()?.bytes_hashed;
+        let messages = discovery.messages(limits, if native { Some(&io) } else { None })?;
+        assert_eq!(
+            before_hashes - work.remaining()?.bytes_hashed,
+            if native { identity_hash_bytes } else { 0 },
+            "catalog identity must hash once across sizing and rendering"
+        );
+        let [
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(catalog),
+            },
+        ] = messages.as_slice()
+        else {
+            return Err(Error::Invalid("expected one skill catalog".into()));
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(catalog)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            expected
+        );
+        assert!(!catalog.contains("PRIVATE_ORIGINAL_SOURCE"));
+        assert!(!catalog.contains("opaque_metadata"));
+        // Source retention is independent of the model's small catalog credit.
+        assert!(
+            discovery.skills[0].fields["opaque_metadata"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("expected opaque metadata text".into()))?
+                .len()
+                > catalog_bytes as usize
+        );
+        assert_eq!(
+            discovery.skills[0].source.path,
+            "skills/private/provenance/inspect/SKILL.md"
+        );
+    }
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 1_000_000);
+    budget.bytes_hashed = identity_hash_bytes - 1;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    assert!(
+        discovery.messages(limits, Some(&io)).is_err(),
+        "catalog hashing bypassed its exact native allowance"
+    );
+    Ok(())
+}
+
+// Property: canonical encoding is idempotent, preserves array order and round-trips
+// arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
+proptest! {
+    // Both catalog discovery and restored manifests reject partial callables.
+    // Opaque runtime data and the original pinned source survive publication;
+    // executable/schema admission remains the registry's responsibility.
+    #[test]
+    fn callable_metadata_preserves_source_and_refuses_partial_declarations(
+        text in ".{0,80}", boolean_schema in any::<bool>(),
+    ) {
+        let original = skill("skills/inspect/SKILL.md".into())?;
+        // Keep the minimized raw-JSON/YAML failure in every generated header.
+        let text = format!("\u{7f}{text}");
+        let schema = if boolean_schema { json!(false) } else { json!({"description": text}) };
+        let runtime = json!({"opaque": text});
+        let header = json!({
+            "name": original.name, "description": original.description,
+            "input_schema": schema, "runtime": runtime,
+        });
+        let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&header)?);
+        let declared = parse_skill_metadata(prefix.as_bytes(), original.source.clone())?;
+        let fields = declared.call_fields(&mut None)?.ok_or_else(|| TestCaseError::fail("missing callable fields"))?;
+        prop_assert_eq!(fields.input_schema, &schema);
+        prop_assert_eq!(fields.runtime, &runtime);
+        let manifest = ContextManifest {
+            discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![declared] },
+            ..Default::default()
+        };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
+        let encoded = manifest.encode(limits)?;
+        let restored = ContextManifest::decode(&encoded, limits)?;
+        prop_assert_eq!(&restored, &manifest);
+        prop_assert_eq!(&restored.discovery.skills[0].source, &original.source);
+        for missing in ["input_schema", "runtime"] {
+            let mut incomplete = header.clone();
+            incomplete.as_object_mut().ok_or_else(|| TestCaseError::fail("header is not an object"))?.remove(missing);
+            let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&incomplete)?);
+            prop_assert!(parse_skill_metadata(prefix.as_bytes(), original.source.clone()).is_err());
+            let mut restored = serde_json::to_value(&manifest)?;
+            restored["discovery"]["skills"][0]["fields"].as_object_mut()
+                .ok_or_else(|| TestCaseError::fail("fields are not an object"))?.remove(missing);
+            prop_assert!(ContextManifest::decode(&serde_json::to_vec(&restored)?, limits).is_err());
+        }
+    }
+
+    // Property: display names do not identify sources; explicit name-only
+    // invocations must be unambiguous, and tool names remain unique.
+    #[test]
+    fn source_names_and_invocations_have_distinct_identity_rules(names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
+        let unique = names.iter().collect::<std::collections::BTreeSet<_>>().len() == names.len();
+        let mut skills = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let mut skill = skill(format!("skills/x{index}/SKILL.md"))?;
+            skill.name = name.clone();
+            skills.push(skill);
+        }
+        let discovery = DiscoveredContext { instructions: Vec::new(), skills };
+        prop_assert!(discovery.validate(&mut None).is_ok());
+        let mut selected = names.clone();
+        selected.sort_unstable();
+        selected.dedup();
+        let manifest = ContextManifest { discovery: discovery.clone(), selected_skills: selected, ..Default::default() };
+        prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+        if let Some(first) = discovery.skills.first() {
+            let mut other = first.clone();
+            other.source.path = "skills/other/SKILL.md".into();
+            let manifest = ContextManifest {
+                discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![first.clone(), other] },
+                selected_skills: vec![first.name.clone(), "missing-selection".into()],
+                ..Default::default()
+            };
+            prop_assert!(matches!(manifest.validate(Limits::default()), Err(Error::Conflict(_))),
+                         "duplicate matches cannot conceal a missing selected skill");
+        }
+        let manifest = ContextManifest {
+            tools: names.iter().map(|name| definition(name.clone(), "test".into())).collect(),
+            ..Default::default()
+        };
+        prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+        let mut discovery = discovery;
+        discovery.skills.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        discovery.skills.dedup_by(|a, b| a.name == b.name);
+        let manifest = ContextManifest { discovery, selected_skills: names, ..Default::default() };
+        prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+    }
+
+    // Property: the manifest round-trips its immutable sources, and
+    // configuration files obey the same bounds as instructions.
+        #[test]
+    fn configuration_sources_round_trip(path in "[a-zé猫]{1,40}", text in ".{0,80}", bound in 1usize..256) {
+        use acyclic_harness_core::conversation::{FileDescriptor, FileRef};
+        let reference = FileRef::new(
+            skill("skills/x/SKILL.md".into())?.source.root.volume,
+            format!("context/{path}.json"), "pinned-1".into(),
+            FileDescriptor::from_bytes(text.as_bytes(), "application/json", &mut None)?,
+            "manifest.json".into(), &mut None,
+        )?;
+        let manifest = ContextManifest { sources: vec![reference.clone()], ..Default::default() };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
+        let bytes = manifest.encode(limits)?;
+        prop_assert_eq!(ContextManifest::decode(&bytes, limits)?, manifest.clone());
+        let limits = Limits { path_bytes: std::num::NonZeroUsize::new(bound), ..limits };
+        prop_assert_eq!(manifest.validate(limits).is_ok(), reference.path().len() <= bound);
+        prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), reference.path().len() <= bound);
+    }
+
+    // Property: every declared skill path fits its UTF-8 byte bound, whether
+    // selected or lazy. Validation, publication encoding and decoding agree at
+    // arbitrary bounds and immediately below/at/above the exact byte length.
+    #[test]
+    fn skill_paths_obey_byte_limits(
+        component in "[a-zé猫]{1,48}",
+        bound in 1usize..256,
+        selected in any::<bool>(),
+    ) {
+        let path = format!("skills/{component}/SKILL.md");
+        let length = path.len();
+        let manifest = ContextManifest {
+            discovery: DiscoveredContext {
+                instructions: Vec::new(),
+                skills: vec![skill(path)?],
+            },
+            selected_skills: if selected { vec!["inspect".into()] } else { Vec::new() },
+            tools: Vec::new(),
+            ..Default::default()
+        };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
+        let bytes = manifest.encode(limits)?;
+        for path_bytes in [Some(bound), Some(length - 1), Some(length), Some(length + 1), None].map(|bound| bound.and_then(std::num::NonZeroUsize::new)) {
+            let limits = Limits { path_bytes, ..limits };
+            let admitted = path_bytes.is_none_or(|maximum| length <= maximum.get());
+            prop_assert_eq!(manifest.validate(limits).is_ok(), admitted);
+            prop_assert_eq!(manifest.encode(limits).is_ok(), admitted);
+            prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), admitted);
+        }
+    }
+
+    #[test]
+    fn bounded_manifest_round_trip(descriptions in prop::collection::vec(".{0,80}", 0..8)) {
+        let manifest = ContextManifest {
+            tools: descriptions.into_iter().enumerate()
+                .map(|(index, description)| definition(format!("tool{index}"), description)).collect(),
+            ..Default::default()
+        };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
+        let encoded = manifest.encode(limits)?;
+        let decoded = ContextManifest::decode(&encoded, limits)?;
+        prop_assert_eq!(&decoded, &manifest);
+        prop_assert_eq!(decoded.encode(limits)?, encoded.clone());
+        prop_assert!(ContextManifest::decode(&encoded, Limits {
+            render_bytes: Some(encoded.len() as u64 - 1), ..limits
+        }).is_err(), "oversized manifest was admitted");
+    }
+}
+
+#[test]
+fn malformed_manifests_fail_before_any_binding() {
+    let limits = Limits {
+        render_bytes: Some(32_768),
+        ..Default::default()
+    };
+    for input in [
+        r#"{"discovery":{"instructions":[],"skills":[]},"selected_skills":[],"tools":[],"extra":true}"#,
+        r#"{"discovery":{"instructions":[],"skills":[]},"selected_skills":[],"tools":[],"tools":[]}"#,
+        r#"{"discovery":{"instructions":[],"skills":[]},"selected_skills":["missing"],"tools":[]}"#,
+        r#"{"discovery":{"instructions":[],"skills":[]},"selected_skills":[],"tools":[]} false"#,
+        r#"{"discovery":{"instructions":[],"skills":[]},"selected_skills":false,"tools":[]}"#,
+        r#"{"discovery":{"instructions":[],"skills":[]},"selected_skills":[],"tools":[],"x": [[["#,
+    ] {
+        assert!(
+            ContextManifest::decode(input.as_bytes(), limits).is_err(),
+            "{input}"
+        );
+    }
+    let mut repeated = ContextManifest {
+        tools: vec![definition("read".into(), "Read".into()); 2],
+        ..Default::default()
+    };
+    assert!(matches!(repeated.validate(limits), Err(Error::Conflict(_))));
+    repeated.tools.truncate(1);
+    repeated.tools[0].input_schema = json!({"type":"invalid"});
+    assert!(repeated.validate(limits).is_err());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> Result<()> {
+    let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+        acyclic_harness_core::AgentId::new(),
+        4096,
+    )
+    .await?;
+    let reader = storage.content_bindings().reader;
+    let mut manifest = ContextManifest::default();
+    manifest.discovery.skills = vec![
+        skill("skills/user/inspect/SKILL.md".into())?,
+        skill("skills/project/inspect/SKILL.md".into())?,
+    ];
+    manifest.discovery.skills[0].identity = "PRIVATE_ORIGINAL_SOURCE".into();
+    let catalog = manifest.discovery.messages(Limits::default(), None)?;
+    let ModelContent::Text(catalog) = &catalog[0].content else {
+        return Err(Error::Invalid("expected skill catalog".into()));
+    };
+    assert!(!catalog.contains("SKILL.md"));
+    assert!(!catalog.contains("PRIVATE_ORIGINAL_SOURCE"));
+    let catalog: Vec<SkillSummary> =
+        serde_json::from_str(catalog).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_ne!(catalog[0].id, catalog[1].id);
+    let initial = ContextEpoch::changes(&BTreeMap::new(), &manifest, reader.as_ref()).await?;
+    for (notice, entry) in initial.iter().zip(&catalog) {
+        assert_eq!(notice.notice.body["skill"]["id"], entry.id);
+        assert_eq!(
+            notice.notice.coalesce_key.as_deref(),
+            Some(format!("{CONTEXT_CHANGED}:{}", entry.id).as_str())
+        );
+    }
+    assert_ne!(
+        initial[0].notice.coalesce_key,
+        initial[1].notice.coalesce_key
+    );
+    let told = manifest.digests()?;
+    manifest.discovery.skills[0].description = "changed user skill".into();
+    // Retention selects another immutable body path, never another source.
+    manifest.discovery.skills[0].source.path = "skills/retained/new-version/SKILL.md".into();
+    let changed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
+    assert_eq!(changed.len(), 1);
+    assert_eq!(
+        changed[0].notice.body["skill"],
+        json!({"id":catalog[0].id,"name":"inspect","description":"changed user skill"})
+    );
+    assert!(
+        !serde_json::to_string(&changed[0].notice)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .contains("PRIVATE_ORIGINAL_SOURCE")
+    );
+    let told = manifest.digests()?;
+    manifest.discovery.skills.remove(0);
+    let removed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].source, changed[0].source);
+    assert_eq!(
+        removed[0].notice.coalesce_key,
+        changed[0].notice.coalesce_key
+    );
+    assert_eq!(
+        removed[0].notice.body["skill"],
+        json!({"id":catalog[0].id,"name":"inspect"})
+    );
+    assert_ne!(removed[0].notice.body["skill"]["id"], catalog[1].id);
+    assert_eq!(removed[0].notice.body["removed"], true);
+    Ok(())
+}
