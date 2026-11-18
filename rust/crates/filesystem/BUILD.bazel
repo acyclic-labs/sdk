@@ -2115,6 +2115,7 @@ rust_test(
         "tests/support/workspace.rs",
         "tests/workspace_merge.rs",
         "tests/workspace_merge/tests/change_sets.rs",
+        "tests/workspace_merge/tests/merge_drivers.rs",
         "tests/workspace_merge/tests/mod.rs",
         "tests/workspace_merge/tests/sibling_directories.rs",
         "tests/workspace_merge/tests/sibling_files.rs",
