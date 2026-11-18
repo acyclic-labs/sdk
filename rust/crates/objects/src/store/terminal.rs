@@ -160,7 +160,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let references = retention_references(references)?;
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        let encoded = Digest::of(root.as_bytes()).encoded_hex();
+        let encoded = retention_root(root);
         let root_hash = encoded.as_ref();
         let terminal_key = self.terminal_key(root_hash);
         let (state, observed) = self.terminal_observed(&terminal_key).await?;
@@ -195,7 +195,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     pub async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        let encoded = Digest::of(root.as_bytes()).encoded_hex();
+        let encoded = retention_root(root);
         let root_hash = encoded.as_ref();
         let terminal_key = self.terminal_key(root_hash);
         let (state, observed) = self.terminal_observed(&terminal_key).await?;

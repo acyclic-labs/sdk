@@ -587,6 +587,10 @@ fn retention_references(references: Vec<Digest>) -> Result<Vec<Digest>, Error> {
     Ok(canonical(references))
 }
 
+fn retention_root(root: &RootId) -> impl AsRef<str> + use<> {
+    Digest::of(root.as_bytes()).encoded_hex()
+}
+
 impl<M, P: Deref<Target = M>> Account<M, P> {
     /// The account's original physical availability producer. A repair service
     /// that writes bytes outside this engine must publish completion here,
@@ -1620,7 +1624,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let references = retention_references(references)?;
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                let encoded = Digest::of(root.as_bytes()).encoded_hex();
+                let encoded = retention_root(root);
                 self.commit_retention(&references, encoded.as_ref(), None)
                     .await?;
                 Ok(Retained {
@@ -1916,7 +1920,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             async {
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                let encoded = Digest::of(root.as_bytes()).encoded_hex();
+                let encoded = retention_root(root);
                 let root_hash = encoded.as_ref();
                 let mut pages = self.pages(self.retention_key('r', root_hash, ""));
                 let batches = pages.keys().await?;
