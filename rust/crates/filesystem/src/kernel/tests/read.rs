@@ -1,15 +1,10 @@
 use super::*;
 use crate::foundation::FileId;
-use crate::kernel::{FileKind, NameEncoding, TreePage};
+use crate::kernel::{FileKind, TreePage};
 use crate::memory::MemoryObjectStore;
 
 use crate::kernel::Child;
-fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
-    Ok(LogicalName::new(
-        NameEncoding::Utf8,
-        value.as_bytes().to_vec(),
-    )?)
-}
+use crate::test_support::tree_entries::name;
 
 use crate::test_support::put_tree_page as put_page;
 

@@ -1,7 +1,7 @@
 use acyclic_fs::CancellationToken;
 use acyclic_fs::kernel::{
-    Child, DecodeLimits, FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, TreeReadError,
-    lookup_tree_entries, lookup_tree_entry,
+    Child, DecodeLimits, FileKind, TreeEntry, TreePage, TreeReadError, lookup_tree_entries,
+    lookup_tree_entry,
 };
 use acyclic_fs_format::{
     identity::{Digest, FileId},
@@ -13,9 +13,7 @@ use std::task::{Context, Poll, Waker};
 use super::super::memory::memory_objects;
 use super::super::tree_objects::put_tree_page;
 
-fn name(value: &str) -> Result<LogicalName, acyclic_fs::kernel::TreePageError> {
-    LogicalName::new(NameEncoding::Utf8, value.as_bytes().to_vec())
-}
+use super::super::tree_entries::name;
 
 #[tokio::test]
 async fn lookup_reads_only_one_frontier() -> Result<(), Box<dyn std::error::Error>> {
