@@ -335,6 +335,7 @@ rust_test(
     crate_root = "tests/main.rs",
     srcs = [
         "src/claim/record.rs",
+        "src/file_lock_test_fixture.rs",
         "tests/cached_flush.rs",
         "tests/claim_codec/oracle.rs",
         "tests/file_lock/mod.rs",
