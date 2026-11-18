@@ -357,6 +357,11 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             }
         });
         if !referenced.is_empty() {
+            if artifacts.is_empty() {
+                return Err(std::io::Error::other(
+                    "Rustdoc fixture references undeclared artifacts",
+                ));
+            }
             let artifacts = acyclic_test_support::source_path(artifacts);
             for relative in referenced {
                 let destination = artifact_target.join(&relative);
