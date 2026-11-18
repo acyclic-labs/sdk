@@ -106,6 +106,7 @@ filegroup(
         "//plugin:Cargo.toml",
         "//plugin/identity:Cargo.toml",
         "//rust/codec-fuzz:Cargo.toml",
+        "//rust/crates/actors-diagnostics:Cargo.toml",
         "//rust/crates/actors-inventory:Cargo.toml",
         "//rust/crates/actors-napi:Cargo.toml",
         "//rust/crates/actors-wasm:Cargo.toml",

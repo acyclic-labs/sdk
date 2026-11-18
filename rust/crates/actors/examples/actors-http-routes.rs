@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 parent.join("live-update.ts"),
                 acyclic_actors::live_update::typescript(),
             )?;
-            <acyclic_actors::client::ErrorMetadata as ts_rs::TS>::export_all(
+            <acyclic_actors_diagnostics::ErrorMetadata as ts_rs::TS>::export_all(
                 &ts_rs::Config::default()
                     .with_out_dir(parent)
                     .with_import_extension(Some("js")),

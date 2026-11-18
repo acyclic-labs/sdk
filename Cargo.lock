@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors-diagnostics",
  "acyclic-actors-inventory",
  "acyclic-auth",
  "acyclic-auth-action",
@@ -63,6 +64,16 @@ dependencies = [
  "url",
  "uuid",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "acyclic-actors-diagnostics"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "serde",
+ "serde_bytes",
+ "ts-rs",
 ]
 
 [[package]]
