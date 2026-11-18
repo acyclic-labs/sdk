@@ -93,7 +93,7 @@ type WireRequest =
   | { readonly kind: "tail"; readonly path: string; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
-  | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
+  | ({ readonly kind: "follow"; readonly path: string } & Omit<import("./types.js").FollowOptions, "signal">)
   | { readonly kind: "children_page"; readonly tailStream?: string | undefined; readonly parent?: string | undefined; readonly after?: string | undefined; readonly offset?: bigint | undefined; readonly hierarchyVersion?: Uint8Array | undefined; readonly limit: number };
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
@@ -181,7 +181,10 @@ export function wireRequest(request: WireRequest): Uint8Array {
       case "follow":
         requirePathType(request.path);
         requireSequenceType(request.from);
-        return toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: request.path, from: request.from }));
+        return toBinary(FollowRequestSchema, create(FollowRequestSchema, {
+          path: request.path, from: request.from, whenAbsent: wireWhenAbsent(request.whenAbsent),
+          ...(request.filter === undefined ? {} : { filter: request.filter }),
+        }));
       case "children_page":
         if (request.offset !== undefined) requireSequenceType(request.offset);
         if (request.tailStream !== undefined) requirePathType(request.tailStream);
@@ -218,12 +221,8 @@ export function validateReadRequest(path: string, options: import("./types.js").
   return validateWireRequest({ ...options, kind: "read", path });
 }
 
-export async function validateFollowRequest(path: string, options: import("./types.js").FollowOptions): Promise<Uint8Array> {
-  await validateWireRequest({ kind: "follow", path, from: options.from });
-  return toBinary(FollowRequestSchema, create(FollowRequestSchema, {
-    path, from: options.from, whenAbsent: wireWhenAbsent(options.whenAbsent),
-    ...(options.filter === undefined ? {} : { filter: options.filter }),
-  }));
+export function validateFollowRequest(path: string, options: import("./types.js").FollowOptions): Promise<Uint8Array> {
+  return validateWireRequest({ ...options, kind: "follow", path });
 }
 
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
