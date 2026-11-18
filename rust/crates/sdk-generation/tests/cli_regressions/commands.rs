@@ -1,6 +1,4 @@
 use super::*;
-#[path = "../support/rustdoc_paths.rs"]
-mod rustdoc_paths;
 
 use std::{
     cell::{Cell, RefCell},

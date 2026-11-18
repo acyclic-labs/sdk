@@ -418,12 +418,7 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
     );
     for receipt in long_profiles {
         assert!(receipt["profile"].as_str().unwrap().len() > 255);
-        let relative = receipt["rustdocFile"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("rustdoc/")
-            .unwrap();
-        let path = fixture.rustdoc.join(relative);
+        let path = receipt_path(&fixture.rustdoc, receipt);
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
             format!(
@@ -540,13 +535,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .iter()
         .find(|receipt| receipt["profile"] == feature_profile["profile"])
         .expect("sidecar profile must have an executed receipt row");
-    let receipt_path = fixture.output.join(".rustdoc").join(
-        receipt["rustdocFile"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("rustdoc/")
-            .unwrap(),
-    );
+    let receipt_path = receipt_path(&fixture.rustdoc, receipt);
     assert_eq!(
         receipt["rustdocSha256"],
         rustdoc_digest(&receipt_path, &fixture.root).unwrap()
@@ -698,11 +687,8 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     assert!(!relocated.output.exists());
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
-    let _ = assert_executed_profiles(
-        &fixture.output,
-        &fixture.rustdoc,
-        &[("demo", 5), ("relocation-helper", 1)],
-    );
+    let owners = [("demo", 5), ("relocation-helper", 1)];
+    let original_receipts = assert_executed_profiles(&fixture.output, &fixture.rustdoc, &owners);
     let metadata = super::replay::metadata(&fixture);
     let members = metadata
         .workspace_members
@@ -729,7 +715,11 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         vec!["demo", "relocation-helper"]
     );
     super::replay::copy_profile_output(&fixture.output, &relocated.output);
-    super::replay::copy_tree(&fixture.root.join("target"), &relocated.root.join("target"));
+    let generated = "target/sdk-generation-generated-sources";
+    super::replay::copy_tree(
+        &fixture.root.join(generated),
+        &relocated.root.join(generated),
+    );
     super::replay::relocate_receipts(&fixture, &relocated);
     std::thread::scope(|scope| {
         for checkout in [&fixture, &relocated] {
@@ -746,44 +736,21 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         serde_json::to_vec_pretty(&availability).unwrap(),
         fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
     );
-    let dependency_paths = |checkout: &Fixture| {
-        let receipts: Value = serde_json::from_slice(
-            &fs::read(checkout.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-        )
-        .unwrap();
-        let receipts = receipts.as_array().unwrap();
-        let host = receipts[0]["target"].as_str().unwrap();
-        let mut expected = sdk_docs::rustdoc_profiles::profiles_for_package(
-            &metadata,
-            "demo",
-            host,
-            &std::collections::BTreeSet::from([host.to_owned()]),
-        )
-        .unwrap()
-        .into_iter()
-        .map(|profile| profile.id().0)
-        .collect::<std::collections::BTreeSet<_>>();
+    let host = original_receipts[0]["target"].as_str().unwrap();
+    let available = BTreeSet::from([host.to_owned()]);
+    let mut expected = BTreeSet::new();
+    for (package, count) in owners {
+        let profiles =
+            sdk_docs::rustdoc_profiles::profiles_for_package(&metadata, package, host, &available)
+                .unwrap();
         assert_eq!(
-            expected.len(),
-            5,
-            "the full original relocation matrix must remain"
+            profiles.len(),
+            count,
+            "{package} must retain its full relocation matrix"
         );
-        expected.extend(
-            sdk_docs::rustdoc_profiles::profiles_for_package(
-                &metadata,
-                "relocation-helper",
-                host,
-                &std::collections::BTreeSet::from([host.to_owned()]),
-            )
-            .unwrap()
-            .into_iter()
-            .map(|profile| profile.id().0),
-        );
-        assert_eq!(
-            expected.len(),
-            6,
-            "five demo profiles plus the native helper profile"
-        );
+        expected.extend(profiles.into_iter().map(|profile| profile.id().0));
+    }
+    let dependency_paths = |checkout: &Fixture, receipts: &[Value]| {
         let actual = receipts
             .iter()
             .map(|receipt| receipt["profile"].as_str().unwrap().to_owned())
@@ -794,13 +761,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
         let mut paths = Vec::new();
         for receipt in receipts {
-            let path = checkout.rustdoc.join(
-                receipt["rustdocFile"]
-                    .as_str()
-                    .unwrap()
-                    .strip_prefix("rustdoc/")
-                    .unwrap(),
-            );
+            let path = receipt_path(&checkout.rustdoc, receipt);
             let raw: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
             let before = paths.len();
             for record in raw["external_crates"].as_object().unwrap().values() {
@@ -829,10 +790,12 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
         paths
     };
-    let original_dependencies = dependency_paths(&fixture);
+    let original_dependencies = dependency_paths(&fixture, &original_receipts);
+    let relocated_receipts =
+        assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
     assert_ne!(
         original_dependencies,
-        dependency_paths(&relocated),
+        dependency_paths(&relocated, &relocated_receipts),
         "raw Rustdoc must retain the relocated dependency artifacts"
     );
     for original in original_dependencies {
@@ -857,15 +820,15 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     );
     let data: Value =
         serde_json::from_slice(&fs::read(fixture.output.join(path)).unwrap()).unwrap();
-    let mut spans = Vec::new();
-    fn source_paths(value: &Value, paths: &mut Vec<String>) {
+    let mut spans = BTreeSet::new();
+    fn source_paths(value: &Value, paths: &mut BTreeSet<String>) {
         if let Some(object) = value.as_object() {
             if let Some(path) = object
                 .get("path")
                 .and_then(Value::as_str)
                 .filter(|path| path.starts_with("generated/rustdoc/"))
             {
-                paths.push(path.to_string());
+                paths.insert(path.to_string());
             }
             for child in object.values() {
                 source_paths(child, paths);
@@ -882,14 +845,12 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         "generated source spans must appear in the actual docs data"
     );
     for path in spans {
-        assert_eq!(
-            fs::read(fixture.output.join(&path)).unwrap(),
-            b"pub struct GeneratedWire;\n"
-        );
-        assert_eq!(
-            fs::read(fixture.output.join(&path)).unwrap(),
-            fs::read(relocated.output.join(&path)).unwrap()
-        );
+        for checkout in [&fixture, &relocated] {
+            assert_eq!(
+                fs::read(checkout.output.join(&path)).unwrap(),
+                b"pub struct GeneratedWire;\n"
+            );
+        }
     }
     assert_eq!(
         fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
