@@ -259,7 +259,7 @@ mod digest_properties {
             any::<u64>().prop_map(Value::from),
             any::<f64>().prop_filter_map("finite JSON number", |number| serde_json::Number::from_f64(number).map(Value::Number)),
         ]) {
-            exhausted_prefixes(&value);
+            exhausted_prefixes(&value).map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
 
         #[test]
@@ -270,8 +270,8 @@ mod digest_properties {
             enum Envelope<'a> { Record(Record<'a>) }
             let raw = serde_json::value::RawValue::from_string(serde_json::to_string(&value).unwrap()).unwrap();
             let extra_slack = 2 * map_slack(&value);
-            exhausted_serialization(raw.as_ref(), extra_slack);
-            exhausted_serialization(&Envelope::Record(Record { borrowed: &value, raw: &raw, ratio: 0.25 }), extra_slack);
+            exhausted_serialization(raw.as_ref(), extra_slack).map_err(|error| TestCaseError::fail(error.to_string()))?;
+            exhausted_serialization(&Envelope::Record(Record { borrowed: &value, raw: &raw, ratio: 0.25 }), extra_slack).map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
 
         #[test]
@@ -281,19 +281,19 @@ mod digest_properties {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
                 let work = native.then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
-                let baseline = work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes);
+                let baseline = work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes).transpose().map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let io = match &work {
                     Some(work) => crate::filesystem::PreparationIo::from_native_work(work),
                     None => crate::filesystem::PreparationIo::from_budget(budget, &cancellation),
                 }.unwrap();
-                let before = io.receipt();
+                let before = io.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let owned = io.owned_bytes().unwrap();
                 let measured = acyclic_test_support::measure(|| {
                     crate::executor::stock_json_bound(&value, length, Some(&io)).unwrap();
                 });
                 prop_assert_eq!(measured.count_total, 0);
                 prop_assert_eq!(io.owned_bytes().unwrap(), owned);
-                let after = io.receipt();
+                let after = io.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
                 prop_assert_eq!(after.source_bytes_read - before.source_bytes_read, length);
                 prop_assert_eq!(after.bytes_encoded, before.bytes_encoded);
                 prop_assert_eq!(after.bytes_copied, before.bytes_copied);
@@ -311,7 +311,8 @@ mod digest_properties {
                     });
                     prop_assert!(legacy.count_total > measured.count_total);
                     prop_assert!(legacy.bytes_current >= length as i64);
-                    prop_assert!(io.receipt().bytes_encoded > after.bytes_encoded);
+                    let encoded_receipt = io.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
+                    prop_assert!(encoded_receipt.bytes_encoded > after.bytes_encoded);
                     drop(encoded);
                 }
                 cancellation.cancel();
@@ -319,7 +320,7 @@ mod digest_properties {
                 prop_assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
                 drop(failure);
                 drop(io);
-                prop_assert_eq!(work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes), baseline);
+                prop_assert_eq!(work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes).transpose().map_err(|error| TestCaseError::fail(error.to_string()))?, baseline);
             }
             for exhausted_items in [false, true] {
                 let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
@@ -340,7 +341,7 @@ mod digest_properties {
         fn observed_digest_preserves_identity_without_an_encoded_copy(value in values()) {
             let budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
-            let baseline = native.live_allocation_bytes();
+            let baseline = native.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?;
             let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native).unwrap());
             let expected = crate::contract::canonical_json_bytes(&value).unwrap();
             let mut digest = Ok([0; 32]);
@@ -348,19 +349,22 @@ mod digest_properties {
                 digest = canonical_json_digest(&value, Some(65_536), &mut Some(&mut work));
             });
             prop_assert_eq!(digest.unwrap(), *blake3::hash(&expected).as_bytes());
-            prop_assert_eq!(work.receipt().bytes_hashed, expected.len() as u64);
+            let receipt = work.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(receipt.bytes_hashed, expected.len() as u64);
             let (items, arrays) = items(&value);
-            prop_assert_eq!(work.receipt().items_examined, items * if arrays { 2 } else { 1 });
+            prop_assert_eq!(receipt.items_examined, items * if arrays { 2 } else { 1 });
             prop_assert_eq!(measured.bytes_current, 0);
-            prop_assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
-            prop_assert_eq!(native.live_allocation_bytes(), baseline);
+            prop_assert!(measured.bytes_max as u64 <= receipt.peak_allocation_bytes);
+            let remaining = native.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(remaining, baseline);
             // Negative control: the former full-buffer path performs one extra
             // encoded copy; it cannot meet the new copy count.
             let legacy_native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
             let mut legacy = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&legacy_native).unwrap());
             let encoded = crate::store::history::canonical_bytes_with_work(&value, 65_536, &mut Some(&mut legacy)).unwrap();
             prop_assert_eq!(&encoded, &expected);
-            prop_assert_eq!(legacy.receipt().bytes_copied, work.receipt().bytes_copied + encoded.len() as u64);
+            let legacy_receipt = legacy.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(legacy_receipt.bytes_copied, receipt.bytes_copied + encoded.len() as u64);
         }
     }
 
@@ -376,11 +380,11 @@ mod digest_properties {
         }
     }
 
-    fn exhausted_prefixes(value: &Value) {
-        exhausted_serialization(value, 0);
+    fn exhausted_prefixes(value: &Value) -> Result<()> {
+        exhausted_serialization(value, 0)
     }
 
-    fn exhausted_serialization<T: Serialize + ?Sized>(value: &T, extra_slack: u64) {
+    fn exhausted_serialization<T: Serialize + ?Sized>(value: &T, extra_slack: u64) -> Result<()> {
         let mut normalized = serde_json::to_value(value).unwrap();
         normalized.sort_all_objects();
         let encoded = serde_json::to_vec(&normalized).unwrap();
@@ -393,7 +397,7 @@ mod digest_properties {
                 Some(crate::wire::ErrorCode::Invalid),
                 &mut |event| crate::store::HistoryIo::codec_charge(work, event),
             )
-        });
+        })?;
         exhausted_encoding(&encoded, slack, |work| {
             canonical_json_bytes_bounded(
                 value,
@@ -401,28 +405,28 @@ mod digest_properties {
                 Some(crate::wire::ErrorCode::Invalid),
                 &mut |event| crate::store::HistoryIo::codec_charge(work, event),
             )
-        });
+        })
     }
 
     fn exhausted_encoding<T: PartialEq + std::fmt::Debug>(
         expected: &T,
         slack: u64,
         encode: impl Fn(&mut crate::store::HistoryWork) -> Result<T>,
-    ) {
+    ) -> Result<()> {
         let budget = acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000);
         let reference = acyclic_fs::NativeMaterializationWork::new(
             budget,
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap();
-        let construction = reference.receipt().allocation_operations;
+        let construction = reference.receipt()?.allocation_operations;
         let mut work = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&reference).unwrap(),
         );
         let result = encode(&mut work).unwrap();
         assert_eq!(&result, expected);
         drop(result);
-        let operations = reference.receipt().allocation_operations - construction;
+        let operations = reference.receipt()?.allocation_operations - construction;
         for prefix in 0..=operations {
             let mut budget = budget;
             budget.allocation_operations = construction + prefix;
@@ -431,7 +435,7 @@ mod digest_properties {
                 &acyclic_fs::CancellationToken::new(),
             )
             .unwrap();
-            let baseline = native.live_allocation_bytes();
+            let baseline = native.live_allocation_bytes()?;
             let mut work = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
             );
@@ -449,7 +453,7 @@ mod digest_properties {
                 prefix == operations,
                 "prefix {prefix}/{operations}"
             );
-            let charged = native.receipt().allocation_operations - construction;
+            let charged = native.receipt()?.allocation_operations - construction;
             assert!(
                 charged >= measured.count_total,
                 "prefix {prefix}/{operations}: {charged} charges / {} allocations",
@@ -461,47 +465,48 @@ mod digest_properties {
                 measured.count_total
             );
             assert_eq!(measured.bytes_current, 0);
-            assert!(measured.bytes_max as u64 <= native.receipt().peak_allocation_bytes);
+            assert!(measured.bytes_max as u64 <= native.receipt()?.peak_allocation_bytes);
             if !succeeded {
-                assert_eq!(native.live_allocation_bytes(), baseline);
+                assert_eq!(native.live_allocation_bytes()?, baseline);
             }
             // Successful decoding transfers its retained bytes to the caller.
             drop(work);
-            assert_eq!(native.live_allocation_bytes(), baseline);
+            assert_eq!(native.live_allocation_bytes()?, baseline);
         }
+        Ok(())
     }
 
     #[test]
-    fn exhausted_prefixes_cover_escapes_and_node_splits() {
-        exhausted_prefixes(&serde_json::json!({"": null}));
-        exhausted_prefixes(&Value::from(6.237624688224859e252));
-        exhausted_prefixes(&Value::from(-0.0));
-        exhausted_prefixes(&serde_json::json!(["],}", "\"\\,", [], {"a,b": [1, 2]}, 3]));
+    fn exhausted_prefixes_cover_escapes_and_node_splits() -> Result<()> {
+        exhausted_prefixes(&serde_json::json!({"": null}))?;
+        exhausted_prefixes(&Value::from(6.237624688224859e252))?;
+        exhausted_prefixes(&Value::from(-0.0))?;
+        exhausted_prefixes(&serde_json::json!(["],}", "\"\\,", [], {"a,b": [1, 2]}, 3]))?;
         exhausted_prefixes(
             &serde_json::json!({"\u{0}\n\\\"": ["\u{1f600}\t\r", -0.25, 1e100, u64::MAX]}),
-        );
+        )?;
         for size in [11, 12, 18, 19, 78] {
             let value = Value::Object(
                 (0..size)
                     .map(|i| (format!("{i:04}"), Value::Null))
                     .collect(),
             );
-            exhausted_prefixes(&value);
+            exhausted_prefixes(&value)?;
             if size == 19 {
                 let raw = serde_json::value::RawValue::from_string(
                     serde_json::to_string(&value).unwrap(),
                 )
                 .unwrap();
-                exhausted_serialization(raw.as_ref(), 2 * map_slack(&value));
+                exhausted_serialization(raw.as_ref(), 2 * map_slack(&value))?;
             }
         }
         let raw = serde_json::value::RawValue::from_string(r#"{"":null}"#.into()).unwrap();
-        exhausted_serialization(raw.as_ref(), 0);
+        exhausted_serialization(raw.as_ref(), 0)?;
         let raw = serde_json::value::RawValue::from_string(
             r#"{"b":["\u0000\n\"",{"a":1}],"b":false,"a":2}"#.into(),
         )
         .unwrap();
-        exhausted_serialization(raw.as_ref(), 0);
+        exhausted_serialization(raw.as_ref(), 0)?;
         // Negative control: reproducing the old visitor's diagnostic after a
         // denied charge allocates despite no admitted operation.
         let diagnostic = acyclic_test_support::measure(|| {
@@ -509,6 +514,7 @@ mod digest_properties {
             drop(error);
         });
         assert!(diagnostic.count_total > 0);
+        Ok(())
     }
 }
 
@@ -623,8 +629,9 @@ fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
                 assert!(result.is_err());
             } else {
                 assert_eq!(result?, *blake3::hash(&bytes).as_bytes());
-                assert_eq!(work.receipt().bytes_hashed, length);
-                println!("canonical digest charges: {:?}", work.receipt());
+                let receipt = work.receipt()?;
+                assert_eq!(receipt.bytes_hashed, length);
+                println!("canonical digest charges: {receipt:?}");
             }
         }
     }
@@ -653,7 +660,7 @@ fn preparation_digest_batches_stream_canonical_output_on_original_work() -> Resu
             expected
         );
     }
-    assert_eq!(bounded.receipt().bytes_hashed, 16 * canonical.len() as u64);
+    assert_eq!(bounded.receipt()?.bytes_hashed, 16 * canonical.len() as u64);
     let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::executor::PreparationIo::from_native_work(&native)?;
@@ -663,7 +670,7 @@ fn preparation_digest_batches_stream_canonical_output_on_original_work() -> Resu
             expected
         );
     }
-    assert_eq!(native.receipt().bytes_hashed, 16 * canonical.len() as u64);
+    assert_eq!(native.receipt()?.bytes_hashed, 16 * canonical.len() as u64);
     cancellation.cancel();
     assert!(crate::executor::preparation_digest(&value, Some(&io)).is_err());
 
@@ -674,7 +681,7 @@ fn preparation_digest_batches_stream_canonical_output_on_original_work() -> Resu
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::executor::PreparationIo::from_native_work(&denied)?;
     assert!(crate::executor::preparation_digest(&value, Some(&io)).is_err());
-    assert_eq!(denied.receipt().bytes_hashed, 0);
+    assert_eq!(denied.receipt()?.bytes_hashed, 0);
     Ok(())
 }
 
