@@ -461,7 +461,7 @@ if (mode === 'signal-owner') {
   process.stdin.resume();
 } else {
   const host = process.env.ACYCLIC_PROCESS_HOST;
-  assert.ok(host, 'step=process-control-admission; recovery=run bazel test //rust/crates/native-runtime:main --test_arg=node_process::');
+  assert.ok(host, 'step=process-control-admission; recovery=run bazel test //rust/crates/native-runtime:node_process_bridge --test_arg=node_process::');
   const options = {host};
   await processSignalControls();
   await argumentControls(host);

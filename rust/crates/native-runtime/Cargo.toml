@@ -15,7 +15,10 @@ categories = ["filesystem"]
 [package.metadata.bazel]
 test-package-binaries = false
 
-[package.metadata.bazel.test-tools.main]
+[package.metadata.bazel.test-dependencies]
+node_process_bridge = ["acyclic_test_support", "serde_json"]
+
+[package.metadata.bazel.test-tools.node_process_bridge]
 acyclic-process-host = ":acyclic-process-host"
 node = "@nodejs//:node"
 
@@ -125,6 +128,10 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[test]]
+name = "node_process_bridge"
+path = "tests/node_process_bridge.rs"
 
 [[test]]
 name = "wake_loom"

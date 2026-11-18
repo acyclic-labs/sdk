@@ -6,7 +6,6 @@ mod file_lock;
 mod native_claim_record;
 mod native_owner_record;
 mod native_report_port;
-mod node_process;
 #[cfg(all(target_os = "linux", not(loom)))]
 mod output;
 mod private_file;
