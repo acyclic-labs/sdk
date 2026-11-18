@@ -42,13 +42,43 @@ cc_toolchain_config(
 )
 
 filegroup(
-    name = "windows_cc_files",
+    name = "windows_cc_all_files",
     visibility = ["//:__pkg__"],
     target_compatible_with = [
         "@platforms//os:windows",
         "@platforms//cpu:x86_64",
     ],
-    srcs = ["@xwin//:sysroot","@llvm_toolchain_llvm//:bin"],
+    srcs = ["@xwin//:includes","@xwin//:libs","@llvm_toolchain_llvm//:bin"],
+)
+
+filegroup(
+    name = "windows_cc_compiler_files",
+    visibility = ["//:__pkg__"],
+    target_compatible_with = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+    srcs = ["@xwin//:includes","@llvm_toolchain_llvm//:bin"],
+)
+
+filegroup(
+    name = "windows_cc_linker_files",
+    visibility = ["//:__pkg__"],
+    target_compatible_with = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+    srcs = ["@xwin//:libs","@llvm_toolchain_llvm//:bin"],
+)
+
+filegroup(
+    name = "windows_cc_tool_files",
+    visibility = ["//:__pkg__"],
+    target_compatible_with = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+    srcs = ["@llvm_toolchain_llvm//:bin"],
 )
 
 toolchain(
