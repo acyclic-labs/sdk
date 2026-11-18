@@ -53,7 +53,9 @@ provider. Reported control traffic remains visible even if the dispatch check pa
 Run the shared dispatch and registration control on native and guest handlers:
 
 ```sh
-cargo test --locked -p acyclic-agent-host-conformance --features local --test main local::shared_benchmark_and_scale_check_native_and_guest_work -- --exact --nocapture
+bazel test //rust/crates/conformance/agent-host:main \
+  --test_filter=local::shared_benchmark_and_scale_check_native_and_guest_work \
+  --test_arg=--exact --test_arg=--nocapture --test_output=all
 ```
 
 This control covers the same workload at two populations and rejects extra work,
