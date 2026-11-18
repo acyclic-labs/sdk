@@ -26,7 +26,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                 let output = fixture.output.join("releases/1.0.0");
                 let packaged_manifest = support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml");
                 let cargo_home = fixture_cargo_home(&fixture);
-                let manifest_path = output.join("generation-manifest.v1.json");
+                let manifest_path = output.join(GENERATION_MANIFEST);
                 let manifest_digest = manifest_path.with_extension("sha256");
                 let [_, cargo_home_frontier, working_directory_frontier] = [
                     (HistoricalAuthority::Lock(&foreign), None),
@@ -573,9 +573,7 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
     let generated = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
     assert!(generated.status.success(), "{}", output_message(&generated));
     let output = fixture.output.join("releases/1.0.0");
-    let manifest: Value =
-        serde_json::from_slice(&fs::read(output.join("generation-manifest.v1.json")).unwrap())
-            .unwrap();
+    let manifest = read_generation_manifest(&output);
     let corpus = &manifest["registryCorpus"];
     assert_eq!(corpus["declared_anchors"], json!([declared]));
     let anchors = corpus["anchors"].as_array().unwrap();
@@ -711,9 +709,7 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
     let data: Value =
         serde_json::from_slice(&fs::read(version.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
     assert_eq!(data["source"]["publicationStatus"], "registryReleased");
-    let mut manifest: Value =
-        serde_json::from_slice(&fs::read(version.join("generation-manifest.v1.json")).unwrap())
-            .unwrap();
+    let mut manifest = read_generation_manifest(&version);
     assert_eq!(manifest["scope"]["kind"], "historicalRelease");
     assert!(manifest["sourceFiles"]["rust/crates/demo/descriptor.bin"].is_string());
     assert!(manifest["declaredSourceToolchain"]

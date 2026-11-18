@@ -66,8 +66,8 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             }
         });
     };
-    let manifest_path = original.output.join("generation-manifest.v1.json");
-    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let manifest_path = original.output.join(GENERATION_MANIFEST);
+    let mut manifest = read_generation_manifest(&original.output);
     let release_path = PathBuf::from(manifest["releaseManifest"].as_str().unwrap());
     let digest_path = release_path.with_extension("sha256");
     let inventory = manifest["rustdocFiles"]
@@ -86,32 +86,31 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     copy_tree_inner(&original.output, &relocated.output, false, &|path| {
         replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains(path)
     });
-    let mut changed = sdk_docs::with_rustdoc_cache(|| {
-        let mut changed = BTreeMap::new();
-        for original_file in inventory {
-            let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
-            let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
-            let relative = original_file.strip_prefix(&original.output).unwrap();
-            let file = relocated.output.join(relative);
-            let mut value = (*value).clone();
-            rebase(&mut value);
-            let rebased_bytes = serde_json::to_vec(&value).unwrap();
-            fs::write(&file, &rebased_bytes).unwrap();
-            changed.insert(
-                relative.to_str().unwrap().replace('\\', "/"),
-                (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
-            );
-        }
-        changed
-    });
+    let mut rebased_bytes = Vec::new();
+    let mut changed = BTreeMap::new();
+    for original_file in inventory {
+        let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
+        let mut value: Value = serde_json::from_slice(&original_bytes).unwrap();
+        let relative = original_file.strip_prefix(&original.output).unwrap();
+        let file = relocated.output.join(relative);
+        rebase(&mut value);
+        rebased_bytes.clear();
+        serde_json::to_writer(&mut rebased_bytes, &value).unwrap();
+        fs::write(&file, &rebased_bytes).unwrap();
+        changed.insert(
+            relative.to_str().unwrap().replace('\\', "/"),
+            (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
+        );
+    }
     // Relocation changes physical receipt bytes. Re-attest only those verified
     // rewrites. Drift checks both checkouts against the unchanged logical digests.
     let original_release = fs::read(original.output.join(&release_path)).unwrap();
     let mut release: Value = serde_json::from_slice(&original_release).unwrap();
     for row in release["artifacts"].as_array_mut().unwrap() {
         if let Some((old, new)) = changed.get(row["path"].as_str().unwrap()) {
-            assert_eq!(row["sha256"].as_str().unwrap(), old);
-            row["sha256"] = json!(new);
+            let digest = row.get_mut("sha256").unwrap();
+            assert_eq!(digest.as_str().unwrap(), old);
+            *digest = Value::String(new.clone());
         }
     }
     let original_digest = hash_bytes(&original_release);
@@ -120,9 +119,10 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         original_digest.as_bytes(),
         "the original release sidecar must attest the original manifest"
     );
-    let rebased_release = serde_json::to_vec_pretty(&release).unwrap();
-    let rebased_digest = hash_bytes(&rebased_release);
-    fs::write(relocated.output.join(&release_path), rebased_release).unwrap();
+    rebased_bytes.clear();
+    serde_json::to_writer_pretty(&mut rebased_bytes, &release).unwrap();
+    let rebased_digest = hash_bytes(&rebased_bytes);
+    fs::write(relocated.output.join(&release_path), &rebased_bytes).unwrap();
     fs::write(
         relocated.output.join(&digest_path),
         rebased_digest.as_bytes(),
@@ -138,11 +138,15 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     ] {
         changed.insert(path.to_str().unwrap().replace('\\', "/"), hashes);
     }
+    let artifacts = manifest["artifacts"].as_object_mut().unwrap();
     for (path, (old, new)) in changed {
-        assert_eq!(manifest["artifacts"][&path].as_str().unwrap(), old);
-        manifest["artifacts"][&path] = json!(new);
+        let digest = artifacts.get_mut(&path).unwrap();
+        assert_eq!(digest.as_str().unwrap(), old);
+        *digest = Value::String(new);
     }
-    write_manifest(&relocated.output, &manifest);
+    rebased_bytes.clear();
+    serde_json::to_writer_pretty(&mut rebased_bytes, &manifest).unwrap();
+    write_manifest_bytes(&relocated.output, &rebased_bytes);
 }
 // Replay the production projection from every real Cargo-produced receipt.
 // Compilation is performed once; copies retain the full matrix and source bytes.
@@ -177,10 +181,7 @@ fn project_inner(
     rows: &[Value],
     template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    let mut manifest: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let mut manifest = read_generation_manifest(&fixture.output);
     // The CLI drift checks recompute the logical digests in this inventory.
     let digests = manifest["rustdocFiles"].as_object_mut().unwrap();
     let mut specs = BTreeMap::new();

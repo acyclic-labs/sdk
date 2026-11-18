@@ -50,7 +50,7 @@ fn main() {
         "{}",
         output_message(&result)
     );
-    assert!(!fixture.output.join("generation-manifest.v1.json").exists());
+    assert!(!fixture.output.join(GENERATION_MANIFEST).exists());
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
 }
 
@@ -96,7 +96,7 @@ fn assert_source_edit_invalidates_output(
         stale_message.contains("matching source attestation"),
         "{stale_message}"
     );
-    assert!(!stale_output.join("generation-manifest.v1.json").exists());
+    assert!(!stale_output.join(GENERATION_MANIFEST).exists());
 
     fs::write(&source, &original).unwrap();
     assert_eq!(hash_file(&source), original_hash);
@@ -155,10 +155,7 @@ fn crate_workspace_and_plugin_source_edits_invalidate_output() {
         true,
     );
     assert!(refreshed.status.success(), "{}", output_message(&refreshed));
-    let manifest: Value = serde_json::from_slice(
-        &fs::read(refreshed_output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let manifest = read_generation_manifest(&refreshed_output);
     for (path, hash) in restored {
         assert_eq!(manifest["sourceFiles"][path], hash);
     }
@@ -223,10 +220,7 @@ fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
         true,
     );
     assert!(result.status.success(), "{}", output_message(&result));
-    let generation: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let generation = read_generation_manifest(&fixture.output);
     let release_relative = generation["releaseManifest"].as_str().unwrap();
     let release_path = fixture.output.join(release_relative);
     let release_bytes = fs::read(&release_path).unwrap();

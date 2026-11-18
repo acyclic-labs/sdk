@@ -324,13 +324,23 @@ fn git_revision(root: &Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
+const GENERATION_MANIFEST: &str = "generation-manifest.v1.json";
+
 fn write_manifest(output: &Path, value: &Value) {
+    write_manifest_bytes(output, &serde_json::to_vec_pretty(value).unwrap());
+}
+
+fn read_generation_manifest(output: &Path) -> Value {
+    serde_json::from_slice(&fs::read(output.join(GENERATION_MANIFEST)).unwrap()).unwrap()
+}
+
+fn write_manifest_bytes(output: &Path, bytes: &[u8]) {
     fs::create_dir_all(output).unwrap();
-    let bytes = serde_json::to_vec_pretty(value).unwrap();
-    fs::write(output.join("generation-manifest.v1.json"), &bytes).unwrap();
+    let manifest = output.join(GENERATION_MANIFEST);
+    fs::write(&manifest, bytes).unwrap();
     fs::write(
-        output.join("generation-manifest.v1.sha256"),
-        format!("{}\n", hash_bytes(&bytes)),
+        manifest.with_extension("sha256"),
+        format!("{}\n", hash_bytes(bytes)),
     )
     .unwrap();
 }
@@ -539,14 +549,8 @@ fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
         );
     }
 
-    let first_manifest: Value = serde_json::from_slice(
-        &fs::read(first.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
-    let second_manifest: Value = serde_json::from_slice(
-        &fs::read(second.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let first_manifest = read_generation_manifest(&first.output);
+    let second_manifest = read_generation_manifest(&second.output);
     assert_eq!(
         first_manifest["sourceSha256"], second_manifest["sourceSha256"],
         "source digest must survive checkout relocation"
