@@ -88,8 +88,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .is_some())
     }
 
-    fn fenced_prefix(&self, root_hash: &str) -> String {
-        format!("{}f/{root_hash}/", self.state.prefix)
+    fn fenced_key(&self, root_hash: &str, name: &str) -> String {
+        format!("{}f/{root_hash}/{name}", self.state.prefix)
     }
 
     async fn remove_fenced_batch(
@@ -125,7 +125,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     .ok_or_else(corrupt)?;
                 let encoded = name.split('.').next().ok_or_else(corrupt)?;
                 let fence = u64::from_str_radix(encoded, 16).map_err(|_| corrupt())?;
-                let terminal_key = format!("{}t/{root}", self.state.prefix);
+                let terminal_key = self.terminal_key(root);
                 let terminal = self
                     .medium
                     .read(&terminal_key, None)
@@ -177,7 +177,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let batch = encode_batch(&references);
         let name = format!("{fence:016x}.{}.{}", Digest::of(&batch), nonce()?);
         let tag = format!("f{root_hash}.{name}");
-        let key = format!("{}{name}", self.fenced_prefix(root_hash));
+        let key = self.fenced_key(root_hash, &name);
         self.commit_retention(&references, &tag, &key, batch, 2)
             .await?;
         if !self.terminal_replace(observed, state.terminal).await? {
@@ -220,7 +220,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .flush(std::slice::from_ref(&terminal_key))
             .await
             .map_err(medium)?;
-        let mut pages = self.pages(self.fenced_prefix(root_hash));
+        let mut pages = self.pages(self.fenced_key(root_hash, ""));
         let mut existed = false;
         while let Some(page) = pages.next().await? {
             for (key, _) in page {

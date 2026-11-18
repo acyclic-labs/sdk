@@ -116,10 +116,7 @@ mod format_recovery_tests {
         .encode()?;
         let envelope_key = account.envelope_key(&digest);
         let batch = encode_batch(&[]);
-        let batch_key = format!(
-            "{}batch",
-            account.root_prefix(&Digest::of(b"root").to_hex())
-        );
+        let batch_key = account.root_key(&Digest::of(b"root").to_hex(), "batch");
         account.issued().await?;
         for (key, original) in [(&envelope_key, &envelope), (&batch_key, &batch)] {
             assert!(account.medium.create(key, original.clone().into()).await?);
@@ -854,8 +851,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         format!("{}{kind}/{}/{hex}{suffix}", self.state.prefix, &hex[..2])
     }
 
-    fn root_prefix(&self, root_hash: &str) -> String {
-        format!("{}r/{root_hash}/", self.state.prefix)
+    fn root_key(&self, root_hash: &str, name: &str) -> String {
+        format!("{}r/{root_hash}/{name}", self.state.prefix)
     }
 
     /// Whether any key exists under `prefix`.
@@ -1623,7 +1620,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
                 let tag = Self::batch_tag(root_hash, &name);
-                let key = format!("{}{name}", self.root_prefix(root_hash));
+                let key = self.root_key(root_hash, &name);
                 self.commit_retention(&references, &tag, &key, batch, 0)
                     .await?;
                 Ok(Retained {
@@ -1922,7 +1919,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let _gate = self.state.gate.read().await;
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
-                let batches = self.list_all(&self.root_prefix(root_hash)).await?;
+                let batches = self.list_all(&self.root_key(root_hash, "")).await?;
                 let mut removed = Vec::new();
                 for (key, _) in &batches {
                     let Some(references) = self.batch(key).await? else {
