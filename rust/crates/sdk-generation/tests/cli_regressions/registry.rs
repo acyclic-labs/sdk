@@ -185,7 +185,20 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
             ),
         )
         .unwrap();
-        fs::write(package.join("build.rs"), "fn main() { std::fs::write(std::path::Path::new(&std::env::var(\"CARGO_MANIFEST_DIR\").unwrap()).join(\"unverified-added.json\"), \"{}\").unwrap(); }\n").unwrap();
+        fs::write(
+            package.join("build.rs"),
+            r#"fn main() {
+    if std::env::var_os("CARGO_FEATURE_EXTRA").is_some() {
+        std::fs::write(
+            std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+                .join("unverified-added.json"),
+            "{}",
+        ).unwrap();
+    }
+}
+"#,
+        )
+        .unwrap();
     }
     std::thread::scope(|scope| {
         for during_profile in [false, true] {
@@ -694,6 +707,7 @@ fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
         .unwrap(),
         b"changed imported input"
     );
+    assert!(!fixture.output.join("releases/1.0.0/.rustdoc").exists());
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
 }
 
