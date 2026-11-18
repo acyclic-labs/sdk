@@ -26,6 +26,7 @@
   "acyclic-objects",
   "acyclic-actors-call",
   "acyclic-actors-contract",
+  "acyclic-actors-diagnostics",
   "acyclic-actors-inventory",
   "acyclic-actors",
   "acyclic-machines-limits",
