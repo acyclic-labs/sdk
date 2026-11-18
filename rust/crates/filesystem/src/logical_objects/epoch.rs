@@ -200,11 +200,13 @@ pub(crate) mod hooks {
         }
 
         /// Holds the next publication that retains until the guard drops.
+        #[cfg(not(loom))]
         pub(crate) async fn pause(&self) -> tokio::sync::OwnedMutexGuard<()> {
             self.pause_at(1).await
         }
 
         /// Holds the `nth` retain from now until the guard drops.
+        #[cfg(not(loom))]
         pub(crate) async fn pause_at(&self, nth: usize) -> tokio::sync::OwnedMutexGuard<()> {
             let gate = Arc::new(tokio::sync::Mutex::new(()));
             let guard = Arc::clone(&gate).lock_owned().await;

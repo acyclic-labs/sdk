@@ -545,5 +545,5 @@ async fn observe<P: StreamProvider + ?Sized>(
     Ok(observed)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod tests;

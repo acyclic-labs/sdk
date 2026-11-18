@@ -55,7 +55,6 @@ rust_test(
         "--check-cfg=cfg(feature, values())",
         "--check-cfg=cfg(kani)",
     ],
-    lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-decimal-boundary",
         "//rust/crates/filesystem/fuzz:corpus/paths/lease-distinct-max",

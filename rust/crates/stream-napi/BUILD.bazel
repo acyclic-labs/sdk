@@ -35,7 +35,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
     deps = [
         "@sdk_crates//napi-build-2.6.0",
     ],
@@ -131,7 +131,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",

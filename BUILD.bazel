@@ -4,6 +4,18 @@ load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load("//:node_modules.bzl", "node_modules")
 load("//:proto_js.bzl", "proto_js")
 load("//:typescript_packages.bzl", "typescript_packages")
+load("//rust/crates/test-runner:isolated_test.bzl", "loom_flag")
+loom_flag(
+    name = "loom_flag",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "loom",
+    flag_values = {"//:loom_flag":"True"},
+)
+
+
 
 constraint_setting(
     name = "libc",

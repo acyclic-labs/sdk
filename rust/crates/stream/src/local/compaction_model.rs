@@ -188,7 +188,7 @@ pub(crate) fn verify(fault: u8) {
         );
         assert!(matches!(record, Poll::Ready(Some(Ok(record))) if record.sequence == 1));
         assert_eq!(
-            marks,
+            marks.map(|result| result.map_err(|error| error.category())),
             Poll::Ready(Ok(crate::StreamWatermarks {
                 accepted: 2,
                 durable: 1

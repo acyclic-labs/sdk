@@ -49,6 +49,7 @@ impl State {
     }
     /// The tail of `path`; `None` when it does not exist. Every planner reads
     /// presence and tails through this one lookup.
+    #[inline(never)]
     fn tail(&self, path: &StreamPath) -> Option<u64> {
         self.paths.get(path).map(|path| path.tail)
     }

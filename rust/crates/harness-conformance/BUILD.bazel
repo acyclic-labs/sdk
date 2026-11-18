@@ -71,7 +71,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",
@@ -168,7 +167,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_harness_conformance",
     ] + [

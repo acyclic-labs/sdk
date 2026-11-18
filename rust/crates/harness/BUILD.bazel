@@ -49,7 +49,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
 )
 
 rust_library(
@@ -298,7 +298,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/executable-search:acyclic_executable_search",
@@ -608,7 +607,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1035,7 +1033,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1371,7 +1368,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1667,7 +1663,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_harness",
         ":build_script",
@@ -1963,7 +1958,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/test-support:acyclic_test_support",
@@ -4733,7 +4727,7 @@ cargo_build_script(
     ],
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
-    build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}) | {"TARGET":"wasm32-unknown-unknown"},
 )
 
 rust_library(

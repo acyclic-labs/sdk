@@ -36,7 +36,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV | select({"//:linux-x86_64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include)"},"//:macos-aarch64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:include)"},"//:windows-x86_64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-win32-3.3.0//:bin/protoc.exe)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-win32-3.3.0//:include)"}}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}) | select({"//:linux-x86_64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include)"},"//:macos-aarch64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:include)"},"//:windows-x86_64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-win32-3.3.0//:bin/protoc.exe)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-win32-3.3.0//:include)"}}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),
     deps = [
         "@sdk_crates//protoc-bin-vendored-linux-aarch_64-3.3.0",
         "@sdk_crates//protoc-bin-vendored-linux-ppcle_64-3.3.0",
@@ -94,7 +94,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//proptest-1.12.0",

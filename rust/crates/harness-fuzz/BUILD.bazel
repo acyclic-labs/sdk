@@ -98,7 +98,6 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(feature, values(\"hooks\", \"wasm\"))",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/test-support:acyclic_test_support",

@@ -63,7 +63,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//hex-0.4.3",

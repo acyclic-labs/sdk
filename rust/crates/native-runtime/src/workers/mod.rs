@@ -231,23 +231,46 @@ pub(crate) fn parallelism() -> usize {
 }
 
 fn start_workers(name: &'static str, worker_count: usize) -> io::Result<NativeWorkers> {
-    // Every process that does native I/O, product or test, starts here.
-    crate::raise_descriptor_limit();
-    let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
-    let admission = Arc::new(QueueMutex::new(AdmissionState::new()));
-    #[cfg(feature = "test-support")]
-    let host_pool = crate::testing::HostPool::new(worker_count);
-    Ok(NativeWorkers {
-        sender,
-        admission,
-        threads: worker_count,
-        service: Some(Service {
-            name,
-            receiver: Arc::new(QueueMutex::new(receiver)),
-        }),
+    // A loom model checks synchronization, not the native I/O pool: never spawn real OS threads
+    // that would touch loom state from outside the model.
+    #[cfg(loom)]
+    {
+        // Never spawn real OS threads under loom; a service-less pool runs no worker, as the
+        // single-worker test fixture does.
+        let _ = name;
+        let (sender, _receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
+        let admission = Arc::new(QueueMutex::new(AdmissionState::new()));
         #[cfg(feature = "test-support")]
-        host_pool,
-    })
+        let host_pool = crate::testing::HostPool::new(worker_count);
+        return Ok(NativeWorkers {
+            sender,
+            admission,
+            threads: worker_count,
+            service: None,
+            #[cfg(feature = "test-support")]
+            host_pool,
+        });
+    }
+    #[cfg(not(loom))]
+    {
+        // Every process that does native I/O, product or test, starts here.
+        crate::raise_descriptor_limit();
+        let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
+        let admission = Arc::new(QueueMutex::new(AdmissionState::new()));
+        #[cfg(feature = "test-support")]
+        let host_pool = crate::testing::HostPool::new(worker_count);
+        Ok(NativeWorkers {
+            sender,
+            admission,
+            threads: worker_count,
+            service: Some(Service {
+                name,
+                receiver: Arc::new(QueueMutex::new(receiver)),
+            }),
+            #[cfg(feature = "test-support")]
+            host_pool,
+        })
+    }
 }
 
 #[cfg(all(test, not(loom)))]

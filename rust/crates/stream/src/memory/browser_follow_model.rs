@@ -139,7 +139,7 @@ fn creation<const WAIT: bool>() {
         });
         writer.join().unwrap();
         assert_eq!(
-            result,
+            result.map_err(|error| error.category()),
             Ok(vec![
                 (0, Bytes::from_static(b"created")),
                 (1, Bytes::from_static(b"appended")),

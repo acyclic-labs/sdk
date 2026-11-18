@@ -2,7 +2,7 @@ use super::*;
 
 use crate::workspace::JoinPreparation as WorkspaceJoinPreparation;
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 impl WorkspaceJoinPreparation {
     pub(crate) fn candidate_root(&self) -> Option<ObjectId> {
         match self {

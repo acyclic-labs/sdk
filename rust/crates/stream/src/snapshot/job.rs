@@ -167,7 +167,8 @@ impl<S: Snapshot> Job<S> {
             return;
         };
         let result = {
-            let mut read = std::pin::pin!(state.read());
+            // The read layer is a heap pointer, so its state and poll frames stay out of the job.
+            let mut read = std::pin::pin!(crate::heap_future::in_heap(|| state.read()));
             // Abandonment is checked before every read poll, so a job whose
             // consumer is gone never enters, or stays queued on, a lock.
             poll_fn(|cx| {

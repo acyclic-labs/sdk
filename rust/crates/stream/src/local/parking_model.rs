@@ -53,7 +53,10 @@ pub(crate) fn verify(retain_pending: bool, memory: bool) {
         drop(held);
         // A later reader must also progress behind that writer.
         drop(follow_model::park(writer.inner.publication.read()));
-        assert_eq!(block_on(follow.next()), Some(Ok(())));
+        assert_eq!(
+            block_on(follow.next()).map(|result| result.map_err(|error| error.category())),
+            Some(Ok(()))
+        );
         drop(ManuallyDrop::into_inner(follow));
         drop(ManuallyDrop::into_inner(writer));
         drop(ManuallyDrop::into_inner(keeper));

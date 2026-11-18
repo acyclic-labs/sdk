@@ -72,6 +72,10 @@ impl LocalStream {
                                         &work.meter,
                                         std::mem::size_of_val(&worker),
                                     ))?;
+                                // The settling future is a heap pointer in the spawned task, so
+                                // neither its state nor its poll frames join the task's stack.
+                                let worker =
+                                    crate::heap_future::in_heap(move || worker).erase_send();
                                 let mut failed = stream.inner.failed.subscribe();
                                 let task = spawn(async move {
                                     let _allocation = allocation;

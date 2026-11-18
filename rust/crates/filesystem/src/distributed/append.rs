@@ -208,6 +208,39 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     }
 }
 
+/// The operation window's permit gate: the one active reservation every append must match.
+pub struct PermitGate {
+    active: Option<OperationId>,
+}
+
+impl PermitGate {
+    pub fn new(active: Option<OperationId>) -> Self {
+        Self { active }
+    }
+
+    pub fn activate(&mut self, operation: OperationId) {
+        self.active = Some(operation);
+    }
+
+    pub fn revoke(&mut self) {
+        self.active = None;
+    }
+
+    pub fn permits(
+        &self,
+        permit: PublicationPermit,
+        authority_id: AuthorityId,
+        expected: Head,
+        gate_tail: u64,
+    ) -> bool {
+        permits_append(permit, authority_id, expected, gate_tail, self.active)
+    }
+
+    pub fn active(&self) -> Option<OperationId> {
+        self.active
+    }
+}
+
 fn permits_append(
     permit: PublicationPermit,
     authority_id: AuthorityId,
@@ -238,3 +271,6 @@ fn permits_append(
         }
     }
 }
+
+#[cfg(all(test, loom))]
+mod gate_tests;

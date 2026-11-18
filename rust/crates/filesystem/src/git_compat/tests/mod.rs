@@ -227,6 +227,8 @@ async fn publish_fixture(
     generation
 }
 
+mod argv;
+#[cfg(not(loom))]
 mod capture;
 mod history;
 mod incremental;

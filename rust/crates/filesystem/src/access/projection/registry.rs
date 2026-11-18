@@ -148,7 +148,7 @@ impl Registry {
         removed
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pub(super) fn is_empty(&self) -> bool {
         self.root.is_none()
     }

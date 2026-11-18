@@ -81,7 +81,11 @@ async fn read_owned<S: Snapshot>(
         return (state, result);
     }
     let (job, completed) = job::new(state);
-    let worker = job.run();
+    // Build the dispatched job on the heap: its state machine holds the whole read path.
+    #[cfg(not(target_arch = "wasm32"))]
+    let worker = crate::heap_future::in_heap(move || job.run()).erase_send();
+    #[cfg(target_arch = "wasm32")]
+    let worker = crate::heap_future::in_heap(move || job.run());
     #[cfg(loom)]
     model::spawn(worker);
     #[cfg(all(not(loom), not(target_arch = "wasm32")))]

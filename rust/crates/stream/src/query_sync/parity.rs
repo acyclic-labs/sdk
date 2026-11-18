@@ -96,7 +96,7 @@ macro_rules! cancellations {
     }};
 }
 
-pub(crate) fn run() {
+pub fn run() {
     admitted!(tokio::sync::RwLock::new(()));
     cancellations!(tokio::sync::RwLock::new(()));
     admitted!(super::RwLock::new(()));
@@ -104,14 +104,14 @@ pub(crate) fn run() {
 }
 
 #[cfg(loom)]
-pub(crate) fn negative() {
+pub fn negative() {
     admitted!(super::RwLock::stalled_reader_control(()));
 }
 
 // The same bounded operation traces run against Tokio and the substituted
 // watch, including cancellation of pending changed futures and publisher loss.
 #[cfg(loom)]
-pub(crate) fn watch(steps: u16, extended: bool) {
+pub fn watch(steps: u16, extended: bool) {
     #[derive(Debug, PartialEq, Eq)]
     enum Event {
         Changed(Poll<bool>),
@@ -194,7 +194,7 @@ pub(crate) fn watch(steps: u16, extended: bool) {
 
 /// A ready result is insufficient when the pending consumer is never woken.
 #[cfg(loom)]
-pub(crate) fn watch_progress() {
+pub fn watch_progress() {
     use std::{
         future::Future,
         sync::{

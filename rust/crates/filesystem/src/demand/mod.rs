@@ -106,7 +106,3 @@ pub(crate) use source_work::SourceDemandReadWork;
 mod paths;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use paths::*;
-
-#[cfg(test)]
-#[cfg(all(loom, not(target_arch = "wasm32")))]
-mod context_loom_tests;

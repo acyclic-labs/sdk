@@ -8,6 +8,12 @@
 // whenever the selection changed).
 // Every workspace member builds with Bazel, and every target `cargo test --all-features` builds
 // is rendered: a target with `test = false` is the only one left out of testing.
+// A crate with a cfg(loom) test module also renders `<crate>_test_loom`: its ordinary test binary
+// under the loom transition, where every build script in the graph sees ACYCLIC_LOOM=1, so the
+// whole dependency graph emits cfg(loom). One loom_test per loom-only module runs that binary with
+// the module path as its libtest filter, and fails if the filter selects no case. The targets carry
+// the `loom` tag. .bazelrc excludes that tag from plain `bazel test //...`; run the proofs with
+// `bazel test --test_tag_filters=loom //...` or an explicit `<crate>_test_loom` label.
 import { assertRegistryPinsCurrent, registryInputs, workspaceBrowserGraph, workspaceGraph } from "./workspace-model.mjs";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -69,6 +75,7 @@ const LOADS = {
   cargo_build_script: "@rules_rust//cargo:defs.bzl",
   extract_cargo_lints: "@rules_rust//cargo:defs.bzl",
   isolated_test: testRunner,
+  loom_test: testRunner,
   rust_binary: "@rules_rust//rust:defs.bzl",
   rust_library: "@rules_rust//rust:defs.bzl",
   rust_proc_macro: "@rules_rust//rust:defs.bzl",
@@ -413,6 +420,238 @@ function readsOf(crateDir, rootFile) {
   literalReads.set(key, reads);
   return reads;
 }
+// A loom target runs the crate's ordinary test target, but only the modules whose cfg exists
+// solely under loom: those are the model tests. Their module paths are libtest filters. The cfg
+// itself comes from each crate's build script through ACYCLIC_LOOM, so the whole dependency graph
+// of the target is built in one loom configuration rather than a second crate list.
+const LOOM_TEST = /#\[(?:tokio::)?test\]/;
+// A loom case drives loom's primitives directly. A module that drives the full async runtime
+// (the stream provider, the actors store or the native I/O pool) is a whole-tower test, not a
+// concurrency core; it is not a loom case.
+const LOOM_PRIMITIVE = /\bloom::/;
+const LOOM_RUNTIME = /acyclic_stream::verification|MemoryStream|\bStore<|acyclic_native_runtime|tokio::|futures::/;
+const loomCase = source => LOOM_PRIMITIVE.test(source) && !LOOM_RUNTIME.test(source);
+const loomFilterCache = new Map();
+// Replace strings and comments with blanks, keeping every byte position and newline.
+function stripRustCode(text) {
+  const out = [];
+  const blank = value => value.replace(/[^\n]/g, " ");
+  for (let i = 0; i < text.length;) {
+    const c = text[i], next = text[i + 1];
+    if (c === "/" && next === "/") {
+      let end = text.indexOf("\n", i);
+      if (end < 0) end = text.length;
+      out.push(blank(text.slice(i, end)));
+      i = end;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      let end = text.indexOf("*/", i + 2);
+      end = end < 0 ? text.length : end + 2;
+      out.push(blank(text.slice(i, end)));
+      i = end;
+      continue;
+    }
+    const raw = c === "r" ? i : c === "b" && next === "r" ? i : -1;
+    if (raw >= 0) {
+      let quote = raw + (c === "b" ? 2 : 1);
+      while (text[quote] === "#") quote++;
+      if (text[quote] === '"') {
+        const close = `"${text.slice(raw + (c === "b" ? 2 : 1), quote)}`;
+        let end = text.indexOf(close, quote + 1);
+        end = end < 0 ? text.length : end + close.length;
+        out.push(blank(text.slice(i, end)));
+        i = end;
+        continue;
+      }
+    }
+    if (c === '"') {
+      let end = i + 1;
+      while (end < text.length) {
+        if (text[end] === "\\") end += 2;
+        else if (text[end] === '"') { end++; break; }
+        else end++;
+      }
+      out.push(blank(text.slice(i, end)));
+      i = end;
+      continue;
+    }
+    if (c === "'") {
+      let end = i + 1;
+      if (text[end] === "\\") end += 2;
+      else end += 1;
+      if (text[end] === "'") end += 1;
+      out.push(blank(text.slice(i, end)));
+      i = end;
+      continue;
+    }
+    out.push(c);
+    i++;
+  }
+  return out.join("");
+}
+function splitCfgArgs(text) {
+  const parts = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") depth--;
+    else if (text[i] === "," && depth === 0) {
+      parts.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start).trim());
+  return parts.filter(Boolean);
+}
+// The host the loom targets run on, as the target predicates a model may name it.
+const HOST_CFG = {
+  target_arch: "x86_64",
+  target_env: "gnu",
+  target_family: "unix",
+  target_os: "linux",
+};
+function evalLoomCfg(expression, loom) {
+  const call = /^(all|any|not)\((.*)\)$/s.exec(expression.trim());
+  if (call) {
+    const values = splitCfgArgs(call[2]).map(part => evalLoomCfg(part, loom));
+    if (call[1] === "all") return values.every(Boolean);
+    if (call[1] === "any") return values.some(Boolean);
+    return !values[0];
+  }
+  const key = expression.trim();
+  if (key === "loom") return loom;
+  if (key === "test") return true;
+  if (key === "unix") return true;
+  if (key === "windows") return false;
+  const value = /^(\w+)\s*=\s*"([^"]*)"$/.exec(key);
+  if (value && value[1] === "feature") return true;
+  if (value) return HOST_CFG[value[1]] === value[2];
+  // A feature or other predicate is not a loom gate; keep the module and let the compiler decide.
+  return true;
+}
+// The attributes immediately before a declaration, across whitespace and a visibility marker.
+function attrsBefore(text, position) {
+  const attrs = [];
+  let i = position;
+  for (;;) {
+    while (i > 0 && /\s/.test(text[i - 1])) i--;
+    if (i === 0) break;
+    if (text.slice(Math.max(0, i - 3), i) === "pub") { i -= 3; continue; }
+    if (text[i - 1] === ")") {
+      let depth = 0, j = i - 1;
+      for (; j >= 0; j--) {
+        if (text[j] === ")") depth++;
+        else if (text[j] === "(") { depth--; if (depth === 0) break; }
+      }
+      if (j > 0 && text.slice(Math.max(0, j - 3), j) === "pub") { i = j - 3; continue; }
+      break;
+    }
+    if (text[i - 1] !== "]") break;
+    let depth = 0, j = i - 1;
+    for (; j >= 0; j--) {
+      if (text[j] === "]") depth++;
+      else if (text[j] === "[") { depth--; if (depth === 0) break; }
+    }
+    if (j < 0) break;
+    let k = j - 1;
+    while (k >= 0 && /\s/.test(text[k])) k--;
+    if (k < 0 || text[k] !== "#") break;
+    attrs.unshift(text.slice(j + 1, i - 1));
+    i = k;
+  }
+  return attrs;
+}
+const cfgExpressions = attrs => attrs.flatMap(attr => {
+  const match = /^cfg\((.*)\)$/s.exec(attr.trim());
+  return match ? [match[1]] : [];
+});
+// Every `mod` declaration with its attributes and, for an inline module, its body.
+function moduleDeclarations(text) {
+  const clean = stripRustCode(text), declarations = [];
+  for (const match of clean.matchAll(/\bmod\s+([A-Za-z_]\w*)\s*([;{])/g)) {
+    const attrs = attrsBefore(text, match.index);
+    if (match[2] === ";") {
+      declarations.push({ name: match[1], attrs, inline: false, start: match.index, bodyStart: 0, bodyEnd: 0 });
+      continue;
+    }
+    let depth = 0, end = match.index + match[0].length - 1;
+    for (; end < clean.length; end++) {
+      if (clean[end] === "{") depth++;
+      else if (clean[end] === "}" && --depth === 0) break;
+    }
+    declarations.push({ name: match[1], attrs, inline: true, start: match.index, bodyStart: match.index + match[0].length, bodyEnd: end });
+  }
+  return declarations;
+}
+function resolveModuleFile(file, name, attrs) {
+  const explicit = attrs.map(attr => /^path\s*=\s*"([^"]+)"$/.exec(attr.trim())).find(Boolean);
+  if (explicit) return path.posix.normalize(path.posix.join(path.posix.dirname(file), explicit[1]));
+  const base = path.posix.basename(file), stem = file.replace(/\.rs$/, "");
+  const root = ["mod.rs", "lib.rs", "main.rs"].includes(base) ? path.posix.dirname(file) : stem;
+  return [`${root}/${name}.rs`, `${root}/${name}/mod.rs`].find(candidate => trackedSet.has(candidate));
+}
+// The Cargo features a cfg expression requires under the loom configuration, so the loom target
+// enables exactly what its models are written against. A negated gate requires nothing, and an
+// `any` branch the host does not take (a wasm-only one) contributes nothing.
+function cfgFeatures(expression) {
+  const call = /^(all|any|not)\((.*)\)$/s.exec(expression.trim());
+  if (call) {
+    const parts = splitCfgArgs(call[2]);
+    if (call[1] === "not") return [];
+    const taken = call[1] === "any" ? parts.filter(part => evalLoomCfg(part, true)) : parts;
+    return taken.flatMap(cfgFeatures);
+  }
+  const value = /^feature\s*=\s*"([^"]*)"$/.exec(expression.trim());
+  return value ? [value[1]] : [];
+}
+function scanLoomText(text, module, file, features, results, seen) {
+  for (const declaration of moduleDeclarations(text)) {
+    const pathParts = [...module, declaration.name];
+    const cfgs = cfgExpressions(declaration.attrs);
+    // A module the loom configuration does not compile — another target's, or one gated
+    // not(loom) — has no loom cases below it.
+    if (!cfgs.every(cfg => evalLoomCfg(cfg, true))) continue;
+    const required = new Set([...features, ...cfgs.flatMap(cfgFeatures)]);
+    const loomOnly = cfgs.length > 0 && !cfgs.every(cfg => evalLoomCfg(cfg, false));
+    if (declaration.inline) {
+      const body = text.slice(declaration.bodyStart, declaration.bodyEnd);
+      if (loomOnly && LOOM_TEST.test(body) && loomCase(body)) {
+        results.add(`${pathParts.join("::")}::`);
+        for (const feature of required) results.features.add(feature);
+      }
+      scanLoomText(body, pathParts, file, required, results, seen);
+      continue;
+    }
+    const child = resolveModuleFile(file, declaration.name, declaration.attrs);
+    if (!child || !trackedSet.has(child)) continue;
+    const childSource = fs.readFileSync(path.join(root, child), "utf8");
+    if (loomOnly && LOOM_TEST.test(childSource) && loomCase(childSource)) {
+      results.add(`${pathParts.join("::")}::`);
+      for (const feature of required) results.features.add(feature);
+    }
+    scanLoomFile(child, pathParts, required, results, seen);
+  }
+}
+function scanLoomFile(file, module, features, results, seen) {
+  const key = `${file}\0${module.join("::")}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  scanLoomText(fs.readFileSync(path.join(root, file), "utf8"), module, file, features, results, seen);
+}
+function loomFilters(crateDir, rootFile) {
+  const key = `${crateDir} ${rootFile}`;
+  if (!loomFilterCache.has(key)) {
+    const results = new Set();
+    results.features = new Set();
+    scanLoomFile(rootFile, [], new Set(), results, new Set());
+    const all = [...results].sort();
+    const parents = all.filter(filter => filter.endsWith("::"));
+    const filters = all.filter(filter => !parents.some(parent => parent !== filter && filter.startsWith(parent)));
+    loomFilterCache.set(key, { filters, features: [...results.features].sort() });
+  }
+  return loomFilterCache.get(key);
+}
 // Every directory that holds a tracked file, at any depth.
 const trackedDirs = new Set(tracked.flatMap(file => file.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))));
 // Cargo discovers .cargo/config.toml from a test's working directory, so a test that carries the
@@ -745,6 +984,13 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     ];
   };
   const rules = [], ownDeps = script ? [`:build_script${suffix}`] : [];
+  // The loom configuration builds the crate with its default features, the features its loom-only
+  // modules are gated on, and model-checking (the feature that depends on loom).
+  const loomModel = (p.features?.["model-checking"] ?? []).includes("dep:loom");
+  const loom = lib && lib.test && loomModel ? loomFilters(dir(p), repoRelative(lib)) : { filters: [], features: [] };
+  const loomFeatures = nodes.map(() => [...new Set([...(p.features.default ?? []), ...loom.features, "model-checking"])].sort());
+  const loomFiltersList = loom.filters;
+  let loomTarget = false;
   // Cargo's [lints] section, read by rules_rust from the same manifest (and workspace) Cargo reads.
   if (!graph) rules.push(["extract_cargo_lints", [
     ["name", q("lints")],
@@ -798,7 +1044,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // A suite whose cases each start Cargo runs fewer at once, so they do not contend for the same
   // cores and exceed the per-case limit.
   const workers = p.metadata?.bazel?.["test-workers"];
-  const test = (wanted, attrs, reads, binaries, id, narrowRunfiles = false) => {
+  const test = (wanted, attrs, reads, binaries, id, narrowRunfiles = false, filters = [], withIsolated = true, suite) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
     reads = [...new Set([...reads, ...testData(p, wanted)])];
     let name = wanted;
@@ -813,15 +1059,34 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       const all = { ...tools, ...extraBinaries };
       return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     };
-    rules.push(
-      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(narrowRunfiles ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
-      isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
-      ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => isolated(`${name}_${profile}`, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined]], ["manual"], wrapper ? { "@nodejs//:node": "node" } : {})),
-    );
+    // Test code is checked by its own test lints, not the production clippy set.
+    const testAttrs = attrs.filter(([key]) => key !== "lint_config");
+    rules.push(["rust_test", [["name", q(`${name}_cases`)], ...testAttrs, ["data", plus(narrowRunfiles ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]]);
+    if (withIsolated) {
+      rules.push(
+        isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
+        ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => isolated(`${name}_${profile}`, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined]], ["manual"], wrapper ? { "@nodejs//:node": "node" } : {})),
+      );
+    }
+    if (filters.length) {
+      const suiteName = suite ?? `${name}_loom`;
+      const members = filters.map((filter, index) => {
+        const member = `${suiteName}_${index}`;
+        names.add(member);
+        rules.push(["loom_test", [["name", q(member)], ["binary", q(`:${name}_cases`)], ["filter", q(filter)], ["id", q(id)], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", q(["loom", "manual", "cpu:1"])], ["target_compatible_with", list(["@platforms//os:linux", "@platforms//cpu:x86_64"])]]]);
+        return `:${member}`;
+      });
+      rules.push(["test_suite", [["name", q(suiteName)], ["tests", list(members)], ["tags", q(["loom"])]]]);
+    }
   };
   if (script) {
     const defaultInputs = p.metadata?.bazel?.["build-script-inputs"] === undefined;
+    // A build script compiles from its own module closure and runs over every package file.
     const extra = extras(script, file => defaultInputs && !file.endsWith(".rs") && !TEST_DIRS.test(file));
+    const platformEnv = scriptEnv.get(p.id).length ? ` | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "";
+    // The loom configuration reaches every build script in the graph, so each crate's own
+    // build script emits cfg(loom) for the crate that depends on it.
+    const loomEnv = `select({${q("//:loom")}: {"ACYCLIC_LOOM": "1"}, ${q("//conditions:default")}: {}})`;
     rules.push(["cargo_build_script", [
       ["name", q(`build_script${suffix}`)],
       ["crate_root", q(local(script.src_path))],
@@ -831,7 +1096,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script).filter(([k]) => k !== "clippy_config"),
-      ["build_script_env", (requiredEntry(scriptEnv,p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "PACKAGE_ENV") + (graph ? ` | ${q({TARGET: WASM_TRIPLE})}` : "")],
+      ["build_script_env", (requiredEntry(scriptEnv,p.id).length ? `PACKAGE_ENV | ${loomEnv} | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : `PACKAGE_ENV | ${loomEnv}`) + (graph ? ` | ${q({TARGET: WASM_TRIPLE})}` : "")],
       ...deps(["build"]),
     ]]);
   }
@@ -892,6 +1157,27 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ];
       covered.add(`test ${lib.kind[0]} ${lib.name}`);
       test(`${crateName(lib)}_test`, attrs, runtimeData(lib), {}, p.name);
+      if (loomFiltersList.length) {
+        loomTarget = true;
+        const loomLib = `${crateName(lib)}_loom_lib`;
+        rules.push([proc ? "rust_proc_macro" : "rust_library", [
+          ["name", q(loomLib)],
+          ["crate_root", q(local(lib.src_path))],
+          // The loom cases compile this library in test configuration, so its
+          // test-only modules must be present.
+          ...libInputs(lib, true),
+          ["crate_features", "LOOM_FEATURES"],
+          ...common(lib).filter(([k]) => k !== "crate_features"),
+          ...deps([null], ownDeps),
+        ]]);
+        test(`${crateName(lib)}_loom`, [
+          ["crate", q(`:${loomLib}`)],
+          ["compile_data", list(extras(lib, libCovered).data)],
+          ["crate_features", "LOOM_FEATURES"],
+          ...common(lib).filter(([k]) => k !== "rustc_env" && k !== "crate_features"),
+          ...deps(["dev"]),
+        ], runtimeData(lib), {}, p.name, false, loomFiltersList, false, `${crateName(lib)}_loom`);
+      }
     }
   }
   const executables = !graph && workspace.has(p.id) ? p.targets : [];
@@ -961,20 +1247,27 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     rules.push(["rust_binary", [["name", q(name)], ...separate(example),
       ["visibility", harnessTools.has(`${label(p)}:${name}`) ? q(["//visibility:public"]) : undefined]]]);
   }
-  return {rules, features:configured(features, list), env,
-    bindings: sharedDeps.map(([key, value]) => [depVariable(key), value])};
+  return {
+    rules,
+    features: configured(features, list),
+    env,
+    bindings: sharedDeps.map(([key, value]) => [depVariable(key), value]),
+    loomFeatures: loomTarget ? perTriple(loomFeatures, list) : null,
+  };
 }
 function renderBuild(native, wasm) {
   const rules = [...native.rules, ...(wasm?.rules ?? [])];
-  const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
+  const loads = [...Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind])]
+    .filter(([file]) => file !== undefined);
   const header = [
     HEADER,
-    ...[...loads].sort().map(([file, kinds]) => `load(${q(file)}, ${kinds.map(q).join(", ")})\n`),
+    ...loads.sort(([a], [b]) => (a < b ? -1 : 1)).map(([file, kinds]) => `load(${q(file)}, ${kinds.map(q).join(", ")})\n`),
     "\n",
     `FEATURES = ${native.features}\n\n`,
     ...(wasm ? [`WASM_FEATURES = ${wasm.features}\n\n`] : []),
     `PACKAGE_ENV = ${q(native.env)}\n`,
     ...native.bindings.map(([name, value]) => `\n${name} = ${value}\n`),
+    ...(native.loomFeatures ? [`LOOM_FEATURES = ${native.loomFeatures}\n`] : []),
   ];
   return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
 }
@@ -1286,8 +1579,6 @@ const linuxMusl = `
 ${rule("config_setting", [["name", q("linux-musl")], ["constraint_values", list(["@platforms//os:linux", "@platforms//cpu:x86_64", ":libc_musl"])]])}
 ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@platforms//os:linux", "@platforms//cpu:x86_64", ":libc_musl"])]])}
 `;
-// The toolchain's Cargo, as the tests that check real Cargo behaviour start it. Each platform's
-// toolchain repository carries the same release's Cargo beside its rustc.
 const toolchainFilegroups = (() => {
   const channel = toml(root, "rust-toolchain.toml").toolchain.channel;
   const channelName = /^(beta|nightly)/.test(channel) ? channel.split("/")[0] : "stable";
@@ -1363,13 +1654,18 @@ const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n
     ["visibility", q(["//visibility:public"])],
   ]);
 }).join("\n");
+const loomSetting = `load("//rust/crates/test-runner:isolated_test.bzl", "loom_flag")
+${rule("loom_flag", [["name", q("loom_flag")], ["build_setting_default", "False"]])}
+${rule("config_setting", [["name", q("loom")], ["flag_values", q({"//:loom_flag": "True"})]])}
+`;
 /** @type {Map<string,string|null>} */
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
+${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}${loomSetting}
+${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}

@@ -29,7 +29,7 @@ impl MemoryStream {
             state.tail(&request.destination),
         )?;
         reserve_fork(state, request, self.limits)?;
-        reserve_commit(state, self.limits)?;
+        reserve_commit(state, self.limits, reserved(state))?;
         if durable {
             self.reserve_commit_index(&mut probes)?;
         }

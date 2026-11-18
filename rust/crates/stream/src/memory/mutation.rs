@@ -1,7 +1,12 @@
-fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
-    if limits.commits.is_some_and(|limit| {
-        state.decision.saturating_add(reserved(state).0 as u64) >= limit as u64
-    }) {
+fn reserve_commit(
+    state: &State,
+    limits: MemoryLimits,
+    reserved: (usize, usize),
+) -> Result<(), StreamError> {
+    if limits
+        .commits
+        .is_some_and(|limit| state.decision.saturating_add(reserved.0 as u64) >= limit as u64)
+    {
         Err(StreamError::Capacity)
     } else {
         Ok(())
@@ -14,13 +19,14 @@ fn reserve_append(
     records: &[AppendRecord],
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
+    let reserved = reserved(state);
     reserve_paths(state, path, limits)?;
-    reserve_commit(state, limits)?;
+    reserve_commit(state, limits, reserved)?;
     let bytes = records
         .iter()
         .map(AppendRecord::payload_bytes)
         .sum::<usize>();
-    reserve_records(state, records.len(), bytes, limits)
+    reserve_records(state, records.len(), bytes, limits, reserved)
 }
 
 impl MemoryStream {

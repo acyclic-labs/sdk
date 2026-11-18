@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests;
 
 /// An original publication and its caller-supplied evidence, recovered together.

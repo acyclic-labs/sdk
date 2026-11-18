@@ -596,11 +596,10 @@ fn invariant_inline(error: InlineFileDataError) -> CanonicalDecodeError {
 #[cfg(test)]
 #[path = "tests/file_table.rs"]
 mod tests;
+#[cfg(all(test, not(loom)))]
+use super::types::digest_object;
 
 #[cfg(test)]
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "tests/file_table_decode/performance.rs"]
 mod decode_probe;
-
-#[cfg(test)]
-use super::types::digest_object;

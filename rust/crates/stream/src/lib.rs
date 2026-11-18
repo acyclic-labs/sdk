@@ -107,6 +107,8 @@ pub mod codec_fuzz;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
+#[doc(hidden)]
+pub mod heap_future;
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 #[path = "memory/recovery_model.rs"]
 /// Bounded schedule verification of production query concurrency paths.

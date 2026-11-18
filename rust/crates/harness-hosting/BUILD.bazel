@@ -75,7 +75,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",

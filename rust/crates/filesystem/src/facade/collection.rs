@@ -285,7 +285,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 
     /// The epoch this root's publications retain under.
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pub(crate) fn local_epoch(&self) -> Arc<crate::logical_objects::Epoch> {
         Arc::clone(self.inner.objects.inner().inner().epoch())
     }

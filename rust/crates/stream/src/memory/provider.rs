@@ -695,13 +695,18 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.lease_ephemeral",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            self.lease_ephemeral_inner(root)
+            crate::heap_future::in_heap(|| self.lease_ephemeral_inner(root)).erase_task()
         )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn is_ephemeral(&self, path: &StreamPath) -> Result<bool, StreamError> {
-        Ok(self.ephemeral_mask(std::slice::from_ref(path)).await == [true])
+        Ok(
+            crate::heap_future::in_heap(|| self.ephemeral_mask(std::slice::from_ref(path)))
+                .erase_task()
+                .await
+                == [true],
+        )
     }
 
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
@@ -709,7 +714,7 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.heads",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            self.heads_inner(request)
+            crate::heap_future::in_heap(|| self.heads_inner(request)).erase_task()
         )
     }
 
@@ -721,7 +726,8 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.inspect_idempotency",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            self.inspect_idempotency_inner(idempotency_key)
+            crate::heap_future::in_heap(|| self.inspect_idempotency_inner(idempotency_key))
+                .erase_task()
         )
     }
 
@@ -782,7 +788,8 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.read",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async { self.read_inner(request.validate()?).await }
+            crate::heap_future::in_heap(|| async { self.read_inner(request.validate()?).await })
+                .erase_task()
         )
     }
 
@@ -794,7 +801,7 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.follow",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            self.follow_inner(request)
+            crate::heap_future::in_heap(|| self.follow_inner(request)).erase_task()
         )
     }
 
@@ -803,7 +810,7 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.read_commit",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            self.read_commit_inner(commit_id)
+            crate::heap_future::in_heap(|| self.read_commit_inner(commit_id)).erase_task()
         )
     }
 }

@@ -45,7 +45,7 @@ cargo_build_script(
         "--check-cfg=cfg(feature, values(\"object-revisions\", \"storage-schedules\"))",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
     deps = [
         "//compatibility:acyclic_proto_build",
         "@sdk_crates//heck-0.5.0",
@@ -118,7 +118,6 @@ rust_test(
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature, values(\"object-revisions\", \"storage-schedules\"))",
     ],
-    lint_config = ":lints",
     deps = [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/test-support:acyclic_test_support",

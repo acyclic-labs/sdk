@@ -44,10 +44,10 @@ const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 pub(crate) mod access;
 #[cfg(test)]
 mod access_tests;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod accounting_tests;
 mod attributes;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 pub(crate) use accounting_tests::Prefunded;
 mod changed_paths;
 mod checkout;
@@ -86,7 +86,7 @@ pub use publication::OperationPublication;
 mod read_core;
 mod reads;
 mod restore;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod retention_accounting_tests;
 mod reverse_paths;
 pub use reverse_paths::FileIdentityPaths;
@@ -150,7 +150,7 @@ use read_core::{
 };
 pub use transaction::Transaction;
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 #[path = "../tests/workspace/mod.rs"]
 mod tests;
 

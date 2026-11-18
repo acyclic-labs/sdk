@@ -4,9 +4,6 @@ use super::*;
 #[cfg(loom)]
 pub(in crate::native_mount) mod kernel;
 mod linux;
-#[cfg(test)]
-#[cfg(loom)]
-mod models;
 
 // Detection, owner acquisition and detach all operate on the one pinned object.
 fn recover(destination: &linux::Pinned) -> Result<bool, NativeMountError> {

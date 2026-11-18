@@ -194,6 +194,8 @@ type ObservedRevisions =
 #[path = "revision/participant.rs"]
 mod participant;
 use participant::ObservedAuthority;
+#[cfg(all(loom, test))]
+pub use participant::verify_concurrent_frontier;
 
 #[derive(Debug)]
 enum TrackedRevisions {

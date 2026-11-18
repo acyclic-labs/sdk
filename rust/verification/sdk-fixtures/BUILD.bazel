@@ -33,7 +33,7 @@ cargo_build_script(
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
 )
 
 rust_library(
@@ -72,7 +72,6 @@ rust_test(
         "--check-cfg=cfg(feature, values(\"model-checking\"))",
         "--check-cfg=cfg(loom)",
     ],
-    lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )
@@ -127,7 +126,6 @@ rust_test(
         "--check-cfg=cfg(feature, values(\"model-checking\"))",
         "--check-cfg=cfg(loom)",
     ],
-    lint_config = ":lints",
     deps = [
         ":sdk_fixture_verification",
         ":build_script",

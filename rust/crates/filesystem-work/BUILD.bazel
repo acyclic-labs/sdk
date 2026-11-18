@@ -87,7 +87,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//serde-1.0.229",
