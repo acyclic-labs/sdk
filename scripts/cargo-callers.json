@@ -54,7 +54,6 @@
   "scripts/qualify-wave1-coverage.py",
   "scripts/release-evidence.mjs",
   "scripts/run-browser-tests.sh",
-  "scripts/run-harness-conformance.mjs",
   "scripts/test-build-stream-native.mjs",
   "scripts/test-provider-catalog-targets.py",
   "scripts/windows-rust-setup.ps1",
