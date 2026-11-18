@@ -331,9 +331,8 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
         "commit" => request_json_commit(input),
         "commits/read" => {
             let request = wire::ReadCommitRequest::decode(input).map_err(|_| "invalid_argument")?;
-            let id =
-                <[u8; 32]>::try_from(request.commit_id.as_ref()).map_err(|_| "invalid_argument")?;
-            Ok(json!({ "commitId": STANDARD.encode(id) }))
+            let id = wire_codec::commit_id(&request.commit_id).map_err(|_| "invalid_argument")?;
+            Ok(json!({ "commitId": STANDARD.encode(id.as_bytes()) }))
         }
         "tokens/create" => request_json_tokens_create(input),
         _ => Err("invalid_argument"),

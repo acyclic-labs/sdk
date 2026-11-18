@@ -296,11 +296,11 @@ impl WasmStream {
             "commit" => dispatch_commit(self.provider.as_ref(), input).await?,
             "read_commit" => {
                 let request = decode::<wire::ReadCommitRequest>(input)?;
-                let commit_id = <[u8; 32]>::try_from(request.commit_id.as_ref())
+                let commit_id = wire_codec::commit_id(&request.commit_id)
                     .map_err(|_| js_error(StreamError::InvalidArgument))?;
                 let response = self
                     .provider
-                    .read_commit(crate::CommitId::from_bytes(commit_id))
+                    .read_commit(commit_id)
                     .await
                     .map_err(js_error)?;
                 wire_codec::envelope_to_wire(response).encode_to_vec()
