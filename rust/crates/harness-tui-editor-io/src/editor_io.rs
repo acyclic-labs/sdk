@@ -1,4 +1,5 @@
 use crate::editor_args::editor_command;
+use acyclic_harness_tui_core::{DEFAULT_SETTINGS, UiSettings};
 use std::{
     io::{self, Write},
     path::Path,
@@ -23,7 +24,7 @@ pub enum ClipboardContent {
 /// Prepare an RGBA clipboard image without allowing malformed dimensions or
 /// overflowing byte counts to reach the image encoder.
 pub fn prepare_image(width: u32, height: u32, rgba: Vec<u8>) -> io::Result<ClipboardContent> {
-    prepare_image_with_settings(width, height, rgba, crate::DEFAULT_SETTINGS)
+    prepare_image_with_settings(width, height, rgba, DEFAULT_SETTINGS)
 }
 
 /// Prepare an attachment using followed image preferences.
@@ -31,7 +32,7 @@ pub fn prepare_image_with_settings(
     width: u32,
     height: u32,
     rgba: Vec<u8>,
-    settings: crate::UiSettings,
+    settings: UiSettings,
 ) -> io::Result<ClipboardContent> {
     if !settings.valid() {
         return Err(io::Error::other("invalid image preferences"));

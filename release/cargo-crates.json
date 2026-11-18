@@ -44,6 +44,7 @@
   "acyclic-syntect",
   "acyclic-markdown",
   "acyclic-harness-tui-core",
+  "acyclic-harness-tui-editor-io",
   "acyclic-harness-tui-terminal",
   "acyclic-harness-tui",
   "acyclic-model-render",

@@ -1369,6 +1369,7 @@ name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
  "acyclic-harness-tui-core",
+ "acyclic-harness-tui-editor-io",
  "acyclic-harness-tui-terminal",
  "acyclic-markdown",
  "acyclic-native-runtime",
@@ -1406,6 +1407,16 @@ dependencies = [
  "serde_json",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "acyclic-harness-tui-editor-io"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness-tui-core",
+ "acyclic-native-runtime",
+ "image",
+ "shell-words",
 ]
 
 [[package]]

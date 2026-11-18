@@ -1,0 +1,19 @@
+[package]
+name = "acyclic-harness-tui-editor-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "External editor handoff and clipboard image preparation for the harness TUI"
+
+[dependencies]
+acyclic-harness-tui-core = { version = "=0.2.0", path = "../harness-tui-core" }
+shell-words = "1.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[lints]
+workspace = true
