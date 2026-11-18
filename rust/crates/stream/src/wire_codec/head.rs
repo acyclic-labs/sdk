@@ -158,7 +158,7 @@ fn head_observation_from_wire(
     // Preserve refusal ordering before decoding an independently malformed origin.
     head.validate_projection(projection)?;
     head.origin = value.origin.map(fork_origin_from_wire).transpose()?;
-    head.validate_projection(projection)?;
+    head.validate_origin()?;
     Ok(head)
 }
 

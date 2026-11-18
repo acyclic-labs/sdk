@@ -99,6 +99,17 @@ impl HeadsRequest {
         {
             return Err(StreamError::InvalidArgument);
         }
+        self.validate_origin()
+    }
+
+    pub(crate) fn validate_origin(&self) -> Result<(), StreamError> {
+        if self
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.inherited.forked_at > self.tail)
+        {
+            return Err(StreamError::InvalidResponse);
+        }
         Ok(())
     }
 
@@ -138,27 +149,7 @@ impl Heads {
     /// Returns `InvalidResponse` when a returned fact does not match the request.
     pub fn validate_for(&self, request: &HeadsRequest) -> Result<(), StreamError> {
         let child_count = self.children.as_ref().map_or(0, |page| page.children.len());
-        if self.projection != request.projection
-            || self.heads.len() != request.paths.len()
-            || self.retained.len() != request.retained.len()
-            || self.children.is_some() != request.children.is_some()
-            || child_count
-                > request
-                    .children
-                    .as_ref()
-                    .map_or(0, |page| page.limit as usize)
-            || self
-                .heads
-                .len()
-                .saturating_add(self.retained.len())
-                .saturating_add(child_count)
-                > request.limit as usize
-            || !request.at_least.proven_by(Some(&self.applied))
-            || request
-                .at
-                .as_ref()
-                .map_or(self.snapshot != self.applied, |at| at != &self.snapshot)
-        {
+        if self.projection != request.projection {
             return Err(StreamError::InvalidResponse);
         }
         for (observation, selected) in self.retained.iter().zip(&request.retained) {
