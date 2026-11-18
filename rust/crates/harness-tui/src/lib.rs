@@ -15,10 +15,6 @@ mod feedback;
 #[cfg(not(target_arch = "wasm32"))]
 pub use feedback::Feedback;
 #[cfg(not(target_arch = "wasm32"))]
-mod editor_args;
-#[cfg(not(target_arch = "wasm32"))]
-mod editor_io;
-#[cfg(not(target_arch = "wasm32"))]
 mod input_events;
 #[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 pub mod onboarding;
@@ -73,13 +69,14 @@ pub use acyclic_harness_tui_core::{
     key_event,
 };
 #[cfg(not(target_arch = "wasm32"))]
+pub use acyclic_harness_tui_editor_io::{
+    ClipboardContent, edit_external, editor_command, prepare_image, prepare_image_with_settings,
+    unix_editor_command, windows_editor_command,
+};
+#[cfg(not(target_arch = "wasm32"))]
 pub use completion_popup::CompletionPopup;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crossterm;
-#[cfg(not(target_arch = "wasm32"))]
-pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};
-#[cfg(not(target_arch = "wasm32"))]
-pub use editor_io::{ClipboardContent, edit_external, prepare_image, prepare_image_with_settings};
 #[cfg(not(target_arch = "wasm32"))]
 pub use prompt_box::PromptBox;
 #[cfg(not(target_arch = "wasm32"))]
