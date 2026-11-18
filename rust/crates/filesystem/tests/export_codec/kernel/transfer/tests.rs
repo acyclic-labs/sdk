@@ -15,13 +15,14 @@ use acyclic_fs_format::{
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
 use super::super::memory::memory_objects;
+use super::super::tree_objects::put_tree_page;
 
 #[path = "../../../support/transfer_manifest.rs"]
 mod transfer_manifest;
 use transfer_manifest::fixture;
 
 use super::super::generation_objects::{
-    put_file_metadata, put_file_table_page, put_generation_root, put_tree_page,
+    put_file_metadata, put_file_table_page, put_generation_root,
 };
 
 #[tokio::test]
