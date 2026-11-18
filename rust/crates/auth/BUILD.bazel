@@ -14,6 +14,7 @@ FEATURES = [
     ]
 
 WASM_FEATURES = [
+        "grpc",
         "grpc-metadata",
         "javascript",
         "js-credential",

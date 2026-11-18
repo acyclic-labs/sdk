@@ -39,6 +39,7 @@ acyclic-harness-client = { path = "../crates/harness-client" }
 acyclic-inference = { path = "../crates/inference", default-features = false, features = ["http-codec"] }
 acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support"] }
 acyclic-machines-simulation = { path = "../crates/machines-simulation", features = ["test-support"] }
+acyclic-machines-grpc = { path = "../crates/machines-grpc", features = ["test-support"] }
 acyclic-model-render = { path = "../crates/model-render" }
 acyclic-log-frame = { path = "../crates/log-frame" }
 acyclic-native-runtime = { path = "../crates/native-runtime" }

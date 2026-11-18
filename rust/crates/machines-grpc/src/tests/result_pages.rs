@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_machines_simulation::SimulatedMachines;
-use crate::results::{ResultCursor, ResultCut};
+use acyclic_machines::results::{ResultCursor, ResultCut};
 
 #[tokio::test]
 async fn failed_remote_forks_retain_partial_and_empty_cuts_and_refuse_fidelity_downgrades()
@@ -320,7 +320,7 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
     {
         use prost::Message as _;
         assert!(
-            crate::grpc::codec_fuzz::check("acyclic.machines.v1.ResultPage", &page.encode_to_vec())
+            crate::codec_fuzz::check("acyclic.machines.v1.ResultPage", &page.encode_to_vec())
                 .is_ok()
         );
     }

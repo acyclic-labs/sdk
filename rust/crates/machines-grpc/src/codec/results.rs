@@ -1,5 +1,5 @@
 use super::*;
-use crate::results::{ResultCursor, ResultCut, ResultPage, Settlement};
+use acyclic_machines::results::{ResultCursor, ResultCut, ResultPage, Settlement};
 
 impl From<Provenance<ForkSource, ForkFidelity>> for wire::Provenance {
     fn from(value: Provenance<ForkSource, ForkFidelity>) -> Self {

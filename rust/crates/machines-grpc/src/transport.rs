@@ -89,7 +89,7 @@ pub(super) trait Messages<T>: Stream<Item = Result<T, Status>> + Unpin {
 impl<T, S: Stream<Item = Result<T, Status>> + Unpin> Messages<T> for S {}
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Deadline for crate::provider::deadline::GuestDeadline {
+impl Deadline for acyclic_machines::deadline::GuestDeadline {
     fn remaining(&self) -> Option<Duration> {
         self.remaining()
     }

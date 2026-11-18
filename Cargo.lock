@@ -236,6 +236,7 @@ dependencies = [
  "acyclic-inference",
  "acyclic-log-frame",
  "acyclic-machines",
+ "acyclic-machines-grpc",
  "acyclic-machines-simulation",
  "acyclic-mcp",
  "acyclic-model-render",
@@ -664,6 +665,7 @@ dependencies = [
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-daytona",
+ "acyclic-machines-grpc",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -1464,6 +1466,41 @@ dependencies = [
  "tsify",
  "uuid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "acyclic-machines-grpc"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-grpc-observability",
+ "acyclic-machines",
+ "acyclic-machines-simulation",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "acyclic-stream",
+ "async-trait",
+ "futures",
+ "hex",
+ "hyper-util",
+ "js-sys",
+ "proptest",
+ "prost",
+ "rcgen",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
  "wasm-bindgen-futures",
 ]
 

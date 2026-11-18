@@ -49,7 +49,7 @@ pub(super) fn decode_uuid(value: &[u8]) -> Result<Uuid, ProviderError> {
     let bytes: [u8; 16] = value
         .try_into()
         .map_err(|_| ProviderError::Rejected("identity width is invalid".into()))?;
-    crate::contract::admit_uuid(Uuid::from_bytes(bytes))
+    acyclic_machines::admit_uuid(Uuid::from_bytes(bytes))
         .map_err(|_| ProviderError::Rejected("nil identity is invalid".into()))
 }
 pub(super) fn decode_operation(

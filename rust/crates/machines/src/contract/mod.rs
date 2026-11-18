@@ -1,6 +1,6 @@
 use super::*;
 mod identity;
-pub(crate) use identity::admit_uuid;
+pub use identity::admit_uuid;
 pub use identity::*;
 mod image;
 pub use image::*;

@@ -107,10 +107,7 @@ pub mod http_codec;
 pub mod results;
 
 
-pub mod grpc;
 mod obs;
-#[cfg(not(target_arch = "wasm32"))]
-pub use grpc::Tls;
 
 #[cfg(test)]
 mod admission_tests {

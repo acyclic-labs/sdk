@@ -514,7 +514,7 @@ machine_mutations! {
                     read_error(error)
                 })?
                 .into_inner();
-            Ok(crate::provider::events::checked(machine, after_sequence, events, move |mut events| async move {
+            Ok(acyclic_machines::events::checked(machine, after_sequence, events, move |mut events| async move {
                 match events.message().await.map_err(|error| read_error(error))? {
                     Some(event) => Ok(Some((decode_event(&event, machine)?, events))),
                     None => Ok(None),
@@ -556,9 +556,9 @@ machine_mutations! {
 
     async fn read_results(
         &self,
-        cursor: crate::results::ResultCursor,
+        cursor: acyclic_machines::results::ResultCursor,
         credit: NonZeroU32,
-    ) -> Result<crate::results::ResultPage, ProviderError> {
+    ) -> Result<acyclic_machines::results::ResultPage, ProviderError> {
         obs::operation!("acyclic.machines.read_results", observation, async {
             let credit = NonZeroU32::new(credit.get().min(MAX_PAGE_SIZE)).unwrap_or(NonZeroU32::MIN);
             cursor.interval(cursor.cut, credit)?;

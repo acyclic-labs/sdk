@@ -1,5 +1,5 @@
 use super::*;
-use crate::grpc::{files, recovery};
+use crate::{files, recovery};
 
 pub(super) fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let machine = MachineId::from_digest([1; 32]);

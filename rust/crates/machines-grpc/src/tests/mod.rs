@@ -638,6 +638,7 @@ fn recovered_suspend(
 }
 
 mod codecs;
+mod deadline;
 mod operations;
 mod recovery;
 mod result_pages;
