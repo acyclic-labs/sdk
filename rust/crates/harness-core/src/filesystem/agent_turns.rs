@@ -108,6 +108,13 @@ pub enum TurnAdmission {
 }
 
 impl TurnAdmission {
+    pub(super) fn parent(&self) -> Option<&Scope> {
+        match self {
+            Self::LocalRoot => None,
+            Self::Admitted { scope, .. } => Some(scope),
+        }
+    }
+
     /// Host observation uses the retained host ceiling, not a workload's
     /// agent-bound scope. Native custody observes under the admission its
     /// agents' turns run under, so a signed checkpoint verifies under the
@@ -202,10 +209,7 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
             ));
         }
         let issuer = admission.verify(issuer, path)?;
-        let parent = match admission {
-            TurnAdmission::LocalRoot => None,
-            TurnAdmission::Admitted { scope, .. } => Some(scope),
-        };
+        let parent = admission.parent();
         if let Some(scope) = parent {
             let verifier = issuer.verifier(&mut None)?;
             crate::conversation::ContentGrant::authorize_agent_volume(
@@ -546,6 +550,18 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
             volume.require_writer(Some(self.owner), &None)?;
         }
         Ok(())
+    }
+
+    /// Issues a scoped file grant from the original verified admission.
+    pub(super) async fn file_scope(
+        &self,
+        grants: &Capabilities,
+    ) -> Result<(Scope, crate::core::AuthorityVerifier)> {
+        let scope = self
+            .issuer
+            .issue(self.parent, "client-files", grants, Some(self.owner))
+            .await?;
+        Ok((scope, self.issuer.verifier(&mut None)?))
     }
 
     /// Host-owned storage is outside the workload's tool grant. Native custody

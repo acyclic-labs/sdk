@@ -56,7 +56,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         )
         .map_err(turn)?;
         admitted.authorize_volume(&volume).map_err(turn)?;
-        let issuer = self.admission.verify(&self.issuer, agent).map_err(turn)?;
         let mut grants = vec![
             volume
                 .capability(VolumeOperation::Read, &mut None)
@@ -75,21 +74,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                     .map_err(turn)?,
             );
         }
-        let grants = Capabilities::new(grants);
-        let parent = match &self.admission {
-            TurnAdmission::LocalRoot => None,
-            TurnAdmission::Admitted { scope, .. } => Some(scope),
-        };
-        let scope = issuer
-            .issue(
-                parent,
-                "client-files",
-                &grants,
-                Some(crate::AgentId::from_bytes(agent.id_bytes())),
-            )
+        let (scope, verifier) = admitted
+            .file_scope(&Capabilities::new(grants))
             .await
             .map_err(turn)?;
-        let verifier = issuer.verifier(&mut None).map_err(turn)?;
         Ok((volume, scope, verifier))
     }
 
@@ -179,13 +167,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let (volume, scope, verifier) = self.file_volume(agent, root, false).await?;
         if matches!(root, FileRoot::ClientSession { .. }) {
             self.volumes
-                .create_volume_admitted(
-                    &volume,
-                    match &self.admission {
-                        TurnAdmission::Admitted { scope, .. } => Some(scope),
-                        _ => None,
-                    },
-                )
+                .create_volume_admitted(&volume, self.admission.parent())
                 .await
                 .map_err(turn)?;
         }
@@ -319,13 +301,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         };
         let selected = if !watching && matches!(root, FileRoot::ClientSession { .. }) {
             self.volumes
-                .create_volume_admitted(
-                    &volume,
-                    match &self.admission {
-                        TurnAdmission::Admitted { scope, .. } => Some(scope),
-                        _ => None,
-                    },
-                )
+                .create_volume_admitted(&volume, self.admission.parent())
                 .await
                 .map_err(turn)?
         } else {
@@ -517,13 +493,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             .await?;
         if matches!(root, FileRoot::ClientSession { .. }) {
             self.volumes
-                .create_volume_admitted(
-                    &volume,
-                    match &self.admission {
-                        TurnAdmission::Admitted { scope, .. } => Some(scope),
-                        _ => None,
-                    },
-                )
+                .create_volume_admitted(&volume, self.admission.parent())
                 .await
                 .map_err(turn)?;
         }
