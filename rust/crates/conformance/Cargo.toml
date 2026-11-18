@@ -23,7 +23,6 @@ actors-hosting = ["client-session", "acyclic-harness/conformance", "dep:acyclic-
 storage-backends = ["acyclic-fs/conformance", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
 harness-accounting = []
 local-runner = ["dep:tempfile", "dep:rusqlite", "dep:notify"]
-s3-fixture = ["local-runner", "dep:async-trait", "dep:axum", "dep:s3s"]
 # Drives a built `graphcoder` binary against the local harness, its
 # self-hosted endpoint, and the same server through injected seams
 # (`graphcoder-seams`; see tests/graphcoder_backends.rs).
@@ -64,7 +63,6 @@ tokio = { workspace = true, features = ["process"] }
 tempfile = { version = "3.27.0", optional = true }
 rusqlite = { version = "0.41", features = ["bundled"], optional = true }
 notify = { workspace = true, optional = true }
-s3s = { workspace = true, optional = true }
 
 [[test]]
 name = "graphcoder_backends"
@@ -118,12 +116,6 @@ required-features = ["local-hotpath"]
 name = "native_observation"
 harness = false
 required-features = ["local-runner"]
-
-[[bin]]
-name = "s3-fixture"
-test = false
-path = "src/bin/s3_fixture.rs"
-required-features = ["s3-fixture"]
 
 [[bin]]
 name = "dependency_vectors"

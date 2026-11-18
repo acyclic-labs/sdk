@@ -19,8 +19,9 @@ pub use policy_fence::PolicyFence;
 mod retry;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use retry::{RetryError, observe_policy};
-#[cfg(test)]
-pub(crate) mod fixtures;
+/// Canonical policy setup for filesystem conformance tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
 mod glob;
 mod mount;
 mod names;

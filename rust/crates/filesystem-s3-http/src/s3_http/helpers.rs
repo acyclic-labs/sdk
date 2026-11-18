@@ -103,14 +103,16 @@ fn check_conditions(
 }
 
 fn committed_generation<A, O>(
-    commit: crate::TransactionCommit<A, O>,
-) -> S3Result<crate::Generation<A, O>> {
+    commit: acyclic_fs::TransactionCommit<A, O>,
+) -> S3Result<acyclic_fs::Generation<A, O>> {
     match commit {
-        crate::TransactionCommit::Committed(generation)
-        | crate::TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-        crate::TransactionCommit::Conflict { .. }
-        | crate::TransactionCommit::Fenced
-        | crate::TransactionCommit::IdempotencyConflict => Err(s3s::s3_error!(PreconditionFailed)),
+        acyclic_fs::TransactionCommit::Committed(generation)
+        | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+        acyclic_fs::TransactionCommit::Conflict { .. }
+        | acyclic_fs::TransactionCommit::Fenced
+        | acyclic_fs::TransactionCommit::IdempotencyConflict => {
+            Err(s3s::s3_error!(PreconditionFailed))
+        }
     }
 }
 
@@ -237,7 +239,9 @@ fn s3_error(error: &S3Error) -> s3s::S3Error {
         S3Error::ForeignGeneration | S3Error::ForeignTransaction => {
             s3s::s3_error!(AccessDenied)
         }
-        S3Error::Workspace(crate::WorkspaceError::AccessDenied) => s3s::s3_error!(AccessDenied),
+        S3Error::Workspace(acyclic_fs::WorkspaceError::AccessDenied) => {
+            s3s::s3_error!(AccessDenied)
+        }
         S3Error::InvalidObject | S3Error::Workspace(_) => s3s::s3_error!(InternalError),
     }
 }

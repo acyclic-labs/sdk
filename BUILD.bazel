@@ -130,6 +130,8 @@ filegroup(
         "//rust/crates/filesystem-napi:Cargo.toml",
         "//rust/crates/filesystem-native-contract:Cargo.toml",
         "//rust/crates/filesystem-native-core-tests:Cargo.toml",
+        "//rust/crates/filesystem-s3-http-fixture:Cargo.toml",
+        "//rust/crates/filesystem-s3-http:Cargo.toml",
         "//rust/crates/filesystem-wasm:Cargo.toml",
         "//rust/crates/filesystem-wire:Cargo.toml",
         "//rust/crates/filesystem-work:Cargo.toml",

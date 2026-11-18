@@ -105,73 +105,31 @@ where
         validate_http_key(&request.input.key)?;
         reject_create_multipart_extensions(&request.input)?;
         let operation = request_operation(&request)?;
-        let upload_id = Self::multipart_upload_id(&workspace, operation);
-        let path = Self::multipart_path(&workspace, &upload_id)?;
-        let provider = workspace.volume.fs.authority().stream_provider();
+        let upload_id = workspace.multipart_upload_id(operation);
         let record = encode_multipart_created(
             &request.input.key,
             self.limits.maximum_multipart_parts,
             self.limits.maximum_multipart_part_bytes,
             self.limits.minimum_multipart_part_bytes,
-        )?;
-        let registry = Self::multipart_registry_path(&upload_id)?;
-        let (registry_condition, registry_tail) = match provider.tail(registry.clone()).await {
-            Ok(tail) => (
-                acyclic_stream::CommitCondition::Tail {
-                    path: registry.clone(),
-                    expected: tail,
-                },
-                tail,
-            ),
-            Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => (
-                acyclic_stream::CommitCondition::Absent {
-                    path: registry.clone(),
-                },
-                0,
-            ),
-            Err(error) => return Err(stream_read_error(&error)),
-        };
-        let attempt =
-            Self::multipart_cas_operation(&upload_id, b"create\0", operation, registry_tail)?;
-        match provider
-            .commit(acyclic_stream::CommitRequest {
-                deadline_unix_millis: None,
-                effects: vec![acyclic_stream::CommitEffect::hard(
-                    vec![
-                        registry_condition,
-                        acyclic_stream::CommitCondition::Absent { path: path.clone() },
-                    ],
-                    vec![
-                        acyclic_stream::CommitMutation::Append {
-                            path: registry,
-                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
-                        },
-                        acyclic_stream::CommitMutation::Append {
-                            path,
-                            records: vec![record.into()],
-                        },
-                    ],
-                )],
-                idempotency_key: attempt,
-            })
+        )
+        .map_err(multipart_storage_error)?;
+        if !workspace
+            .create_multipart_record(&upload_id, record, operation)
             .await
-            .map_err(|error| stream_write_error(&error))?
+            .map_err(multipart_storage_error)?
         {
-            acyclic_stream::CommitOutcome::Committed(_) => {}
-            acyclic_stream::CommitOutcome::Conflict(_) => {
-                let snapshot = self
-                    .multipart_snapshot(&workspace, &upload_id)
-                    .await
-                    .map_err(|error| {
-                        if error.code() == &s3s::S3ErrorCode::NoSuchUpload {
-                            s3s::s3_error!(SlowDown)
-                        } else {
-                            error
-                        }
-                    })?;
-                if snapshot.key != request.input.key {
-                    return Err(s3s::s3_error!(InvalidRequest));
-                }
+            let snapshot = self
+                .multipart_snapshot(&workspace, &upload_id)
+                .await
+                .map_err(|error| {
+                    if error.code() == &s3s::S3ErrorCode::NoSuchUpload {
+                        s3s::s3_error!(SlowDown)
+                    } else {
+                        error
+                    }
+                })?;
+            if snapshot.key != request.input.key {
+                return Err(s3s::s3_error!(InvalidRequest));
             }
         }
         Ok(S3Response::new(CreateMultipartUploadOutput {
@@ -264,13 +222,14 @@ where
                 &workspace,
                 &request.input.upload_id,
                 snapshot.tail,
-                encode_multipart_part(part_number, staged, operation, &etag_value),
-                Self::multipart_cas_operation(
-                    &request.input.upload_id,
-                    b"part\0",
+                encode_multipart_part(
+                    part_number,
+                    staged.root(),
+                    staged.logical_bytes(),
                     operation,
-                    snapshot.tail,
-                )?,
+                    &etag_value,
+                ),
+                operation,
             )
             .await?
         {
@@ -399,14 +358,14 @@ where
             transaction
                 .commit(
                     None,
-                    crate::PublicationPermit::Unrestricted,
+                    acyclic_fs::PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                     |_| async {
-                        Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                            crate::OperationReceipt {
+                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                            acyclic_fs::OperationReceipt {
                                 value: (),
-                                work: crate::WorkCounters::default(),
+                                work: acyclic_fs::WorkCounters::default(),
                             },
                         )
                     },
@@ -465,12 +424,7 @@ where
                         &request.input.upload_id,
                         snapshot.tail,
                         encode_multipart_aborted(),
-                        Self::multipart_cas_operation(
-                            &request.input.upload_id,
-                            b"abort\0",
-                            operation,
-                            snapshot.tail,
-                        )?,
+                        operation,
                     )
                     .await?
                 {

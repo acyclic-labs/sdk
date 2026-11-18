@@ -1,9 +1,7 @@
 use crate::*;
 
-pub(crate) async fn publish_policy<
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
->(
+/// Publishes the policy through a filesystem transaction.
+pub async fn publish_policy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     policy: &super::Policy,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +48,8 @@ pub(crate) async fn publish_policy<
     Ok(())
 }
 
-pub(crate) fn denied(action: super::Action, path: &str) -> super::Policy {
+/// Builds a policy with a deny rule for the requested action and path.
+pub fn denied(action: super::Action, path: &str) -> super::Policy {
     let mut policy: super::Policy = serde_json::from_slice(super::INITIAL_POLICY).unwrap();
     policy.version += 1;
     let mut rule = policy.layers[0][0].clone();

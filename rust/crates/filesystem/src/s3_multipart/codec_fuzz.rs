@@ -1,7 +1,7 @@
 //! On-demand multipart record admission through the original replay decoder.
 use super::*;
 
-fn created() -> S3Result<Bytes> {
+fn created() -> MultipartStorageResult<MultipartCreateRecord> {
     let limits = FilesystemS3Limits::default();
     encode_multipart_created("key", Some(2), limits.maximum_multipart_part_bytes, 0)
 }
@@ -39,7 +39,8 @@ fn check_inner(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                 assert_eq!(
                     encode_multipart_part(
                         *number,
-                        part.staged,
+                        part.staged.root(),
+                        part.staged.logical_bytes(),
                         IdempotencyKey::from_bytes(*operation),
                         etag
                     )
@@ -74,31 +75,27 @@ fn check_inner(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 
 fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
     for version in [0, 2, u8::MAX] {
-        let mut header = RecordCursor::new(std::slice::from_ref(&version));
+        let (tag, consumed) = inspect_multipart_header(std::slice::from_ref(&version));
         assert!(
-            matches!(header.any_header(), Err(MultipartDecodeError::UnsupportedVersion(found)) if found == version)
+            matches!(tag, Err(MultipartStorageError::UnsupportedVersion(found)) if found == version)
         );
         assert_eq!(
-            header.offset, 0,
+            consumed, 0,
             "unsupported version must not consume a payload field"
         );
-        let error: s3s::S3Error = MultipartDecodeError::UnsupportedVersion(version).into();
-        assert_eq!(error.code(), &s3s::S3ErrorCode::NotImplemented);
         let record = Bytes::copy_from_slice(&[version]).into();
         assert!(matches!(
             decode_multipart(vec![record], 1, FilesystemS3Limits::default()),
-            Err(MultipartDecodeError::UnsupportedVersion(found)) if found == version
+            Err(MultipartStorageError::UnsupportedVersion(found)) if found == version
         ));
     }
-    let mut missing = RecordCursor::new(&[]);
     assert!(matches!(
-        missing.any_header(),
-        Err(MultipartDecodeError::UnsupportedVersion(0))
+        inspect_multipart_header(&[]).0,
+        Err(MultipartStorageError::UnsupportedVersion(0))
     ));
-    let mut truncated = RecordCursor::new(&[MULTIPART_RECORD_VERSION]);
     assert!(matches!(
-        truncated.any_header(),
-        Err(MultipartDecodeError::Malformed)
+        inspect_multipart_header(&[MULTIPART_RECORD_VERSION]).0,
+        Err(MultipartStorageError::Malformed)
     ));
     // The declared count cannot allocate beyond the actual fixed-width entries,
     // even when the caller configured the widest representable part bound.
@@ -107,7 +104,9 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
         ..FilesystemS3Limits::default()
     };
     let initial = encode_multipart_created("key", Some(u32::MAX), Some(1), 0)?;
-    let mut count_only = encode_multipart_completing(&[(1, etag())])?.to_vec();
+    let mut count_only = encode_multipart_completing(&[(1, etag())])?
+        .as_ref()
+        .to_vec();
     count_only.truncate(6);
     count_only[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(
@@ -116,22 +115,25 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
             2,
             limits
         ),
-        Err(MultipartDecodeError::Malformed)
+        Err(MultipartStorageError::Malformed)
     ));
-    let malformed: s3s::S3Error = MultipartDecodeError::Malformed.into();
-    assert_eq!(malformed.code(), &s3s::S3ErrorCode::InvalidRequest);
     Ok(())
 }
 
 /// Capture each production writer with complete plain and sealed references.
-pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
+pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
     let mut seeds = vec![
-        ("multipart-created", created()?.to_vec()),
+        ("multipart-created", created()?.as_ref().to_vec()),
         (
             "multipart-completing",
-            encode_multipart_completing(&[(1, etag())])?.to_vec(),
+            encode_multipart_completing(&[(1, etag())])?
+                .as_ref()
+                .to_vec(),
         ),
-        ("multipart-aborted", encode_multipart_aborted().to_vec()),
+        (
+            "multipart-aborted",
+            encode_multipart_aborted().as_ref().to_vec(),
+        ),
     ];
     for sealed in [false, true] {
         let root = ObjectId {
@@ -149,13 +151,9 @@ pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
             } else {
                 "multipart-part"
             },
-            encode_multipart_part(
-                1,
-                StagedContent::from_canonical_parts(root, 4),
-                IdempotencyKey::from_bytes([6; 16]),
-                &etag(),
-            )
-            .to_vec(),
+            encode_multipart_part(1, root, 4, IdempotencyKey::from_bytes([6; 16]), &etag())
+                .as_ref()
+                .to_vec(),
         ));
         let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
             kind: crate::ObjectKind::GenerationRoot,
@@ -167,7 +165,7 @@ pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
             } else {
                 "multipart-completed"
             },
-            encode_multipart_completed(generation).to_vec(),
+            encode_multipart_completed(generation).as_ref().to_vec(),
         ));
     }
     Ok(seeds)

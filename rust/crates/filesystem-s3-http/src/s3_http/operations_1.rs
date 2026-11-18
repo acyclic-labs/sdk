@@ -398,14 +398,14 @@ where
         let commit = transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
+                acyclic_fs::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
+                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                        acyclic_fs::OperationReceipt {
                             value: (),
-                            work: crate::WorkCounters::default(),
+                            work: acyclic_fs::WorkCounters::default(),
                         },
                     )
                 },

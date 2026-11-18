@@ -316,7 +316,6 @@ dependencies = [
  "prost",
  "rusqlite",
  "rustls",
- "s3s",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -388,14 +387,12 @@ dependencies = [
  "acyclic-test-support",
  "async-trait",
  "axum",
- "base64 0.23.1",
  "blake3",
  "bytes",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
  "cc",
- "crc-fast",
  "dirs",
  "divan",
  "ed25519-dalek",
@@ -403,7 +400,6 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
- "hmac 0.13.0",
  "http",
  "icu_casemap",
  "indexed_db_futures",
@@ -423,14 +419,10 @@ dependencies = [
  "rcgen",
  "rustix",
  "rustls",
- "s3s",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sha2 0.11.1",
  "strum",
- "subtle",
- "sync_wrapper",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -443,7 +435,6 @@ dependencies = [
  "tracing-subscriber",
  "tsify",
  "unicode-normalization",
- "urlencoding",
  "uuid",
  "vhost",
  "virtio-queue",
@@ -566,6 +557,48 @@ name = "acyclic-fs-native-core-tests"
 version = "0.2.0"
 dependencies = [
  "proptest",
+]
+
+[[package]]
+name = "acyclic-fs-s3-http"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-fs-format",
+ "acyclic-stream",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "blake3",
+ "bytes",
+ "crc-fast",
+ "futures",
+ "hex",
+ "hmac 0.13.0",
+ "http",
+ "s3s",
+ "sha2 0.11.1",
+ "subtle",
+ "sync_wrapper",
+ "time",
+ "tokio",
+ "tower",
+ "urlencoding",
+]
+
+[[package]]
+name = "acyclic-fs-s3-http-fixture"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-fs-format",
+ "acyclic-fs-s3-http",
+ "acyclic-fs-work",
+ "async-trait",
+ "axum",
+ "hex",
+ "s3s",
+ "tokio",
 ]
 
 [[package]]
