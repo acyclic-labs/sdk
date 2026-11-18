@@ -80,12 +80,15 @@ pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) ->
         super::package_manifest::normalize(&template.1["Cargo.toml"], &original).unwrap();
     fs::write(source.join("Cargo.toml.orig"), original).unwrap();
     fs::write(source.join("Cargo.toml"), normalized).unwrap();
-    let lock = fs::read_to_string(source.join("Cargo.lock")).unwrap();
-    fs::write(
-        source.join("Cargo.lock"),
-        lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
-    )
-    .unwrap();
+    if package_name != "demo" {
+        let lock = source.join("Cargo.lock");
+        let contents = fs::read_to_string(&lock).unwrap();
+        fs::write(
+            lock,
+            contents.replace("name = \"demo\"", &format!("name = {package_name:?}")),
+        )
+        .unwrap();
+    }
     source
 }
 
