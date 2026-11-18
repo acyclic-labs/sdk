@@ -22,27 +22,30 @@ fn cargo_metadata_fixture() -> Option<&'static Metadata> {
     }))
 }
 
-fn metadata() -> Metadata {
-    let json = serde_json::json!({
-        "packages": [{
-            "name": "feature-rich", "version": "0.1.0", "id": "path+file:///fixture#feature-rich@0.1.0",
-            "source": null, "dependencies": [], "targets": [],
-            "features": {"default": ["json"], "json": ["codec", "dep:serde_json"], "codec": [], "wasm": ["codec", "other/feature"]},
-            "manifest_path": "C:/fixture/Cargo.toml", "categories": [], "keywords": [], "readme": null,
-            "repository": null, "homepage": null, "documentation": null, "edition": "2021",
-            "metadata": null, "links": null, "publish": null, "default_run": null, "rust_version": null
-        }],
-        "workspace_members": ["path+file:///fixture#feature-rich@0.1.0"],
-        "workspace_default_members": ["path+file:///fixture#feature-rich@0.1.0"],
-        "resolve": null, "workspace_root": "C:/fixture", "target_directory": "C:/fixture/target",
-        "build_directory": null, "metadata": null, "version": 1
+fn metadata() -> &'static Metadata {
+    static METADATA: std::sync::LazyLock<Metadata> = std::sync::LazyLock::new(|| {
+        let json = serde_json::json!({
+            "packages": [{
+                "name": "feature-rich", "version": "0.1.0", "id": "path+file:///fixture#feature-rich@0.1.0",
+                "source": null, "dependencies": [], "targets": [],
+                "features": {"default": ["json"], "json": ["codec", "dep:serde_json"], "codec": [], "wasm": ["codec", "other/feature"]},
+                "manifest_path": "C:/fixture/Cargo.toml", "categories": [], "keywords": [], "readme": null,
+                "repository": null, "homepage": null, "documentation": null, "edition": "2021",
+                "metadata": null, "links": null, "publish": null, "default_run": null, "rust_version": null
+            }],
+            "workspace_members": ["path+file:///fixture#feature-rich@0.1.0"],
+            "workspace_default_members": ["path+file:///fixture#feature-rich@0.1.0"],
+            "resolve": null, "workspace_root": "C:/fixture", "target_directory": "C:/fixture/target",
+            "build_directory": null, "metadata": null, "version": 1
+        });
+        serde_json::from_value(json).expect("valid Cargo metadata fixture")
     });
-    serde_json::from_value(json).expect("valid Cargo metadata fixture")
+    &METADATA
 }
 
 #[test]
 fn browser_profiles_follow_features_and_fail_if_target_is_missing() {
-    let mut metadata = metadata();
+    let mut metadata = (*metadata()).clone();
     let package = &metadata.packages[0];
     let targets = BTreeSet::from(["wasm32-unknown-unknown".into()]);
     let profile = browser_profile_for_package(package, false, &targets)
@@ -72,7 +75,7 @@ fn browser_profiles_follow_features_and_fail_if_target_is_missing() {
 
 #[test]
 fn browser_binding_policy_excludes_native_features_and_rejects_invalid_policy() {
-    let mut metadata = metadata();
+    let mut metadata = (*metadata()).clone();
     let targets = BTreeSet::from(["wasm32-unknown-unknown".into()]);
     metadata.packages[0].metadata = serde_json::json!({"napi":{
         "wasm-package":"feature-rich", "wasm-features":["wasm"], "wasm-no-default-features":true}});
@@ -93,7 +96,7 @@ fn browser_binding_policy_excludes_native_features_and_rejects_invalid_policy() 
 #[test]
 fn unsupported_target_is_hard_error() {
     let result = profiles_for_package(
-        &metadata(),
+        metadata(),
         "feature-rich",
         "wasm32-wasip1",
         &BTreeSet::new(),
@@ -111,7 +114,7 @@ fn historical_defaults_cover_features_without_changing_current_profiles() {
     let metadata = metadata();
     let targets = BTreeSet::from(["host".into()]);
     let historical =
-        historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).unwrap();
+        historical_profiles_for_package(metadata, "feature-rich", "host", &targets).unwrap();
     assert!(historical.iter().all(|profile| profile.default_features));
     assert!(historical.iter().any(|profile| profile.features.is_empty()));
     assert!(historical
@@ -120,7 +123,7 @@ fn historical_defaults_cover_features_without_changing_current_profiles() {
     assert!(historical.iter().any(|profile| profile.features
         == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
     assert!(
-        profiles_for_package(&metadata, "feature-rich", "host", &targets)
+        profiles_for_package(metadata, "feature-rich", "host", &targets)
             .unwrap()
             .iter()
             .any(|profile| !profile.default_features && profile.features.is_empty())
@@ -129,7 +132,7 @@ fn historical_defaults_cover_features_without_changing_current_profiles() {
 
 #[test]
 fn historical_docs_rs_policy_is_required_and_validated() {
-    let mut metadata = metadata();
+    let mut metadata = (*metadata()).clone();
     let targets = BTreeSet::from(["host".into()]);
     metadata.packages[0].metadata =
         serde_json::json!({"docs":{"rs":{"all-features":true,"no-default-features":true}}});
@@ -155,7 +158,7 @@ fn historical_docs_rs_policy_is_required_and_validated() {
 #[test]
 fn feature_profiles_include_default_baseline_and_local_closure() {
     let profiles = profiles_for_package(
-        &metadata(),
+        metadata(),
         "feature-rich",
         "host",
         &BTreeSet::from(["host".into()]),
@@ -193,10 +196,10 @@ fn rustdoc_version_must_match_cargo_package_even_without_items() {
         includes_private: false,
         item_count: 0,
     };
-    validate_rustdoc_version(&metadata, "feature-rich", &observation).unwrap();
+    validate_rustdoc_version(metadata, "feature-rich", &observation).unwrap();
     for version in [Some("0.9.0".into()), None] {
         observation.crate_version = version;
-        assert!(validate_rustdoc_version(&metadata, "feature-rich", &observation).is_err());
+        assert!(validate_rustdoc_version(metadata, "feature-rich", &observation).is_err());
     }
 }
 
@@ -210,7 +213,7 @@ fn invalid_feature_fails_before_cargo_runs() {
     };
     let error = execute_profile(
         "missing-Cargo.toml",
-        &metadata(),
+        metadata(),
         &profile,
         &BTreeSet::from(["host".into()]),
         "unused-target",
