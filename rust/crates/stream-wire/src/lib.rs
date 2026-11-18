@@ -3,6 +3,8 @@
 pub mod authorization;
 /// Canonical change-record decoding.
 pub mod changes;
+/// Canonical Session filter grammar.
+pub mod filter;
 /// Canonical record header grammar.
 pub mod headers;
 /// Hosted HTTP field and receipt validation.
