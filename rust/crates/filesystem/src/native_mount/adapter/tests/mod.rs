@@ -92,7 +92,7 @@ fn mount_source(
     destination: &Path,
 ) -> Result<crate::native_mount::NativeMountSession, NativeMountError> {
     crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id: source.volume_id()?,
             destination: destination.to_path_buf(),
