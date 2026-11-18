@@ -19,10 +19,15 @@ impl Drop for Input {
 
 /// The account providers and limits used by a WASM session.
 pub struct WasmSessionService {
+    /// Account-scoped Stream operations.
     pub provider: Arc<dyn StreamProvider>,
+    /// Credential verification and revocation source.
     pub authority: Arc<session::Authority>,
+    /// Optional account resource observations.
     pub resources: Option<Arc<dyn ResourceProvider>>,
+    /// Account-scoped call dispatch.
     pub calls: Arc<dyn CallProvider>,
+    /// Node identity and negotiated session limits.
     pub spec: session::SessionSpec,
 }
 
@@ -44,10 +49,10 @@ pub fn serve_wasm_session(
     };
     let incoming = futures::stream::try_unfold(input, |mut input| async move {
         loop {
-            if let Some(decoder) = input.decoder.as_mut() {
-                if let Some(frame) = read_chunk_frame(decoder, &input.chunk, &mut input.offset)? {
-                    return Ok(Some((frame, input)));
-                }
+            if let Some(decoder) = input.decoder.as_mut()
+                && let Some(frame) = read_chunk_frame(decoder, &input.chunk, &mut input.offset)?
+            {
+                return Ok(Some((frame, input)));
             }
             let value = input
                 .next
