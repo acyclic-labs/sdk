@@ -32,22 +32,9 @@ fn message(content: &FileRef, sequence: u64) -> ConversationMessage {
     }
 }
 
-pub(super) fn file(agent: AgentId, path: &str) -> Result<FileRef> {
-    FileRef::new(
-        VolumeRef::new(
-            ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
-            "scratch".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?,
-        (path).into(),
-        ("version-1").into(),
-        FileDescriptor::from_bytes(b"hello", "text/plain", &mut None)?,
-        ("text.txt").into(),
-        &mut None,
-    )
-}
+#[path = "../../tests/conversation_contract/fixture.rs"]
+mod fixture;
+pub(super) use fixture::file;
 
 mod history;
 mod native;
