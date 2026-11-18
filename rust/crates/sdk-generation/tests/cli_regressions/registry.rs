@@ -25,6 +25,8 @@ fn archive_locks_override_foreign_cargo_authority() {
                 let output = fixture.output.join("releases/1.0.0");
                 let packaged_manifest = support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml");
                 let cargo_home = fixture_cargo_home(&fixture);
+                let manifest_path = output.join("generation-manifest.v1.json");
+                let manifest_digest = manifest_path.with_extension("sha256");
                 let [_, cargo_home_frontier, working_directory_frontier] = [
                     (HistoricalAuthority::Lock(&foreign), None),
                     (
@@ -96,15 +98,13 @@ fn archive_locks_override_foreign_cargo_authority() {
                             "docsProducer"
                         }
                     );
-                    let mut manifest: Value = serde_json::from_slice(
-                        &fs::read(output.join("generation-manifest.v1.json")).unwrap(),
-                    )
-                    .unwrap();
+                    let mut manifest: Value =
+                        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
                     let frontier = manifest["registryCorpus"]["frontier"].take();
                     // Each case gets a new admission: its discovery context differs.
                     // Retain the exact source, receipts and compiler directory only.
-                    fs::remove_file(output.join("generation-manifest.v1.json")).unwrap();
-                    fs::remove_file(output.join("generation-manifest.v1.sha256")).unwrap();
+                    fs::remove_file(&manifest_path).unwrap();
+                    fs::remove_file(&manifest_digest).unwrap();
                     frontier
                 });
                 let (recorded, replayed_compilers) = queries.compiler_counts();
