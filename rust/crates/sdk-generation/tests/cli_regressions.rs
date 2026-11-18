@@ -830,22 +830,12 @@ fn registry_archive_fixture(
     mutation: Option<&str>,
     publisher_vcs: bool,
 ) -> (Fixture, PathBuf) {
-    registry_archive_fixture_named(dirty, published_lock, mutation, publisher_vcs, "demo")
-}
-
-fn registry_archive_fixture_named(
-    dirty: bool,
-    published_lock: bool,
-    mutation: Option<&str>,
-    publisher_vcs: bool,
-    package_name: &str,
-) -> (Fixture, PathBuf) {
     registry_archive_fixture_configured(
         dirty,
         published_lock,
         mutation,
         publisher_vcs,
-        package_name,
+        "demo",
         None,
         None,
     )
@@ -863,25 +853,25 @@ fn registry_archive_fixture_configured(
     let needs_commit = prepared.is_some() || package_name != "demo";
     let (fixture, support) = prepared.unwrap_or_else(packaging::source_fixture);
     let package = fixture.root.join("rust/crates/demo");
-    let manifest = fs::read_to_string(package.join("Cargo.toml"))
-        .unwrap()
-        .replace("name = \"demo\"", &format!("name = {package_name:?}"));
-    fs::write(package.join("Cargo.toml"), manifest).unwrap();
-    packaging::include_sources(&package);
-    // Original Cargo and release manifests establish each renamed owner's
-    // authority. Archive-only API bytes below remain divergent from this root.
-    fs::write(
-        fixture.root.join("release/cargo-crates.json"),
-        serde_json::to_vec(&vec![package_name]).unwrap(),
-    )
-    .unwrap();
-    let lock = fs::read_to_string(fixture.root.join("Cargo.lock")).unwrap();
-    fs::write(
-        fixture.root.join("Cargo.lock"),
-        lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
-    )
-    .unwrap();
     if needs_commit {
+        let manifest = fs::read_to_string(package.join("Cargo.toml"))
+            .unwrap()
+            .replace("name = \"demo\"", &format!("name = {package_name:?}"));
+        fs::write(package.join("Cargo.toml"), manifest).unwrap();
+        packaging::include_sources(&package);
+        // Original Cargo and release manifests establish each renamed owner's
+        // authority. Archive-only API bytes below remain divergent from this root.
+        fs::write(
+            fixture.root.join("release/cargo-crates.json"),
+            serde_json::to_vec(&vec![package_name]).unwrap(),
+        )
+        .unwrap();
+        let lock = fs::read_to_string(fixture.root.join("Cargo.lock")).unwrap();
+        fs::write(
+            fixture.root.join("Cargo.lock"),
+            lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
+        )
+        .unwrap();
         git(
             &fixture.root,
             &[
