@@ -1,6 +1,6 @@
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
-use acyclic_harness::{
+use acyclic_harness_core::{
     COMPONENT_LABEL_FORBIDDEN_EXACT, COMPONENT_LABEL_FORBIDDEN_SEPARATORS,
     COMPONENT_LABEL_MAX_BYTES, is_valid_component_label,
 };
