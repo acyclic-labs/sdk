@@ -640,7 +640,7 @@ pub(crate) fn open_directory_for_sync(path: &Path) -> io::Result<File> {
 }
 
 #[cfg(windows)]
-pub(crate) fn open_directory_for_sync(path: &Path) -> io::Result<File> {
+fn open_directory_for_sync(path: &Path) -> io::Result<File> {
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt as _;
 

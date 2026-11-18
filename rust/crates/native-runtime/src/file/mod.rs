@@ -28,7 +28,9 @@ pub(crate) use destination::ReadDestination;
 mod device_tests;
 mod operations;
 pub(crate) use durable::flush_cached_data;
-pub(crate) use operations::{open_directory_for_sync, sync_cached_data, sync_cached_file};
+#[cfg(unix)]
+pub(crate) use operations::open_directory_for_sync;
+pub(crate) use operations::{sync_cached_data, sync_cached_file};
 mod range;
 mod scope;
 mod write_validation;
