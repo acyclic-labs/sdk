@@ -508,11 +508,7 @@ pub fn execute_profile(
     context: CargoExecutionContext<'_>,
     rustdoc_target: &RustdocTarget,
 ) -> Result<RustdocObservation, ProfileError> {
-    if !available_targets.contains(&profile.target) {
-        return Err(ProfileError::UnsupportedTarget {
-            target: profile.target.clone(),
-        });
-    }
+    super::validate_profile_target(&profile.target, available_targets)?;
     let package = package_by_name(metadata, &profile.package)
         .ok_or_else(|| ProfileError::UnknownPackage(profile.package.clone()))?;
     if let RustdocTarget::Binary(name) = rustdoc_target {
