@@ -214,10 +214,14 @@ impl ProfileSpec {
     }
 }
 
+fn insert_profile(ordered: &mut BTreeMap<ProfileId, ProfileSpec>, profile: ProfileSpec) {
+    ordered.entry(profile.id()).or_insert(profile);
+}
+
 fn order_profiles(profiles: Vec<ProfileSpec>) -> Vec<ProfileSpec> {
     let mut ordered = BTreeMap::new();
     for profile in profiles {
-        ordered.entry(profile.id()).or_insert(profile);
+        insert_profile(&mut ordered, profile);
     }
     ordered.into_values().collect()
 }
@@ -238,15 +242,21 @@ pub fn profiles_for_package(
     }
     let package_metadata = package_by_name(metadata, package)
         .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
-    let profile = |default_features, features| ProfileSpec {
-        package: package.to_owned(),
-        target: target.to_owned(),
-        default_features,
-        features,
+    let mut profiles = BTreeMap::new();
+    let mut add = |default_features, features| {
+        insert_profile(
+            &mut profiles,
+            ProfileSpec {
+                package: package.to_owned(),
+                target: target.to_owned(),
+                default_features,
+                features,
+            },
+        );
     };
-    let mut profiles = vec![profile(true, BTreeSet::new())];
+    add(true, BTreeSet::new());
     if !package_metadata.features.is_empty() {
-        profiles.push(profile(false, BTreeSet::new()));
+        add(false, BTreeSet::new());
     }
     let declared = package_metadata
         .features
@@ -255,15 +265,12 @@ pub fn profiles_for_package(
         .cloned()
         .collect::<BTreeSet<_>>();
     for feature in &declared {
-        profiles.push(profile(
-            false,
-            feature_closure(&package_metadata.features, feature),
-        ));
+        add(false, feature_closure(&package_metadata.features, feature));
     }
     if !declared.is_empty() {
-        profiles.push(profile(true, declared));
+        add(true, declared);
     }
-    Ok(order_profiles(profiles))
+    Ok(profiles.into_values().collect())
 }
 
 /// Select the browser profile from Cargo declarations without enabling native
