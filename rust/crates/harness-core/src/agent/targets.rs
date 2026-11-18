@@ -29,6 +29,22 @@ struct RosterPositions {
 }
 
 impl RosterPositions {
+    fn admit<const N: usize>(
+        index: &mut FixedIndex<usize, acyclic_fs::NativeCustody, N>,
+        text: &str,
+        position: usize,
+        work: &mut crate::NativeIndexWork<'_>,
+    ) -> Result<usize, super::Error> {
+        let key = binary_key(text.as_bytes(), work).map_err(|error| match error {
+            acyclic_collections::BinaryKeyError::Work(error) => super::Error::Turn(Box::new(error)),
+            _ => super::Error::Record("roster index cannot represent the admitted key"),
+        })?;
+        index
+            .get_or_try_insert_with(key, work, |_| Ok(position))
+            .map(|original| *original)
+            .map_err(|error| super::Error::Turn(Box::new(error)))
+    }
+
     fn find<W: IndexReadWork>(&self, named: &str, work: &mut W) -> Result<Option<usize>, W::Error> {
         fn exact<W: IndexReadWork, const N: usize>(
             index: &FixedIndex<usize, acyclic_fs::NativeCustody, N>,
@@ -280,21 +296,12 @@ impl Roster {
         let mut home_position = None;
         for (position, target) in targets.iter().enumerate() {
             super::AgentRecord::check(target)?;
-            let name = binary_key(target.name.as_bytes(), &mut work)
-                .expect("validated target name fits its complete domain");
-            let original = positions
-                .names
-                .get_or_try_insert_with(name, &mut work, |_| Ok(position))
-                .expect("unbounded original roster admission");
-            if *original != position {
+            if RosterPositions::admit(&mut positions.names, &target.name, position, &mut work)?
+                != position
+            {
                 return Err(super::Error::Record("target name repeats in the roster"));
             }
-            let owner = binary_key(target.owner.as_bytes(), &mut work)
-                .expect("validated owner fits its complete domain");
-            positions
-                .owners
-                .get_or_try_insert_with(owner, &mut work, |_| Ok(position))
-                .expect("unbounded original roster admission");
+            RosterPositions::admit(&mut positions.owners, &target.owner, position, &mut work)?;
             if target.name == home {
                 home_position = Some(position);
             }
@@ -369,7 +376,7 @@ impl Roster {
             self.admitted
                 .positions
                 .find(named, &mut crate::NativeIndexWork(None))
-                .expect("unbounded original roster read")
+                .map_err(|error| self.refusal(named, Refused::Declined(error.to_string())))?
         };
         let refused = match found {
             Some(position) if self.admitted.targets[position].state == TargetState::Online => {
