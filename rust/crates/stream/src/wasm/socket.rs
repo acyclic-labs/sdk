@@ -255,11 +255,11 @@ fn decode_frame(data: js_sys::ArrayBuffer) -> Result<wire::SessionFrame, StreamE
 pub(super) fn sessions(endpoint: Endpoint) -> crate::session::Client {
     let moved = endpoint.clone();
     crate::session::Client::with_transport(
-        Arc::new(endpoint),
-        Arc::new(move |node| {
+        Rc::new(endpoint),
+        Rc::new(move |node| {
             let credential = moved.credential.clone();
             Box::pin(async move {
-                Ok(Arc::new(Endpoint::new(&node.endpoint, credential)?)
+                Ok(Rc::new(Endpoint::new(&node.endpoint, credential)?)
                     as crate::session::transport::Endpoint)
             })
         }),
