@@ -193,6 +193,7 @@ function nativeTokens(source, file) {
  const powershell = file.endsWith('.ps1');
  const shell = /\.(?:sh|bash)$/.test(file);
  const yaml = /\.ya?ml$/.test(file);
+ const csharp = file.endsWith('.cs');
  const whitespace = yaml ? /^[ \t\r\n]+/ : /^\s+/;
  const wordComments = powershell || shell;
  const escape = powershell ? '`' : shell ? '\\' : undefined;
@@ -290,7 +291,7 @@ function nativeTokens(source, file) {
    if (!end) throw malformed('unterminated PowerShell here-string');
    emit(end.index + end[0].length, 'literal'); continue;
   }
-  const verbatim = file.endsWith('.cs') && tail.match(/^@\$?"/);
+  const verbatim = csharp && tail.match(/^(?:@|\$@|@\$)"/);
   const quote = verbatim ? '"' : tail[0];
   if (yaml && !'[]{} ,#&*!|>\'"%@`'.includes(quote) && !/^[-?:](?:[ \t\r\n]|$)/.test(tail)) {
    // Quotes and unseparated hashes inside plain scalars are data. Only YAML

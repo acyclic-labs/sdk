@@ -55,6 +55,7 @@ export function fuzz(data, analyze = sourcePolicy.pollingSites) {
   ['scripts/control.cs', `$@"""${word}""\\"`],
   ['scripts/control.cs', `@$"${word}\\"`],
   ['scripts/control.ps1', `@"\n${word}\n"@`], ['scripts/control.py', `"""${word}"""`],
+  ['scripts/control.cs', `@"${word}"`],
  ]) assert.ok(analyze(file, literal + '\nsleep(1)').some(site => site.kind === 'timer-or-readiness'));
  const sqlitePolicy = ['busy_timeout', 'busy_handler', 'sqlite3_busy_timeout', 'sqlite3_busy_handler'][data.length % 4];
  const sqliteSource = sqlitePolicy.startsWith('sqlite3_') ? `${sqlitePolicy}(db, ${word});` : `connection.${sqlitePolicy}(${word});`;
