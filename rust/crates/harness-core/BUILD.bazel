@@ -964,6 +964,7 @@ rust_binary(
         "//rust/crates/harness-control:acyclic_harness_control",
         "//rust/crates/harness-json:acyclic_harness_json",
         "//rust/crates/harness-layout:acyclic_harness_layout",
+        "//rust/crates/harness-model-cache:acyclic_harness_model_cache",
         "//rust/crates/harness-modules:acyclic_harness_modules",
         "//rust/crates/harness-sse:acyclic_harness_sse",
         "//rust/crates/host-platform:acyclic_host_platform",
