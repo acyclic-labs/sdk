@@ -1,5 +1,7 @@
 //! Portable Actors guest socket messages shared by host adapters and code generation.
 
+/// Shared semantic request admission.
+pub mod admission;
 mod body;
 pub use body::{
     GuestBody, GuestStreamingRequest, GuestStreamingResponse, JAVASCRIPT_FETCH_RESPONSE,

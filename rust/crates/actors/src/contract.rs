@@ -1,16 +1,11 @@
 //! Actors contract and admission.
 use crate::wire;
+pub use acyclic_actors_guest_wire::admission::ContractError;
+pub(super) use acyclic_actors_guest_wire::admission::{
+    valid_idempotency_key, valid_jurisdiction, validate_fork_identity, validate_idempotency_key,
+    validate_subscription_identity,
+};
 use std::collections::HashSet;
-
-pub(super) fn valid_idempotency_key(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256
-}
-
-pub(super) fn validate_idempotency_key(value: &str) -> Result<(), ContractError> {
-    valid_idempotency_key(value)
-        .then_some(())
-        .ok_or(ContractError::InvalidArgument)
-}
 
 fn valid_actor_scope(namespace: Option<&str>, id: &str) -> bool {
     crate::addressing::NamespaceId::validate(
@@ -20,33 +15,6 @@ fn valid_actor_scope(namespace: Option<&str>, id: &str) -> bool {
     )
     .is_ok()
         && crate::addressing::validate_actor_id(id.as_bytes()).is_ok()
-}
-
-/// Invalid customer-authored Actors request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ContractError {
-    /// A required field is absent or malformed.
-    #[error("required field is absent or malformed")]
-    InvalidArgument,
-    /// A subscription or binding name occurs more than once.
-    #[error("duplicate subscription or binding name")]
-    DuplicateName,
-}
-
-impl ContractError {
-    /// Returns the stable error code shared by every SDK bridge.
-    pub const fn code_name(self) -> &'static str {
-        match self {
-            Self::InvalidArgument => "invalid_argument",
-            Self::DuplicateName => "duplicate_name",
-        }
-    }
-}
-
-impl From<std::convert::Infallible> for ContractError {
-    fn from(value: std::convert::Infallible) -> Self {
-        match value {}
-    }
 }
 
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
@@ -65,14 +33,6 @@ fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
             && source.length > 0
             && domain::EntrySource::validate_selection(&source.environment, &source.entry).is_ok()
     })
-}
-
-pub(super) fn valid_jurisdiction(jurisdiction: &str, worker: bool) -> bool {
-    if worker {
-        jurisdiction.is_empty()
-    } else {
-        matches!(jurisdiction, "" | "eu" | "us" | "fedramp")
-    }
 }
 
 /// Validates an explicit namespace or named script deployment before admission.
@@ -245,16 +205,6 @@ fn validate_subscription_control(
     validate_subscription_identity(subscription, identity)
 }
 
-pub(super) fn validate_subscription_identity(
-    subscription: &str,
-    key: &str,
-) -> Result<(), ContractError> {
-    if subscription.is_empty() {
-        return Err(ContractError::InvalidArgument);
-    }
-    validate_idempotency_key(key)
-}
-
 /// Validates a fork: both Actors share one account and namespace, the child
 /// differs from the parent, and each child subscription id occurs once.
 pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractError> {
@@ -274,23 +224,6 @@ pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractErr
             .iter()
             .map(|value| value.subscription_id.as_str()),
     )
-}
-
-pub(super) fn validate_fork_identity<'a>(
-    parent: &str,
-    child: &str,
-    key: &str,
-    mut subscriptions: impl Iterator<Item = &'a str>,
-) -> Result<(), ContractError> {
-    if parent == child {
-        return Err(ContractError::InvalidArgument);
-    }
-    validate_idempotency_key(key)?;
-    let mut seen = HashSet::new();
-    subscriptions
-        .all(|id| seen.insert(id))
-        .then_some(())
-        .ok_or(ContractError::DuplicateName)
 }
 
 mod generated {
