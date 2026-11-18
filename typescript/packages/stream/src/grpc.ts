@@ -17,7 +17,7 @@ import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/p
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { StreamError, type StreamRefusal } from "./types.js";
 import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
@@ -267,10 +267,9 @@ export class GrpcStreamProvider implements StreamProvider {
     return this.#project("head", toBinary(wire.PathHeadSchema, response));
   }
   async tail(path: string): Promise<bigint> {
-    await validateWireRequest({ kind: "tail", path });
-    const atLeast = this.#sessions.revisionFloor();
-    const request = wireRequest({ kind: "tail", path, atLeast });
-    const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, request)));
+    const validated = await validateWireRequest({ kind: "tail", path });
+    const { input, atLeast } = this.#sessions.tailRequest(path, validated);
+    const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, input)));
     this.#sessions.served(atLeast, response.applied);
     return response.tail;
   }

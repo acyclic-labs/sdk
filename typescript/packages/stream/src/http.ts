@@ -12,7 +12,7 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/core/observe";
-import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {
   readonly endpoint: string; readonly fetcher?: typeof fetch;
@@ -92,9 +92,8 @@ export class HttpStreamProvider implements StreamProvider {
     return this.#request("head", await encodeHttpRequest("head", input));
   }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
-    await validateWireRequest({ kind: "tail", path });
-    const atLeast = this.#sessions.revisionFloor();
-    const input = wireRequest({ kind: "tail", path, atLeast });
+    const validated = await validateWireRequest({ kind: "tail", path });
+    const { input, atLeast } = this.#sessions.tailRequest(path, validated);
     const { tail, applied } = await this.#request("tail", await encodeHttpRequest("tail", input), signal);
     this.#sessions.served(atLeast, applied);
     return tail;
