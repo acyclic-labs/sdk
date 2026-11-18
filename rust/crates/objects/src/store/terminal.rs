@@ -120,10 +120,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let mut pages = self.pages(self.namespace_prefix('f'));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
-                let (root, name) = key
-                    .strip_prefix(pages.prefix.as_str())
-                    .and_then(|key| key.split_once('/'))
-                    .ok_or_else(corrupt)?;
+                let (root, name) = pages.relative(&key)?.split_once('/').ok_or_else(corrupt)?;
                 let fence = batch_fence(name)?;
                 let terminal_key = self.terminal_key(root);
                 let terminal = self
@@ -228,9 +225,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let mut existed = false;
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
-                let name = key
-                    .strip_prefix(pages.prefix.as_str())
-                    .ok_or_else(corrupt)?;
+                let name = pages.relative(&key)?;
                 if batch_fence(name)? > fence {
                     continue;
                 }

@@ -459,6 +459,10 @@ struct Pages<'a, M> {
 }
 
 impl<M: Medium> Pages<'_, M> {
+    fn relative<'a>(&self, key: &'a str) -> Result<&'a str, Error> {
+        key.strip_prefix(self.prefix.as_str()).ok_or_else(corrupt)
+    }
+
     async fn next(&mut self) -> Result<Option<Vec<(String, u64)>>, Error> {
         if self.done {
             return Ok(None);
