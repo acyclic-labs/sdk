@@ -256,13 +256,8 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                 } else {
                     assert!(result.status.success(), "{}", output_message(&result));
                     let output = fixture.output.join("releases/1.0.0");
-                    let profiles: Value = serde_json::from_slice(
-                        &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-                    )
-                    .unwrap();
+                    let profiles = read_profile_rows(&output);
                     assert!(profiles
-                        .as_array()
-                        .unwrap()
                         .iter()
                         .all(|profile| profile["defaultFeatures"] == true));
                     let data: Value = serde_json::from_slice(
