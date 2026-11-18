@@ -244,7 +244,6 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                     writer.sync_all()?;
                     writer.seek(SeekFrom::Start(0))?;
                     let mut syncer = std::fs::OpenOptions::new().read(true).open(&path)?;
-                    let directory = std::fs::File::open(temporary.path())?;
                     writer.write_all(b"new")?;
                     assert!(checkout_state(&source).1, "write remains pending");
                     syncer.sync_all()?;
@@ -257,12 +256,15 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                     assert_eq!(&observed, b"new");
                     writer.write_all(b"2")?;
                     assert!(checkout_state(&source).1, "second write remains pending");
-                    directory.sync_all()?;
+                    acyclic_native_runtime::sync_parent(
+                        temporary.path(),
+                        acyclic_native_runtime::Durability::Full,
+                    )?;
                     assert!(
                         !checkout_state(&source).1,
                         "directory fsync published the write"
                     );
-                    drop((directory, writer, syncer));
+                    drop((writer, syncer));
                 }
                 "linux_concurrent_truncates_do_not_fence_unrelated_files" => {
                     let paths = (0..8)
