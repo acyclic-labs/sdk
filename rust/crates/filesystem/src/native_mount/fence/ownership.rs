@@ -75,7 +75,7 @@ impl MountDestinationGuard {
         let read_length = if length == RECEIPT_BYTES as u64 {
             RECEIPT_BYTES
         } else {
-            usize::try_from(length.min(16)).expect("bounded receipt header")
+            usize::try_from(length.min(16)).map_err(|_| crate::WorkError::Overflow)?
         };
         let mut bytes = [0; RECEIPT_BYTES];
         let mut offset = 0;
