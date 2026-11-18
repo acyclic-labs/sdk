@@ -181,7 +181,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .allocate(references.len() as u64 * 32)
             .map_err(medium)?;
         let batch = encode_batch(&references);
-        let name = format!("{fence:016x}.{}.{}", Digest::of(&batch).to_hex(), nonce()?);
+        let name = format!("{fence:016x}.{}.{}", Digest::of(&batch), nonce()?);
         let root_hash = Digest::of(root.as_bytes()).to_hex();
         let tag = format!("f{root_hash}.{name}");
         let key = format!("{}{name}", self.fenced_prefix(root));

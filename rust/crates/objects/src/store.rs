@@ -423,12 +423,7 @@ impl<M: Medium> Store<M> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .entry(id)
-                .or_insert_with(|| {
-                    Arc::new(State::new(
-                        format!("{}/", id.to_hex()),
-                        Arc::clone(&self.scrub),
-                    ))
-                }),
+                .or_insert_with(|| Arc::new(State::new(format!("{id}/"), Arc::clone(&self.scrub)))),
         );
         Ok(Account {
             medium: Arc::clone(&self.medium),
@@ -514,7 +509,7 @@ impl MemoryObjects {
         Self {
             medium: Arc::new(medium),
             state: Arc::new(State::new(
-                format!("{}/", Digest::of(b"memory").to_hex()),
+                format!("{}/", Digest::of(b"memory")),
                 Arc::default(),
             )),
             _medium: PhantomData,
@@ -883,7 +878,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 
     /// The `i/` holder tag of an envelope.
     fn envelope_tag(parent: &Digest, version: &[u8; 16]) -> String {
-        format!("e{}.{}", parent.to_hex(), hex::encode(version))
+        format!("e{parent}.{}", hex::encode(version))
     }
 
     /// The `i/` holder tag of the root batch named `batch`.
@@ -1632,7 +1627,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let batch = encode_batch(&references);
                 // Each retain owns its batch and keys, so a concurrent release of an
                 // equal batch never removes them.
-                let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
+                let name = format!("{}.{}", Digest::of(&batch), nonce()?);
                 let tag = Self::batch_tag(root, &name);
                 let key = format!("{}{name}", self.root_prefix(root));
                 self.commit_retention(&references, &tag, &key, batch, 0)
