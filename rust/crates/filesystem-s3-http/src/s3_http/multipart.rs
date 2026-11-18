@@ -12,21 +12,6 @@ where
     A: StreamBackedAuthority,
     O: AsyncObjectStore,
 {
-    fn multipart_path(
-        workspace: &Workspace<A, O>,
-        upload_id: &str,
-    ) -> S3Result<acyclic_stream::StreamPath> {
-        if upload_id.len() != 32 || !upload_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(s3s::s3_error!(NoSuchUpload));
-        }
-        acyclic_stream::StreamPath::new(format!(
-            "fs/s3-multipart/{}/{}",
-            hex::encode(workspace.id().into_bytes()),
-            upload_id.to_ascii_lowercase()
-        ))
-        .map_err(|_| s3s::s3_error!(InvalidRequest))
-    }
-
     fn multipart_upload_id(workspace: &Workspace<A, O>, operation: IdempotencyKey) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(MULTIPART_DOMAIN);
@@ -69,9 +54,8 @@ where
         workspace: &Workspace<A, O>,
         upload_id: &str,
     ) -> S3Result<MultipartSnapshot> {
-        let path = Self::multipart_path(workspace, upload_id)?;
-        let provider = workspace.multipart_stream_provider();
-        read_multipart_snapshot(provider.as_ref(), path, self.limits)
+        workspace
+            .multipart_snapshot(upload_id, self.limits)
             .await
             .map_err(multipart_storage_error)
     }
@@ -87,7 +71,9 @@ where
         let provider = workspace.multipart_stream_provider();
         match provider
             .append(acyclic_stream::AppendRequest {
-                path: Self::multipart_path(workspace, upload_id)?,
+                path: workspace
+                    .multipart_path(upload_id)
+                    .map_err(multipart_storage_error)?,
                 records: vec![record.into()],
                 if_tail: Some(expected_tail),
                 idempotency_key: operation,

@@ -37,6 +37,36 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
         self.volume.fs.authority().stream_provider()
     }
 
+    /// Returns the upload record path under this workspace's multipart namespace.
+    pub fn multipart_path(
+        &self,
+        upload_id: &str,
+    ) -> MultipartStorageResult<acyclic_stream::StreamPath> {
+        if upload_id.len() != 32 || !upload_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(MultipartStorageError::NoSuchUpload);
+        }
+        acyclic_stream::StreamPath::new(format!(
+            "fs/s3-multipart/{}/{}",
+            hex::encode(self.id().into_bytes()),
+            upload_id.to_ascii_lowercase()
+        ))
+        .map_err(|_| MultipartStorageError::Malformed)
+    }
+
+    /// Replays the requested upload in this workspace.
+    pub async fn multipart_snapshot(
+        &self,
+        upload_id: &str,
+        limits: FilesystemS3Limits,
+    ) -> MultipartStorageResult<MultipartSnapshot> {
+        read_multipart_snapshot(
+            self.multipart_stream_provider().as_ref(),
+            self.multipart_path(upload_id)?,
+            limits,
+        )
+        .await
+    }
+
     /// Authenticates the immutable objects retained by active multipart uploads.
     pub async fn active_multipart_objects(
         &self,

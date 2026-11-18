@@ -106,7 +106,9 @@ where
         reject_create_multipart_extensions(&request.input)?;
         let operation = request_operation(&request)?;
         let upload_id = Self::multipart_upload_id(&workspace, operation);
-        let path = Self::multipart_path(&workspace, &upload_id)?;
+        let path = workspace
+            .multipart_path(&upload_id)
+            .map_err(multipart_storage_error)?;
         let provider = workspace.multipart_stream_provider();
         let record = encode_multipart_created(
             &request.input.key,
