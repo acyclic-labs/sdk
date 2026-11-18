@@ -36,7 +36,6 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             .features
             .keys()
             .filter(|feature| feature.as_str() != "default")
-            .cloned()
             .collect::<BTreeSet<_>>();
         let mut ids = BTreeSet::new();
         let mut count = None;
@@ -54,15 +53,18 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             for profile in &profiles {
                 assert_eq!(&profile.target, target);
                 assert!(ids.insert(profile.id()));
-                assert!(profile.features.is_subset(&declared));
+                assert!(profile
+                    .features
+                    .iter()
+                    .all(|feature| declared.contains(feature)));
                 if profile.default_features {
-                    has_all_features |= profile.features == declared;
+                    has_all_features |= profile.features.len() == declared.len();
                 } else {
                     covered.extend(&profile.features);
                 }
             }
             for feature in &declared {
-                assert!(covered.contains(feature), "{package_name}: {feature}");
+                assert!(covered.contains(*feature), "{package_name}: {feature}");
             }
             assert!(has_all_features, "{package_name}: {target}");
         }
