@@ -396,7 +396,10 @@ mod tests {
                 custody,
             };
             let expected = format!("{}{tail}", prefix.replace('\t', " ").replace('\n', " "));
-            let baseline = work.live_allocation_bytes();
+            let live = |work: &acyclic_fs::NativeMaterializationWork| {
+                work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))
+            };
+            let baseline = live(&work)?;
             for kind in KINDS {
                 let io = PreparationIo::from_native_work(&work).unwrap();
                 let cause = with_history_io(Some(&io), |work| entry(kind, "example.tool", &error, work)).unwrap();
@@ -405,7 +408,7 @@ mod tests {
                 if !matches!(kind, ToolFailureKind::Unavailable | ToolFailureKind::Removed) {
                     prop_assert!(cause.message.ends_with(&expected), "{kind:?}: {cause:?}");
                 }
-                prop_assert!(work.live_allocation_bytes() >= baseline + cause.message.capacity() as u64);
+                prop_assert!(live(&work)? >= baseline + cause.message.capacity() as u64);
                 let rendered = tool_failure_content(kind, &cause, Some(&io)).unwrap();
                 with_history_io(Some(&io), |work| rendered.validate_limits(Limits::default(), work)).unwrap();
                 // The persisted cause uses the same codec shape and replays identical text.
@@ -418,26 +421,26 @@ mod tests {
                 drop(replayed);
                 drop(cause);
                 drop(io);
-                prop_assert_eq!(work.live_allocation_bytes(), baseline);
+                prop_assert_eq!(live(&work)?, baseline);
             }
             // No copy capacity refuses rather than silently clipping to an admitted prefix.
             let mut budget = acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024);
             budget.bytes_copied = 0;
             let exhausted = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, _)| TestCaseError::fail(format!("{cause:?}")))?;
-            let exhausted_baseline = exhausted.live_allocation_bytes();
+            let exhausted_baseline = live(&exhausted)?;
             let io = PreparationIo::from_native_work(&exhausted).unwrap();
             let no_capacity = with_history_io(Some(&io), |work| ToolFailureCause::of(&error, work));
             prop_assert!(matches!(&no_capacity, Err(Error::NativeWork { .. })), "copy admission must return the original typed failure: {no_capacity:?}");
             drop(no_capacity);
             drop(io);
-            prop_assert_eq!(exhausted.live_allocation_bytes(), exhausted_baseline);
+            prop_assert_eq!(live(&exhausted)?, exhausted_baseline);
             // Cancellation refuses on the same ledger instead of returning partial success.
             let io = PreparationIo::from_native_work(&work).unwrap();
             cancellation.cancel();
             prop_assert!(with_history_io(Some(&io), |work| entry(ToolFailureKind::ExecutorRejected, "example.tool", &error, work)).is_err());
             drop(io);
-            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            prop_assert_eq!(live(&work)?, baseline);
         }
     }
 
