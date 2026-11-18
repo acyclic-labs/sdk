@@ -1239,6 +1239,7 @@ rust_test(
     crate_root = "tests/wire_contracts.rs",
     srcs = [
         "tests/wire_contracts.rs",
+        "tests/wire_contracts/hosted_contract.rs",
     ],
     edition = "2024",
     version = "0.2.0",

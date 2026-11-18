@@ -1,5 +1,8 @@
 //! Public wire contracts for workspace context and merge publication records.
 
+#[path = "wire_contracts/hosted_contract.rs"]
+mod hosted_contract;
+
 mod compat_wire {
     mod tests {
         use acyclic_fs::compat_wire::*;
