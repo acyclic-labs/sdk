@@ -196,7 +196,10 @@ export class Stream<Value = Uint8Array> {
     if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
     const authored = structuredClone(options);
     if (authored?.idempotencyKey === undefined) throw new StreamError("invalid_argument", "an explicit idempotency key is required");
-    return this.provider.append(this.path, values.map(value => snapshotBytes(this.codec.encode(value))), authored);
+    const encode = Object.is(this.codec, bytesCodec)
+      ? (value: Value) => this.codec.encode(value)
+      : (value: Value) => snapshotBytes(this.codec.encode(value));
+    return this.provider.append(this.path, values.map(encode), authored);
   }
   async fork(destination: string, options: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
     validatePathValue(destination);
