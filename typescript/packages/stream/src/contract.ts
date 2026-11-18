@@ -1,3 +1,4 @@
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { wasmSource, wasmSourceSync } from "@acyclic-labs/core/wasm";
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -348,12 +349,12 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
           case "append": return {
             append: {
               path: mutation.mutation.value.path,
-              values: mutation.mutation.value.records.map(record => record.value.slice()),
+              values: mutation.mutation.value.records.map(record => snapshotBytes(record.value)),
             },
           };
           case "fork": {
             const value = mutation.mutation.value;
-            return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => record.value.slice()) } };
+            return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, exclude: value.exclude, values: value.records.map(record => snapshotBytes(record.value)) } };
           }
           default: throw new StreamError("invalid_argument", "normalized mutation is missing its kind");
         }
