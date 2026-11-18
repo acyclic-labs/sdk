@@ -14,6 +14,12 @@ keywords = ["objects", "storage", "grpc"]
 categories = ["api-bindings", "filesystem"]
 
 
+[package.metadata.bazel]
+test-build-script = ["objects-authorization"]
+
+[package.metadata.bazel.test-dependencies]
+objects-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
+
 [[bench]]
 name = "objects"
 harness = false
@@ -90,6 +96,7 @@ tower = { workspace = true, features = ["util"] }
 workspace = true
 
 [dev-dependencies]
+acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }
 
