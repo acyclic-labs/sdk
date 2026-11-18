@@ -506,12 +506,12 @@ mod tests {
                 })
             ));
             assert_eq!(
-                work.receipt().allocation_operations,
+                work.receipt().unwrap().allocation_operations,
                 1,
                 "only the actual accounting state was allocated"
             );
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 0,
                 "no fiber SDK creation entered"
             );
@@ -545,9 +545,12 @@ mod tests {
             })
             .expect("four exact native control operations admitted");
             assert_eq!(result, 42);
-            assert_eq!(work.receipt().backend_write_operations, 4);
-            assert_eq!(work.receipt().allocation_operations, 2);
-            assert_eq!(work.receipt().peak_allocation_bytes, payload + exchange);
+            assert_eq!(work.receipt().unwrap().backend_write_operations, 4);
+            assert_eq!(work.receipt().unwrap().allocation_operations, 2);
+            assert_eq!(
+                work.receipt().unwrap().peak_allocation_bytes,
+                payload + exchange
+            );
             assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
             assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: the actual conversion cleanup has returned this thread.
@@ -577,7 +580,7 @@ mod tests {
                 })
             ));
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 2,
                 "real create and mandatory delete, no conversion"
             );
@@ -608,7 +611,7 @@ mod tests {
                 "the original token remains active"
             );
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 4,
                 "both actual cleanup calls survived cancellation"
             );

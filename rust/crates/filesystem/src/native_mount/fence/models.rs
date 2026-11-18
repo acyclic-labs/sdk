@@ -51,7 +51,7 @@ fn cleanup_after_contended_registry(
         guard.release_cleanup(None).unwrap();
         assert!(guard.file.is_none());
         assert_eq!(
-            work.receipt().backend_write_operations,
+            work.receipt().unwrap().backend_write_operations,
             before.backend_write_operations + 3,
             "contention must use exactly lock, unlink and unlock"
         );
