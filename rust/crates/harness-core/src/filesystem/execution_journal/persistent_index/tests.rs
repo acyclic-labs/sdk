@@ -72,7 +72,7 @@ async fn check_roots(_native: bool) -> Result<()> {
         cache: None,
     };
     for (index, version) in versions {
-        let before = io.receipt();
+        let before = io.receipt()?;
         let read = reader
             .get(version, &key(index))
             .await?
@@ -80,7 +80,7 @@ async fn check_roots(_native: bool) -> Result<()> {
         assert!(
             matches!(read.node(Some(&io))?, Node::Leaf { value, .. } if value == index.to_be_bytes())
         );
-        let records = io.receipt().authority_records_read - before.authority_records_read;
+        let records = io.receipt()?.authority_records_read - before.authority_records_read;
         eprintln!(
             "persisted index native={_native} keys={} read_records={records}",
             index + 1
