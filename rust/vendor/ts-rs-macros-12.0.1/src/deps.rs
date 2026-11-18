@@ -1,16 +1,19 @@
-use std::{collections::HashSet, rc::Rc};
+use std::rc::Rc;
 
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{Path, Type};
 
+// Both sets keep first-insertion order, so a derive expands to the same tokens in every compiler
+// process: a hash-ordered set made the expansion, and with it the crate hash, differ between two
+// compiles of one crate (its metadata and its rlib), and dependents then failed with E0460.
 pub struct Dependencies {
     crate_rename: Rc<Path>,
-    dependencies: HashSet<Dependency>,
-    types: HashSet<Rc<Type>>,
+    dependencies: Vec<Dependency>,
+    types: Vec<Rc<Type>>,
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 enum Dependency {
     // A dependency on all dependencies of `ty`.
     // This does not include a dependency on `ty` itself - only its dependencies!
@@ -30,9 +33,9 @@ enum Dependency {
 impl Dependencies {
     pub fn new(crate_rename: Path) -> Self {
         Self {
-            dependencies: HashSet::new(),
+            dependencies: Vec::new(),
             crate_rename: Rc::new(crate_rename),
-            types: HashSet::new(),
+            types: Vec::new(),
         }
     }
 
@@ -43,37 +46,46 @@ impl Dependencies {
     /// Adds all dependencies from the given type
     pub fn append_from(&mut self, ty: &Type) {
         let ty = self.push_type(ty);
-        self.dependencies.insert(Dependency::Transitive {
+        self.insert(Dependency::Transitive {
             crate_rename: self.crate_rename.clone(),
-            ty: ty.clone(),
+            ty,
         });
     }
 
     /// Adds the given type.
     pub fn push(&mut self, ty: &Type) {
         let ty = self.push_type(ty);
-        self.dependencies.insert(Dependency::Type(ty.clone()));
-        self.dependencies.insert(Dependency::Generics {
+        self.insert(Dependency::Type(ty.clone()));
+        self.insert(Dependency::Generics {
             crate_rename: self.crate_rename.clone(),
-            ty: ty.clone(),
+            ty,
         });
     }
 
     pub fn append(&mut self, other: Dependencies) {
-        self.dependencies.extend(other.dependencies);
-        self.types.extend(other.types);
+        for dependency in other.dependencies {
+            self.insert(dependency);
+        }
+        for ty in other.types {
+            if !self.types.contains(&ty) {
+                self.types.push(ty);
+            }
+        }
+    }
+
+    fn insert(&mut self, dependency: Dependency) {
+        if !self.dependencies.contains(&dependency) {
+            self.dependencies.push(dependency);
+        }
     }
 
     fn push_type(&mut self, ty: &Type) -> Rc<Type> {
-        // this can be replaces with `get_or_insert_owned` once #60896 is stabilized
-        match self.types.get(ty) {
-            None => {
-                let ty = Rc::new(ty.clone());
-                self.types.insert(ty.clone());
-                ty
-            }
-            Some(ty) => ty.clone(),
+        if let Some(known) = self.types.iter().find(|known| known.as_ref() == ty) {
+            return known.clone();
         }
+        let ty = Rc::new(ty.clone());
+        self.types.push(ty.clone());
+        ty
     }
 }
 

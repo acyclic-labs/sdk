@@ -31,19 +31,22 @@ diff --git a/rust/private/rustc.bzl b/rust/private/rustc.bzl
 index b57cf29..ff5b6f6 100644
 --- a/rust/private/rustc.bzl
 +++ b/rust/private/rustc.bzl
-@@ -1809,6 +1809,11 @@ def rustc_compile_action(
+@@ -1809,6 +1809,14 @@ def rustc_compile_action(
          **crate_info_dict
      )
- 
+
 +    clippy_driver = getattr(ctx.attr, "_clippy_driver", None)
 +    use_clippy = clippy_driver != None and clippy_driver[BuildSettingInfo].value
 +    if use_clippy and not toolchain.clippy_driver:
 +        fail("--@rules_rust//rust/settings:clippy_driver requires a toolchain with clippy-driver")
++    # One driver compiles both the metadata and the rlib of a crate: clippy-driver sets `--cfg clippy`, so an
++    # rmeta from rustc beside an rlib from clippy-driver carries a different crate hash than its dependents saw.
++    compile_tool = toolchain.clippy_driver if use_clippy else toolchain.rustc
 +
      build_metadata = crate_info.metadata
      rustc_output = crate_info.rustc_output
      rustc_rmeta_output = crate_info.rustc_rmeta_output
-@@ -1851,6 +1856,9 @@ def rustc_compile_action(
+@@ -1851,6 +1859,9 @@ def rustc_compile_action(
      if hasattr(ctx.attr, "lint_config") and ctx.attr.lint_config:
          rust_flags = rust_flags + ctx.attr.lint_config[LintsInfo].rustc_lint_flags
          lint_files = lint_files + ctx.attr.lint_config[LintsInfo].rustc_lint_files
@@ -53,16 +56,25 @@ index b57cf29..ff5b6f6 100644
  
      profiling_dir, profiling_flags = setup_zself_profile(ctx, crate_info)
      rust_flags = rust_flags + profiling_flags
-@@ -1949,7 +1957,7 @@ def rustc_compile_action(
+@@ -1949,7 +1960,7 @@ def rustc_compile_action(
          attr = attr,
          file = ctx.file,
          toolchain = toolchain,
 -        tool_file = toolchain.rustc,
-+        tool_file = toolchain.clippy_driver if use_clippy else toolchain.rustc,
++        tool_file = compile_tool,
          cc_toolchain = cc_toolchain,
          emit = emit,
          feature_configuration = feature_configuration,
-@@ -2006,6 +2014,12 @@ def rustc_compile_action(
+@@ -1979,7 +1990,7 @@ def rustc_compile_action(
+             attr = attr,
+             file = ctx.file,
+             toolchain = toolchain,
+-            tool_file = toolchain.rustc,
++            tool_file = compile_tool,
+             cc_toolchain = cc_toolchain,
+             emit = emit,
+             feature_configuration = feature_configuration,
+@@ -2006,6 +2017,12 @@ def rustc_compile_action(
      # this is the final list of env vars
      env.update(env_from_args)
  

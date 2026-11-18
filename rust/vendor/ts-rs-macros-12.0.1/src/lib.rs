@@ -1,6 +1,6 @@
 #![deny(unused)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
@@ -441,7 +441,8 @@ fn generate_where_clause(
     let used_types = {
         let is_type_param = |id: &Ident| generics.type_params().any(|p| &p.ident == id);
 
-        let mut used_types = HashSet::new();
+        // First-use order, never hash order: see `Dependencies`.
+        let mut used_types = Vec::new();
         for ty in dependencies.used_types() {
             used_type_params(&mut used_types, ty, is_type_param);
         }
@@ -458,7 +459,7 @@ fn generate_where_clause(
 // Associated types of a type parameter are extracted as well.
 // Note: This will not extract `I` from `I::Item`, but just `I::Item`!
 fn used_type_params<'ty, 'out>(
-    out: &'out mut HashSet<&'ty Type>,
+    out: &'out mut Vec<&'ty Type>,
     ty: &'ty Type,
     is_type_param: impl Fn(&'ty Ident) -> bool + Copy + 'out,
 ) {
@@ -479,7 +480,9 @@ fn used_type_params<'ty, 'out>(
             if is_type_param(&first.ident) {
                 // The type is either a generic parameter (e.g `T`), or an associated type of that
                 // generic parameter (e.g `I::Item`). Either way, we return it.
-                out.insert(ty);
+                if !out.contains(&ty) {
+                    out.push(ty);
+                }
                 return;
             }
 
