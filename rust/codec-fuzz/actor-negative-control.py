@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Require the unchanged Actors fuzz oracle to detect production reject-all drift."""
 import hashlib
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -9,12 +10,13 @@ import sys
 ROOT = Path(__file__).resolve().parent
 PRODUCTION = ROOT.parent / "crates/actors/src/invocation.rs"
 ORACLE = ROOT / "src/lib.rs"
-COMMAND = ["cargo", "run", "--locked", "--example", "replay", "--", "actor_codecs"]
+COMMAND = ["bazel", "run", "//rust/codec-fuzz:replay_example", "--", "actor_codecs"]
+RUN_ENV = {**os.environ, "ACYCLIC_TEST_SOURCE_ROOT": str(ROOT.parents[1])}
 
 
 def run(step, expected, diagnostic="invocation writer must be admitted", entry=None):
     command = COMMAND + ([entry] if entry else [])
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(command, cwd=ROOT, env=RUN_ENV, capture_output=True, text=True)
     output = result.stdout + result.stderr
     print(f"STEP {step}\n{output}", flush=True)
     if expected == "rejected":
@@ -323,10 +325,10 @@ def replay_diagnostics():
             diagnostic = re.search(
                 r"decoder oracle (actor_codecs/[^\s]+) \(entry call_record\) failed:", output)
             if (diagnostic is None or
-                "recovery: cargo +nightly fuzz run --fuzz-dir . call_record corpus/" +
+                'recovery: bazel run //rust/codec-fuzz:call_record -- "$PWD/corpus/' +
                     diagnostic[1] not in output or
                 "recovery after correcting the reported mismatch: "
-                    "cargo run --locked --example replay -- actor_codecs call_record" not in output):
+                    "bazel run //rust/codec-fuzz:replay_example -- actor_codecs call_record" not in output):
                 raise RuntimeError("replay recovery lost the actual entry or captured input; "
                                    "recovery: correct examples/replay.rs then python3 "
                                    "actor-negative-control.py --replay-diagnostics")
@@ -472,9 +474,9 @@ def socket_ledger():
 
 
 def capture():
-    command = ["cargo", "run", "--locked", "--example", "capture", "--",
+    command = ["bazel", "run", "//rust/codec-fuzz:capture_example", "--",
                "--only-actors", "--extend-goldens"]
-    result = subprocess.run(command, cwd=ROOT)
+    result = subprocess.run(command, cwd=ROOT, env=RUN_ENV)
     if result.returncode:
         raise RuntimeError("original Actors writer capture failed; recovery after "
                            "correcting the reported failure: python3 actor-negative-control.py --capture")
