@@ -42,7 +42,7 @@ mod workspace_context {
                 let inserted = self
                     .insert_before_swap
                     .lock()
-                    .expect("injection lock")
+                    .map_err(|_| MemoryWorkspaceContextStoreError)?
                     .take();
                 if let Some(record) = inserted {
                     assert!(
