@@ -260,7 +260,8 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
-    let (release, archive) = fixture.archive(&revision, "");
+    let entry = fixture.stage_archive(&revision, "", false);
+    let (release, archive) = fixture.pack_archive(&entry);
     let verify = |revision: &str, release: &RegistryVersion, archive: &Path| {
         verify_archive(&metadata, fixture.path(), revision, release, archive)
     };
@@ -270,19 +271,19 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
         accepted.1.get("src/lib.rs"),
         Some(&crate::sha256_file(&fixture.path().join("src/lib.rs")).unwrap())
     );
-    fs::write(
-        fixture.path().join("src/lib.rs"),
-        "//! Divergent checkout Rust bytes.\n",
-    )
-    .unwrap();
-    assert!(verify(&revision, &release, &archive)
-        .unwrap_err()
-        .contains("source bytes differ"));
-    fs::copy(
-        fixture.path().join("historical-fixture-0.1.0/src/lib.rs"),
-        fixture.path().join("src/lib.rs"),
-    )
-    .unwrap();
+    for (source, member) in [
+        ("src/lib.rs", "src/lib.rs"),
+        ("Cargo.toml", "Cargo.toml.orig"),
+    ] {
+        let path = fixture.path().join(source);
+        fs::write(&path, b"changed checkout bytes").unwrap();
+        let error = verify(&revision, &release, &archive).unwrap_err();
+        assert!(
+            error.contains("source bytes differ") && error.ends_with(source),
+            "{error}"
+        );
+        fs::copy(entry.join(member), path).unwrap();
+    }
     let mut wrong = release.clone();
     wrong.checksum = "b".repeat(64);
     assert!(verify(&revision, &wrong, &archive)
@@ -291,13 +292,6 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     assert!(verify(&"c".repeat(40), &release, &archive)
         .unwrap_err()
         .contains("revision differs"));
-    let manifest = fixture.path().join("Cargo.toml");
-    fs::write(&manifest, "different manifest").unwrap();
-    assert!(verify(&revision, &release, &archive)
-        .unwrap_err()
-        .contains("source bytes differ"));
-    let entry = fixture.path().join("historical-fixture-0.1.0");
-    fs::copy(entry.join("Cargo.toml.orig"), manifest).unwrap();
     fs::remove_file(entry.join("src/lib.rs")).unwrap();
     let (release, archive) = fixture.pack_archive(&entry);
     assert!(verify(&revision, &release, &archive)
