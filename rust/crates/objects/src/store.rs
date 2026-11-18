@@ -264,13 +264,10 @@ mod format_recovery_tests {
 
 /// Why a root batch did not commit.
 enum Commit {
-    /// It may have: its keys stay.
+    /// Publication or durability is unconfirmed, so its keys stay for repair.
     Unknown(Error),
     /// It did not: its keys are removed.
     Failed(Error),
-    /// Its batch exists but may not be durable: its keys stay, and a crash
-    /// before they are leaves a batch repair discards.
-    Unflushed(Error),
 }
 
 /// What a put found when its envelope already existed.
@@ -980,7 +977,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         keys.push(key.to_owned());
         self.flush_blobs(Some(references), keys)
             .await
-            .map_err(Commit::Unflushed)
+            .map_err(Commit::Unknown)
     }
 
     /// Admit and publish one batch, retaining unknown outcomes for recovery.
@@ -1012,7 +1009,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .map_err(medium)?;
         match self.commit_batch(references, &tag, &key, batch).await {
             Ok(()) => Ok((key, name)),
-            Err(Commit::Unknown(error) | Commit::Unflushed(error)) => Err(error),
+            Err(Commit::Unknown(error)) => Err(error),
             Err(Commit::Failed(error)) => {
                 self.unreference(references, &tag, None).await?;
                 Err(error)
