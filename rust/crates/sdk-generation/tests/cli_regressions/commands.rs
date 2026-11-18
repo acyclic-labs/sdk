@@ -186,12 +186,10 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         return Ok(None);
     }
     let value = |name: &str| argument_value(command.get_args(), name);
-    let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
+    let Some(manifest) = value("--manifest-path").and_then(OsStr::to_str) else {
         return Ok(None);
     };
-    let Some(manifest) = manifest_path.to_str() else {
-        return Ok(None);
-    };
+    let manifest_path = Path::new(manifest);
     let Some(package) = value("--package").and_then(|arg| arg.to_str()) else {
         return Ok(None);
     };
