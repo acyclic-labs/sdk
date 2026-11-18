@@ -1346,8 +1346,10 @@ impl Reader {
             (self.failures - 1).min(20),
         );
         // Deterministic jitter spreads reconnecting clients apart.
-        let jitter = self.next_id.wrapping_mul(0x9E37_79B9) % (backoff / 4 + 1);
-        self.retry_at = now.saturating_add(backoff).saturating_add(jitter);
+        let sample = self.next_id.wrapping_mul(0x9E37_79B9);
+        self.retry_at = now.saturating_add(acyclic_auth::operation::Backoff::reconnect_delay_ms(
+            backoff, sample,
+        ));
         if overloaded {
             self.prefetch_paused_until = now.saturating_add(backoff.saturating_mul(4));
         }

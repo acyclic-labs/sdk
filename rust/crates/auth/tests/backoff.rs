@@ -25,6 +25,20 @@ proptest! {
     }
 
     #[test]
+    fn reconnect_projection_preserves_additive_jitter(
+        ceiling in prop_oneof![Just(0_u64), Just(u64::MAX), any::<u64>()],
+        sample in any::<u64>(),
+    ) {
+        let upper = u128::from(ceiling);
+        let expected = (upper + u128::from(sample) % (upper / 4 + 1))
+            .min(u128::from(u64::MAX));
+        prop_assert_eq!(
+            u128::from(Backoff::reconnect_delay_ms(ceiling, sample)),
+            expected,
+        );
+    }
+
+    #[test]
     fn fractional_projection_preserves_javascript_spacing(
         base in 0.0_f64..1.0e12,
         maximum in 0.0_f64..1.0e16,
