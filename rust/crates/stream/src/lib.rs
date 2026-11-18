@@ -20,10 +20,7 @@ use thiserror::Error;
 
 pub mod conformance;
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod filtered_follow_tests;
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod follow_tests;
+mod filtered_follow_fixture;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 #[cfg(test)]
