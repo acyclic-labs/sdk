@@ -1,8 +1,9 @@
 use acyclic_fs::kernel::TransferCursor;
 use acyclic_fs::model::CheckoutMode;
-use acyclic_fs::{AuthoredMutation, ByteRange, CancellationToken, Fs, FsError, GenerationId};
+use acyclic_fs::{AuthoredMutation, ByteRange, CancellationToken, Fs, FsError};
 use acyclic_fs_format::identity::{Digest, OperationId, VolumeId};
 use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_fs_format::object_reference::GenerationId;
 use acyclic_stream::OwnedBytes;
 
 use super::B;
