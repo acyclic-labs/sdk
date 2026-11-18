@@ -237,21 +237,16 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             "--package",
             package,
         ];
-        expected_args.extend(
-            metadata["target_args"]
+        let flags = |key: &str| {
+            metadata[key]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|flag| flag.as_str().unwrap()),
-        );
+                .map(|flag| flag.as_str().unwrap())
+        };
+        expected_args.extend(flags("target_args"));
         expected_args.extend(["--target", target]);
-        expected_args.extend(
-            metadata["cargo_flags"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|flag| flag.as_str().unwrap()),
-        );
+        expected_args.extend(flags("cargo_flags"));
         let Some(root) = manifest_path
             .ancestors()
             .nth(declared_manifest.components().count())
