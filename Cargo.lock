@@ -19,6 +19,7 @@ name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-host-platform",
@@ -117,6 +118,7 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-auth-operation",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-observability",
@@ -182,10 +184,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-auth-operation"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "zeroize",
+]
+
+[[package]]
 name = "acyclic-auth-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-operation",
  "js-sys",
  "proptest",
  "prost",
@@ -203,6 +222,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-agent-host-conformance",
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
@@ -360,6 +380,7 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-collections",
  "acyclic-fs-base",
  "acyclic-fs-format",
@@ -631,6 +652,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-fs-format",
@@ -721,6 +743,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-harness-core",
  "acyclic-markdown",
  "acyclic-stream",
@@ -793,6 +816,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-decimal-u64",
@@ -1138,6 +1162,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-fs",
  "acyclic-fs-work",
  "acyclic-harness",
@@ -1248,6 +1273,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-fs",
  "acyclic-fs-work",
  "acyclic-harness-client",
@@ -1649,6 +1675,7 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-contract-derive",
  "acyclic-log-frame",
  "acyclic-native-runtime",
@@ -1756,6 +1783,7 @@ name = "acyclic-plugin-identity"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-mcp",
  "acyclic-native-runtime",
  "acyclic-native-stdin",
@@ -1858,6 +1886,7 @@ name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-auth-operation",
  "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-decimal-u64",

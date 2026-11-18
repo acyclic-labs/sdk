@@ -1340,7 +1340,7 @@ impl Reader {
         };
         self.failures = self.failures.saturating_add(1);
         self.since.get_or_insert(now);
-        let backoff = acyclic_auth::operation::Backoff::ceiling_ms_at(
+        let backoff = acyclic_auth_operation::Backoff::ceiling_ms_at(
             self.policy.backoff_min_ms,
             self.policy.backoff_max_ms,
             (self.failures - 1).min(20),

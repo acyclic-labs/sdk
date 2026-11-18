@@ -324,7 +324,7 @@ async fn credited_fetch_enters_before_eof_and_retires_original_transport_owners(
     assert_eq!(transfer.count_total, 1);
     assert_eq!(
         transfer.bytes_total as usize,
-        acyclic_auth::operation::bytes_owner_allocation_bytes::<
+        acyclic_auth_operation::bytes_owner_allocation_bytes::<
             BodyChunk<(
                 tokio::sync::OwnedSemaphorePermit,
                 tokio::sync::OwnedSemaphorePermit

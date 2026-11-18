@@ -70,7 +70,7 @@ impl RuntimeAuthority {
     }
 
     /// Original invocation stop, when custody belongs to an admitted platform.
-    pub fn operation_context(&self) -> Option<&acyclic_auth::operation::Context> {
+    pub fn operation_context(&self) -> Option<&acyclic_auth_operation::Context> {
         match &self.custody {
             Custody::Native(_) => None,
             Custody::Platform { authority, .. } => Some(&authority.context),

@@ -162,7 +162,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
         assert_eq!(calls.load(Ordering::SeqCst), 6);
 
         // An ended budget wins before input decoding and credential callbacks.
-        let client = client.with_context(acyclic_auth::operation::Context::new(
+        let client = client.with_context(acyclic_auth_operation::Context::new(
             1,
             std::future::ready(()),
             std::future::pending(),
@@ -170,12 +170,12 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
         for bytes in [&[0xff][..], &renewed.encode_to_vec()] {
             assert!(matches!(
                 client.call("InvokeActor", bytes).await,
-                Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
+                Err(Error::Stopped(acyclic_auth_operation::Stopped::Deadline))
             ));
         }
         assert!(matches!(
             client.invoke_actor(typed.clone()).await,
-            Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
+            Err(Error::Stopped(acyclic_auth_operation::Stopped::Deadline))
         ));
         assert_eq!(renewals.load(Ordering::Relaxed), 2);
 
@@ -198,7 +198,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
                     std::future::pending()
                 }),
             )
-            .with_context(acyclic_auth::operation::Context::new(
+            .with_context(acyclic_auth_operation::Context::new(
                 10,
                 std::future::pending(),
                 async {
@@ -207,7 +207,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             ));
             assert!(matches!(
                 client.invoke_actor(typed.clone()).await,
-                Err(Error::Stopped(acyclic_auth::operation::Stopped::Cancelled))
+                Err(Error::Stopped(acyclic_auth_operation::Stopped::Cancelled))
             ));
         }
         assert_eq!(renewals.load(Ordering::Relaxed), 4);

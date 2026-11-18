@@ -25,10 +25,10 @@ const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// has no deadline; it retains one interrupt registration and creates no timer,
 /// clock or task. Registration failure stops the invocation as cancellation.
 /// Hosted callers instead pass their already-owned context to [`run`].
-pub fn interrupt_context() -> acyclic_auth::operation::Context {
-    acyclic_auth::operation::Context::from_stopped(u64::MAX, async {
+pub fn interrupt_context() -> acyclic_auth_operation::Context {
+    acyclic_auth_operation::Context::from_stopped(u64::MAX, async {
         let _ = tokio::signal::ctrl_c().await;
-        acyclic_auth::operation::Stopped::Cancelled
+        acyclic_auth_operation::Stopped::Cancelled
     })
 }
 
@@ -378,7 +378,7 @@ impl Store {
 
     fn save(&self, credentials: &Credentials) -> Result<(), Error> {
         private_file::validate_destination(&self.path)?;
-        let bytes = acyclic_auth::operation::ProtectedBytes::from_json(credentials)
+        let bytes = acyclic_auth_operation::ProtectedBytes::from_json(credentials)
             .map_err(|_| Error::new("credential_error", "cannot serialize credentials"))?;
         #[cfg(test)]
         if let Some(
@@ -1074,7 +1074,7 @@ impl Options {
 /// Returns command, credential-store, transport and output errors.
 pub fn run(
     arguments: &[String],
-    context: Option<acyclic_auth::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + '_>> {
     Box::pin(async move {
         if arguments
@@ -1102,7 +1102,7 @@ pub fn run(
 
 async fn execute(
     arguments: &[String],
-    context: Option<acyclic_auth::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
 ) -> Result<Value, Error> {
     if let Some((command, rest)) = arguments.split_first()
         && command == "secrets"

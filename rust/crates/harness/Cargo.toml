@@ -67,6 +67,7 @@ notify = { workspace = true }
 pulldown-cmark.workspace = true
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
 acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", default-features = false }

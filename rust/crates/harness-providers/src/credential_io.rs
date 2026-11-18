@@ -109,7 +109,7 @@ impl CredentialIo {
     }
 
     pub fn json_body(&mut self, value: &impl serde::Serialize) -> Result<bytes::Bytes> {
-        let bytes = acyclic_auth::operation::ProtectedBytes::from_json(value)
+        let bytes = acyclic_auth_operation::ProtectedBytes::from_json(value)
             .map_err(|_| crate::invalid("Codex refresh encoding failed"))?;
         match &mut self.custody {
             Some(custody) => {

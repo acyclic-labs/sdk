@@ -103,9 +103,9 @@ fn authenticated_scope_keeps_the_half_open_live_validity_interval() -> Result<()
         .issue(&bounded, "child", &capabilities)?;
     verifier.verify(&delegated.clone().seal(&verifier)?, &mut None)?;
     let (_owner, closed) = futures::channel::oneshot::channel::<()>();
-    let context = acyclic_auth::operation::Context::from_stopped((timestamp + 60) * 1000, async {
+    let context = acyclic_auth_operation::Context::from_stopped((timestamp + 60) * 1000, async {
         let _ = closed.await;
-        acyclic_auth::operation::Stopped::Cancelled
+        acyclic_auth_operation::Stopped::Cancelled
     });
     let admitted = issuer.admit(bounded.clone(), context.clone())?;
     for seconds in [timestamp, timestamp + 59] {

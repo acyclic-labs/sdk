@@ -1,6 +1,6 @@
 //! The original Auth operation budget, shared by both native transports.
 use crate::Error;
-use acyclic_auth::operation::Context;
+use acyclic_auth_operation::Context;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -47,7 +47,7 @@ pub(crate) fn deadline(
             Duration::from_millis(context.deadline_unix_millis())
                 .checked_sub(now)
                 .filter(|remaining| !remaining.is_zero())
-                .ok_or(acyclic_auth::operation::Stopped::Deadline)?
+                .ok_or(acyclic_auth_operation::Stopped::Deadline)?
         }
         None => match fallback {
             Some(fallback) => fallback,

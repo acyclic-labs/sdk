@@ -64,18 +64,18 @@ fn response_credential_error(error: CredentialError) -> Status {
     credential_status(error.denial_cause(), ResponseCredentialError(Some(error)))
 }
 
-fn stopped_status(reason: crate::operation::Stopped) -> Status {
+fn stopped_status(reason: acyclic_auth_operation::Stopped) -> Status {
     let mut status = match reason {
-        crate::operation::Stopped::Deadline => {
+        acyclic_auth_operation::Stopped::Deadline => {
             Status::deadline_exceeded("operation deadline expired")
         }
-        crate::operation::Stopped::Cancelled => Status::cancelled("operation wait cancelled"),
+        acyclic_auth_operation::Stopped::Cancelled => Status::cancelled("operation wait cancelled"),
     };
     status.set_source(Arc::new(reason));
     status
 }
 
-fn check_context(context: Option<&crate::operation::Context>) -> Result<(), Status> {
+fn check_context(context: Option<&acyclic_auth_operation::Context>) -> Result<(), Status> {
     if let Some(context) = context {
         context.check().map_err(stopped_status)?;
     }
@@ -87,7 +87,7 @@ fn check_context(context: Option<&crate::operation::Context>) -> Result<(), Stat
 #[derive(Clone)]
 pub struct CredentialChannel {
     channel: Channel,
-    context: Option<crate::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
 }
 
 impl std::fmt::Debug for CredentialChannel {
@@ -103,7 +103,7 @@ impl std::fmt::Debug for CredentialChannel {
 impl CredentialChannel {
     /// Check the original operation after a credential owner's admission,
     /// immediately before handing the request to the maintained transport.
-    pub fn with_context(mut self, context: Option<crate::operation::Context>) -> Self {
+    pub fn with_context(mut self, context: Option<acyclic_auth_operation::Context>) -> Self {
         self.context = context;
         self
     }
@@ -126,7 +126,7 @@ struct Admission {
     check: CredentialPending<()>,
     channel: Channel,
     request: http::Request<Body>,
-    context: Option<crate::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
 }
 
 impl Future for CredentialDispatch {
@@ -279,7 +279,7 @@ pub enum Budget<'a> {
     /// The original operation event and its projected wire deadline.
     Operation {
         /// Caller-owned stop event shared with every other stage.
-        context: &'a crate::operation::Context,
+        context: &'a acyclic_auth_operation::Context,
         /// Original absolute deadline projected to the native clock.
         deadline: Option<tokio::time::Instant>,
     },

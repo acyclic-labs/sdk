@@ -71,6 +71,7 @@ rust_library(
         ":build_script",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -101,6 +102,7 @@ rust_library(
         "@sdk_crates//tracing-0.1.44",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -132,6 +134,7 @@ rust_library(
         "@sdk_crates//tracing-0.1.44",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -253,6 +256,7 @@ rust_binary(
         ":build_script",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -283,6 +287,7 @@ rust_binary(
         "@sdk_crates//tracing-0.1.44",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -314,6 +319,7 @@ rust_binary(
         "@sdk_crates//tracing-0.1.44",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -377,6 +383,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -415,6 +422,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -454,6 +462,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -556,6 +565,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -594,6 +604,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -633,6 +644,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -702,6 +714,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -740,6 +753,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -779,6 +793,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -876,6 +891,7 @@ rust_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/observability:acyclic_observability_wasm",
         "//rust/crates/protobuf-json:acyclic_protobuf_json_wasm",

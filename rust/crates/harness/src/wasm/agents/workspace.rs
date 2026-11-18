@@ -171,7 +171,7 @@ impl WasmMachinesWorkspace {
 
 #[cfg(target_arch = "wasm32")]
 mod deadline {
-    use acyclic_auth::operation::{BudgetError, Context};
+    use acyclic_auth_operation::{BudgetError, Context};
     use acyclic_machines::{DeadlineStop, ProviderError, grpc::transport::Deadline};
     use acyclic_stream::ProviderTask;
     use std::{future::Future, time::Duration};
@@ -231,11 +231,11 @@ mod deadline {
         {
             let check = || -> Result<(), DeadlineStop> {
                 self.context.remaining().map_err(|error| match error {
-                    BudgetError::Stopped(acyclic_auth::operation::Stopped::Deadline) => {
+                    BudgetError::Stopped(acyclic_auth_operation::Stopped::Deadline) => {
                         DeadlineStop::Expired
                     }
                     BudgetError::ClockUnavailable
-                    | BudgetError::Stopped(acyclic_auth::operation::Stopped::Cancelled) => {
+                    | BudgetError::Stopped(acyclic_auth_operation::Stopped::Cancelled) => {
                         DeadlineStop::Cancelled
                     }
                 })?;
@@ -246,8 +246,8 @@ mod deadline {
             };
             check()?;
             let result = self.context.run(future).await.map_err(|stop| match stop {
-                acyclic_auth::operation::Stopped::Deadline => DeadlineStop::Expired,
-                acyclic_auth::operation::Stopped::Cancelled => DeadlineStop::Cancelled,
+                acyclic_auth_operation::Stopped::Deadline => DeadlineStop::Expired,
+                acyclic_auth_operation::Stopped::Cancelled => DeadlineStop::Cancelled,
             })?;
             check()?;
             Ok(result)

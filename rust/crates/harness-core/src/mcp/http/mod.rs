@@ -200,7 +200,7 @@ impl HttpMcpTransport {
             task: tokio::spawn(async move {
                 let [a, b, c, d, ..] = OperationId::new().into_bytes();
                 let schedule = || {
-                    acyclic_auth::operation::Backoff::new(
+                    acyclic_auth_operation::Backoff::new(
                         100,
                         5_000,
                         u32::from_le_bytes([a, b, c, d]),

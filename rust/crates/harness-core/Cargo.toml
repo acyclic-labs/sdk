@@ -64,6 +64,7 @@ p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-model-render = { version = "=0.2.0", path = "../model-render" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
 zeroize.workspace = true
 once_cell = "1.21.3"

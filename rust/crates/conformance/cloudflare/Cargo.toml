@@ -15,6 +15,7 @@ acyclic-hosted-actors-conformance = { path = "../hosted-actors" }
 acyclic-agent-host-conformance = { path = "../agent-host" }
 acyclic-actors = { path = "../../actors", features = ["conformance"] }
 acyclic-auth = { path = "../../auth", features = ["test-support"] }
+acyclic-auth-operation = { version = "=0.2.0", path = "../../auth-operation" }
 acyclic-harness-core = { path = "../../harness-core" }
 acyclic-harness-client = { path = "../../harness-client", features = ["wasm"] }
 acyclic-fs = { path = "../../filesystem", default-features = false }

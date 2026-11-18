@@ -1,7 +1,7 @@
 //! Parent-bound runtime operations. Root signing material never crosses this port.
 use super::*;
 use crate::OperationId;
-use acyclic_auth::operation::Context;
+use acyclic_auth_operation::Context;
 use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
 
 /// A checkpoint operation, rather than an unrestricted signing oracle.

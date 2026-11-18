@@ -110,6 +110,7 @@ filegroup(
         "//rust/crates/actors-wasm:Cargo.toml",
         "//rust/crates/actors:Cargo.toml",
         "//rust/crates/auth-action:Cargo.toml",
+        "//rust/crates/auth-operation:Cargo.toml",
         "//rust/crates/auth-wasm:Cargo.toml",
         "//rust/crates/auth:Cargo.toml",
         "//rust/crates/auth/fuzz:Cargo.toml",

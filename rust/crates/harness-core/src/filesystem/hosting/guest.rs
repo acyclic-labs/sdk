@@ -74,7 +74,7 @@ impl GuestAuthorityLifetime {
     fn monitor(
         verified: crate::core::VerifiedScope,
         changes: Arc<dyn acyclic_auth::trust::ChangeSource>,
-        context: Option<acyclic_auth::operation::Context>,
+        context: Option<acyclic_auth_operation::Context>,
         original: NativeMaterializationWork,
     ) -> crate::Result<impl std::future::Future<Output = ()> + use<>> {
         let cancelled = original.cancellation_wait()?;
@@ -354,7 +354,7 @@ mod tests {
         }
         fn derive<'a>(
             &'a self,
-            _context: &'a acyclic_auth::operation::Context,
+            _context: &'a acyclic_auth_operation::Context,
             _operation: crate::OperationId,
             _parent: &'a Scope,
             _id: &'a str,
@@ -364,7 +364,7 @@ mod tests {
         }
         fn checkpoint<'a>(
             &'a self,
-            _context: &'a acyclic_auth::operation::Context,
+            _context: &'a acyclic_auth_operation::Context,
             _operation: crate::OperationId,
             _kind: crate::core::CheckpointKind,
             _digest: [u8; 32],
@@ -440,11 +440,11 @@ mod tests {
                 native.public_checkpoint_key(),
             )?;
             let (producer, stopped) = futures::channel::oneshot::channel::<()>();
-            let context = acyclic_auth::operation::Context::from_stopped(
+            let context = acyclic_auth_operation::Context::from_stopped(
                 native.expiry(&scope)?.saturating_mul(1000),
                 async move {
                     let _ = stopped.await;
-                    acyclic_auth::operation::Stopped::Cancelled
+                    acyclic_auth_operation::Stopped::Cancelled
                 },
             );
             let operations = Arc::new(PublicObservation(native));
@@ -622,11 +622,11 @@ mod tests {
                 &mut None,
             )?;
             let (producer, stopped) = futures::channel::oneshot::channel::<()>();
-            let context = acyclic_auth::operation::Context::from_stopped(
+            let context = acyclic_auth_operation::Context::from_stopped(
                 verifier.expiry(&scope)?.saturating_mul(1000),
                 async move {
                     let _ = stopped.await;
-                    acyclic_auth::operation::Stopped::Cancelled
+                    acyclic_auth_operation::Stopped::Cancelled
                 },
             );
             let runtime = crate::core::RuntimeAuthority::admitted(

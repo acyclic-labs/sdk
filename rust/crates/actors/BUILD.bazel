@@ -76,6 +76,7 @@ rust_library(
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -196,6 +197,7 @@ rust_binary(
         ":acyclic_actors",
         ":build_script",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -275,6 +277,7 @@ rust_test(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
@@ -369,6 +372,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
@@ -439,6 +443,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
@@ -509,6 +514,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
@@ -578,6 +584,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
@@ -647,6 +654,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
@@ -750,6 +758,7 @@ rust_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",
         "//rust/crates/observability:acyclic_observability_wasm",

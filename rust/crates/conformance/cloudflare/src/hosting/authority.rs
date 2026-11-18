@@ -1,5 +1,6 @@
 //! The qualification host's custody lives in this module's separate Wasm memory.
-use acyclic_auth::{contract::*, operation::Context};
+use acyclic_auth::contract::*;
+use acyclic_auth_operation::Context;
 use acyclic_harness_core::{
     Capabilities, OperationId,
     conversation::{FileRef, VolumeRef},
@@ -142,7 +143,7 @@ impl HostFixtureAuthority {
             expires_at_unix_seconds,
             capability_handle: operation.to_string().into_bytes(),
         };
-        let context = acyclic_auth::operation::javascript::from_promise(
+        let context = acyclic_auth_operation::javascript::from_promise(
             deadline_unix_millis,
             stopped,
             Some(clock),

@@ -210,30 +210,30 @@ struct InvocationClock {
     monotonic: std::time::Instant,
 }
 
-impl acyclic_auth::operation::Clock for InvocationClock {
-    fn now_unix_millis(&self) -> std::result::Result<u64, acyclic_auth::operation::Stopped> {
+impl acyclic_auth_operation::Clock for InvocationClock {
+    fn now_unix_millis(&self) -> std::result::Result<u64, acyclic_auth_operation::Stopped> {
         self.unix
             .checked_add(
                 u64::try_from(self.monotonic.elapsed().as_millis())
-                    .map_err(|_| acyclic_auth::operation::Stopped::Cancelled)?,
+                    .map_err(|_| acyclic_auth_operation::Stopped::Cancelled)?,
             )
-            .ok_or(acyclic_auth::operation::Stopped::Cancelled)
+            .ok_or(acyclic_auth_operation::Stopped::Cancelled)
     }
 
     fn expires_at(
         &self,
         deadline: u64,
-    ) -> std::result::Result<acyclic_auth::operation::StopFuture, acyclic_auth::operation::Stopped>
+    ) -> std::result::Result<acyclic_auth_operation::StopFuture, acyclic_auth_operation::Stopped>
     {
         let at = self
             .monotonic
             .checked_add(std::time::Duration::from_millis(
                 deadline.saturating_sub(self.unix),
             ))
-            .ok_or(acyclic_auth::operation::Stopped::Cancelled)?;
+            .ok_or(acyclic_auth_operation::Stopped::Cancelled)?;
         Ok(Box::pin(async move {
             tokio::time::sleep_until(at.into()).await;
-            acyclic_auth::operation::Stopped::Deadline
+            acyclic_auth_operation::Stopped::Deadline
         }))
     }
 }
@@ -424,11 +424,11 @@ async fn committed_handover(refused_close: bool) -> Result {
         workspace.clone(),
         DeviceAuthority {
             verifier: owner.verifier(&mut None)?,
-            context: acyclic_auth::operation::Context::from_clock(
+            context: acyclic_auth_operation::Context::from_clock(
                 u64::MAX,
                 async move {
                     let _ended = invocation_lost.await;
-                    acyclic_auth::operation::Stopped::Cancelled
+                    acyclic_auth_operation::Stopped::Cancelled
                 },
                 Arc::new(clock),
             ),

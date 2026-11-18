@@ -13,6 +13,7 @@ documentation = "https://docs.rs/acyclic-harness-suite"
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["conformance", "test-support"] }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }

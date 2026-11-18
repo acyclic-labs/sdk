@@ -1,9 +1,9 @@
 //! Browser/Node fetch adapter. Authority, JSON and redaction live in acyclic-auth.
 use acyclic_auth::{
     contract::*,
-    operation::ProtectedBytes,
     secrets::{Client, Error, Response, Transport, TransportFuture},
 };
+use acyclic_auth_operation::ProtectedBytes;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use prost::Message;
 use wasm_bindgen::{JsCast, prelude::*};
@@ -111,7 +111,7 @@ impl SecretsClient {
             .map_err(|_| error(Error::InvalidRequest))?;
         let context = match (deadline_unix_millis, stopped) {
             (Some(deadline), Some(stopped)) => Some(
-                acyclic_auth::operation::javascript::context(deadline, stopped)
+                acyclic_auth_operation::javascript::context(deadline, stopped)
                     .map_err(|_| error(Error::InvalidRequest))?,
             ),
             (None, None) => None,

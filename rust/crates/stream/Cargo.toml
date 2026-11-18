@@ -69,6 +69,7 @@ loom = { version = "0.7.3", features = ["futures"], optional = true }
 tempfile = { version = "3.27.0", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 async-trait.workspace = true
 base64 = "0.23.1"
 blake3 = "1.8.2"

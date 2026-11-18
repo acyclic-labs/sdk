@@ -1,6 +1,6 @@
 //! Lossless adapter for the public JavaScript CredentialProvider contract.
 use super::*;
-use crate::operation::javascript::Cancel;
+use acyclic_auth_operation::javascript::Cancel;
 use js_sys::{Function, JsString, Reflect};
 use std::task::{Context, Poll};
 use wasm_bindgen::{JsCast, prelude::*};
@@ -156,7 +156,7 @@ impl CredentialSource for Source {
             let signal = get(&owner.0, "changed")?
                 .dyn_into::<AbortSignal>()
                 .map_err(invalid)?;
-            let changed = crate::operation::javascript::listen(signal).map_err(invalid)?;
+            let changed = acyclic_auth_operation::javascript::listen(signal).map_err(invalid)?;
             Ok(Some(CredentialWatch::from_custodian(
                 validity,
                 Registration {
@@ -216,7 +216,7 @@ impl Drop for Close {
 }
 struct Registration {
     // Unregister before closing the original source owner.
-    changed: crate::operation::javascript::SignalStop,
+    changed: acyclic_auth_operation::javascript::SignalStop,
     _owner: Close,
 }
 impl Future for Registration {

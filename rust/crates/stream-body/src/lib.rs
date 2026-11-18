@@ -36,7 +36,7 @@ impl<C: Send + 'static> BodyChunk<C> {
         self,
         admit: impl FnOnce(usize) -> Result<A, E>,
     ) -> Result<Bytes, E> {
-        let control = admit(acyclic_auth::operation::bytes_owner_allocation_bytes::<
+        let control = admit(acyclic_auth_operation::bytes_owner_allocation_bytes::<
             BodyChunk<(C, A)>,
         >())?;
         Ok(Bytes::from_owner(BodyChunk {

@@ -1,5 +1,5 @@
 use crate::RetrySpec;
-use acyclic_auth::operation::Backoff;
+use acyclic_auth_operation::Backoff;
 use acyclic_harness_core::{Error, model::ModelDispatch, wire::ErrorCode};
 use std::time::Duration;
 

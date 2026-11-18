@@ -101,7 +101,7 @@ impl Pool {
         &mut self,
         node: wire::SessionNode,
         channel: Option<Endpoint>,
-        mut backoff: Option<acyclic_auth::operation::Backoff>,
+        mut backoff: Option<acyclic_auth_operation::Backoff>,
     ) {
         let name = node.node_id.clone();
         if self.links.contains_key(&name) || self.dials.contains_key(&name) {
@@ -191,7 +191,7 @@ impl Pool {
                                 }
                                 attempt = attempt.saturating_add(1);
                                 let backoff = backoff.get_or_insert_with(|| {
-                                    acyclic_auth::operation::Backoff::new(
+                                    acyclic_auth_operation::Backoff::new(
                                         10,
                                         1_000,
                                         uuid::Uuid::new_v4().as_fields().0,
@@ -468,7 +468,7 @@ impl Pool {
             },
             Some(link.channel.clone()),
             Some(link.backoff.take().unwrap_or_else(|| {
-                acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
+                acyclic_auth_operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
             })),
         );
         Ok(())

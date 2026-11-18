@@ -1,7 +1,7 @@
 //! Original credential custody shared by both availability transports.
 use super::*;
 use acyclic_auth::credential::{CredentialProvider, ResolvedCredential};
-use acyclic_auth::operation::Context;
+use acyclic_auth_operation::Context;
 use futures::future::{self, BoxFuture, Either};
 use std::future::Future;
 

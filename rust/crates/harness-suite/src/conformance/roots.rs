@@ -206,14 +206,14 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         // The same native issuer stays behind its admitted operation port.
         // This is not native enrollment: only the original caller's grant
         // can authorize journal creation, even though it has the host role.
-        let context = acyclic_auth::operation::Context::from_stopped(
+        let context = acyclic_auth_operation::Context::from_stopped(
             issuer
                 .verifier(&mut None)?
                 .expiry(&scope)?
                 .saturating_mul(1000),
             async move {
                 let _ = stopped.await;
-                acyclic_auth::operation::Stopped::Cancelled
+                acyclic_auth_operation::Stopped::Cancelled
             },
         );
         Bound::platform_admitted(

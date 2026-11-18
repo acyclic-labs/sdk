@@ -434,7 +434,7 @@ pub fn bearer_bytes(value: &str) -> bytes::Bytes {
     let mut bytes = Zeroizing::new(Vec::with_capacity(PREFIX.len() + value.len()));
     bytes.extend_from_slice(PREFIX);
     bytes.extend_from_slice(value.as_bytes());
-    crate::operation::ProtectedBytes::new(bytes).into_bytes()
+    acyclic_auth_operation::ProtectedBytes::new(bytes).into_bytes()
 }
 
 fn validated_bearer(value: &str) -> Result<bytes::Bytes, CredentialError> {

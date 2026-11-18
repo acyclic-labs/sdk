@@ -10,9 +10,9 @@ use crate::{
         IssuanceRequestProto,
     },
     crypto::BlockId,
-    operation::{BudgetError, Context},
     verify::{CertificateVerifier, Trust, VerifyError},
 };
+use acyclic_auth_operation::{BudgetError, Context};
 use prost::Message;
 use sha2::{Digest, Sha256};
 mod wire;

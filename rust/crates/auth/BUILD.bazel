@@ -95,6 +95,7 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/observability:acyclic_observability",
         "//rust/vendor/napi-3.15.0:napi",
@@ -257,6 +258,7 @@ rust_test(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
@@ -401,6 +403,7 @@ rust_binary(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
@@ -471,6 +474,7 @@ rust_binary(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
@@ -540,6 +544,7 @@ rust_binary(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
@@ -609,6 +614,7 @@ rust_binary(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
@@ -723,6 +729,7 @@ rust_library(
         ":build_script_wasm",
     ] + [
         "//rust/crates/auth-action:acyclic_auth_action_wasm",
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/observability:acyclic_observability_wasm",
         "@wasm_crates//base64_0_23_1-0.23.1",
         "@wasm_crates//bytes-1.12.1",

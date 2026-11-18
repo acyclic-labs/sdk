@@ -107,6 +107,7 @@ rust_test(
         "//rust/crates/actors-wasm:tree",
         "//rust/crates/actors:tree",
         "//rust/crates/auth-action:tree",
+        "//rust/crates/auth-operation:tree",
         "//rust/crates/auth-wasm:tree",
         "//rust/crates/auth/fuzz:tree",
         "//rust/crates/auth:tree",

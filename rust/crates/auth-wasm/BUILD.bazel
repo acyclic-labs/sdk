@@ -34,6 +34,7 @@ rust_shared_library(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//js-sys-0.3.94",
         "@sdk_crates//prost-0.14.4",
@@ -65,6 +66,7 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//js-sys-0.3.94",
         "@sdk_crates//prost-0.14.4",
@@ -99,6 +101,7 @@ rust_test(
     deps = [
         ":acyclic_auth_wasm",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//js-sys-0.3.94",
         "@sdk_crates//proptest-1.12.0",
@@ -154,6 +157,7 @@ rust_shared_library(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "@wasm_crates//js-sys-0.3.94",
         "@wasm_crates//prost-0.14.4",
@@ -187,6 +191,7 @@ rust_library(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "@wasm_crates//js-sys-0.3.94",
         "@wasm_crates//prost-0.14.4",

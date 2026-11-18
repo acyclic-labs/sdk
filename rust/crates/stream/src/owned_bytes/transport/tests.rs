@@ -35,7 +35,7 @@ fn transport_transfer_preserves_original_backing_credit_and_refusal()
             let pointer = bytes.as_ptr();
             let held = observed.held.load(Ordering::SeqCst);
             let header = if native {
-                acyclic_auth::operation::bytes_owner_allocation_bytes::<NativeTransport>() as u64
+                acyclic_auth_operation::bytes_owner_allocation_bytes::<NativeTransport>() as u64
             } else {
                 0
             };

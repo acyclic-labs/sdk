@@ -93,7 +93,7 @@ pub struct DeviceAuthority {
     pub verifier: AuthorityVerifier,
     /// Original attaching invocation's clock and stop, retained by its host.
     /// Event-only contexts refuse deadline narrowing before dispatch.
-    pub context: acyclic_auth::operation::Context,
+    pub context: acyclic_auth_operation::Context,
 }
 
 /// One connection's identity: the session its socket opens with.

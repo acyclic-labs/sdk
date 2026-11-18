@@ -55,7 +55,7 @@ pub(crate) async fn read(
                 )?;
                 hold.absorb(&mut growth)?;
             }
-            acyclic_auth::operation::reserve_protected_bytes(&mut bytes, capacity).map_err(
+            acyclic_auth_operation::reserve_protected_bytes(&mut bytes, capacity).map_err(
                 |cause| {
                     #[cfg(not(target_arch = "wasm32"))]
                     if work.is_some() {
