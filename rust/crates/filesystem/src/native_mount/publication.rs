@@ -106,7 +106,13 @@ pub(super) async fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O,
     accounting: crate::kernel::KernelAccounting<'a>,
     before_publication: &'a mut F,
     proof: PublicationProof<'a>,
-) -> Result<Option<(Option<OperationId>, crate::GenerationId)>, T>
+) -> Result<
+    Option<(
+        Option<OperationId>,
+        acyclic_fs_format::object_reference::GenerationId,
+    )>,
+    T,
+>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -192,7 +198,10 @@ where
 fn private_ack(
     operation: OperationId,
     outcome: LivePublicationObservation,
-) -> Option<(Option<OperationId>, crate::GenerationId)> {
+) -> Option<(
+    Option<OperationId>,
+    acyclic_fs_format::object_reference::GenerationId,
+)> {
     match outcome {
         LivePublicationObservation::Committed { generation_id, .. }
         | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
@@ -205,7 +214,10 @@ fn private_ack(
 fn live_ack(
     operation: OperationId,
     outcome: &LiveMutationOutcome,
-) -> Option<(Option<OperationId>, crate::GenerationId)> {
+) -> Option<(
+    Option<OperationId>,
+    acyclic_fs_format::object_reference::GenerationId,
+)> {
     match outcome {
         LiveMutationOutcome::Committed { generation_id, .. }
         | LiveMutationOutcome::AlreadyCommitted { generation_id, .. } => {

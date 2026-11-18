@@ -24,10 +24,11 @@ use {
     acyclic_fs::{
         AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityStoreError,
         CancellationToken, CreateAuthorityOutcome, EmbeddedCapabilities, Epoch, FenceOutcome,
-        ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head, IdempotencyKey,
+        ForkOptions, Fs, GenerationFork, GenerationForkSource, Head, IdempotencyKey,
         ProposedCommit, ReplayLimit, Sequence, WorkspaceDelete, object_digest,
     },
     acyclic_fs_format::identity::{AuthorityId, Digest, OperationId},
+    acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
     acyclic_fs_work::performance::{OperationFailure, WorkBudget},
 };

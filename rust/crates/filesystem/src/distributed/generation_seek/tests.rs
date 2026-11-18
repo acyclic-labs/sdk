@@ -155,7 +155,7 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                 store
                     .first_generation(
                         authority,
-                        crate::GenerationId::from_root(absent),
+                        acyclic_fs_format::object_reference::GenerationId::from_root(absent),
                         head.sequence,
                         &mut work
                     )

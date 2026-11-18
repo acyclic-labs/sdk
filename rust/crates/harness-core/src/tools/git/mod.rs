@@ -16,14 +16,15 @@ use {
     acyclic_fs::{
         ApplyOptions, CancellationToken, Generation, GitCommand, GitCommandOutput,
         GitCompatRepository, GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult,
-        GitIgnorePolicy, GitTreeRef, IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache,
-        MergeDriverRegistry, OperationWindowCoordinator, OperationWindowLease, PublicationPermit,
-        TransactionCommit, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph,
-        WorkspacePathApply, apply_git_patch, blame_git_generations,
+        GitIgnorePolicy, GitTreeRef, IdempotencyKey, JoinOutcome, OperationWindowCoordinator,
+        OperationWindowLease, PublicationPermit, TransactionCommit, Workspace as FsWorkspace,
+        WorkspaceError, WorkspaceGraph, WorkspacePathApply, apply_git_patch, blame_git_generations,
         capture_git_compatible_generation, capture_git_compatible_generation_incremental,
         git_compatible_diff, git_restore_paths, grep_git_generation, walk_git_tree,
     },
     acyclic_fs_format::identity::OperationId,
+    acyclic_fs_merge::merge_driver::MemoryMergeResolutionCache,
+    acyclic_fs_merge::merge_driver::MergeDriverRegistry,
     acyclic_fs_work::performance::WorkBudget,
 };
 

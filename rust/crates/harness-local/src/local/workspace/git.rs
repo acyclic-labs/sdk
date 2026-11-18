@@ -38,7 +38,7 @@ struct Invocation<'a> {
     source: Option<&'a workspace::MountedVolume>,
     watcher: &'a mut Option<capture::Cursor>,
     access: &'a crate::filesystem::WorkspaceAccess,
-    capture_cut: acyclic_fs::GenerationId,
+    capture_cut: acyclic_fs_format::object_reference::GenerationId,
 }
 
 /// A cancelled or failed settlement still owes its durable queue a drain.
@@ -628,8 +628,8 @@ pub(in crate::local) fn reconciliation_generation(
 fn reconciliation_operation(
     operation: OperationId,
     phase: &[u8],
-    from: acyclic_fs::GenerationId,
-    to: acyclic_fs::GenerationId,
+    from: acyclic_fs_format::object_reference::GenerationId,
+    to: acyclic_fs_format::object_reference::GenerationId,
 ) -> acyclic_fs_format::identity::OperationId {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.git-reconciliation/v2");
     hash.update(&operation.into_bytes());

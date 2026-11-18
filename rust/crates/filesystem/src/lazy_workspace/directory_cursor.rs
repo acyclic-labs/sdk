@@ -179,8 +179,9 @@ fn decode_fields(
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
     let kind = decoder.u8(observe)?;
     let workspace = WorkspaceId::from_bytes(decoder.fixed::<16, crate::FsError>(observe)?);
-    let generation =
-        crate::GenerationId::from_root(decoder.object(crate::ObjectKind::GenerationRoot, observe)?);
+    let generation = acyclic_fs_format::object_reference::GenerationId::from_root(
+        decoder.object(crate::ObjectKind::GenerationRoot, observe)?,
+    );
     let cut = match kind {
         0 => DirectoryCut::Authored {
             workspace,

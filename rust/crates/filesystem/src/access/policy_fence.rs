@@ -3,7 +3,7 @@
 /// again at publication. Unrelated data changes can then rebase normally.
 #[derive(Clone, Copy)]
 pub struct PolicyFence {
-    pub(super) generation: crate::GenerationId,
+    pub(super) generation: acyclic_fs_format::object_reference::GenerationId,
     pub(super) revision: crate::kernel::MetadataField<crate::ObjectId>,
     pub(super) generation_sensitive: bool,
     pub(super) valid_from: u64,
@@ -39,7 +39,7 @@ impl PolicyFence {
 
     pub(crate) fn matches(
         self,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         revision: crate::kernel::MetadataField<crate::ObjectId>,
         now: u64,
     ) -> bool {

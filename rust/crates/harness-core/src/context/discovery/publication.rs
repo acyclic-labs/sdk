@@ -53,7 +53,8 @@ impl SkillSourceCheckpoint {
             StreamPath::validate(origin)?;
             if *end > value.2.next
                 || *end <= value.1.next
-                || acyclic_fs::GenerationId::from_bytes(generation).is_none()
+                || acyclic_fs_format::object_reference::GenerationId::from_bytes(generation)
+                    .is_none()
             {
                 return Err(StreamError::InvalidArgument.into());
             }

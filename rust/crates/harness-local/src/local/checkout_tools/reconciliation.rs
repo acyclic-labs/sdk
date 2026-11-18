@@ -376,7 +376,7 @@ mod tests {
             };
             let pending = (acyclic_fs_format::identity::OperationId::from_bytes(operation), GitGenerationRef {
                 workspace_id: root,
-                generation: acyclic_fs::GenerationId::from_root(acyclic_fs_format::object_reference::ObjectId {
+                generation: acyclic_fs_format::object_reference::GenerationId::from_root(acyclic_fs_format::object_reference::ObjectId {
                     kind: acyclic_fs_format::object_reference::ObjectKind::GenerationRoot,
                     digest: acyclic_fs_format::identity::Digest::from_bytes(generation),
                     storage: sealed.then_some(association),
@@ -411,7 +411,7 @@ mod tests {
                     2 => { let mut bytes = operation; bytes[0] ^= 1; changed.root_file_id = acyclic_fs_format::identity::FileId::from_bytes(bytes); object.storage = Some(changed); }
                     _ => { changed.origin_generation = acyclic_fs_format::identity::Digest::from_bytes(bytes); object.storage = Some(changed); }
                 }
-                wrong.1.generation = acyclic_fs::GenerationId::from_root(object);
+                wrong.1.generation = acyclic_fs_format::object_reference::GenerationId::from_root(object);
                 prop_assert_eq!(wrong.1.generation.digest(), pending.1.generation.digest());
                 let mut state = original.clone();
                 prop_assert!(update(&mut state, Some(wrong), None).is_err());

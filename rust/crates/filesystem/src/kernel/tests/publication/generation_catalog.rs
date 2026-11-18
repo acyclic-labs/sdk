@@ -269,7 +269,8 @@ async fn fixture_with_fence(
     for id in 1..=count {
         let mut candidate = base.clone();
         if !repeat {
-            candidate.parents = vec![crate::GenerationId::from_root(root)];
+            candidate.parents =
+                vec![acyclic_fs_format::object_reference::GenerationId::from_root(root)];
             let bytes = encode_generation_root(&candidate, accept, allocation_failed)?;
             root = ObjectId {
                 storage: None,

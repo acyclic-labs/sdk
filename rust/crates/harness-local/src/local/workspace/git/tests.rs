@@ -4,7 +4,10 @@ use proptest::prelude::*;
 
 struct PreparedMerge {
     repository: acyclic_fs::GitCompatRepository<acyclic_fs::LocalCoreStateStore>,
-    capture: Option<(Arc<LocalWorkspace>, acyclic_fs::GenerationId)>,
+    capture: Option<(
+        Arc<LocalWorkspace>,
+        acyclic_fs_format::object_reference::GenerationId,
+    )>,
     gate: std::sync::Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -470,7 +473,7 @@ proptest! {
                 origin_generation: acyclic_fs_format::identity::Digest::from_bytes(origin),
             }),
         };
-        let sealed = acyclic_fs::GenerationId::from_root(object);
+        let sealed = acyclic_fs_format::object_reference::GenerationId::from_root(object);
         let original = sealed.to_bytes();
         let key = reconciliation_operation(operation, b"before", sealed, sealed);
 
@@ -480,14 +483,14 @@ proptest! {
             let mut changed = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
             changed.copy_from_slice(original.as_slice());
             changed[index] ^= 1;
-            let changed = acyclic_fs::GenerationId::from_bytes(&changed)
+            let changed = acyclic_fs_format::object_reference::GenerationId::from_bytes(&changed)
                 .ok_or_else(|| TestCaseError::fail("canonical reference mutation refused"))?;
             prop_assert_ne!(reconciliation_operation(operation, b"before", changed, sealed), key);
             prop_assert_ne!(reconciliation_operation(operation, b"before", sealed, changed), key);
         }
 
         object.storage = None;
-        let plain = acyclic_fs::GenerationId::from_root(object);
+        let plain = acyclic_fs_format::object_reference::GenerationId::from_root(object);
         prop_assert_eq!(plain.digest(), sealed.digest());
         prop_assert_ne!(reconciliation_operation(operation, b"before", plain, sealed), key);
         prop_assert_ne!(reconciliation_operation(operation, b"before", sealed, plain), key);

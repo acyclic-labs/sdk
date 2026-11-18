@@ -1,5 +1,8 @@
-use crate::{GenerationId, Sequence, VolumeId};
 use bytes::BufMut;
+use {
+    crate::{Sequence, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const VERSION: u8 = 1;
 const PREFIX_BYTES: usize = 1 + 16;

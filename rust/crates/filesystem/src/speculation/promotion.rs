@@ -4,12 +4,15 @@ use super::active::Active;
 use super::{ResidencyPermit, ResidencyReason};
 use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::foundation::{GenerationId, OperationId, VolumeId};
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectReadRequest, ObjectResult, ObjectStoreError};
 use std::collections::VecDeque;
 use std::future::Future;
 use thiserror::Error;
+use {
+    crate::foundation::{OperationId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const BASIS_POINTS: u128 = 10_000;
 

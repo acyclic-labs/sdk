@@ -2,10 +2,13 @@
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
 use super::volume::{decode_config, encode_config};
-use crate::foundation::{GenerationId, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
 use thiserror::Error;
+use {
+    crate::foundation::{VolumeId, usize_to_u64},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const DOMAIN: &[u8] = b"acyclic-fs-generation-export-v1\0";
 const VERSION: u16 = 2;

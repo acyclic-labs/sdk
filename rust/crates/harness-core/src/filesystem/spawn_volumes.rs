@@ -72,8 +72,11 @@ pub trait VolumeResources: acyclic_stream::ProviderPlatform + 'static {
         source: &'a str,
         destination: &'a str,
         operation: acyclic_fs_format::identity::OperationId,
-        generation: Option<acyclic_fs::GenerationId>,
-    ) -> BoxProviderFuture<'a, Result<Option<acyclic_fs::GenerationId>, ForkCutError>>;
+        generation: Option<acyclic_fs_format::object_reference::GenerationId>,
+    ) -> BoxProviderFuture<
+        'a,
+        Result<Option<acyclic_fs_format::object_reference::GenerationId>, ForkCutError>,
+    >;
 
     /// Releases physical resources belonging to these original bindings. This
     /// does not delete the logical volumes or their retained history.

@@ -873,7 +873,7 @@ fn multipart_records_preserve_sealed_parts_and_completed_generations() -> S3Resu
         digest: crate::Digest::from_bytes([4; 32]),
         storage: Some(storage),
     };
-    let generation = crate::GenerationId::from_root(ObjectId {
+    let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
         kind: crate::ObjectKind::GenerationRoot,
         ..part
     });

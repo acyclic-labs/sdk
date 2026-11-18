@@ -52,7 +52,7 @@ impl crate::native_mount::NativeAccessOwner for Reload {
 
     fn select<'a>(
         &'a self,
-        _generation: crate::GenerationId,
+        _generation: acyclic_fs_format::object_reference::GenerationId,
         _work: &'a crate::NativeMaterializationWork,
     ) -> Result<
         crate::native_mount::NativeMountCallbackFuture<'a, crate::MountOptions>,

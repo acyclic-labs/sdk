@@ -9,12 +9,15 @@ use super::{
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::foundation::{Digest, FileId, GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectStoreError};
 use std::mem::size_of;
 use std::sync::Mutex;
 use thiserror::Error;
+use {
+    crate::foundation::{Digest, FileId, usize_to_u64},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const ZERO_HASH_BLOCK: [u8; 8 * 1024] = [0; 8 * 1024];
 const CONTENT_RANGE_DOMAIN: &[u8] = b"acyclic-fs-dependency-content-range-v1\0";

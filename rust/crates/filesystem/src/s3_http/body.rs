@@ -172,7 +172,9 @@ fn encode_multipart_completing(parts: &[(u32, String)]) -> S3Result<Bytes> {
     Ok(Bytes::from(output))
 }
 
-fn encode_multipart_completed(generation: crate::GenerationId) -> Bytes {
+fn encode_multipart_completed(
+    generation: acyclic_fs_format::object_reference::GenerationId,
+) -> Bytes {
     let mut output = Vec::with_capacity(2 + generation.object_id().encoded_len());
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 4]);
     output.extend_from_slice(&generation.to_bytes());
@@ -414,9 +416,10 @@ impl MultipartReplay {
                 *terminal = Some(MultipartTerminal::Completing(selected));
             }
             4 => {
-                let generation =
-                    crate::GenerationId::from_bytes(cursor.take(record.len().saturating_sub(2))?)
-                        .ok_or(MultipartDecodeError::Malformed)?;
+                let generation = acyclic_fs_format::object_reference::GenerationId::from_bytes(
+                    cursor.take(record.len().saturating_sub(2))?,
+                )
+                .ok_or(MultipartDecodeError::Malformed)?;
                 cursor.finish()?;
                 if !matches!(terminal, Some(MultipartTerminal::Completing(_))) {
                     return Err(MultipartDecodeError::Malformed);

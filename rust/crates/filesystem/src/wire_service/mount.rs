@@ -6,7 +6,6 @@
 //! what an issuer returns with [`admit_mount`] before it reaches a client,
 //! and the mount endpoint verifies it as any other capability.
 use super::CredentialGrantRequest;
-use crate::{GenerationId, WorkspaceId};
 use acyclic_auth::{
     authority::{self, PolicyDecision, Request, Scope, Target},
     contract::{
@@ -17,6 +16,7 @@ use acyclic_auth::{
 };
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
+use {crate::WorkspaceId, acyclic_fs_format::object_reference::GenerationId};
 
 /// The audience of `workspace`'s mount capability: the volume itself.
 #[must_use]

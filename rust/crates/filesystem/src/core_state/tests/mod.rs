@@ -104,8 +104,12 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
         plan: crate::MaterializationPlan {
             operation_id,
             intent: crate::MaterializationIntent::GenerationTransition {
-                from: crate::GenerationId::new(Digest::from_bytes([1; 32])),
-                to: crate::GenerationId::new(Digest::from_bytes([2; 32])),
+                from: acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes(
+                    [1; 32],
+                )),
+                to: acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes(
+                    [2; 32],
+                )),
             },
             edits: Vec::new(),
         },
@@ -204,8 +208,12 @@ pub(super) fn crash_lineage() -> WorkspaceLineageRecord {
         workspace_name: "crash-child".to_owned(),
         parent_workspace_id: Some(workspace()),
         parent_workspace_name: Some("durable".to_owned()),
-        fork_generation: crate::GenerationId::new(Digest::from_bytes([5; 32])),
-        initial_generation: crate::GenerationId::new(Digest::from_bytes([6; 32])),
+        fork_generation: acyclic_fs_format::object_reference::GenerationId::new(
+            Digest::from_bytes([5; 32]),
+        ),
+        initial_generation: acyclic_fs_format::object_reference::GenerationId::new(
+            Digest::from_bytes([6; 32]),
+        ),
     }
 }
 #[derive(Debug, PartialEq)]
@@ -451,7 +459,7 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
 pub(super) fn prepared_origin_fixture(parent: &LazyWorkspaceState) -> LazyWorkspaceState {
     let snapshot = crate::LazySnapshotRef::new(
         parent.workspace_id,
-        crate::GenerationId::new(Digest::from_bytes([0xa2; 32])),
+        acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes([0xa2; 32])),
         parent.source.clone(),
         parent.overlay,
         parent.shadows,

@@ -396,7 +396,10 @@ impl CheckoutPublisher {
             .await
     }
 
-    fn staged_generation(&self, file: &FileRef) -> Result<acyclic_fs::GenerationId> {
+    fn staged_generation(
+        &self,
+        file: &FileRef,
+    ) -> Result<acyclic_fs_format::object_reference::GenerationId> {
         self.files.file_generation_id(file, None)
     }
 }

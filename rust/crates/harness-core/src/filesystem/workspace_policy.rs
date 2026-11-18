@@ -1,11 +1,14 @@
 use crate::{Error, Result};
-use acyclic_fs::{DefaultTextMergeDriver, GitIgnorePolicy, MergeDriverRegistry};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{
     LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend,
     demand::native::NativeDemandSource,
 };
 use std::sync::Arc;
+use {
+    acyclic_fs::GitIgnorePolicy, acyclic_fs_merge::merge_driver::DefaultTextMergeDriver,
+    acyclic_fs_merge::merge_driver::MergeDriverRegistry,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) type LocalLazyWorkspace = LazyWorkspace<
     LocalAuthorityBackend,

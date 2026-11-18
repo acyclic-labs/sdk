@@ -133,7 +133,7 @@ async fn prepared_generation_pin_hands_sweep_admission_to_the_root_registry()
         };
         let proof = crate::kernel::GenerationProof {
             root: working,
-            generation_id: crate::GenerationId::new(object(7).digest),
+            generation_id: acyclic_fs_format::object_reference::GenerationId::new(object(7).digest),
             file_count: 1,
             logical_file_bytes: 0,
             objects: vec![object(1), object(2)],
@@ -288,7 +288,9 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
     let Held::Checkout { mut working, .. } = checkout_hold() else {
         unreachable!()
     };
-    working.parents = vec![crate::GenerationId::new(object(7).digest)];
+    working.parents = vec![acyclic_fs_format::object_reference::GenerationId::new(
+        object(7).digest,
+    )];
     let denied = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
             bytes_copied: 0,
@@ -338,7 +340,8 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         );
         assert_eq!(
             original.receipt().unwrap().bytes_copied,
-            before.bytes_copied + std::mem::size_of::<crate::GenerationId>() as u64
+            before.bytes_copied
+                + std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>() as u64
         );
         std::panic::panic_any("unwind after the completed physical parent copy");
     }));

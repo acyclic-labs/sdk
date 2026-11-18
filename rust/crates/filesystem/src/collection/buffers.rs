@@ -2,14 +2,16 @@ use super::*;
 
 pub(super) fn root_parent_bytes(root: &GenerationRoot) -> u64 {
     crate::foundation::usize_to_u64(
-        root.parents.capacity() * std::mem::size_of::<crate::GenerationId>(),
+        root.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>(),
     )
 }
 
 pub(super) fn held_owned_bytes(held: &Held) -> u64 {
     let parents = match held {
         Held::Checkout { working, .. } => {
-            working.parents.capacity() * std::mem::size_of::<crate::GenerationId>()
+            working.parents.capacity()
+                * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>()
         }
         Held::Construction { .. }
         | Held::Record { .. }

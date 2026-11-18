@@ -3,11 +3,12 @@ use crate::{Error, Result};
 use std::{collections::BTreeMap, path::PathBuf};
 use {
     acyclic_fs::{
-        CancellationToken, Generation, GenerationId, LocalAuthorityBackend, LocalCoreStateStore,
-        LocalFs, LocalObjectBackend, MaterializeOptions, MultiRootMaterializer, Workspace,
-        WorkspaceId, WorkspaceRootId,
+        CancellationToken, Generation, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
+        LocalObjectBackend, MaterializeOptions, MultiRootMaterializer, Workspace, WorkspaceId,
+        WorkspaceRootId,
     },
     acyclic_fs_format::identity::OperationId,
+    acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_native_contract::NativeRootIdentity,
     acyclic_fs_work::performance::WorkBudget,
 };

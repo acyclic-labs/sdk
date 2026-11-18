@@ -198,7 +198,7 @@ where
         let typed = typed?;
         let automatic = child_wins_resolutions(&typed, &root.child_wins_bindings);
         let candidate = if resolutions.is_empty() && !typed.conflicts.is_empty() {
-            let remaining = crate::MergePlan {
+            let remaining = acyclic_fs_merge::merge_driver::MergePlan {
                 conflicts: typed
                     .conflicts
                     .iter()
@@ -227,7 +227,12 @@ where
                         "merge resolution cache is unavailable".to_owned(),
                     )
                 })?;
-                match crate::resolve_merge_plan(remaining, registry, &mut *cache, false) {
+                match acyclic_fs_merge::merge_driver::resolve_merge_plan(
+                    remaining,
+                    registry,
+                    &mut *cache,
+                    false,
+                ) {
                     Ok(mut candidate) => {
                         candidate.plan = typed.clone();
                         candidate.resolutions.extend(automatic);

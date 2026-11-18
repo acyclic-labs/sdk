@@ -137,7 +137,7 @@ async fn generation(
     root_file_id: FileId,
     metadata: ObjectId,
     children: Vec<(TreeEntry, FileRecord)>,
-    parents: Vec<crate::GenerationId>,
+    parents: Vec<acyclic_fs_format::object_reference::GenerationId>,
 ) -> TestResult<([ObjectId; 3], Vec<ObjectId>)> {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);

@@ -292,7 +292,9 @@ mod tests {
             acyclic_stream::session::testing::resource_authorization(&encoded, &name).unwrap();
         let context = crate::PublicationContext {
             volume,
-            generation: crate::GenerationId::new(crate::Digest::from_bytes([8; 32])),
+            generation: acyclic_fs_format::object_reference::GenerationId::new(
+                crate::Digest::from_bytes([8; 32]),
+            ),
             authority_sequence: crate::Sequence::new(1),
             records_after: 2,
         }

@@ -24,7 +24,9 @@ async fn snapshot_validation_requires_available_indexes_and_generation() {
             LazyShadowId::from_bytes([0xa2; 32]),
         ),
         (
-            crate::GenerationId::new(crate::Digest::from_bytes([0xa3; 32])),
+            acyclic_fs_format::object_reference::GenerationId::new(crate::Digest::from_bytes(
+                [0xa3; 32],
+            )),
             cut.overlay,
             cut.shadows,
         ),

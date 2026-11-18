@@ -276,8 +276,8 @@ mod version {
 #[cfg(kani)]
 mod proofs {
     use {
-        acyclic_fs::GenerationId,
         acyclic_fs_format::identity::Digest,
+        acyclic_fs_format::object_reference::GenerationId,
         acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
     };
 

@@ -2,13 +2,16 @@
 
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
 use crate::facade::Checkout;
-use crate::foundation::{GenerationId, MountId, VolumeId};
 use crate::kernel::{NamespacePath, NamespacePathError};
 use crate::model::{AccessMode, ConsistencyMode};
 use crate::path::prefix::PathPrefixIndex;
 use crate::path::{PathError, PortablePath};
 use std::collections::BTreeMap;
 use thiserror::Error;
+use {
+    crate::foundation::{MountId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 /// One independently configured checkout mounted into a composed view.
 pub struct MountedCheckout<A: 'static, O: 'static> {

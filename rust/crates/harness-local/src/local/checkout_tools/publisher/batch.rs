@@ -222,12 +222,15 @@ impl CheckoutPublisher {
                         if physical.mounted.is_some() {
                             reconciliation::advance_mount(&physical, &|| async { Ok(()) }).await?;
                         } else {
-                            let generation = acyclic_fs::GenerationId::from_bytes(
-                                receipt.generation.as_resource().key(),
-                            )
-                            .ok_or_else(|| {
-                                Error::Invalid("invalid conditional publication generation".into())
-                            })?;
+                            let generation =
+                                acyclic_fs_format::object_reference::GenerationId::from_bytes(
+                                    receipt.generation.as_resource().key(),
+                                )
+                                .ok_or_else(|| {
+                                    Error::Invalid(
+                                        "invalid conditional publication generation".into(),
+                                    )
+                                })?;
                             self.tools
                                 .owe_write_capture(
                                     (&physical, view),

@@ -33,7 +33,7 @@ fn fixture() -> (
     )
 }
 
-fn root(id: crate::GenerationId) -> ObjectId {
+fn root(id: acyclic_fs_format::object_reference::GenerationId) -> ObjectId {
     id.object_id()
 }
 

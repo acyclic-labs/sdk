@@ -3,13 +3,16 @@
 //! Promoting a planned child publishes against one observed revision. A lost
 //! conditional write returns [`WorkspaceLineageError::Contended`].
 
-use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, GenerationId,
-    IdempotencyKey, Workspace, WorkspaceError, WorkspaceId,
-};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use thiserror::Error;
+use {
+    crate::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, IdempotencyKey,
+        Workspace, WorkspaceError, WorkspaceId,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const LINEAGE_VERSION: u32 = 1;
 
@@ -304,7 +307,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
-        fork_generation: crate::GenerationId,
+        fork_generation: acyclic_fs_format::object_reference::GenerationId,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
@@ -328,8 +331,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
-        fork_generation: crate::GenerationId,
-        initial_generation: crate::GenerationId,
+        fork_generation: acyclic_fs_format::object_reference::GenerationId,
+        initial_generation: acyclic_fs_format::object_reference::GenerationId,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
@@ -352,7 +355,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
-        fork_generation: crate::GenerationId,
+        fork_generation: acyclic_fs_format::object_reference::GenerationId,
         initial: crate::model::GenerationSelector,
         work: W,
         cancellation: &CancellationToken,
@@ -373,7 +376,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
-        fork_generation: crate::GenerationId,
+        fork_generation: acyclic_fs_format::object_reference::GenerationId,
         initial: crate::model::GenerationSelector,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {

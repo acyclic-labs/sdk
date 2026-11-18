@@ -481,7 +481,7 @@ mod tests {
                                 ),
                                 volume(),
                             ),
-                            generation: acyclic_fs::GenerationId::from_root(acyclic_fs_format::object_reference::ObjectId {
+                            generation: acyclic_fs_format::object_reference::GenerationId::from_root(acyclic_fs_format::object_reference::ObjectId {
                                 kind: acyclic_fs_format::object_reference::ObjectKind::GenerationRoot,
                                 digest: acyclic_fs_format::identity::Digest::from_bytes([255; 32]),
                                 storage: Some(acyclic_fs_format::object_reference::ObjectStorage {

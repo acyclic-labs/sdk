@@ -456,7 +456,7 @@ impl HashedObject {
         mut self,
         sealed: acyclic_stream::SealedBytes,
         root_file_id: crate::FileId,
-        origin_generation: crate::GenerationId,
+        origin_generation: acyclic_fs_format::object_reference::GenerationId,
     ) -> Self {
         self.storage = Some((
             ObjectStorage {

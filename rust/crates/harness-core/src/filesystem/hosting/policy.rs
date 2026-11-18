@@ -66,7 +66,7 @@ impl RootPolicySeed {
         request: &mut acyclic_stream::CommitRequest,
         child: &AgentPath,
         journal: &crate::conversation::VolumeRef,
-        generation: acyclic_fs::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
     ) -> Result<(), Error> {
         let policy = FileRef::new(
             journal.clone(),

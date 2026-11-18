@@ -301,7 +301,7 @@ async fn hand_back(
                 }
                 resolutions.insert(view.key.clone(), resolution);
             }
-            let candidate = acyclic_fs::UnpublishedMergeCandidate {
+            let candidate = acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate {
                 plan: described,
                 resolutions,
             };
@@ -332,14 +332,19 @@ async fn hand_back(
 /// Text conflicts that do not merge cleanly carry git markers into the
 /// volume. Any other conflicting value keeps the volume's side. Both are
 /// reported (`true`); a clean text merge is not.
-fn conflict_resolution(view: &acyclic_fs::ConflictView) -> (acyclic_fs::MergeResolution, bool) {
-    if view.kind == acyclic_fs::ConflictKind::Text
-        && let Ok(resolved) = acyclic_fs::DefaultTextMergeDriver.resolve_marked(view)
+fn conflict_resolution(
+    view: &acyclic_fs_merge::merge_driver::ConflictView,
+) -> (acyclic_fs_merge::merge_driver::MergeResolution, bool) {
+    if view.kind == acyclic_fs_merge::merge_driver::ConflictKind::Text
+        && let Ok(resolved) =
+            acyclic_fs_merge::merge_driver::DefaultTextMergeDriver.resolve_marked(view)
     {
         return resolved;
     }
     (
-        acyclic_fs::MergeResolution::Select(acyclic_fs::ConflictSide::Ours),
+        acyclic_fs_merge::merge_driver::MergeResolution::Select(
+            acyclic_fs_merge::merge_driver::ConflictSide::Ours,
+        ),
         true,
     )
 }

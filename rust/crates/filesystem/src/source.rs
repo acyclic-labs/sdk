@@ -459,7 +459,7 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 async fn conflict_head_reuses_checkout_base<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
-    checkout_generation: crate::GenerationId,
+    checkout_generation: acyclic_fs_format::object_reference::GenerationId,
     actual: Head,
 ) -> Result<bool, SourceError> {
     let previous_sequence = actual.sequence.get().checked_sub(1).ok_or_else(|| {
@@ -531,7 +531,7 @@ async fn rebase_source_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 async fn persist_generation_outcome<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
     state: SourceState,
-    generation_id: crate::GenerationId,
+    generation_id: acyclic_fs_format::object_reference::GenerationId,
     key: IdempotencyKey,
     operation: SourceOperation,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
@@ -728,7 +728,7 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     root_identity: crate::NativeRootIdentity,
     options: &SourceOptions,
     capture_policy: Digest,
-    generation_id: crate::GenerationId,
+    generation_id: acyclic_fs_format::object_reference::GenerationId,
 ) -> Result<Head, SourceError> {
     let authority_id = source_authority_id(workspace.volume.id());
     let created = ({
@@ -869,7 +869,7 @@ async fn refresh_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 async fn recover_published_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
     state: SourceState,
-    generation_id: crate::GenerationId,
+    generation_id: acyclic_fs_format::object_reference::GenerationId,
     begin_head: Head,
     key: IdempotencyKey,
     operation: SourceOperation,
@@ -1032,7 +1032,7 @@ async fn published_generation_for_key<A: AsyncAuthorityStore, O: AsyncObjectStor
     session: &mut SourceSession<A, O>,
     key: IdempotencyKey,
     operation: SourceOperation,
-) -> Result<Option<crate::GenerationId>, SourceError> {
+) -> Result<Option<acyclic_fs_format::object_reference::GenerationId>, SourceError> {
     let receipt = session
         .workspace
         .volume
@@ -1086,9 +1086,9 @@ async fn published_generation_for_key<A: AsyncAuthorityStore, O: AsyncObjectStor
     {
         return Err(SourceError::IdempotencyConflict);
     }
-    Ok(Some(crate::GenerationId::from_root(
-        published.generation_root,
-    )))
+    Ok(Some(
+        acyclic_fs_format::object_reference::GenerationId::from_root(published.generation_root),
+    ))
 }
 
 async fn begin_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1147,7 +1147,7 @@ async fn persist_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 async fn persist_source_operation_with_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
     state: SourceState,
-    generation_id: crate::GenerationId,
+    generation_id: acyclic_fs_format::object_reference::GenerationId,
     key: IdempotencyKey,
     operation: SourceOperation,
 ) -> Result<SourceFact, SourceError> {
@@ -1181,7 +1181,7 @@ async fn persist_source_operation_with_generation<A: AsyncAuthorityStore, O: Asy
 async fn persist_source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
     state: SourceState,
-    generation_id: crate::GenerationId,
+    generation_id: acyclic_fs_format::object_reference::GenerationId,
 ) -> Result<(), SourceError> {
     let fact = source_fact(session, state, generation_id);
     session.authority_head =
@@ -1193,7 +1193,7 @@ async fn persist_source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 fn source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &SourceSession<A, O>,
     state: SourceState,
-    generation_id: crate::GenerationId,
+    generation_id: acyclic_fs_format::object_reference::GenerationId,
 ) -> SourceFact {
     SourceFact {
         volume_id: session.workspace.volume.id(),
@@ -1707,7 +1707,7 @@ mod tests {
         source: &Source<A, O>,
         key: IdempotencyKey,
         operation: SourceOperation,
-    ) -> Result<crate::GenerationId, Box<dyn std::error::Error>> {
+    ) -> Result<acyclic_fs_format::object_reference::GenerationId, Box<dyn std::error::Error>> {
         let mut session = source.inner.lock().await;
         begin_source_operation(&mut session, key, operation).await?;
         let rescan = session.watcher.begin_rescan()?;

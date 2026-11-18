@@ -15,7 +15,7 @@ pub fn compile_view(
     resource: Resource<'_>,
     context: Context,
     capability: &Capability,
-    head: acyclic_fs::GenerationId,
+    head: acyclic_fs_format::object_reference::GenerationId,
     revision: acyclic_fs_format::metadata::MetadataField<
         acyclic_fs_format::object_reference::ObjectId,
     >,
@@ -144,7 +144,7 @@ where
 
     fn select<'a>(
         &'a self,
-        _generation: acyclic_fs::GenerationId,
+        _generation: acyclic_fs_format::object_reference::GenerationId,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
         acyclic_fs::native_mount::NativeMountCallbackFuture<'a, MountOptions>,

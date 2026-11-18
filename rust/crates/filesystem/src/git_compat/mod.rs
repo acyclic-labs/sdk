@@ -8,16 +8,19 @@ use crate::model::{CheckoutMode, GenerationSelector, VolumeLimits};
 use crate::record_store::{MemoryRecords, next_revision};
 use crate::storage::ByteRange;
 use crate::workspace::customer_path;
-use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GenerationId,
-    IdempotencyKey, OperationId, ResolvedFile, ResolvedFileRangeReadRequest, TransactionCommit,
-    WorkBudget, Workspace, WorkspaceError, WorkspaceId,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use thiserror::Error;
 use uuid::Uuid;
+use {
+    crate::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, IdempotencyKey,
+        OperationId, ResolvedFile, ResolvedFileRangeReadRequest, TransactionCommit, WorkBudget,
+        Workspace, WorkspaceError, WorkspaceId,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 pub(super) const STATE_VERSION: u32 = 1;
 

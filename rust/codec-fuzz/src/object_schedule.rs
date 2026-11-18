@@ -1,5 +1,5 @@
 //! Original local operations and their original physical fault controller.
-use acyclic_fs::GenerationId;
+use acyclic_fs_format::object_reference::GenerationId;
 use acyclic_native_runtime::testing::{DurableFault, DurableWrite, InjectedStorageFault, Schedule};
 use acyclic_objects::{
     LocalClose, LocalMedium, Medium, MediumError,

@@ -48,7 +48,7 @@ impl<'de> Deserialize<'de> for GitCommitId {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitCaptureProof {
     pub(super) fork_parent: GitTreeRef,
-    pub(super) initial_generation: crate::GenerationId,
+    pub(super) initial_generation: acyclic_fs_format::object_reference::GenerationId,
     pub(super) operation_id: OperationId,
 }
 

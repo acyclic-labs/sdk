@@ -34,9 +34,11 @@ impl LocalWorkspace {
         source: &str,
         destination: &str,
         operation: acyclic_fs_format::identity::OperationId,
-        generation: Option<acyclic_fs::GenerationId>,
-    ) -> std::result::Result<Option<acyclic_fs::GenerationId>, crate::filesystem::ForkCutError>
-    {
+        generation: Option<acyclic_fs_format::object_reference::GenerationId>,
+    ) -> std::result::Result<
+        Option<acyclic_fs_format::object_reference::GenerationId>,
+        crate::filesystem::ForkCutError,
+    > {
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut accounting =
             acyclic_fs_work::performance::WorkBudget::UNBOUNDED.accounting(&cancellation);
@@ -188,8 +190,8 @@ impl LocalWorkspace {
 }
 
 fn require_selected_generation(
-    selected: Option<acyclic_fs::GenerationId>,
-    actual: acyclic_fs::GenerationId,
+    selected: Option<acyclic_fs_format::object_reference::GenerationId>,
+    actual: acyclic_fs_format::object_reference::GenerationId,
 ) -> std::result::Result<(), crate::filesystem::ForkCutError> {
     if selected.is_some_and(|selected| selected != actual) {
         return Err(crate::filesystem::ForkCutError::SourceChanged);
@@ -214,10 +216,13 @@ impl crate::filesystem::VolumeResources for LocalVolumeResources {
         source: &'a str,
         destination: &'a str,
         operation: acyclic_fs_format::identity::OperationId,
-        generation: Option<acyclic_fs::GenerationId>,
+        generation: Option<acyclic_fs_format::object_reference::GenerationId>,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,
-        std::result::Result<Option<acyclic_fs::GenerationId>, crate::filesystem::ForkCutError>,
+        std::result::Result<
+            Option<acyclic_fs_format::object_reference::GenerationId>,
+            crate::filesystem::ForkCutError,
+        >,
     > {
         Box::pin(
             self.0

@@ -157,7 +157,7 @@ pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
             )
             .to_vec(),
         ));
-        let generation = crate::GenerationId::from_root(ObjectId {
+        let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
             kind: crate::ObjectKind::GenerationRoot,
             ..root
         });

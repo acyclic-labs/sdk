@@ -9,9 +9,9 @@ enum ConflictContents {
 }
 
 fn scalar_conflict_view(
-    value: crate::ConflictView,
+    value: acyclic_fs_merge::merge_driver::ConflictView,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+) -> Result<Owned<acyclic_fs_merge::merge_driver::ConflictView>, WorkspaceError> {
     Ok(Owned::new(value, accounting.claim_owned(0, 0)?, 0))
 }
 
@@ -69,7 +69,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     pub async fn describe_conflict(
         &self,
         conflict: MergeConflict,
-    ) -> Result<crate::ConflictView, WorkspaceError> {
+    ) -> Result<acyclic_fs_merge::merge_driver::ConflictView, WorkspaceError> {
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         self.describe_conflict_contents(
@@ -86,7 +86,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         conflict: MergeConflict,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<Retained<crate::ConflictView>, WorkspaceError> {
+    ) -> Result<Retained<acyclic_fs_merge::merge_driver::ConflictView>, WorkspaceError> {
         let cancellation = accounting.cancellation();
         let view = self
             .describe_conflict_contents(conflict, ConflictContents::Files, accounting, cancellation)
@@ -100,7 +100,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+    ) -> Result<Owned<acyclic_fs_merge::merge_driver::ConflictView>, WorkspaceError> {
         crate::heap_future::in_borrowed_frame!(accounting, |accounting| self
             .describe_conflict_contents_inner(conflict, contents, accounting, cancellation))
     }
@@ -111,7 +111,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+    ) -> Result<Owned<acyclic_fs_merge::merge_driver::ConflictView>, WorkspaceError> {
         cancellation.check()?;
         // The path buffer follows the completed view, rather than losing its
         // original credit at a String projection or being cloned per branch.
@@ -163,7 +163,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+    ) -> Result<Owned<acyclic_fs_merge::merge_driver::ConflictView>, WorkspaceError> {
         let records = self
             .conflict_records(file_id, accounting, cancellation)
             .await?;
@@ -208,7 +208,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 return Ok(view);
             }
             return scalar_conflict_view(
-                crate::ConflictView {
+                acyclic_fs_merge::merge_driver::ConflictView {
                     key: ConflictKey::File(file_id),
                     path: None,
                     kind: ConflictKind::Record,
@@ -311,10 +311,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         file_id: FileId,
         records: [crate::kernel::FileRecord; 3],
         cancellation: &CancellationToken,
-    ) -> Result<crate::ConflictView, WorkspaceError> {
+    ) -> Result<acyclic_fs_merge::merge_driver::ConflictView, WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
         let [base, ours, theirs] = records;
-        Ok(crate::ConflictView {
+        Ok(acyclic_fs_merge::merge_driver::ConflictView {
             key: ConflictKey::Metadata(file_id),
             path: None,
             kind: ConflictKind::Metadata,
@@ -395,7 +395,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<Owned<crate::ConflictView>>, WorkspaceError> {
+    ) -> Result<Option<Owned<acyclic_fs_merge::merge_driver::ConflictView>>, WorkspaceError> {
         if records[1].is_none()
             || records[2].is_none()
             || records

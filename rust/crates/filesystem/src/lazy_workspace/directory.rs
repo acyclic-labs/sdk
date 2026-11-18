@@ -107,7 +107,7 @@ pub struct LazyDirectoryCursor {
 enum DirectoryCut {
     Authored {
         workspace: WorkspaceId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
     },
     Computed(LazySnapshotRef),
 }
@@ -119,7 +119,7 @@ impl DirectoryCut {
             Self::Computed(cut) => cut.workspace_id,
         }
     }
-    fn generation(&self) -> crate::GenerationId {
+    fn generation(&self) -> acyclic_fs_format::object_reference::GenerationId {
         match self {
             Self::Authored { generation, .. } => *generation,
             Self::Computed(cut) => cut.authored_generation,

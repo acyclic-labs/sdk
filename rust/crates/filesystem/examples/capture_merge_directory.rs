@@ -178,7 +178,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
     let trace = serde_json::to_vec(&(
         &text_conflict,
         original.as_ref(),
-        None::<acyclic_fs::MergeResolution>,
+        None::<acyclic_fs_merge::merge_driver::MergeResolution>,
     ))?;
     emit("resolution-text-refused-v1", &trace)?;
     staging.write_text(&text_path, "resolved\n").await?;

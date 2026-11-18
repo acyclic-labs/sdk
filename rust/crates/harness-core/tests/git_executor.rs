@@ -30,10 +30,11 @@ type Lazy = LazyWorkspace<
 async fn branch_switch_accepts_only_the_destination_workspace() -> Result<()> {
     use {
         acyclic_fs::{
-            GenerationId, GitCommand, GitCompatError, GitCompatRepository, GitFilesystemResult,
-            GitTreeRef, MemoryGitCompatStore, WorkspaceId,
+            GitCommand, GitCompatError, GitCompatRepository, GitFilesystemResult, GitTreeRef,
+            MemoryGitCompatStore, WorkspaceId,
         },
         acyclic_fs_format::identity::Digest,
+        acyclic_fs_format::object_reference::GenerationId,
     };
     let main = WorkspaceId::from_bytes([1; 16]);
     let child = WorkspaceId::from_bytes([2; 16]);
@@ -136,7 +137,7 @@ async fn read_reported_generation(
     reference: &serde_json::Value,
 ) -> Result<Vec<u8>> {
     let bytes = hex::decode(reference.as_str().ok_or("missing generation reference")?)?;
-    let generation = acyclic_fs::GenerationId::from_bytes(&bytes)
+    let generation = acyclic_fs_format::object_reference::GenerationId::from_bytes(&bytes)
         .ok_or("invalid canonical generation reference")?;
     let stop = CancellationToken::new();
     let owner = fs
@@ -483,8 +484,9 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         .await?
         .value
         .file_id;
-    let conflict_path =
-        directory.conflict_file_path(&acyclic_fs::ConflictKey::File(conflict_id))?;
+    let conflict_path = directory.conflict_file_path(
+        &acyclic_fs_merge::merge_driver::ConflictKey::File(conflict_id),
+    )?;
     let mut non_text = Vec::new();
     for (path, kind) in [
         (
@@ -508,7 +510,8 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             kind,
             format!(
                 "{}.conflict.json",
-                directory.conflict_file_path(&acyclic_fs::ConflictKey::File(id))?
+                directory
+                    .conflict_file_path(&acyclic_fs_merge::merge_driver::ConflictKey::File(id))?
             ),
         ));
     }
@@ -548,7 +551,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         "proposal staging published the target"
     );
     let plan_path = format!("{}/plan.json", directory.path());
-    let binary_key = acyclic_fs::ConflictKey::File(non_text[0].0);
+    let binary_key = acyclic_fs_merge::merge_driver::ConflictKey::File(non_text[0].0);
     let resolution_path = format!(
         "{}.resolve.json",
         directory.conflict_file_path(&binary_key)?
@@ -559,7 +562,9 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
     let selected = staging.head(WorkBudget::UNBOUNDED, &stop).await?.value;
     assert!(matches!(
         directory.resolution(&selected, &binary_key).await?,
-        acyclic_fs::MergeResolution::Select(acyclic_fs::ConflictSide::Theirs)
+        acyclic_fs_merge::merge_driver::MergeResolution::Select(
+            acyclic_fs_merge::merge_driver::ConflictSide::Theirs
+        )
     ));
     projection_cancel.cancel();
     assert!(matches!(
@@ -617,26 +622,26 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         assert_eq!(descriptor.conflict.path.as_deref(), Some(source_path));
         assert_eq!(
             descriptor.conflict.key,
-            acyclic_fs::ConflictKey::File(file_id)
+            acyclic_fs_merge::merge_driver::ConflictKey::File(file_id)
         );
         assert_eq!(
             descriptor.conflict.base,
-            acyclic_fs::ConflictValue::Record {
+            acyclic_fs_merge::merge_driver::ConflictValue::Record {
                 generation: expected.base,
                 file_id,
             }
         );
         assert_eq!(
             descriptor.conflict.ours,
-            acyclic_fs::ConflictValue::Record {
+            acyclic_fs_merge::merge_driver::ConflictValue::Record {
                 generation: expected.ours,
                 file_id,
             }
         );
         let theirs = if kind == acyclic_fs::workspace::MergeConflictFileKind::Deleted {
-            acyclic_fs::ConflictValue::Absent
+            acyclic_fs_merge::merge_driver::ConflictValue::Absent
         } else {
-            acyclic_fs::ConflictValue::Record {
+            acyclic_fs_merge::merge_driver::ConflictValue::Record {
                 generation: expected.theirs,
                 file_id,
             }

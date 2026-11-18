@@ -174,12 +174,12 @@ operation_claim = ["acyclic_fs", "acyclic_stream"]
 operation_claim_model = ["acyclic_stream", "loom"]
 git_history = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "futures", "proptest", "serde_json", "thiserror", "tokio"]
 git_marker_contracts = ["proptest"]
-merge_driver_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_base"]
+merge_driver_contracts = ["acyclic_fs_base", "acyclic_fs_format", "acyclic_fs_merge"]
 native_root_identity = ["acyclic_fs_native_contract"]
 native_view_table = []
 local_commit_model = []
 native_checkpoint = ["acyclic_auth", "acyclic_fs_native_contract", "thiserror"]
-wire_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_wire", "prost", "serde_json"]
+wire_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acyclic_fs_wire", "prost", "serde_json"]
 wire_error_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_auth", "acyclic_fs_native_contract", "acyclic_fs_wire", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "bytes", "prost_reflect", "tokio", "tonic"]
 wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
 source_lifecycle = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tempfile", "tokio"]
@@ -194,7 +194,7 @@ workspace_materialization = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work
 workspace_simulation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "tempfile", "tokio"]
 workspace_fork_selection = ["acyclic_fs", "acyclic_fs_work", "bytes", "futures", "proptest", "tokio"]
 workspace_rebase = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
-workspace_restore = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
+workspace_restore = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acyclic_fs_work", "acyclic_stream", "tokio"]
 workspace_transactions = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "thiserror", "tokio"]
 
 [[test]]
@@ -408,6 +408,7 @@ harness = false
 name = "native_capture"
 harness = false
 [dependencies]
+acyclic-fs-merge = { version = "=0.2.0", path = "../filesystem-merge" }
 tracing.workspace = true
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }

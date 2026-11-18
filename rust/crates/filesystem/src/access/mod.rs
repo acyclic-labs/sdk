@@ -88,7 +88,7 @@ pub struct AccessBinding<'a> {
     /// Facts this adapter can authenticate and enforce.
     pub facts: AuthenticatedFacts,
     /// Optional selected data generation; policy always comes from the head.
-    pub generation: Option<crate::GenerationId>,
+    pub generation: Option<acyclic_fs_format::object_reference::GenerationId>,
     /// Host clock and authenticated approvals.
     pub context: Context,
     /// The host's opaque name for this volume, as in [`Resource::reference`].

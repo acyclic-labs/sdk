@@ -182,8 +182,10 @@ impl Ticket {
             cancellation,
         )
         .await?;
-        let bytes =
-            usize_to_u64(base.parents.capacity() * std::mem::size_of::<crate::GenerationId>());
+        let bytes = usize_to_u64(
+            base.parents.capacity()
+                * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>(),
+        );
         let base = Retained::from_owned(Owned::new(base, allocation, bytes), accounting)?;
         let result = prepare_delta(
             objects,
@@ -535,7 +537,10 @@ async fn prepare_delta<O: crate::AsyncObjectStore>(
         cancellation,
     )
     .await?;
-    let bytes = usize_to_u64(root.parents.capacity() * std::mem::size_of::<crate::GenerationId>());
+    let bytes = usize_to_u64(
+        root.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>(),
+    );
     let root = Owned::new(root, allocation, bytes);
     let result = async {
         if root.value.volume_id != request.volume_id

@@ -133,7 +133,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn receipt_access<'a>(
         &self,
         workspace: &Workspace<A, O>,
-        generation: acyclic_fs::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         request: &PublicationLookup<'_>,
         file: &FileRef,
         io: &'a PreparationIo,

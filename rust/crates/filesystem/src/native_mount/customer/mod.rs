@@ -11,14 +11,17 @@ use crate::kernel::KernelAccounting;
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::native_capture::NativeViewBaseline;
 use crate::workspace::{Workspace, WorkspaceError};
-use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, GenerationId, IdempotencyKey, LazyLookup, LazyWorkspace,
-    LazyWorkspaceError, LazyWorkspaceStore, MountId, MountSourceError, NativeAllocation,
-    NativeMaterializationWork, NativeRootIdentity, PublicationPermit, VolumeId,
-};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use {
+    crate::{
+        AsyncAuthorityStore, AsyncObjectStore, IdempotencyKey, LazyLookup, LazyWorkspace,
+        LazyWorkspaceError, LazyWorkspaceStore, MountId, MountSourceError, NativeAllocation,
+        NativeMaterializationWork, NativeRootIdentity, PublicationPermit, VolumeId,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 #[cfg(test)]
 fn recording_options(destination: impl Into<PathBuf>) -> crate::MaterializeOptions {

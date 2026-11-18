@@ -48,6 +48,7 @@ wasm = ["acyclic-harness-model-cache/wasm", "acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
 acyclic-decimal-u64 = { version = "=0.2.0", path = "../decimal-u64" }
+acyclic-fs-merge = { version = "=0.2.0", path = "../filesystem-merge" }
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }

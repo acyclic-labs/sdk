@@ -221,7 +221,10 @@ async fn automatic_text_markers_are_reported_not_published()
         ])),
     };
     let mut registry = MergeDriverRegistry::new();
-    registry.register("text", std::sync::Arc::new(crate::DefaultTextMergeDriver))?;
+    registry.register(
+        "text",
+        std::sync::Arc::new(acyclic_fs_merge::merge_driver::DefaultTextMergeDriver),
+    )?;
     registry.set_default("text")?;
     let publisher = WorkspaceMultiRootPublisher::new(resolver)
         .with_merge_drivers(std::sync::Arc::new(registry));
@@ -369,7 +372,7 @@ async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
         .conflicts
         .iter()
         .find(|conflict| {
-            conflict.kind == crate::ConflictKind::Binding
+            conflict.kind == acyclic_fs_merge::merge_driver::ConflictKind::Binding
                 && conflict.path.as_deref() == Some("/cache.tmp")
         })
         .ok_or("binding conflict missing")?;

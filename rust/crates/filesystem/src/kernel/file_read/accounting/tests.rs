@@ -1,8 +1,11 @@
 use super::*;
-use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
 use crate::kernel::{GenerationRoot, decode_generation_root, encode_generation_root};
 use crate::storage::{ObjectId, ObjectKind};
 use proptest::prelude::*;
+use {
+    crate::foundation::{Digest, FileId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]

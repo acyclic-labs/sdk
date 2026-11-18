@@ -76,7 +76,7 @@ pub struct S3List {
 /// Opaque stable S3 listing continuation bound to one generation and query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct S3ListCursor {
-    generation: crate::GenerationId,
+    generation: acyclic_fs_format::object_reference::GenerationId,
     after: String,
     after_prefix: bool,
     query: crate::Digest,
@@ -107,8 +107,8 @@ impl S3ListCursor {
             return Err(S3Error::InvalidContinuation);
         }
         let generation = hex::decode(generation).map_err(|_| S3Error::InvalidContinuation)?;
-        let generation =
-            crate::GenerationId::from_bytes(&generation).ok_or(S3Error::InvalidContinuation)?;
+        let generation = acyclic_fs_format::object_reference::GenerationId::from_bytes(&generation)
+            .ok_or(S3Error::InvalidContinuation)?;
         let query = decode_fixed::<32>(fields.next())?;
         let after_prefix = match fields.next() {
             Some("o") => false,
@@ -759,7 +759,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
     checkout: &mut crate::Checkout<A, O>,
     options: &S3ListOptions,
     limits: crate::model::VolumeLimits,
-    generation: crate::GenerationId,
+    generation: acyclic_fs_format::object_reference::GenerationId,
     query: crate::Digest,
     frontier: NamespacePath,
     frontier_key: String,
@@ -1256,7 +1256,9 @@ mod tests {
 
     #[test]
     fn listing_cursor_retains_object_prefix_identity() -> Result<(), S3Error> {
-        let generation = crate::GenerationId::new(crate::Digest::from_bytes([1; 32]));
+        let generation = acyclic_fs_format::object_reference::GenerationId::new(
+            crate::Digest::from_bytes([1; 32]),
+        );
         let query = crate::Digest::from_bytes([2; 32]);
         let long = S3ListCursor {
             generation,

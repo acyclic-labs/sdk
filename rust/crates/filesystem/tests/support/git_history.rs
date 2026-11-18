@@ -1,8 +1,11 @@
+use acyclic_fs::WorkspaceId;
 use acyclic_fs::git_compat::{
     GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitTreeRef,
 };
-use acyclic_fs::{GenerationId, WorkspaceId};
-use acyclic_fs_format::identity::{Digest, OperationId};
+use acyclic_fs_format::{
+    identity::{Digest, OperationId},
+    object_reference::GenerationId,
+};
 use std::sync::Mutex;
 use thiserror::Error;
 

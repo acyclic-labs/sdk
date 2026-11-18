@@ -225,7 +225,9 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
     let mut seeds = Vec::new();
     let parent = WorkspaceId::from_bytes([0x61; 16]);
     let child = WorkspaceId::from_bytes([0x62; 16]);
-    let generation = crate::GenerationId::new(crate::Digest::from_bytes([0x63; 32]));
+    let generation = acyclic_fs_format::object_reference::GenerationId::new(
+        crate::Digest::from_bytes([0x63; 32]),
+    );
     for (name, value) in [
         ("core-absent", None),
         (

@@ -6,13 +6,16 @@ use super::{
     decode_file_metadata,
 };
 use crate::CancellationToken;
-use crate::foundation::{FileId, GenerationId, usize_to_u64};
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use std::mem::size_of;
 use std::sync::Mutex;
 use thiserror::Error;
+use {
+    crate::foundation::{FileId, usize_to_u64},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 /// Canonical shape and semantic capabilities required before publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

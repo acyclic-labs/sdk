@@ -1,7 +1,7 @@
 //! Filesystem operations on the preparation context.
 use super::*;
 use crate::resources::ResourceRef;
-use acyclic_fs::{Generation, GenerationId};
+use {acyclic_fs::Generation, acyclic_fs_format::object_reference::GenerationId};
 
 impl acyclic_fs::facade::FsWork for &PreparationIo {
     type Output<T, E> = (

@@ -29,7 +29,7 @@ pub enum Failure {
     StreamCaptureAuthentication(GitCaptureAuthenticationError<acyclic_fs::StreamStateStoreCause>),
     /// Workspace merge-driver configuration failure.
     #[error(transparent)]
-    Policy(#[from] acyclic_fs::DriverRegistrationError),
+    Policy(#[from] acyclic_fs_merge::merge_driver::DriverRegistrationError),
     /// Operation-window coordination failure.
     #[error(transparent)]
     OperationWindow(#[from] OperationWindowError<StreamOperationWindowStoreError>),
@@ -120,8 +120,8 @@ impl From<acyclic_fs::GitCompatError<LocalCoreStateStoreError>> for Error {
     }
 }
 
-impl From<acyclic_fs::DriverRegistrationError> for Error {
-    fn from(source: acyclic_fs::DriverRegistrationError) -> Self {
+impl From<acyclic_fs_merge::merge_driver::DriverRegistrationError> for Error {
+    fn from(source: acyclic_fs_merge::merge_driver::DriverRegistrationError) -> Self {
         Self::NativeGit {
             source: Box::new(Failure::Policy(source)),
         }

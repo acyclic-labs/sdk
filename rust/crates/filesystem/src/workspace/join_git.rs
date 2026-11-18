@@ -273,7 +273,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
 
     pub(super) async fn git_delete_binding(
         &self,
-        conflict: &crate::ConflictView,
+        conflict: &acyclic_fs_merge::merge_driver::ConflictView,
         resolution: &MergeConflictResolution,
         resolutions: &mut BTreeMap<MergeConflict, MergeConflictResolution>,
     ) -> Result<(), DrivenJoinError> {

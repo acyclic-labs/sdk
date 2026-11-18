@@ -9,7 +9,7 @@ struct CommandCheckout<A: 'static, O: 'static> {
 }
 
 struct CommandFork<A: 'static, O: 'static> {
-    origin: crate::GenerationId,
+    origin: acyclic_fs_format::object_reference::GenerationId,
     policy: crate::kernel::MetadataField<ObjectId>,
     workspace: crate::Workspace<A, O>,
     custody: Option<crate::EphemeralFork>,
@@ -49,7 +49,7 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
     fn authorization_generation(
         &self,
         checkout: &Checkout<A, O>,
-    ) -> Result<crate::GenerationId, MountSourceError> {
+    ) -> Result<acyclic_fs_format::object_reference::GenerationId, MountSourceError> {
         if checkout.volume_id() == self.volume_id {
             return Ok(checkout.generation_id());
         }
@@ -159,7 +159,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         self: &Arc<Self>,
         plan: &crate::JoinPlan<A, O>,
         options: crate::ApplyOptions,
-        candidate: Option<&crate::UnpublishedMergeCandidate>,
+        candidate: Option<&acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate>,
     ) -> Result<
         (crate::JoinOutcome<A, O>, crate::NativeAllocation),
         super::super::MountLifecycleError,
@@ -268,7 +268,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
 
     async fn validate_command_publication(
         &self,
-        origin: crate::GenerationId,
+        origin: acyclic_fs_format::object_reference::GenerationId,
         policy: crate::kernel::MetadataField<ObjectId>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {

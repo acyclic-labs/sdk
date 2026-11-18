@@ -19,15 +19,28 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use {
     acyclic_fs::{
-        AppendOutcome, ApplyOptions, AsyncAuthorityStore, AttributeRule, CachedMergeResolution,
-        CancellationToken, ConflictKey, ConflictKind, ConflictSide, ConflictValue, DrivenJoinError,
-        Epoch, FenceOutcome, ForkOptions, Fs, GenerationId, Head, IdempotencyKey, JoinOutcome,
-        MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergePlan,
-        MergePlanResolutionError, MergeResolution, MergeResolutionCache, ProposedCommit,
-        ResolutionKey, StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph,
-        WorkspaceLineageError, resolve_merge_plan,
+        AppendOutcome, ApplyOptions, AsyncAuthorityStore, CancellationToken, DrivenJoinError,
+        Epoch, FenceOutcome, ForkOptions, Fs, Head, IdempotencyKey, JoinOutcome, ProposedCommit,
+        StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceLineageError,
     },
     acyclic_fs_format::identity::{AuthorityId, Digest, FileId, OperationId},
+    acyclic_fs_format::object_reference::GenerationId,
+    acyclic_fs_merge::merge_driver::AttributeRule,
+    acyclic_fs_merge::merge_driver::CachedMergeResolution,
+    acyclic_fs_merge::merge_driver::ConflictKey,
+    acyclic_fs_merge::merge_driver::ConflictKind,
+    acyclic_fs_merge::merge_driver::ConflictSide,
+    acyclic_fs_merge::merge_driver::ConflictValue,
+    acyclic_fs_merge::merge_driver::MemoryMergeResolutionCache,
+    acyclic_fs_merge::merge_driver::MergeDriver,
+    acyclic_fs_merge::merge_driver::MergeDriverMode,
+    acyclic_fs_merge::merge_driver::MergeDriverRegistry,
+    acyclic_fs_merge::merge_driver::MergePlan,
+    acyclic_fs_merge::merge_driver::MergePlanResolutionError,
+    acyclic_fs_merge::merge_driver::MergeResolution,
+    acyclic_fs_merge::merge_driver::MergeResolutionCache,
+    acyclic_fs_merge::merge_driver::ResolutionKey,
+    acyclic_fs_merge::merge_driver::resolve_merge_plan,
     acyclic_fs_work::performance::WorkBudget,
 };
 
@@ -39,8 +52,12 @@ fn file(byte: u8) -> FileId {
     FileId::from_bytes([byte; 16])
 }
 
-fn conflict(key: ConflictKey, kind: ConflictKind, path: &str) -> acyclic_fs::ConflictView {
-    acyclic_fs::ConflictView {
+fn conflict(
+    key: ConflictKey,
+    kind: ConflictKind,
+    path: &str,
+) -> acyclic_fs_merge::merge_driver::ConflictView {
+    acyclic_fs_merge::merge_driver::ConflictView {
         key,
         path: Some(path.to_owned()),
         kind,
@@ -178,8 +195,8 @@ impl MergeDriver for CountingDriver {
 
     fn resolve(
         &self,
-        _conflict: &acyclic_fs::ConflictView,
-    ) -> Result<MergeResolution, acyclic_fs::DriverError> {
+        _conflict: &acyclic_fs_merge::merge_driver::ConflictView,
+    ) -> Result<MergeResolution, acyclic_fs_merge::merge_driver::DriverError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(MergeResolution::Select(ConflictSide::Ours))
     }
@@ -345,7 +362,7 @@ fn typed_conflict_categories_and_keys_survive_immutable_planning() {
                         ConflictValue::Binary(vec![2]),
                     ),
                 };
-                acyclic_fs::ConflictView {
+                acyclic_fs_merge::merge_driver::ConflictView {
                     key: key.clone(),
                     path: Some(format!("path-{index}")),
                     kind: *kind,

@@ -10,8 +10,11 @@ use super::codec::Encoder;
 use super::codec::{CanonicalDecodeError, Decoder};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::foundation::AuthorityId;
-use crate::foundation::{Digest, GenerationId, VolumeId};
 use thiserror::Error;
+use {
+    crate::foundation::{Digest, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 pub(super) const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
 #[cfg(not(target_arch = "wasm32"))]

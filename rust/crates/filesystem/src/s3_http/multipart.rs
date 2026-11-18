@@ -7,7 +7,7 @@ struct MultipartPart {
 #[derive(Clone, Debug)]
 enum MultipartTerminal {
     Completing(Vec<(u32, String)>),
-    Completed(crate::GenerationId),
+    Completed(acyclic_fs_format::object_reference::GenerationId),
     Aborted,
 }
 
@@ -16,7 +16,7 @@ enum MultipartCompletionIntent {
     /// The upload is admitted at the requested part set and ready to commit.
     Admitted(Box<MultipartSnapshot>),
     /// The upload was already completed at this exact generation.
-    AlreadyCompleted(crate::GenerationId),
+    AlreadyCompleted(acyclic_fs_format::object_reference::GenerationId),
 }
 
 #[derive(Clone, Debug)]
@@ -442,7 +442,7 @@ where
         upload_id: &str,
         operation: IdempotencyKey,
         requested: &[(u32, String)],
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
     ) -> S3Result<bool> {
         let latest = self.multipart_snapshot(workspace, upload_id).await?;
         match latest.terminal {

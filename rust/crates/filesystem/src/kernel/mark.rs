@@ -8,9 +8,9 @@ use super::{
     visit_record_references,
 };
 use crate::CancellationToken;
-use crate::foundation::{GenerationId, VolumeId};
 use crate::performance::WorkBudget;
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
+use {crate::foundation::VolumeId, acyclic_fs_format::object_reference::GenerationId};
 
 pub(crate) struct Marker<'a, S> {
     store: &'a S,

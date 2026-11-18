@@ -372,7 +372,10 @@ mod read {
                 1 => {
                     let length = reader.number()?;
                     DeltaOrigin::Generation(
-                        crate::GenerationId::from_bytes(reader.take(length)?).ok_or(Malformed)?,
+                        acyclic_fs_format::object_reference::GenerationId::from_bytes(
+                            reader.take(length)?,
+                        )
+                        .ok_or(Malformed)?,
                     )
                 }
                 _ => return Err(Malformed),

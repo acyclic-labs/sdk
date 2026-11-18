@@ -675,7 +675,7 @@ proptest! {
         let mut cap = capability();
         cap.expires_at = Some(110);
         for grant in cap.layers.iter_mut().flatten() { grant.resource.generations = Generations::All; }
-        let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([byte; 32]));
+        let generation = |byte| acyclic_fs_format::object_reference::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([byte; 32]));
         let revision = |byte| acyclic_fs_format::metadata::MetadataField::Value(acyclic_fs_format::object_reference::ObjectId { storage: None,
             kind: acyclic_fs_format::object_reference::ObjectKind::TreePage, digest: acyclic_fs_format::identity::Digest::from_bytes(byte),
         });

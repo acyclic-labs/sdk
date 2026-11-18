@@ -3,15 +3,21 @@
 //! Maps with typed binary keys use ordered entry arrays, keeping the wire
 //! representation valid and deterministic in every target language.
 
-use crate::{
-    ConflictKey, GenerationId, MergePlan, MergeResolution, MultiRootFence, MultiRootMergeCandidate,
-    MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationPhase,
-    OperationId, Publication, UnpublishedMergeCandidate, WorkspaceContextId, WorkspaceId,
-    WorkspaceRootId,
-};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
+use {
+    crate::{
+        MultiRootFence, MultiRootMergeCandidate, MultiRootMergePlan, MultiRootMergeRoot,
+        MultiRootPublication, MultiRootPublicationPhase, OperationId, Publication,
+        WorkspaceContextId, WorkspaceId, WorkspaceRootId,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+    acyclic_fs_merge::merge_driver::ConflictKey,
+    acyclic_fs_merge::merge_driver::MergePlan,
+    acyclic_fs_merge::merge_driver::MergeResolution,
+    acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate,
+};
 
 const WIRE_VERSION: u16 = 1;
 

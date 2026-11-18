@@ -12,7 +12,7 @@ where
         operation: OperationId,
         target_tree: &GitTreeRef,
         source: acyclic_fs::WorkspaceId,
-        source_generation: Option<acyclic_fs::GenerationId>,
+        source_generation: Option<acyclic_fs_format::object_reference::GenerationId>,
         rebase: bool,
         tracked: &BTreeSet<String>,
     ) -> crate::Result<GitFilesystemResult> {
@@ -102,8 +102,11 @@ where
     /// whether any conflict still needs the user.
     async fn merge_candidate(
         &self,
-        typed: acyclic_fs::MergePlan,
-    ) -> crate::Result<(acyclic_fs::UnpublishedMergeCandidate, Vec<String>)> {
+        typed: acyclic_fs_merge::merge_driver::MergePlan,
+    ) -> crate::Result<(
+        acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate,
+        Vec<String>,
+    )> {
         let mut unresolved = Vec::new();
         let candidate = super::helpers::prepared(
             async {
@@ -111,7 +114,7 @@ where
                 let mut resolutions = BTreeMap::new();
                 for conflict in &typed.conflicts {
                     let mut needs_resolution = false;
-                    let resolution = match acyclic_fs::resolve_merge_conflict(
+                    let resolution = match acyclic_fs_merge::merge_driver::resolve_merge_conflict(
                         &typed,
                         conflict,
                         &self.merge_drivers,
@@ -119,23 +122,23 @@ where
                         false,
                     ) {
                         Ok(resolution)
-                            if !matches!(resolution, acyclic_fs::MergeResolution::Unresolved) =>
+                            if !matches!(resolution, acyclic_fs_merge::merge_driver::MergeResolution::Unresolved) =>
                         {
                             resolution
                         }
                         Ok(_)
                         | Err(
-                            acyclic_fs::MergePlanResolutionError::MissingDriver(_)
-                            | acyclic_fs::MergePlanResolutionError::Driver(
-                                acyclic_fs::DriverError::Unsupported,
+                            acyclic_fs_merge::merge_driver::MergePlanResolutionError::MissingDriver(_)
+                            | acyclic_fs_merge::merge_driver::MergePlanResolutionError::Driver(
+                                acyclic_fs_merge::merge_driver::DriverError::Unsupported,
                             ),
                         ) => {
                             needs_resolution = true;
-                            acyclic_fs::MergeResolution::Select(
-                                if matches!(conflict.ours, acyclic_fs::ConflictValue::Absent) {
-                                    acyclic_fs::ConflictSide::Theirs
+                            acyclic_fs_merge::merge_driver::MergeResolution::Select(
+                                if matches!(conflict.ours, acyclic_fs_merge::merge_driver::ConflictValue::Absent) {
+                                    acyclic_fs_merge::merge_driver::ConflictSide::Theirs
                                 } else {
-                                    acyclic_fs::ConflictSide::Ours
+                                    acyclic_fs_merge::merge_driver::ConflictSide::Ours
                                 },
                             )
                         }
@@ -145,14 +148,14 @@ where
                             )));
                         }
                     };
-                    needs_resolution |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
+                    needs_resolution |= matches!(&resolution, acyclic_fs_merge::merge_driver::MergeResolution::Text(text)
                         if acyclic_fs_base::text_merge::has_conflict_markers(text));
                     if needs_resolution {
                         unresolved.push(conflict.path.clone().unwrap_or_else(|| "/".into()));
                     }
                     resolutions.insert(conflict.key.clone(), resolution);
                 }
-                Ok(acyclic_fs::UnpublishedMergeCandidate {
+                Ok(acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate {
                     plan: typed,
                     resolutions,
                 })
@@ -245,7 +248,7 @@ where
     async fn plan_join_at(
         &self,
         source: &ManagedWorkspace<P, O>,
-        generation: Option<acyclic_fs::GenerationId>,
+        generation: Option<acyclic_fs_format::object_reference::GenerationId>,
         rebase: bool,
     ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
         let mut builder = source.join_into(&self.current).git_metadata();
@@ -330,10 +333,19 @@ where
             .conflicts
             .iter()
             .filter(|conflict| {
-                matches!(conflict.key, acyclic_fs::ConflictKey::File(_))
-                    && matches!(conflict.base, acyclic_fs::ConflictValue::Absent)
-                    && !matches!(conflict.ours, acyclic_fs::ConflictValue::Absent)
-                    && !matches!(conflict.theirs, acyclic_fs::ConflictValue::Absent)
+                matches!(
+                    conflict.key,
+                    acyclic_fs_merge::merge_driver::ConflictKey::File(_)
+                ) && matches!(
+                    conflict.base,
+                    acyclic_fs_merge::merge_driver::ConflictValue::Absent
+                ) && !matches!(
+                    conflict.ours,
+                    acyclic_fs_merge::merge_driver::ConflictValue::Absent
+                ) && !matches!(
+                    conflict.theirs,
+                    acyclic_fs_merge::merge_driver::ConflictValue::Absent
+                )
             })
             .filter_map(|conflict| conflict.path.clone())
             .collect::<Vec<_>>();
@@ -382,7 +394,7 @@ where
     async fn join_generation(
         &self,
         workspace: &ManagedWorkspace<P, O>,
-        generation: acyclic_fs::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
     ) -> crate::Result<ManagedGeneration<P, O>> {
         workspace
             .generation(generation, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -395,7 +407,7 @@ where
 /// The path and identity of every described conflict, which a continued
 /// merge checks its resolution against.
 fn conflict_paths(
-    typed: &acyclic_fs::MergePlan,
+    typed: &acyclic_fs_merge::merge_driver::MergePlan,
 ) -> crate::Result<BTreeMap<String, Option<acyclic_fs_format::identity::FileId>>> {
     typed
         .conflicts
@@ -404,7 +416,7 @@ fn conflict_paths(
             let path = conflict.path.clone().ok_or_else(|| {
                 Error::Conflict("Git join conflict has no resolvable path".into())
             })?;
-            use acyclic_fs::ConflictKey;
+            use acyclic_fs_merge::merge_driver::ConflictKey;
             let identity = match &conflict.key {
                 ConflictKey::File(id)
                 | ConflictKey::Metadata(id)

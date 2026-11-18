@@ -142,7 +142,7 @@ pub struct FilesystemS3Principal<A: 'static, O: 'static> {
     /// Canonical workspace selected by the capability.
     pub workspace: Workspace<A, O>,
     /// Optional immutable generation bound into a read-only capability.
-    pub generation: Option<crate::GenerationId>,
+    pub generation: Option<acyclic_fs_format::object_reference::GenerationId>,
     /// Whether the capability admits S3 mutations.
     pub writable: bool,
 }

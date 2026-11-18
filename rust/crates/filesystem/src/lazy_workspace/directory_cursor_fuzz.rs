@@ -1,6 +1,9 @@
 //! Funded continuation checks call the public production encoder and decoder.
 use super::*;
-use crate::{Digest, FilesystemProfile, GenerationId, ObjectId, ObjectKind, ObjectStorage};
+use {
+    crate::{Digest, FilesystemProfile, ObjectId, ObjectKind, ObjectStorage},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const PROFILES: [FilesystemProfile; 4] = [
     FilesystemProfile::Portable,

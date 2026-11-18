@@ -1,6 +1,9 @@
 //! Original conditional publication results shared by private and direct-live mutations.
 
-use crate::foundation::{Digest, Epoch, GenerationId, Head};
+use {
+    crate::foundation::{Digest, Epoch, Head},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 /// One original authority publication result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

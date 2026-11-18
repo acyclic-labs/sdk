@@ -4,7 +4,7 @@ fn metadata() -> FileMetadata {
 
 fn checkout_state<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     source: &CheckoutMountSource<A, O>,
-) -> (crate::GenerationId, bool) {
+) -> (acyclic_fs_format::object_reference::GenerationId, bool) {
     source
         .runtime
         .block_on(

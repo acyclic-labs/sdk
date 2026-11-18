@@ -3,9 +3,12 @@ use super::allocation::KernelAccounting;
 use super::codec::{CanonicalInvariant, DecodedPageKind, DecodedPageShape, ReadAllocationStep};
 use super::file_read::OriginalReadAccounting;
 use super::*;
-use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind};
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
+use {
+    crate::foundation::{Digest, FileId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 pub mod records;
 

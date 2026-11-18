@@ -1,13 +1,13 @@
 use super::*;
 
 pub(super) fn child_wins_resolutions(
-    plan: &crate::MergePlan,
+    plan: &acyclic_fs_merge::merge_driver::MergePlan,
     paths: &BTreeSet<String>,
 ) -> BTreeMap<ConflictKey, MergeResolution> {
     plan.conflicts
         .iter()
         .filter(|conflict| {
-            conflict.kind == crate::ConflictKind::Binding
+            conflict.kind == acyclic_fs_merge::merge_driver::ConflictKind::Binding
                 && conflict
                     .path
                     .as_ref()

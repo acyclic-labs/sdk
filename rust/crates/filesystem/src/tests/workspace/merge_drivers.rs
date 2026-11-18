@@ -794,7 +794,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         directory.resolution(&staged, binary_key).await,
         Err(DrivenJoinError::Workspace(WorkspaceError::Cancelled(_)))
     ));
-    let candidate = crate::UnpublishedMergeCandidate {
+    let candidate = acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate {
         plan: typed,
         resolutions,
     };
@@ -887,7 +887,9 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn Error>> {
+fn merge_text_allocation_cost(
+    view: &acyclic_fs_merge::merge_driver::ConflictView,
+) -> Result<(), Box<dyn Error>> {
     let (ConflictValue::Text(base), ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
         (&view.base, &view.ours, &view.theirs)
     else {
@@ -1401,7 +1403,7 @@ async fn merge_directory_opaque_bindings() -> Result<(), Box<dyn Error>> {
             .await?;
         let staged = unbounded!(staging, head())?;
         let resolution = directory.resolution(&staged, &view.key).await?;
-        let candidate = crate::UnpublishedMergeCandidate {
+        let candidate = acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate {
             plan: typed.clone(),
             resolutions: BTreeMap::from([(view.key.clone(), resolution)]),
         };
@@ -1440,7 +1442,7 @@ struct MergePreviewProjection {
     options: ApplyOptions,
     root_file_id: crate::FileId,
     shared_conflict: crate::MergeConflict,
-    selections: BTreeMap<crate::MergeConflict, crate::ConflictSide>,
+    selections: BTreeMap<crate::MergeConflict, acyclic_fs_merge::merge_driver::ConflictSide>,
 }
 
 impl MergePreviewFixture {
@@ -1600,7 +1602,12 @@ impl MergePreviewFixture {
             .value
             .iter()
             .cloned()
-            .map(|conflict| (conflict, crate::ConflictSide::Theirs))
+            .map(|conflict| {
+                (
+                    conflict,
+                    acyclic_fs_merge::merge_driver::ConflictSide::Theirs,
+                )
+            })
             .collect();
         let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
             fs.objects(),
@@ -1610,8 +1617,9 @@ impl MergePreviewFixture {
             &cancellation,
         )
         .await?;
-        let root_bytes =
-            (root.parents.capacity() * std::mem::size_of::<crate::GenerationId>()) as u64;
+        let root_bytes = (root.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>())
+            as u64;
         let root = Owned::new(root, allocation, root_bytes);
         let limits = DecodeLimits::for_volume(main.volume.config());
         let root_record = value!(
@@ -1784,9 +1792,9 @@ impl MergePreviewFixture {
             };
             let mut records = [None; 3];
             for (side, record) in [
-                crate::ConflictSide::Base,
-                crate::ConflictSide::Ours,
-                crate::ConflictSide::Theirs,
+                acyclic_fs_merge::merge_driver::ConflictSide::Base,
+                acyclic_fs_merge::merge_driver::ConflictSide::Ours,
+                acyclic_fs_merge::merge_driver::ConflictSide::Theirs,
             ]
             .into_iter()
             .zip(&mut records)
@@ -1880,7 +1888,7 @@ impl MergePreviewFixture {
                     assert_eq!(path.value.is_some(), record.is_some());
                     if let Some(path) = path.value {
                         if matches!(row.value(), crate::MergeConflict::Binding { .. })
-                            && side == crate::ConflictSide::Ours
+                            && side == acyclic_fs_merge::merge_driver::ConflictSide::Ours
                         {
                             // The occupying file's earlier alias differs from the
                             // binding location returned above for the same side.
@@ -2050,7 +2058,10 @@ impl MergePreviewFixture {
         selected_cancel.cancel();
         assert!(matches!(
             selected_pages
-                .conflict_record(selected.value(), crate::ConflictSide::Ours)
+                .conflict_record(
+                    selected.value(),
+                    acyclic_fs_merge::merge_driver::ConflictSide::Ours
+                )
                 .await
                 .map_err(|failure| failure.error),
             Err(WorkspaceError::Cancelled(_))
@@ -2080,7 +2091,10 @@ impl MergePreviewFixture {
             .value;
         assert!(
             range_pages
-                .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
+                .open_conflict_content(
+                    &shared_conflict,
+                    acyclic_fs_merge::merge_driver::ConflictSide::Ours
+                )
                 .await
                 .is_err(),
             "selected content minted another item allowance"
@@ -2101,7 +2115,10 @@ impl MergePreviewFixture {
                 .map_err(|failure| failure.error)?
                 .value;
             let selected = native_pages
-                .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
+                .open_conflict_content(
+                    &shared_conflict,
+                    acyclic_fs_merge::merge_driver::ConflictSide::Ours,
+                )
                 .await
                 .map_err(|failure| failure.error)?;
             let baseline_live = original.live_allocation_bytes().unwrap();
@@ -2125,7 +2142,10 @@ impl MergePreviewFixture {
             }
             drop(content);
             let mut content = native_pages
-                .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
+                .open_conflict_content(
+                    &shared_conflict,
+                    acyclic_fs_merge::merge_driver::ConflictSide::Ours,
+                )
                 .await
                 .map_err(|failure| failure.error)?
                 .value
@@ -2171,7 +2191,10 @@ impl MergePreviewFixture {
             .value;
         assert!(
             bounded_pages
-                .file_path(root_file_id, crate::ConflictSide::Ours)
+                .file_path(
+                    root_file_id,
+                    acyclic_fs_merge::merge_driver::ConflictSide::Ours
+                )
                 .await
                 .is_err(),
             "selected path minted another item allowance"
@@ -2190,7 +2213,7 @@ impl MergePreviewFixture {
         path_cancel.cancel();
         assert!(matches!(
             path_pages
-                .file_path(root_id, crate::ConflictSide::Ours)
+                .file_path(root_id, acyclic_fs_merge::merge_driver::ConflictSide::Ours)
                 .await
                 .map_err(|failure| failure.error),
             Err(WorkspaceError::Cancelled(_))
@@ -2232,7 +2255,10 @@ impl MergePreviewFixture {
             .map_err(|failure| failure.error)?
             .value;
         let mut pinned_content = pinned_range_pages
-            .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
+            .open_conflict_content(
+                &shared_conflict,
+                acyclic_fs_merge::merge_driver::ConflictSide::Ours,
+            )
             .await
             .map_err(|failure| failure.error)?
             .value
@@ -2319,7 +2345,10 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
         .value;
         assert_eq!(preview.conflict_count(), 1);
         let mut content = preview
-            .open_conflict_content(&conflict, crate::ConflictSide::Ours)
+            .open_conflict_content(
+                &conflict,
+                acyclic_fs_merge::merge_driver::ConflictSide::Ours,
+            )
             .await
             .map_err(|failure| failure.error)?
             .value
@@ -2353,7 +2382,10 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
         }
         drop(content);
         let mut content = preview
-            .open_conflict_content(&conflict, crate::ConflictSide::Ours)
+            .open_conflict_content(
+                &conflict,
+                acyclic_fs_merge::merge_driver::ConflictSide::Ours,
+            )
             .await
             .map_err(|failure| failure.error)?
             .value

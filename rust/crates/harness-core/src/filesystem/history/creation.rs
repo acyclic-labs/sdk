@@ -7,7 +7,12 @@ mod tests;
 pub(in crate::filesystem) async fn capture_creation<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     agent: &AgentPath,
-    prepared: impl Iterator<Item = (acyclic_fs::WorkspaceId, acyclic_fs::GenerationId)> + Clone,
+    prepared: impl Iterator<
+        Item = (
+            acyclic_fs::WorkspaceId,
+            acyclic_fs_format::object_reference::GenerationId,
+        ),
+    > + Clone,
     cuts: Option<&dyn super::super::VolumeResources>,
     commit: &mut FilesystemCommit,
 ) -> Result<(), GuestError>

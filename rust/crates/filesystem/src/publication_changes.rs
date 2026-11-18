@@ -24,7 +24,7 @@ pub enum DeltaOrigin {
     Empty,
     /// The exact generation compared with the publication, including its
     /// authenticated storage association. A restore need not follow ancestry.
-    Generation(crate::GenerationId),
+    Generation(acyclic_fs_format::object_reference::GenerationId),
 }
 
 /// An immutable delta bound to the original follow selection. A delivered
@@ -197,7 +197,9 @@ impl PublicationChanges {
             return Err(FsError::InvalidDiff);
         }
         self.1 = Some(predecessor);
-        self.3 = DeltaOrigin::Generation(crate::GenerationId::from_root(root));
+        self.3 = DeltaOrigin::Generation(
+            acyclic_fs_format::object_reference::GenerationId::from_root(root),
+        );
         Ok(())
     }
     pub(crate) fn composed(
@@ -336,7 +338,9 @@ impl PublicationChanges {
             .root
             .volume_id;
         let origin = base.map_or(DeltaOrigin::Empty, |(_, root)| {
-            DeltaOrigin::Generation(crate::GenerationId::from_root(root))
+            DeltaOrigin::Generation(
+                acyclic_fs_format::object_reference::GenerationId::from_root(root),
+            )
         });
         let paths =
             crate::workspace::complete_changed_paths(endpoints, None, accounting, cancellation)
@@ -372,7 +376,9 @@ impl PublicationChanges {
         if root.volume_id != creation.volume_id {
             return Err(FsError::InvalidDiff);
         }
-        let bytes = (root.parents.capacity() * std::mem::size_of::<crate::GenerationId>()) as u64;
+        let bytes = (root.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>())
+            as u64;
         let root = Owned::new(root, guard, bytes);
         let result = Self::prepare(
             [
@@ -423,7 +429,9 @@ impl PublicationChanges {
         if before.volume_id != request.volume_id {
             return Err(FsError::InvalidDiff);
         }
-        let bytes = (before.parents.capacity() * std::mem::size_of::<crate::GenerationId>()) as u64;
+        let bytes = (before.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>())
+            as u64;
         let before = Owned::new(before, guard, bytes);
         let result = Self::prepare(
             [

@@ -51,7 +51,9 @@ async fn native_fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> Tes
             entry(b"content", child)?,
             regular(child, metadata, logical_bytes, extents),
         )],
-        vec![crate::GenerationId::new(Digest::from_bytes([7; 32]))],
+        vec![acyclic_fs_format::object_reference::GenerationId::new(
+            Digest::from_bytes([7; 32]),
+        )],
     )
     .await?;
     Ok(generation)

@@ -887,7 +887,7 @@ mod tests {
     /// Publication ordinal of `generation` in the fixture workspace.
     async fn ordinal(
         workspace: &LocalWorkspace,
-        generation: acyclic_fs::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
     ) -> Result<u64> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let head = workspace

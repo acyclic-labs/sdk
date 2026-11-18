@@ -127,7 +127,7 @@ where
         &self,
         plan: &crate::JoinPlan<A, O>,
         options: crate::ApplyOptions,
-        candidate: Option<&crate::UnpublishedMergeCandidate>,
+        candidate: Option<&acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate>,
     ) -> Result<(crate::JoinOutcome<A, O>, crate::NativeAllocation), MountLifecycleError> {
         self.source
             .apply_command_join(plan, options, candidate)

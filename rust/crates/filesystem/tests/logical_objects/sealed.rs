@@ -10,8 +10,9 @@ use {
     acyclic_fs_work::performance::WorkCounters,
 };
 use {
-    acyclic_fs::{GenerationId, HashedObject, NativeMaterializationWork},
+    acyclic_fs::{HashedObject, NativeMaterializationWork},
     acyclic_fs_format::identity::{Digest, FileId},
+    acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_format::object_reference::ObjectKind,
     acyclic_fs_work::performance::WorkBudget,
 };

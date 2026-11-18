@@ -673,7 +673,7 @@ mod tests {
                 "missing".into(),
                 acyclic_fs::GitGenerationRef {
                     workspace_id: acyclic_fs::WorkspaceId::from_bytes([0; 16]),
-                    generation: acyclic_fs::GenerationId::new(
+                    generation: acyclic_fs_format::object_reference::GenerationId::new(
                         acyclic_fs_format::identity::Digest::from_bytes([0; 32]),
                     ),
                 },

@@ -5,7 +5,13 @@ pub(super) async fn observe_current_policy<A: AsyncAuthorityStore, O: AsyncObjec
     checkout: &SharedCheckout<A, O>,
     cancellation: &CancellationToken,
     work: &crate::NativeMaterializationWork,
-) -> Result<(crate::GenerationId, crate::kernel::MetadataField<ObjectId>), MountSourceError> {
+) -> Result<
+    (
+        acyclic_fs_format::object_reference::GenerationId,
+        crate::kernel::MetadataField<ObjectId>,
+    ),
+    MountSourceError,
+> {
     crate::access::observe_policy(work.cancellation(), cancellation, || async {
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());

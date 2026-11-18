@@ -1087,10 +1087,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         reference: &FileRef,
         io: Option<&PreparationIo>,
-    ) -> Result<acyclic_fs::GenerationId> {
+    ) -> Result<acyclic_fs_format::object_reference::GenerationId> {
         let cut = self.file_generation(reference, io)?;
         match cut.as_resource().version() {
-            None => acyclic_fs::GenerationId::from_bytes(cut.as_resource().key()),
+            None => acyclic_fs_format::object_reference::GenerationId::from_bytes(
+                cut.as_resource().key(),
+            ),
             Some(_) => None,
         }
         .ok_or_else(|| {

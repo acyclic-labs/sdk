@@ -20,11 +20,11 @@ use super::{
 use crate::FsError;
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::{CancellationError, CancellationToken};
-use crate::foundation::{FileId, GenerationId};
 use crate::performance::{MeasuredResult, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError};
 use std::collections::BTreeMap;
 use thiserror::Error;
+use {crate::foundation::FileId, acyclic_fs_format::object_reference::GenerationId};
 
 /// One exact unresolved three-way merge region.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
