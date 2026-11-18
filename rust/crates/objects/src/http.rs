@@ -211,9 +211,9 @@ impl HttpObjects {
     /// Posts one route's input and decodes its canonical output.
     async fn call(&self, route: &str, input: Bytes) -> Result<Bytes, Error> {
         crate::operation::run(self.context.as_ref(), async {
-            let (_, input_name, output_name) = crate::HTTP_ROUTES
-                .iter()
-                .find(|(path, _, _)| *path == route)
+            let (input_name, output_name) = crate::ObjectsMethod::from_http_route(route)
+                .filter(|method| *method != crate::ObjectsMethod::Availability)
+                .map(crate::ObjectsMethod::http_message_types)
                 .ok_or_else(unavailable)?;
             let url = self
                 .endpoint
