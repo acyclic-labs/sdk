@@ -30,7 +30,7 @@ impl WasmSession {
     pub fn register_credential(
         &self,
         slot: u32,
-        credential: js_sys::Uint8Array,
+        credential: &js_sys::Uint8Array,
     ) -> Result<(), JsValue> {
         if slot as usize >= crate::session::Limits::default().channels {
             return Err(js_error(StreamError::Capacity));
@@ -78,7 +78,7 @@ impl WasmSession {
     #[wasm_bindgen(js_name = servedRevision)]
     pub fn served_revision(
         &self,
-        minimum: js_sys::Array,
+        minimum: &js_sys::Array,
         applied: Option<Box<[u8]>>,
     ) -> Result<(), JsValue> {
         let minimum = minimum
@@ -89,7 +89,7 @@ impl WasmSession {
                     .dyn_into::<js_sys::Uint8Array>()
                     .map_err(|_| js_error(StreamError::InvalidArgument))?
                     .to_vec();
-                Ok(decode::<wire::Revision>(&bytes)?)
+                decode::<wire::Revision>(&bytes)
             })
             .collect::<Result<Vec<_>, JsValue>>()?;
         let minimum = crate::wire_codec::cut_from_wire(minimum).map_err(js_error)?;

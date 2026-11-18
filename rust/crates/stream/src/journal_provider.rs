@@ -111,7 +111,11 @@ impl OpenJournals {
         let Some(address) = self.addresses.get_checked(journal.unchecked_ref()) else {
             return Ok(None);
         };
-        let address = address.as_f64().ok_or(StreamError::Unavailable)? as usize;
+        let address = address
+            .as_f64()
+            .and_then(crate::wasm_unsigned_integer)
+            .and_then(|address| usize::try_from(address).ok())
+            .ok_or(StreamError::Unavailable)?;
         self.owners
             .borrow()
             .get(&address)
@@ -120,15 +124,15 @@ impl OpenJournals {
             .ok_or(StreamError::Unavailable)
     }
 
-    fn insert(&self, inner: &Rc<Inner>) {
+    fn insert(&self, inner: &Rc<Inner>) -> Result<(), StreamError> {
         let address = Rc::as_ptr(inner) as usize;
+        let wire_address = u32::try_from(address).map_err(|_| StreamError::Unavailable)?;
         self.owners
             .borrow_mut()
             .insert(address, Rc::downgrade(inner));
-        self.addresses.set(
-            inner.journal.unchecked_ref(),
-            &JsValue::from_f64(address as f64),
-        );
+        self.addresses
+            .set(inner.journal.unchecked_ref(), &JsValue::from(wire_address));
+        Ok(())
     }
 }
 
@@ -207,7 +211,7 @@ impl JournalStream {
             clock,
             claims: OperationClaims::default(),
         });
-        OPEN.with(|open| open.insert(&inner));
+        OPEN.with(|open| open.insert(&inner))?;
         let stream = Self(inner);
         stream.query(async |_| Ok(())).await?;
         Ok(stream)

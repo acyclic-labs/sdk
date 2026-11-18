@@ -933,12 +933,14 @@ pub trait UnixMillisClock: Send + Sync + 'static {
 pub struct SystemUnixMillisClock;
 
 #[cfg(any(test, target_arch = "wasm32"))]
-fn javascript_millis(value: f64) -> u64 {
+pub(crate) fn wasm_unsigned_integer(value: f64) -> Option<u64> {
     if !value.is_finite() || value.is_sign_negative() || value.fract() != 0.0 {
-        return u64::MAX;
+        return None;
     }
     // Use Duration's checked float conversion on the integral millisecond count.
-    std::time::Duration::try_from_secs_f64(value).map_or(u64::MAX, |value| value.as_secs())
+    std::time::Duration::try_from_secs_f64(value)
+        .ok()
+        .map(|value| value.as_secs())
 }
 
 impl UnixMillisClock for SystemUnixMillisClock {
@@ -953,7 +955,7 @@ impl UnixMillisClock for SystemUnixMillisClock {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            javascript_millis(js_sys::Date::now())
+            wasm_unsigned_integer(js_sys::Date::now()).unwrap_or(u64::MAX)
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -968,14 +970,17 @@ impl UnixMillisClock for SystemUnixMillisClock {
 
 #[cfg(test)]
 mod clock_tests {
-    use super::javascript_millis;
+    use super::wasm_unsigned_integer;
 
     #[test]
     fn javascript_clock_rejects_invalid_deadline_times() {
-        assert_eq!(javascript_millis(1_700_000_000_123.0), 1_700_000_000_123);
-        assert_eq!(javascript_millis(0.0), 0);
+        assert_eq!(
+            wasm_unsigned_integer(1_700_000_000_123.0),
+            Some(1_700_000_000_123)
+        );
+        assert_eq!(wasm_unsigned_integer(0.0), Some(0));
         for invalid in [-0.0, -1.0, 1.5, f64::NAN, f64::INFINITY, f64::MAX] {
-            assert_eq!(javascript_millis(invalid), u64::MAX);
+            assert_eq!(wasm_unsigned_integer(invalid), None);
         }
     }
 }

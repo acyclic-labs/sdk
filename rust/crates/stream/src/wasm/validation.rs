@@ -275,11 +275,12 @@ mod http {
         set(
             &result,
             "scanned",
-            &JsValue::from_f64(
+            &JsValue::from_f64(f64::from(
                 field(item, "scanned")?
                     .as_u64()
-                    .ok_or("invalid scanned count")? as f64,
-            ),
+                    .and_then(|count| u32::try_from(count).ok())
+                    .ok_or("invalid scanned count")?,
+            )),
         )?;
         set(
             &result,

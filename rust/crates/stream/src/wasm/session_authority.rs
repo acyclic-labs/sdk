@@ -1,5 +1,6 @@
 //! Explicit owner-authenticated public trust for browser-local sessions.
 use super::*;
+use crate::UnixMillisClock as _;
 use crate::runtime::Executor;
 use crate::session::{Authority, AuthorityState, TrustSnapshot};
 use acyclic_auth::{
@@ -49,7 +50,7 @@ impl AuthorityState for State {
         let current = self.current.lock().map_err(|_| VerifyError::Trust)?;
         Ok(TrustSnapshot {
             trust: current.clone(),
-            now_unix_seconds: (Date::now() / 1000.0) as u64,
+            now_unix_seconds: crate::SystemUnixMillisClock.now_unix_millis() / 1000,
         })
     }
     fn changes(&self) -> &dyn ChangeSource {
@@ -59,9 +60,14 @@ impl AuthorityState for State {
         &self,
         unix_seconds: u64,
     ) -> crate::BoxProviderFuture<'_, Result<(), SourceClosed>> {
-        let milliseconds = (unix_seconds as f64 * 1000.0 - Date::now()).max(0.0);
-        let expiry =
-            crate::runtime::PlatformExecutor.sleep(milliseconds.min(f64::from(i32::MAX)) as u32);
+        let milliseconds = unix_seconds
+            .saturating_mul(1000)
+            .saturating_sub(crate::SystemUnixMillisClock.now_unix_millis());
+        let expiry = crate::runtime::PlatformExecutor.sleep(
+            u32::try_from(milliseconds)
+                .unwrap_or(u32::MAX)
+                .min(i32::MAX.unsigned_abs()),
+        );
         Box::pin(async move {
             expiry.await;
             Ok(())
