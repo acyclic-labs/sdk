@@ -10,7 +10,8 @@ fn main() {
     let manifest_path = PathBuf::from(args.next().unwrap());
     let selected_lock = PathBuf::from(args.next().unwrap());
     let receipt_name = args.next().unwrap().into_string().unwrap();
-    let binary_name = args.next().unwrap().into_string().unwrap();
+    let target_args: Vec<String> =
+        serde_json::from_str(args.next().unwrap().to_str().unwrap()).unwrap();
     let proc_macro = args.next().unwrap() == "proc-macro";
     let linker = args.next().unwrap();
     let root = output.with_extension("work");
@@ -74,13 +75,10 @@ fn main() {
         ])
         .arg("--manifest-path")
         .arg(source.join(manifest_path))
-        .args(["--package", &package]);
-    if binary_name.is_empty() {
-        command.arg("--lib");
-    } else {
-        command.args(["--bin", &binary_name]);
-    }
-    command.args(["--target", host]).args(args);
+        .args(["--package", &package])
+        .args(target_args)
+        .args(["--target", host])
+        .args(args);
     if !selected_lock.as_os_str().is_empty() {
         let lock = fs::canonicalize(source.join(selected_lock)).unwrap();
         command.args([

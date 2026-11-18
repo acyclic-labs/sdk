@@ -232,7 +232,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
-        let binary = metadata["binary_name"].as_str().unwrap_or_default();
         let mut expected_args = vec![
             "rustdoc",
             "--locked",
@@ -241,11 +240,13 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             "--package",
             package,
         ];
-        if binary.is_empty() {
-            expected_args.push("--lib");
-        } else {
-            expected_args.extend(["--bin", binary]);
-        }
+        expected_args.extend(
+            metadata["target_args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|flag| flag.as_str().unwrap()),
+        );
         expected_args.extend(["--target", target]);
         expected_args.extend(
             metadata["cargo_flags"]
@@ -323,11 +324,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let mut referenced = std::collections::BTreeSet::new();
         let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
         let owner = metadata["owner_path"].as_str().unwrap();
-        let entrypoint = Path::new(if binary.is_empty() {
-            "src/lib.rs"
-        } else {
-            "src/main.rs"
-        });
+        let entrypoint = Path::new(metadata["entrypoint"].as_str().unwrap());
         let owner_entrypoint = Path::new(owner).join(entrypoint);
         rustdoc_paths::visit(&mut json, |kind, path| {
             if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {

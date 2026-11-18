@@ -27,6 +27,7 @@ def _rustdoc_fixture_impl(ctx):
     artifacts = ctx.actions.declare_directory(ctx.label.name + ".artifacts") if ctx.attr.retain_artifacts else None
     toolchain = _declared_toolchain(ctx.attr._rustup)
     binary_name = ctx.attr.binary_name
+    target_args = ["--bin", binary_name] if binary_name else ["--lib"]
     receipt_name = (binary_name or ctx.attr.library_name or ctx.attr.package).replace("-", "_")
     sources = []
     for file in ctx.files.srcs:
@@ -47,7 +48,8 @@ def _rustdoc_fixture_impl(ctx):
         "owner_path": ctx.attr.owner_path,
         "selected_lock": ctx.attr.selected_lock,
         "receipt_name": receipt_name,
-        "binary_name": binary_name,
+        "target_args": target_args,
+        "entrypoint": "src/main.rs" if binary_name else "src/lib.rs",
         "proc_macro": ctx.attr.proc_macro,
         "cargo_flags": ctx.attr.cargo_flags,
         "sources": [{"file": _repository_path(file.short_path), "relative": relative} for file, relative in sources],
@@ -63,7 +65,7 @@ def _rustdoc_fixture_impl(ctx):
     args.add(ctx.attr.manifest_path)
     args.add(ctx.attr.selected_lock)
     args.add(receipt_name)
-    args.add(binary_name)
+    args.add(json.encode(target_args))
     args.add("proc-macro" if ctx.attr.proc_macro else "library")
     tool_inputs = [ctx.attr._rustup[DefaultInfo].data_runfiles.files]
     linker_env = {}
