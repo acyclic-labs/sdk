@@ -129,8 +129,6 @@ mod native_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_host;
-#[cfg(not(target_arch = "wasm32"))]
-mod native_identity;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(
@@ -271,6 +269,8 @@ pub use git_compat::{
 };
 pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs_native_contract::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
     GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,
@@ -338,8 +338,6 @@ pub use native_capture::{
     capture_paths, capture_root_identity, capture_subtree, capture_watch_batch, file_identity,
     hold_root, hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,

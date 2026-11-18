@@ -337,6 +337,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-collections",
  "acyclic-fs-base",
+ "acyclic-fs-native-contract",
  "acyclic-fs-wire",
  "acyclic-fs-work",
  "acyclic-grpc-observability",
@@ -479,6 +480,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-fs-native-contract"
+version = "0.2.0"
+dependencies = [
+ "cap-primitives",
+ "cap-std",
 ]
 
 [[package]]
@@ -724,6 +733,7 @@ dependencies = [
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-fs-base",
+ "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness-control",
  "acyclic-harness-json",
@@ -903,6 +913,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness-client",
  "acyclic-harness-core",

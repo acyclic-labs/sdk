@@ -40,7 +40,7 @@ thread_local! {
     static REKEY_VOLUMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Replaces a capture's object id and generation, as a filesystem that
     /// reissues ids or renumbers them across remounts.
-    pub(crate) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs::NativeRootGeneration)>> =
+    pub(crate) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs_native_contract::NativeRootGeneration)>> =
         const { std::cell::Cell::new(None) };
     /// Negative control: a root without stable ids is keyed on its id.
     pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -181,12 +181,12 @@ impl Checkout {
 fn incarnation_of(
     root: &acyclic_fs::HeldRoot,
     object: [u8; 16],
-    generation: acyclic_fs::NativeRootGeneration,
+    generation: acyclic_fs_native_contract::NativeRootGeneration,
 ) -> Result<[u8; 16]> {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.workspace-incarnation/v6");
     hash.update(&object);
     match generation {
-        acyclic_fs::NativeRootGeneration::FileHandle(handle) => {
+        acyclic_fs_native_contract::NativeRootGeneration::FileHandle(handle) => {
             hash.update(&handle);
         }
         _ => {
@@ -210,8 +210,11 @@ fn incarnation_of(
 
 impl RootWitness {
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    pub(super) fn capture(object: [u8; 16], generation: acyclic_fs::NativeRootGeneration) -> Self {
-        use acyclic_fs::NativeRootGeneration;
+    pub(super) fn capture(
+        object: [u8; 16],
+        generation: acyclic_fs_native_contract::NativeRootGeneration,
+    ) -> Self {
+        use acyclic_fs_native_contract::NativeRootGeneration;
         #[cfg(test)]
         let object = if DISCARD_VOLUME.get() {
             let mut object = object;
