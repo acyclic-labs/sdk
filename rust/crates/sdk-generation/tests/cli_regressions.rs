@@ -752,6 +752,16 @@ enum HistoricalAuthority<'a> {
     WorkingDirectory(&'a Path),
 }
 
+impl HistoricalAuthority<'_> {
+    fn configure(&self, command: &mut Command) {
+        match self {
+            Self::Lock(lock) => command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock),
+            Self::CargoHome(home) => command.env("CARGO_HOME", home),
+            Self::WorkingDirectory(directory) => command.current_dir(directory),
+        };
+    }
+}
+
 fn run_historical_generation(
     fixture: &Fixture,
     support: &Path,
@@ -793,17 +803,8 @@ fn run_historical_generation(
                 .arg(revisions.trim());
         }
     }
-    match authority {
-        Some(HistoricalAuthority::Lock(lock)) => {
-            command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock);
-        }
-        Some(HistoricalAuthority::CargoHome(home)) => {
-            command.env("CARGO_HOME", home);
-        }
-        Some(HistoricalAuthority::WorkingDirectory(directory)) => {
-            command.current_dir(directory);
-        }
-        None => {}
+    if let Some(authority) = authority {
+        authority.configure(&mut command);
     }
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");

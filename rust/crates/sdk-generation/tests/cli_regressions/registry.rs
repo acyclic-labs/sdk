@@ -52,11 +52,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                             ])
                             .arg(support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml"))
                             .env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-                        if matches!(&authority, HistoricalAuthority::CargoHome(_)) {
-                            control.env("CARGO_HOME", &directory);
-                        } else {
-                            control.current_dir(&directory);
-                        }
+                        authority.configure(&mut control);
                         let rejected = control.output().unwrap();
                         assert!(
                             !rejected.status.success(),
