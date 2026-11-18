@@ -1369,6 +1369,7 @@ rust_test(
         "tests/git_history/git_compat/mod.rs",
         "tests/git_history/git_compat/stream_store/mod.rs",
         "tests/git_history/git_compat/stream_store/tests.rs",
+        "tests/git_history/git_compat/tests/argv.rs",
         "tests/git_history/git_compat/tests/history.rs",
         "tests/git_history/git_compat/tests/mod.rs",
         "tests/support/git_history.rs",
@@ -1392,6 +1393,7 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
     ],

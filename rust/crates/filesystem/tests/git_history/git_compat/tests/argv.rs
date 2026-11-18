@@ -1,4 +1,9 @@
-use super::*;
+use acyclic_fs::git_compat::{
+    GitCommand, GitCommandOutput, GitCompatError, GitCompatRepository, GitFilesystemAction,
+    MemoryGitCompatStore, MemoryGitCompatStoreError, parse_git_argv,
+};
+
+use crate::fixtures::{tree, workspace};
 
 #[tokio::test]
 async fn argv_covers_local_history_and_rejects_transport() {
@@ -43,7 +48,8 @@ async fn argv_covers_local_history_and_rejects_transport() {
 }
 
 #[test]
-fn argv_parser_has_an_explicit_command_conformance_matrix() {
+fn argv_parser_has_an_explicit_command_conformance_matrix() -> Result<(), Box<dyn std::error::Error>>
+{
     let cases: &[(&[&str], &str)] = &[
         (&["status", "--short"], r#""Status""#),
         (&["diff", "--staged"], r#"{"Diff":{"cached":true}}"#),
@@ -140,10 +146,9 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
             .iter()
             .map(|value| (*value).to_owned())
             .collect::<Vec<_>>();
-        let expected: GitCommand = serde_json::from_str(expected).expect("canonical command");
+        let expected: GitCommand = serde_json::from_str(expected)?;
         assert_eq!(
-            parse_git_argv::<MemoryGitCompatStoreError>(&argv, "default", 10)
-                .expect("supported argv"),
+            parse_git_argv::<MemoryGitCompatStoreError>(&argv, "default", 10)?,
             expected,
             "argv: {argv:?}"
         );
@@ -153,12 +158,12 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
             &["add".to_owned(), "--".to_owned(), "--all".to_owned()],
             "default",
             10
-        )
-        .expect("literal option-looking path"),
+        )?,
         GitCommand::Add {
             paths: vec!["--all".to_owned()]
         }
     );
+    Ok(())
 }
 
 #[test]
