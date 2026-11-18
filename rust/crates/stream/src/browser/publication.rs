@@ -92,19 +92,8 @@ impl Before {
         command: &WriteRequest,
         publications: &notifications::Publications,
     ) -> Result<Self, StreamError> {
-        let destinations = match command {
-            WriteRequest::Append(request) => vec![(request.path.clone(), false)],
-            WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
-            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
-                .mutations()
-                .map(|mutation| match mutation {
-                    CommitMutation::Append { path, .. } => (path.clone(), false),
-                    CommitMutation::Fork { destination, .. } => (destination.clone(), true),
-                })
-                .collect(),
-        };
         let mut paths = BTreeSet::new();
-        for (path, fork) in destinations {
+        let mut capture = |path: &StreamPath, fork| -> Result<(), StreamError> {
             // A fork can create a followed descendant without appending to it.
             // Consult active subscriptions, never enumerate the forked subtree.
             if fork {
@@ -114,10 +103,23 @@ impl Before {
                 }
                 paths.extend(publications.follows.keys_in(descendants.bounds())?);
             }
-            let mut next = Some(path);
+            let mut next = Some(path.clone());
             while let Some(path) = next {
                 next = path.parent();
                 paths.insert(path);
+            }
+            Ok(())
+        };
+        match command {
+            WriteRequest::Append(request) => capture(&request.path, false)?,
+            WriteRequest::Fork(request) => capture(&request.destination, true)?,
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                for mutation in request.mutations() {
+                    capture(
+                        mutation.path(),
+                        matches!(mutation, CommitMutation::Fork { .. }),
+                    )?;
+                }
             }
         }
         let mut before = BTreeMap::new();
