@@ -1,3 +1,9 @@
+const CREATED_RECORD: u8 = 1;
+const PART_RECORD: u8 = 2;
+const COMPLETING_RECORD: u8 = 3;
+const COMPLETED_RECORD: u8 = 4;
+const ABORTED_RECORD: u8 = 5;
+
 /// Encodes the key and part bounds of a new upload.
 pub fn encode_multipart_created(
     key: &str,
@@ -7,7 +13,7 @@ pub fn encode_multipart_created(
 ) -> MultipartStorageResult<Bytes> {
     let key_length = u32::try_from(key.len()).map_err(|_| MultipartStorageError::KeyTooLong)?;
     let mut output = Vec::with_capacity(2 + 4 + key.len() + 4 + 8 + 8);
-    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 1]);
+    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, CREATED_RECORD]);
     output.extend_from_slice(&key_length.to_le_bytes());
     output.extend_from_slice(key.as_bytes());
     output.extend_from_slice(&maximum_parts.unwrap_or(0).to_le_bytes());
@@ -25,7 +31,7 @@ pub fn encode_multipart_part(
     etag_value: &str,
 ) -> Bytes {
     let mut output = Vec::with_capacity(2 + 4 + root.encoded_len() + 8 + 16 + 32);
-    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 2]);
+    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, PART_RECORD]);
     output.extend_from_slice(&part_number.to_le_bytes());
     output.extend_from_slice(&root.to_bytes());
     output.extend_from_slice(&logical_bytes.to_le_bytes());
@@ -43,7 +49,7 @@ pub fn encode_multipart_part(
 pub fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageResult<Bytes> {
     let count = u32::try_from(parts.len()).map_err(|_| MultipartStorageError::TooManyParts)?;
     let mut output = Vec::with_capacity(6 + parts.len().saturating_mul(36));
-    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 3]);
+    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, COMPLETING_RECORD]);
     output.extend_from_slice(&count.to_le_bytes());
     for (number, etag_value) in parts {
         output.extend_from_slice(&number.to_le_bytes());
@@ -60,14 +66,14 @@ pub fn encode_multipart_completed(
     generation: acyclic_fs_format::object_reference::GenerationId,
 ) -> Bytes {
     let mut output = Vec::with_capacity(2 + generation.object_id().encoded_len());
-    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 4]);
+    output.extend_from_slice(&[MULTIPART_RECORD_VERSION, COMPLETED_RECORD]);
     output.extend_from_slice(&generation.to_bytes());
     Bytes::from(output)
 }
 
 /// Encodes an upload abort.
 pub fn encode_multipart_aborted() -> Bytes {
-    Bytes::from_static(&[MULTIPART_RECORD_VERSION, 5])
+    Bytes::from_static(&[MULTIPART_RECORD_VERSION, ABORTED_RECORD])
 }
 
 /// Replays every record up to the observed upload stream tail.
@@ -194,7 +200,7 @@ pub fn decode_multipart_header(
     limits: FilesystemS3Limits,
 ) -> MultipartStorageResult<(String, Option<u32>, Option<u64>, u64)> {
     let mut cursor = RecordCursor::new(created);
-    cursor.header(1)?;
+    cursor.header(CREATED_RECORD)?;
     let key_length = cursor.u32()?;
     if key_length == 0 {
         return Err(MultipartStorageError::Malformed);
@@ -266,7 +272,7 @@ impl MultipartReplay {
             return Err(MultipartStorageError::Malformed);
         }
         match tag {
-            2 => {
+            PART_RECORD => {
                 let part_number = cursor.u32()?;
                 let root = cursor.object()?;
                 let logical_bytes = cursor.u64()?;
@@ -298,7 +304,7 @@ impl MultipartReplay {
                     },
                 );
             }
-            3 => {
+            COMPLETING_RECORD => {
                 let count = cursor.u32()?;
                 if count == 0 || self.maximum_parts.is_some_and(|maximum| count > maximum) {
                     return Err(MultipartStorageError::Malformed);
@@ -320,7 +326,7 @@ impl MultipartReplay {
                 cursor.finish()?;
                 *terminal = Some(MultipartTerminal::Completing(selected));
             }
-            4 => {
+            COMPLETED_RECORD => {
                 let generation = acyclic_fs_format::object_reference::GenerationId::from_bytes(
                     cursor.take(record.len().saturating_sub(2))?,
                 )
@@ -331,7 +337,7 @@ impl MultipartReplay {
                 }
                 *terminal = Some(MultipartTerminal::Completed(generation));
             }
-            5 => {
+            ABORTED_RECORD => {
                 cursor.finish()?;
                 *terminal = Some(MultipartTerminal::Aborted);
             }

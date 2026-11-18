@@ -161,10 +161,10 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
         operation: IdempotencyKey,
     ) -> MultipartStorageResult<bool> {
         let phase: &[u8] = match RecordCursor::new(&record).any_header()? {
-            2 => b"part\0",
-            3 => b"complete-intent\0",
-            4 => b"complete-terminal\0",
-            5 => b"abort\0",
+            PART_RECORD => b"part\0",
+            COMPLETING_RECORD => b"complete-intent\0",
+            COMPLETED_RECORD => b"complete-terminal\0",
+            ABORTED_RECORD => b"abort\0",
             _ => return Err(MultipartStorageError::Malformed),
         };
         let idempotency_key = multipart_cas_operation(upload_id, phase, operation, expected_tail)?;
