@@ -104,7 +104,7 @@ int acyclic_fs_darwin_test_retirement_custody(bool (*check_result)(int, int)) {
           model.released != 3 || model.visits != delay + 1 ||
           status != outcomes[outcome].error || dissent != model.dissent ||
           !check_result(status, dissent)) {
-        fprintf(stderr, "retirement callback contract failed: native=%#x errno=%d expected=%d delay=%u; recovery: cargo test -p acyclic-fs --all-features retirement_keeps_callback_storage_until_terminal_completion -- --nocapture\n",
+        fprintf(stderr, "retirement callback contract failed: native=%#x errno=%d expected=%d delay=%u; recovery: bazel run //rust/crates/filesystem:acyclic_fs_test_cases -- retirement_keeps_callback_storage_until_terminal_completion --nocapture\n",
                 model.dissent, status, outcomes[outcome].error, delay);
         return 1;
       }

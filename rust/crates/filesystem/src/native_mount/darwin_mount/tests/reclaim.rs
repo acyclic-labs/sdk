@@ -44,7 +44,7 @@ fn crashed_owner(root: PathBuf) -> TestResult {
     std::io::stdin().read_exact(&mut [0])?;
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        "step=await crash fixture kill; recovery: cargo test --locked -p acyclic-fs --all-features --lib native_mount::darwin_mount::tests::reclaim::startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts -- --exact --nocapture",
+        "step=await crash fixture kill; recovery: bazel run //rust/crates/filesystem:acyclic_fs_test_cases -- native_mount::darwin_mount::tests::reclaim::startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts --exact --nocapture",
     ).into())
 }
 

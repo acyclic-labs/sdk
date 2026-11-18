@@ -1,5 +1,5 @@
 //! Real public commit-path benchmark. Run one named case per invocation with
-//! `cargo test --release -p acyclic-fs --test main fs_concurrency_bench::CASE -- --exact --nocapture`.
+//! `bazel run -c opt //rust/crates/filesystem:main_cases -- fs_concurrency_bench::CASE --exact --nocapture`.
 //! The driver also builds unchanged on the pre-combiner revision.
 use acyclic_fs::kernel::{
     FileMetadata, LogicalName, NameEncoding, NamespacePath, RebaseDecision, volume_authority_id,

@@ -380,7 +380,7 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
         };
         if let Err(cause) = result {
             return Err(format!(
-                "step=Linux mount case {case}; cause={cause:?}; recovery: cargo test --locked -p acyclic-fs --lib native_mount::adapter::tests::linux_mount_behaviour_cases -- --exact --nocapture"
+                "step=Linux mount case {case}; cause={cause:?}; recovery: bazel run //rust/crates/filesystem:acyclic_fs_test_cases -- native_mount::adapter::tests::linux_mount_behaviour_cases --exact --nocapture"
             ).into());
         }
     }
