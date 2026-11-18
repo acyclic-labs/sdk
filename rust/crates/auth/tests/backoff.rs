@@ -11,25 +11,25 @@ proptest! {
     ) {
         let mut backoff = Backoff::new(base, maximum, 0);
         let mut ceilings = Backoff::new(base, maximum, 0);
-        let initial = u64::from(base.min(maximum));
+        let initial = u128::from(base.min(maximum));
         for attempt in 0..=33 {
-            let ceiling = ((u128::from(initial) << attempt).min(u128::from(maximum))) as u64;
+            let ceiling = (initial << attempt).min(u128::from(maximum));
             let lower = ceiling.div_ceil(2);
             let delay = backoff.delay_with(|choices| {
-                assert_eq!(u64::from(choices), ceiling - lower + 1);
+                assert_eq!(u128::from(choices), ceiling - lower + 1);
                 sample
             });
-            let expected = lower + u64::from(sample) % (ceiling - lower + 1);
-            prop_assert_eq!(delay.as_millis(), u128::from(expected));
+            let expected = lower + u128::from(sample) % (ceiling - lower + 1);
+            prop_assert_eq!(delay.as_millis(), expected);
             prop_assert_eq!(
                 ceilings.delay_with(|choices| choices - 1).as_millis(),
-                u128::from(ceiling),
+                ceiling,
             );
         }
         backoff.reset();
         prop_assert_eq!(
             backoff.delay_with(|_| 0).as_millis(),
-            u128::from(initial.div_ceil(2)),
+            initial.div_ceil(2),
         );
     }
 
@@ -59,7 +59,7 @@ proptest! {
             let ceiling = u64::from(base.min(maximum))
                 .saturating_mul(2_u64.saturating_pow(attempt))
                 .min(u64::from(maximum));
-            prop_assert_eq!(scenario.delay_with(|choices| choices - 1).as_millis(), u128::from(ceiling));
+            prop_assert_eq!(scenario.delay_with(|choices| choices - 1).as_millis(), ceiling);
             if attempt > 32 {
                 prop_assert!(wait >= maximum.div_ceil(2));
             }
