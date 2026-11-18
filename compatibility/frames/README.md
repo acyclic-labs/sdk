@@ -17,17 +17,17 @@ encoders; they are not claimed as captured service traffic.
 readable as raw wire data; semantic admission refuses its old format marker.
 It is a refusal fixture, not a migration input or supported reader version.
 
-Fuzz seed captures are produced separately by `cargo run --example capture`
-from `rust/codec-fuzz`. Their `corpus/SOURCES.tsv` records the producing call,
-byte length and SHA-256. Run `cargo run --example replay` to validate those
-captured bytes without rewriting them. Never replace provider or external-tool
+Run `bazel run //rust/codec-fuzz:capture_example` from the repository root to
+produce fuzz seeds. The `corpus/SOURCES.tsv` records the producing call,
+byte length and SHA-256. Run `bazel run //rust/codec-fuzz:replay_example` to
+validate those captured bytes without rewriting them. Never replace provider or external-tool
 output with manually authored fixtures.
 
 The `corpus/` names in `golden.hex` are exact copies of those captured SDK
 outputs, using the same paths as `SOURCES.tsv`. Capture compares each current
 encoder output with this shared baseline before saving a seed. Replay compares
 the saved seed with both its provenance and this baseline. After reviewing an
-intentional format change, `cargo run --example capture -- --accept-goldens`
+intentional format change, `bazel run //rust/codec-fuzz:capture_example -- --accept-goldens`
 captures new baseline rows through the production encoders. Ordinary capture
 and replay never update the golden file.
 Use `--extend-goldens` to add new names while requiring all existing baselines
@@ -43,7 +43,7 @@ outputs. SDK encoder capture preserves these external baselines.
 To capture protocol descriptors, run this command from the repository root:
 
 ```sh
-cargo run --locked -p acyclic-proto-build --example capture_descriptors
+bazel run //compatibility:capture_descriptors_example
 ```
 
 The existing shared compiler writes every family to
@@ -54,5 +54,5 @@ descriptor identity. After updating the reviewed descriptors and their manifest
 digests, run the owning equality control:
 
 ```sh
-cargo test --locked -p acyclic-proto-build --lib every_compiled_descriptor_is_byte_identical_to_its_wire_baseline
+bazel test //compatibility:acyclic_proto_build_test
 ```
