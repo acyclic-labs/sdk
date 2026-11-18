@@ -35,7 +35,6 @@
   "scripts/build-native-family.mjs",
   "scripts/build-wasm.mjs",
   "scripts/check-feature-matrix.mjs",
-  "scripts/check-feature-matrix.test.mjs",
   "scripts/check-git-proto-build.mjs",
   "scripts/check-hermetic-clippy.mjs",
   "scripts/check-proto-source-root.mjs",
