@@ -476,7 +476,8 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         ObjectsMethod::PutBlob => {
             let request: wire::PutBlobRequest = decode(input)?;
             let digest = convert::digest(request.digest.as_ref())?;
-            convert::verified_put(&reply(output)?, digest, request.body.len() as u64).map(drop)
+            convert::verified_put(&reply(output)?, digest, request.body.len() as u64, None)
+                .map(drop)
         }
         ObjectsMethod::PutBlobs => {
             let request: wire::PutBlobsRequest = decode(input)?;
@@ -491,7 +492,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
             let request: wire::PutManifestRequest = decode(input)?;
             let manifest = convert::from_manifest(request.manifest.as_ref())?;
             let (digest, length) = (Digest::of(&manifest.encode()?), manifest.length()?);
-            convert::verified_put(&reply(output)?, digest, length).map(drop)
+            convert::verified_put(&reply(output)?, digest, length, None).map(drop)
         }
         ObjectsMethod::GetBlob => {
             let request: wire::GetBlobRequest = decode(input)?;

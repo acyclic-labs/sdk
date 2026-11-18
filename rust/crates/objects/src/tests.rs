@@ -61,9 +61,8 @@ async fn listing_rejects_an_envelope_in_the_wrong_shard() -> Result<(), Box<dyn 
     let shard = if digest.starts_with("00") { "ff" } else { "00" };
     let key = format!("{}/e/{shard}/{digest}", Digest::of(account));
     assert!(store.medium().create(&key, Vec::new().into()).await?);
-    let error = match store.account(account)?.list(None, 10).await {
-        Err(error) => error,
-        Ok(_) => return Err("malformed envelope key was silently skipped".into()),
+    let Err(error) = store.account(account)?.list(None, 10).await else {
+        return Err("malformed envelope key was silently skipped".into());
     };
     assert_eq!(error.code, ErrorCode::Corrupt);
     Ok(())

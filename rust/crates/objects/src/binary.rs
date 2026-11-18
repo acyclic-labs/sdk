@@ -80,9 +80,7 @@ impl<T: Transport> BinaryObjects<T> {
         length: u64,
     ) -> Result<Put, Error> {
         let (reply, revision) = self.call(route, input).await?;
-        Ok(convert::verified_put(&reply, digest, length)
-            .map_err(|_| unavailable())?
-            .committed_at(revision))
+        convert::verified_put(&reply, digest, length, revision).map_err(|_| unavailable())
     }
 }
 
@@ -98,7 +96,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     }
 
     async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        let (request, (digest, length)) = convert::put_blob(body, references);
+        let (request, (digest, length)) = convert::put_blob(body, &references);
         self.publish("blobs/put", request, digest, length).await
     }
 
