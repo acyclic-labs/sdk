@@ -23,6 +23,8 @@ fn archive_locks_override_foreign_cargo_authority() {
                 let archive = support.join("registry/demo-1.0.0.crate");
                 let original_archive = fs::read(&archive).unwrap();
                 let output = fixture.output.join("releases/1.0.0");
+                let packaged_manifest = support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml");
+                let cargo_home = fixture_cargo_home(&fixture);
                 let [_, cargo_home_frontier, working_directory_frontier] = [
                     (HistoricalAuthority::Lock(&foreign), None),
                     (
@@ -41,7 +43,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                         // Negative control: maintained Cargo really discovers this automatic config.
                         let mut control = Command::new(&*runtime::cargo());
                         runtime::configure(&mut control);
-                        control.env("CARGO_HOME", fixture_cargo_home(&fixture));
+                        control.env("CARGO_HOME", &cargo_home);
                         control
                             .args([
                                 "metadata",
@@ -51,7 +53,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                                 "1",
                                 "--manifest-path",
                             ])
-                            .arg(support.join("cargo-packaged-source/demo-1.0.0/Cargo.toml"))
+                            .arg(&packaged_manifest)
                             .env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
                         authority.configure(&mut control);
                         let rejected = control.output().unwrap();
