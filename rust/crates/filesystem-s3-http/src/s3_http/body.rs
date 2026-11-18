@@ -401,7 +401,7 @@ impl MultipartReplay {
                 if usize::try_from(count)
                     .ok()
                     .and_then(|count| count.checked_mul(36))
-                    != Some(cursor.bytes.len() - cursor.offset)
+                    != Some(cursor.remaining_len())
                 {
                     return Err(MultipartDecodeError::Malformed);
                 }
@@ -540,8 +540,12 @@ impl<'a> RecordCursor<'a> {
         Ok(())
     }
 
+    fn remaining_len(&self) -> usize {
+        self.bytes.len() - self.offset
+    }
+
     fn finish(&self) -> MultipartDecodeResult {
-        if self.offset != self.bytes.len() {
+        if self.remaining_len() != 0 {
             return Err(MultipartDecodeError::Malformed);
         }
         Ok(())
