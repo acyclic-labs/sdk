@@ -5,17 +5,6 @@ use prost::Message;
 use wasm_bindgen::{JsCast, prelude::*};
 use zeroize::Zeroizing;
 
-/// Compute retry spacing for a caller that owns the attempt and entropy.
-#[wasm_bindgen(js_name = retryDelayMs)]
-pub fn retry_delay_ms(base_ms: f64, maximum_ms: f64, doublings: u32, unit_sample: f64) -> f64 {
-    acyclic_auth::operation::Backoff::fractional_delay_ms_at(
-        base_ms,
-        maximum_ms,
-        doublings,
-        unit_sample,
-    )
-}
-
 fn error(value: VerifyError) -> JsValue {
     let error = js_sys::Error::new(&value.to_string());
     error.set_name("CapabilityError");
