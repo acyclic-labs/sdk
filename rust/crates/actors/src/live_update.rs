@@ -21,12 +21,12 @@ mod tests;
 pub use acyclic_actors_guest_wire::compatibility::{
     Adapter, CompatibilityManifest, HandoffRequirements, PeerRange, RpcSchema, Schema,
 };
-use acyclic_actors_guest_wire::live_selection::decimal;
 pub use acyclic_actors_guest_wire::live_selection::{
     Artifact, CallPair, ChangeKind, DeploymentId, Error, Fraction, GuardDecision, POLICY_FILE, Pin,
     RolloutPolicy, RolloutStatus, SELECTION_FILE, SELECTION_REQUEST_FILE, STATUS_FILE, Selection,
     SelectionChange, Split, VERSIONS_DIRECTORY, Version, decode, encode,
 };
+use acyclic_actors_guest_wire::{compatibility::PublicationUpload, live_selection::decimal};
 
 fn validate_compatibility(manifest: &CompatibilityManifest) -> Result<(), Error> {
     let mut schemas = manifest.messages.iter().collect::<Vec<_>>();
@@ -74,41 +74,19 @@ fn validate_compatibility(manifest: &CompatibilityManifest) -> Result<(), Error>
 ///
 /// A value exists only after validation: [`Publication::new`] and decoding both
 /// validate once and keep the identity, so every later read is O(1).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
 pub struct Publication {
-    /// Authenticated deployment scope.
-    deployment: DeploymentId,
-    /// Zero only before the first immutable upload.
-    #[serde(with = "decimal")]
-    #[ts(type = "string")]
-    expected_version: u64,
-    /// Namespace/service identity to immutable artifact/configuration selection.
-    artifacts: BTreeMap<String, Artifact>,
-    /// Rust-owned contract submitted for Cloud's upload gate.
-    compatibility: CompatibilityManifest,
+    upload: PublicationUpload,
     #[serde(skip)]
-    #[ts(skip)]
     schema: [u8; 32],
     #[serde(skip)]
-    #[ts(skip)]
     version: Version,
-}
-
-/// The wire fields of a [`Publication`], before validation.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Upload {
-    deployment: DeploymentId,
-    #[serde(with = "decimal")]
-    expected_version: u64,
-    artifacts: BTreeMap<String, Artifact>,
-    compatibility: CompatibilityManifest,
 }
 
 impl<'de> Deserialize<'de> for Publication {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let upload = Upload::deserialize(deserializer)?;
+        let upload = PublicationUpload::deserialize(deserializer)?;
         Self::new(
             upload.deployment,
             upload.expected_version,
@@ -145,10 +123,12 @@ impl Publication {
         let number = NonZeroU64::new(expected_version.checked_add(1).ok_or(Error::Exhausted)?)
             .ok_or(Error::Exhausted)?;
         let mut publication = Self {
-            deployment,
-            expected_version,
-            artifacts,
-            compatibility,
+            upload: PublicationUpload {
+                deployment,
+                expected_version,
+                artifacts,
+                compatibility,
+            },
             schema,
             version: Version {
                 number,
@@ -171,22 +151,22 @@ impl Publication {
 
     /// Authenticated deployment scope.
     pub fn deployment(&self) -> &DeploymentId {
-        &self.deployment
+        &self.upload.deployment
     }
 
     /// Zero only before the first immutable upload.
     pub fn expected_version(&self) -> u64 {
-        self.expected_version
+        self.upload.expected_version
     }
 
     /// Namespace/service identity to immutable artifact/configuration selection.
     pub fn artifacts(&self) -> &BTreeMap<String, Artifact> {
-        &self.artifacts
+        &self.upload.artifacts
     }
 
     /// Rust-owned contract submitted for Cloud's upload gate.
     pub fn compatibility(&self) -> &CompatibilityManifest {
-        &self.compatibility
+        &self.upload.compatibility
     }
 }
 
@@ -360,7 +340,7 @@ pub fn typescript() -> String {
         HandoffRequirements,
         Adapter,
         CompatibilityManifest,
-        Publication,
+        PublicationUpload,
         CallEnvelope,
         JournalPosition,
         DurableAwait,

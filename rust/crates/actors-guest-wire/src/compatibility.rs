@@ -2,7 +2,7 @@
 
 use crate::{
     CodecIdentity,
-    live_selection::{DeploymentId, Error, decimal, encode, optional_decimal},
+    live_selection::{Artifact, DeploymentId, Error, decimal, encode, optional_decimal},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -94,4 +94,21 @@ impl CompatibilityManifest {
     pub fn schema_digest(&self) -> Result<[u8; 32], Error> {
         Ok(Sha256::digest(encode(&(&self.rpcs, &self.messages))?).into())
     }
+}
+
+/// Immutable upload fields before runtime descriptor admission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename = "Publication")]
+pub struct PublicationUpload {
+    /// Authenticated deployment scope.
+    pub deployment: DeploymentId,
+    /// Zero only before the first immutable upload.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub expected_version: u64,
+    /// Namespace/service identity to immutable artifact/configuration selection.
+    pub artifacts: BTreeMap<String, Artifact>,
+    /// Rust-owned contract submitted for Cloud's upload gate.
+    pub compatibility: CompatibilityManifest,
 }
