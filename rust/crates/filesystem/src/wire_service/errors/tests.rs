@@ -1,6 +1,6 @@
 use super::*;
-use crate::WorkError;
 use crate::kernel::*;
+use crate::{CancellationError, WorkError};
 
 #[path = "../../../tests/support/wire_errors.rs"]
 mod fixtures;
