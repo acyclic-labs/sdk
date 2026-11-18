@@ -175,6 +175,9 @@ pub enum MultipartStorageError {
     /// Multipart stream read failed.
     #[error("multipart stream read failed")]
     Stream(#[source] acyclic_stream::StreamError),
+    /// Multipart stream append or commit failed.
+    #[error("multipart stream write failed")]
+    StreamWrite(#[source] acyclic_stream::StreamError),
     /// Multipart stream returned inconsistent records or accounting.
     #[error("multipart stream returned inconsistent records or accounting")]
     InconsistentStream,

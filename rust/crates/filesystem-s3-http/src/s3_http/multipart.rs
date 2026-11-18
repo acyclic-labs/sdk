@@ -68,22 +68,10 @@ where
         record: Bytes,
         operation: acyclic_stream::IdempotencyKey,
     ) -> S3Result<bool> {
-        let provider = workspace.multipart_stream_provider();
-        match provider
-            .append(acyclic_stream::AppendRequest {
-                path: workspace
-                    .multipart_path(upload_id)
-                    .map_err(multipart_storage_error)?,
-                records: vec![record.into()],
-                if_tail: Some(expected_tail),
-                idempotency_key: operation,
-            })
+        workspace
+            .append_multipart_record(upload_id, expected_tail, record, operation)
             .await
-            .map_err(|error| stream_write_error(&error))?
-        {
-            acyclic_stream::AppendOutcome::Committed(_) => Ok(true),
-            acyclic_stream::AppendOutcome::TailConflict { .. } => Ok(false),
-        }
+            .map_err(multipart_storage_error)
     }
 
     /// Conditionally records one completion intent, retaining exact caller resends.

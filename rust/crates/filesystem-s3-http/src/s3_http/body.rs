@@ -182,6 +182,7 @@ fn multipart_storage_error(error: MultipartStorageError) -> s3s::S3Error {
         MultipartStorageError::Malformed => s3s::s3_error!(InvalidRequest),
         MultipartStorageError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),
         MultipartStorageError::Stream(error) => stream_read_error(&error),
+        MultipartStorageError::StreamWrite(error) => stream_write_error(&error),
         MultipartStorageError::InconsistentStream => s3s::s3_error!(InternalError),
     }
 }

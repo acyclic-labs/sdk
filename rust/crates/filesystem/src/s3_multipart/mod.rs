@@ -53,6 +53,30 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
         .map_err(|_| MultipartStorageError::Malformed)
     }
 
+    /// Appends an upload record at the observed tail in this workspace.
+    pub async fn append_multipart_record(
+        &self,
+        upload_id: &str,
+        expected_tail: u64,
+        record: Bytes,
+        operation: acyclic_stream::IdempotencyKey,
+    ) -> MultipartStorageResult<bool> {
+        match self
+            .multipart_stream_provider()
+            .append(acyclic_stream::AppendRequest {
+                path: self.multipart_path(upload_id)?,
+                records: vec![record.into()],
+                if_tail: Some(expected_tail),
+                idempotency_key: operation,
+            })
+            .await
+            .map_err(MultipartStorageError::StreamWrite)?
+        {
+            acyclic_stream::AppendOutcome::Committed(_) => Ok(true),
+            acyclic_stream::AppendOutcome::TailConflict { .. } => Ok(false),
+        }
+    }
+
     /// Replays the requested upload in this workspace.
     pub async fn multipart_snapshot(
         &self,
