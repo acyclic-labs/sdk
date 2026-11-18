@@ -4,7 +4,7 @@ use crate::key_event::{
 };
 use crate::term::Capabilities;
 use crate::{Action, CompletionMenu, Editor, InputKeymap, Motion, Viewport};
-use acyclic_harness_tui_core::{DecodedKey, decode_key, event_chord};
+use acyclic_harness_tui_core::{ChordContinuation, DecodedKey, PendingChord, decode_key};
 use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -107,7 +107,7 @@ pub struct PromptInput {
     pub keymap: InputKeymap,
     /// Completion results folded from the host's current file-query snapshots.
     pub completion: CompletionMenu,
-    pending_chord: Option<(String, u64, Option<DecodedKey>)>,
+    pending_chord: Option<PendingChord>,
     last_interrupt: Option<u64>,
     search: Option<Search>,
     editing: Option<MessageEdit>,
@@ -148,7 +148,7 @@ impl PromptInput {
         let pending = self.pending_chord.take();
         self.keymap = keymap;
         self.last_interrupt = None;
-        if let Some((_, at, Some(DecodedKey::Text(text)))) = pending {
+        if let Some((at, DecodedKey::Text(text))) = pending.and_then(PendingChord::into_fallback) {
             // There is no pending chord left to flush into a host effect.
             let _ = self.committed_text(text.encode_utf8(&mut [0; 4]), at);
         }
@@ -304,8 +304,8 @@ impl PromptInput {
 
     /// Flush a timed-out Ctrl+X prefix, preserving ordinary cut semantics.
     pub(crate) fn chord_timeout(&mut self, now_ms: u64) -> Vec<InputEffect> {
-        if self.pending_chord.as_ref().is_some_and(|(_, at, _)| {
-            now_ms.saturating_sub(*at) >= self.editor.settings().chord_timeout_ms as u64
+        if self.pending_chord.as_ref().is_some_and(|pending| {
+            pending.timed_out(now_ms, self.editor.settings().chord_timeout_ms as u64)
         }) {
             self.flush_chord()
         } else {
@@ -316,10 +316,9 @@ impl PromptInput {
     pub(crate) fn flush_chord(&mut self) -> Vec<InputEffect> {
         self.pending_chord
             .take()
-            .map_or_else(Vec::new, |(_, at, decoded)| {
-                decoded.map_or_else(Vec::new, |decoded| {
-                    self.apply_decoded(decoded, at, self.input_width)
-                })
+            .and_then(PendingChord::into_fallback)
+            .map_or_else(Vec::new, |(at, decoded)| {
+                self.apply_decoded(decoded, at, self.input_width)
             })
     }
 
@@ -343,47 +342,21 @@ impl PromptInput {
             return vec![];
         }
         let mut effects = self.chord_timeout(now_ms);
-        if key.kind == KeyEventKind::Repeat
-            && self.pending_chord.as_ref().is_some_and(|(prefix, _, _)| {
-                event_chord(key).is_some_and(|chord| chord.as_str() == prefix)
-            })
-        {
-            return effects;
-        }
-        if let Some((prefix, _, _)) = self.pending_chord.as_ref() {
-            let chord = event_chord(key).map(|chord| format!("{prefix} {chord}"));
-            if key.kind == KeyEventKind::Press
-                && let Some(binding) = chord
-                    .as_deref()
-                    .and_then(|chord| self.keymap.resolve(chord))
-            {
-                self.pending_chord = None;
-                effects.extend(self.apply_decoded(
-                    DecodedKey::Action {
-                        action: binding.action,
-                        select: false,
-                    },
-                    now_ms,
-                    width,
-                ));
-                return effects;
+        if let Some(pending) = self.pending_chord.as_ref() {
+            match pending.continuation(key, &self.keymap) {
+                ChordContinuation::Repeat => return effects,
+                ChordContinuation::Matched(action) => {
+                    self.pending_chord = None;
+                    effects.extend(self.apply_decoded(action, now_ms, width));
+                    return effects;
+                }
+                ChordContinuation::Unmatched => effects.extend(self.flush_chord()),
             }
-            effects.extend(self.flush_chord());
         }
-        if key.kind == KeyEventKind::Press
-            && let Some(chord) = event_chord(key)
-            && (self.keymap.has_prefix(&chord)
-                || matches!(
-                    decoded,
-                    Some(DecodedKey::Action {
-                        action: Action::CutPrefix,
-                        ..
-                    })
-                ))
-        {
+        if let Some(pending) = PendingChord::start(key, &self.keymap, now_ms, decoded) {
             self.last_interrupt = None;
             self.last_activity = now_ms;
-            self.pending_chord = Some((chord.as_str().to_owned(), now_ms, decoded));
+            self.pending_chord = Some(pending);
             return effects;
         }
         if let Some(decoded) = decoded {

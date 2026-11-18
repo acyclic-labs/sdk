@@ -1,5 +1,6 @@
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers as M};
 use acyclic_harness_tui::{Action, DecodedKey, InputKeymap, Motion, decode_key, key_chord};
+use acyclic_harness_tui_core::{ChordContinuation, PendingChord};
 
 #[test]
 fn repeat_policy_selection_modifiers_and_platform_keys() {
@@ -129,6 +130,21 @@ fn assert_dispatch_allocates_nothing(broken: bool) -> Result<(), Box<dyn std::er
     let overrides = InputKeymap::parse(r#"{"bindings":{"Super+k":"cursor.line-start","a":null,"Ctrl+x Ctrl+e":"cursor.line-start"}}"#)
         .map_err(|errors| format!("{errors:?}"))?;
     for map in [InputKeymap::default(), overrides] {
+        let first = KeyEvent::new(KeyCode::Char('x'), M::CONTROL);
+        let second = KeyEvent::new(KeyCode::Char('e'), M::CONTROL);
+        let allocation = acyclic_test_support::measure(|| {
+            if broken {
+                // Restore the previous heap spelling for the pending key.
+                std::hint::black_box(key_chord(first));
+            }
+            let pending = PendingChord::start(first, &map, 0, decode_key(first, &map));
+            assert!(matches!(
+                pending.map(|pending| pending.continuation(second, &map)),
+                Some(ChordContinuation::Matched(DecodedKey::Action { .. }))
+            ));
+        });
+        assert_eq!(allocation.count_total, 0, "keypress dispatch allocated");
+
         for code in [
             KeyCode::Char('a'),
             KeyCode::Char('Z'),
