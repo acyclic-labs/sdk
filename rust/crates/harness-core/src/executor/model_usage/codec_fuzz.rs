@@ -88,14 +88,19 @@ pub fn check(bytes: &[u8]) {
         );
     }
     if let Ok(record) = serde_json::from_slice::<ModelUsageRecord>(bytes) {
-        let encoded = serde_json::to_vec(&record).expect("accepted usage row encodes");
-        let restored: ModelUsageRecord =
-            serde_json::from_slice(&encoded).expect("original usage writer output decodes");
-        assert_eq!(
-            serde_json::to_value(record).unwrap(),
-            serde_json::to_value(restored).unwrap()
-        );
+        let result = check_round_trip(&record);
+        assert!(result.is_ok(), "usage row round trip failed: {result:?}");
     }
+}
+
+fn check_round_trip(record: &ModelUsageRecord) -> serde_json::Result<()> {
+    let encoded = serde_json::to_vec(record)?;
+    let restored: ModelUsageRecord = serde_json::from_slice(&encoded)?;
+    assert_eq!(
+        serde_json::to_value(record)?,
+        serde_json::to_value(restored)?
+    );
+    Ok(())
 }
 
 pub(super) fn check_metadata_bytes(bytes: &[u8]) -> serde_json::Result<()> {

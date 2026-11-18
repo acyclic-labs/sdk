@@ -214,6 +214,8 @@ impl EngineAllocator {
         if pointer.is_null() {
             return pointer;
         }
+        // SAFETY: the allocated layout starts with a suitably aligned Header,
+        // followed by size payload bytes.
         unsafe {
             pointer.cast::<Header>().write(Header { size, custody });
             pointer.add(size_of::<Header>())
@@ -225,6 +227,8 @@ impl EngineAllocator {
     unsafe_code,
     reason = "QuickJS allocator FFI: every pointer carries this allocator's aligned header and live layout; realloc preserves it and dealloc retires its custody"
 )]
+// SAFETY: QuickJS receives only payload pointers into live allocations with
+// initialized headers. Deallocation and resizing use each header's layout.
 unsafe impl Allocator for EngineAllocator {
     fn alloc(&mut self, size: usize) -> *mut u8 {
         self.allocate(size, false)
@@ -237,9 +241,12 @@ unsafe impl Allocator for EngineAllocator {
     }
 
     unsafe fn dealloc(&mut self, pointer: *mut u8) {
+        // SAFETY: the caller supplies a live payload pointer from this allocator.
         let base = unsafe { pointer.sub(size_of::<Header>()) };
+        // SAFETY: base points to the aligned, initialized header we own.
         let header = unsafe { base.cast::<Header>().read() };
         if let Some(layout) = Self::layout(header.size) {
+            // SAFETY: the removed header records the original allocation size.
             unsafe {
                 dealloc(base, layout);
             }
@@ -248,7 +255,9 @@ unsafe impl Allocator for EngineAllocator {
     }
 
     unsafe fn realloc(&mut self, pointer: *mut u8, size: usize) -> *mut u8 {
+        // SAFETY: the caller supplies a live payload pointer from this allocator.
         let base = unsafe { pointer.sub(size_of::<Header>()) };
+        // SAFETY: realloc has exclusive access to this initialized header.
         let header = unsafe { &mut *base.cast::<Header>() };
         let Some(old_layout) = Self::layout(header.size) else {
             return ptr::null_mut();
@@ -264,7 +273,8 @@ unsafe impl Allocator for EngineAllocator {
             return ptr::null_mut();
         }
         let old_size = header.size;
-        let _ = old_size;
+        // SAFETY: base and old_layout describe the original allocation. The
+        // new layout preserves alignment and always has space for the header.
         let moved = unsafe { realloc(base, old_layout, new_layout.size()) };
         if moved.is_null() {
             if let Some(custody) = &mut header.custody
@@ -276,6 +286,7 @@ unsafe impl Allocator for EngineAllocator {
             }
             return moved;
         }
+        // SAFETY: successful realloc preserves the header bytes and alignment.
         let header = unsafe { &mut *moved.cast::<Header>() };
         if let Some(custody) = &mut header.custody
             && size < old_size
@@ -285,10 +296,12 @@ unsafe impl Allocator for EngineAllocator {
             }
         }
         header.size = size;
+        // SAFETY: the new layout includes the header before the payload.
         unsafe { moved.add(size_of::<Header>()) }
     }
 
     unsafe fn usable_size(pointer: *mut u8) -> usize {
+        // SAFETY: the live payload is immediately after its initialized header.
         unsafe { (*pointer.sub(size_of::<Header>()).cast::<Header>()).size }
     }
 }

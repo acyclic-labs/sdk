@@ -49,9 +49,13 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     if let Ok(operation) = serde_json::from_slice::<VolumeOperation>(bytes) {
         let encoded =
             serde_json::to_vec(&operation).map_err(|error| Error::Storage(error.to_string()))?;
+        let decode = |bytes| {
+            serde_json::from_slice::<String>(bytes)
+                .map_err(|error| Error::Storage(error.to_string()))
+        };
         assert_eq!(
-            serde_json::from_slice::<String>(&encoded).unwrap(),
-            serde_json::from_slice::<String>(bytes).unwrap(),
+            decode(&encoded)?,
+            decode(bytes)?,
             "volume operation changed at the admission boundary"
         );
     }

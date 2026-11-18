@@ -39,6 +39,50 @@ mod checkpoint_maps;
 pub mod codec_fuzz {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn check_decode_custody(
+        check: impl FnOnce(&PreparationIo) -> Result<()>,
+    ) -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes()?;
+        let result = check(&PreparationIo::from_native_work(&work)?);
+        assert_eq!(
+            work.live_allocation_bytes()?,
+            baseline,
+            "codec custody was retained"
+        );
+        result
+    }
+
+    pub(super) fn check_versioned_frame<T>(
+        bytes: &[u8],
+        versions: impl IntoIterator<Item = u8>,
+        decode: impl Fn(&[u8]) -> super::Result<T>,
+    ) -> super::Result<()> {
+        use crate::wire::ErrorCode;
+
+        let [first, second, third, version, ..] = bytes else {
+            return Err(crate::Error::Invalid(
+                "admitted journal frame has no header".into(),
+            ));
+        };
+        for unsupported in versions {
+            let header = [*first, *second, *third, unsupported];
+            assert!(decode(&header).is_err_and(|error| error.code() == ErrorCode::Unsupported));
+        }
+        let header = [*first, *second, *third, *version];
+        assert!(decode(&header).is_err_and(|error| error.code() != ErrorCode::Unsupported));
+        let mut trailing = bytes.to_vec();
+        trailing.push(0);
+        assert!(decode(&trailing).is_err());
+        Ok(())
+    }
+
     /// Check metadata syntax without granting checkpoint signature authority.
     pub fn check(bytes: &[u8]) {
         observations::codec_fuzz::check(bytes);

@@ -152,16 +152,9 @@ pub(super) async fn settle(
     if view.status != GoalStatus::Active {
         return Ok(ControlFlow::Break(Settlement::default()));
     }
-    if !policy
-        .max_continuations
-        .is_none_or(|maximum| count.parse::<u32>().is_ok_and(|count| count < maximum))
-    {
+    if let Some(blocked) = policy.blocked_if_exhausted(&view, count.parse::<u32>().ok()) {
         return match goal
-            .rewrite(
-                &view,
-                &policy.blocked(&view).expect("selected exhausted allowance"),
-                &format!("goal-block:{turn}"),
-            )
+            .rewrite(&view, &blocked, &format!("goal-block:{turn}"))
             .await
         {
             Ok(()) => Ok(ControlFlow::Break(Settlement::default())),

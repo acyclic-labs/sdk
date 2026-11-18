@@ -133,13 +133,9 @@ impl StockExecution<'_> {
             let mut worker = self.preparing(self.io);
             service.review = context_review::Review::Shared(Arc::clone(&review));
             worker.review = context_review::Review::Shared(review);
-            service
-                .with_context_review(
-                    journal,
-                    input,
-                    worker.execute_turn(input, journal, &mut phase),
-                )
-                .await
+            // Keep the worker in one slot while the review service borrows it.
+            let worker = std::pin::pin!(worker.execute_turn(input, journal, &mut phase));
+            service.with_context_review(journal, input, worker).await
         } else {
             self.execute_turn(input, journal, &mut phase).await
         };

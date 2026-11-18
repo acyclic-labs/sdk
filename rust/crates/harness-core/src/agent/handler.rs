@@ -73,25 +73,6 @@ struct DiagnosticAttempt<'a> {
     prepared: Option<super::machine::PreparedStep>,
 }
 
-impl std::ops::Deref for DiagnosticAttempt<'_> {
-    type Target = super::machine::PreparedStep;
-    fn deref(&self) -> &Self::Target {
-        self.prepared.as_ref().expect("original diagnostic attempt")
-    }
-}
-impl std::ops::DerefMut for DiagnosticAttempt<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.prepared.as_mut().expect("original diagnostic attempt")
-    }
-}
-impl DiagnosticAttempt<'_> {
-    fn into_checkpoint(mut self) -> Checkpoint {
-        self.prepared
-            .take()
-            .expect("original diagnostic attempt")
-            .into_checkpoint()
-    }
-}
 impl Drop for DiagnosticAttempt<'_> {
     fn drop(&mut self) {
         if let (Some(prepared), Some((path, trigger, checkpoint))) =
@@ -646,7 +627,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 let watch: super::ReplyWatch = serde_json::from_str(
                     subscription
                         .strip_prefix(REPLY_SUBSCRIPTION)
-                        .expect("reply prefix"),
+                        .ok_or(Error::Record("reply subscription is malformed"))?,
                 )
                 .map_err(|_| Error::Record("reply subscription is malformed"))?;
                 let bound = delivery
@@ -776,11 +757,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .outs
             .iter()
             .any(|out| matches!(out, Out::Diagnostic { .. }));
-        let mut prepared = DiagnosticAttempt {
+        let mut attempt = DiagnosticAttempt {
             owner: &self.diagnostics,
             identity: diagnostic.then(|| (path.clone(), trigger.clone(), checkpoint.cloned())),
             prepared: Some(prepared),
         };
+        let prepared = attempt
+            .prepared
+            .as_mut()
+            .ok_or(Error::Record("original diagnostic attempt is missing"))?;
         for out in &prepared.step().outs {
             if let Out::Send {
                 to,
@@ -932,7 +917,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             pause,
             response: None,
             participant,
-            checkpoint: prepared.into_checkpoint(),
+            checkpoint: attempt
+                .prepared
+                .take()
+                .ok_or(Error::Record("original diagnostic attempt is missing"))?
+                .into_checkpoint(),
             alarm: match alarm {
                 Alarm::Clear => AlarmChange::Clear,
                 Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
