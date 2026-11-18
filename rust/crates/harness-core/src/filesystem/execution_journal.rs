@@ -49,10 +49,10 @@ pub mod codec_fuzz {
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let result = check(&PreparationIo::from_native_work(&work)?);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             baseline,
             "codec custody was retained"
         );

@@ -12,11 +12,17 @@ pub(super) mod codec_fuzz {
 
     pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
         model_cell::codec_fuzz::check(bytes);
-        if let Ok(value) = bool::decode(bytes, None) {
-            assert_eq!(value.encode(None).unwrap().as_ref(), bytes);
-        }
-        if let Ok(value) = <(u64, [u8; 32])>::decode(bytes, None) {
-            assert_eq!(value.encode(None).unwrap().as_ref(), bytes);
+        check_entry::<bool>(bytes);
+        check_entry::<(u64, [u8; 32])>(bytes);
+    }
+
+    fn check_entry<T: Entry>(bytes: &[u8]) {
+        if let Ok(value) = T::decode(bytes, None) {
+            let encoded = value.encode(None);
+            assert!(
+                matches!(&encoded, Ok(encoded) if encoded.as_ref() == bytes),
+                "journal summary entry changed on round trip: {encoded:?}"
+            );
         }
     }
 
