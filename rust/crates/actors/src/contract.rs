@@ -261,21 +261,36 @@ pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractErr
     let namespace = request.namespace.as_deref();
     if !valid_actor_scope(namespace, &request.actor_id)
         || crate::addressing::validate_actor_id(request.child_actor_id.as_bytes()).is_err()
-        || request.actor_id == request.child_actor_id
-        || !valid_idempotency_key(&request.idempotency_key)
         || !request.subscriptions.iter().all(subscription)
     {
         return Err(ContractError::InvalidArgument);
     }
-    let mut seen = HashSet::new();
-    if !request
-        .subscriptions
-        .iter()
-        .all(|value| seen.insert(value.subscription_id.as_str()))
-    {
-        return Err(ContractError::DuplicateName);
+    validate_fork_identity(
+        &request.actor_id,
+        &request.child_actor_id,
+        &request.idempotency_key,
+        request
+            .subscriptions
+            .iter()
+            .map(|value| value.subscription_id.as_str()),
+    )
+}
+
+pub(super) fn validate_fork_identity<'a>(
+    parent: &str,
+    child: &str,
+    key: &str,
+    mut subscriptions: impl Iterator<Item = &'a str>,
+) -> Result<(), ContractError> {
+    if parent == child {
+        return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_idempotency_key(key)?;
+    let mut seen = HashSet::new();
+    subscriptions
+        .all(|id| seen.insert(id))
+        .then_some(())
+        .ok_or(ContractError::DuplicateName)
 }
 
 mod generated {

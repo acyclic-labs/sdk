@@ -551,19 +551,28 @@ impl ForkActorRequest {
         subscriptions: Vec<SubscriptionSpec>,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        Self::try_from(wire::ForkActorRequest {
+        let request = Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
-            child_actor_id: child_actor_id.as_str().to_owned(),
-            subscriptions: subscriptions.into_iter().map(Into::into).collect(),
+            actor_id,
+            child_actor_id,
+            subscriptions,
             idempotency_key,
-        })
+        };
+        request.validate_from_proto()?;
+        Ok(request)
     }
 
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::ForkActorRequest = self.clone().into();
-        crate::validate_fork(&wire).map_err(DomainError::Contract)
+        crate::contract::validate_fork_identity(
+            self.actor_id.as_str(),
+            self.child_actor_id.as_str(),
+            &self.idempotency_key,
+            self.subscriptions
+                .iter()
+                .map(SubscriptionSpec::subscription_id),
+        )
+        .map_err(Into::into)
     }
 
     /// Returns the parent Actor identity.

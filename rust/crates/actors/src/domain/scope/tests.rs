@@ -80,6 +80,13 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
         let mut invalid_child = raw.clone();
         invalid_child.child_actor_id = "invalid/child".into();
         assert!(crate::contract::validate_fork(&invalid_child).is_err());
+        let mut same_actor = raw.clone();
+        same_actor.child_actor_id.clone_from(&raw.actor_id);
+        assert_eq!(
+            crate::contract::validate_fork(&same_actor),
+            Err(crate::ContractError::InvalidArgument)
+        );
+        assert!(ForkActorRequest::try_from(same_actor).is_err());
         let fork = ForkActorRequest::try_from(raw)?;
         let parent = fork.reference(b"wrong-account")?;
         let child = fork.child_reference(b"wrong-account")?;
