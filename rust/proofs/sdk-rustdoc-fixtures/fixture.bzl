@@ -57,7 +57,7 @@ def _rustdoc_fixture_impl(ctx):
         "toolchain": toolchain,
         "manifest_path": ctx.attr.manifest_path,
         "owner_path": ctx.attr.owner_path,
-        "selected_lock": ctx.attr.selected_lock,
+        "selected_lock": ctx.attr.selected_lock or None,
         "receipt_name": receipt_name,
         "target_args": target_args,
         "entrypoint": "src/main.rs" if binary_name else "src/lib.rs",
