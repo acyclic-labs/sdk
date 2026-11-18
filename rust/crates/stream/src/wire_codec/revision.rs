@@ -1,5 +1,6 @@
 //! The one wire spelling of the shared applied-revision token.
-use crate::{Revision, RevisionCut, RevisionScope, StreamError, wire};
+use crate::{Revision, RevisionCut, RevisionScope, StreamError};
+use acyclic_stream_wire::wire;
 
 /// Encodes the choices made by an original stream open.
 #[must_use]

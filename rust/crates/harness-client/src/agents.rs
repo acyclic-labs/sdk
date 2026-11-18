@@ -5,7 +5,8 @@
 
 use crate::{DemandPolicy, StreamView, WireSession, WireSessionError};
 use acyclic_harness_core::agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord};
-use acyclic_stream::{StreamPath, session::Client, wire, wire_codec};
+use acyclic_stream::{StreamPath, session::Client, wire_codec};
+use acyclic_stream_wire::wire;
 use std::{
     collections::{BTreeMap, BTreeSet},
     task::{Context, Poll},

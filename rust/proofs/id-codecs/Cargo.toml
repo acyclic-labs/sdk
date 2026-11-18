@@ -11,6 +11,7 @@ acyclic-fs = { path = "../../crates/filesystem", default-features = false, featu
 acyclic-log-frame = { path = "../../crates/log-frame" }
 acyclic-objects = { path = "../../crates/objects", default-features = false }
 acyclic-stream = { path = "../../crates/stream", default-features = false }
+acyclic-stream-wire = { path = "../../crates/stream-wire" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

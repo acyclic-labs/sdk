@@ -607,7 +607,7 @@ fn corrupt_retained(
         let flags = input.u8().ok_or_else(invalid)?;
         let mut observation = if flags & RETAINS_REPLAY != 0 {
             Some(crate::persistence::observation_from_wire(
-                crate::persistence::decode::<crate::wire::IdempotencyObservation>(
+                crate::persistence::decode::<acyclic_stream_wire::wire::IdempotencyObservation>(
                     input.bytes().ok_or_else(invalid)?,
                     retained_fact_bound().ok_or_else(invalid)?,
                 )?,
@@ -617,7 +617,7 @@ fn corrupt_retained(
         };
         let mut envelope = if flags & RETAINS_COMMIT != 0 {
             Some(crate::persistence::envelope_from_wire(
-                crate::persistence::decode::<crate::wire::CommittedEnvelope>(
+                crate::persistence::decode::<acyclic_stream_wire::wire::CommittedEnvelope>(
                     input.bytes().ok_or_else(invalid)?,
                     retained_fact_bound().ok_or_else(invalid)?,
                 )?,

@@ -28,6 +28,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
  "async-trait",
@@ -239,6 +240,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "blake3",
  "bytes",
@@ -287,6 +289,7 @@ dependencies = [
  "acyclic-observability",
  "acyclic-plugin",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "async-trait",
  "axum",
@@ -357,6 +360,7 @@ dependencies = [
  "acyclic-observability",
  "acyclic-process-identity",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "async-trait",
  "axum",
@@ -451,6 +455,7 @@ dependencies = [
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "futures",
  "libfuzzer-sys",
  "loom",
@@ -613,6 +618,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "arrayvec",
  "async-stream",
@@ -687,6 +693,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-markdown",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "base64 0.22.1",
  "blake3",
@@ -776,6 +783,7 @@ dependencies = [
  "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "arrayvec",
  "async-stream",
@@ -893,6 +901,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "async-stream",
  "base64 0.23.1",
  "blake3",
@@ -954,6 +963,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "arrayvec",
  "async-stream",
@@ -1287,6 +1297,7 @@ dependencies = [
  "acyclic-log-frame",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-stream-wire",
 ]
 
 [[package]]
@@ -1594,6 +1605,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "async-trait",
  "axum",
@@ -1789,6 +1801,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
  "async-trait",
@@ -1846,6 +1859,7 @@ name = "acyclic-stream-contract-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-stream",
+ "acyclic-stream-wire",
  "libfuzzer-sys",
  "prost",
 ]
@@ -1855,6 +1869,7 @@ name = "acyclic-stream-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-stream",
+ "acyclic-stream-wire",
  "bytes",
  "futures",
  "libfuzzer-sys",
@@ -1866,6 +1881,7 @@ name = "acyclic-stream-models"
 version = "0.0.0"
 dependencies = [
  "acyclic-stream",
+ "acyclic-stream-wire",
  "futures",
  "loom",
  "proptest",
@@ -1877,6 +1893,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "async-trait",
  "futures",
  "napi",
@@ -1914,6 +1931,7 @@ name = "acyclic-stream-typescript-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
  "bytes",
@@ -1955,6 +1973,17 @@ name = "acyclic-test-runner"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+]
+
+[[package]]
+name = "acyclic-stream-wire"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth-action",
+ "acyclic-proto-build",
+ "prost",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -8914,6 +8943,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-stream",
+ "acyclic-stream-wire",
  "libfuzzer-sys",
  "prost",
  "serde_json",

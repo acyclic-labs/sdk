@@ -12,7 +12,7 @@
       "rust/crates/stream/src/local/discovery_model.rs"
     ],
     "removed_export": "acyclic_stream::discovery_verification",
-    "protocol_evidence": "rust/crates/stream/proto/stream/v1/session.proto reserves child-discovery fields 11/12 and names children/child; finite children_page remains a separate API.",
+    "protocol_evidence": "rust/crates/stream-wire/proto/stream/v1/session.proto reserves child-discovery fields 11/12 and names children/child; finite children_page remains a separate API.",
     "signature_limit": "Local git reports E for the historical merged commit; this mapping does not claim independently verified historical signer trust. Commit identity, tree differences and the recorded PR establish the source disposition."
   },
   "orphan": {

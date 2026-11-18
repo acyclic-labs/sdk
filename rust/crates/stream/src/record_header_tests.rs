@@ -141,7 +141,7 @@ fn manual_append_and_commit_codecs_match_the_generated_header_contract() -> Resu
     let request = append(body(b"key", b"attribute")?)?;
     let mut actual = Vec::new();
     crate::wire_codec::requests::append(&mut actual, &request);
-    let expected = crate::wire::AppendRequest {
+    let expected = acyclic_stream_wire::wire::AppendRequest {
         path: request.path.to_string(),
         records: request
             .records

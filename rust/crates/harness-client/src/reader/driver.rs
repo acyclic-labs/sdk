@@ -243,7 +243,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         let id = self.next_follow;
         self.next_follow = id.checked_add(1).ok_or(StreamError::Capacity)?;
         self.ready.register(
-            acyclic_stream::wire::SessionChannel {
+            acyclic_stream_wire::wire::SessionChannel {
                 channel_id: id,
                 generation: 0,
             },

@@ -220,7 +220,8 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
     harness_protocol::check(name, bytes);
     stream_http::check(name, bytes);
     assert!(acyclic_machines::grpc::codec_fuzz::check(name, bytes).is_ok());
-    use acyclic_stream::{wire as w, wire_codec as c};
+    use acyclic_stream::wire_codec as c;
+    use acyclic_stream_wire::wire as w;
     macro_rules! projection {
         ($wire:ident, $decode:expr, $encode:expr) => {
             project::<w::$wire, _, _>(bytes, $decode, $encode)
@@ -380,7 +381,8 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
 pub(super) fn seeds(
     streams: &[(String, Vec<u8>)],
 ) -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
-    use acyclic_stream::{StreamPath, wire, wire_codec};
+    use acyclic_stream::{StreamPath, wire_codec};
+    use acyclic_stream_wire::wire;
     let mut seeds = Vec::new();
     for (name, bytes) in streams {
         let message = match name.as_str() {

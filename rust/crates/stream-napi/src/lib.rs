@@ -14,7 +14,8 @@ use std::{
 };
 
 use acyclic_auth::refusal::native::NativeRefusal;
-use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire, wire_codec};
+use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire_codec};
+use acyclic_stream_wire::wire;
 use futures::StreamExt;
 use napi::Env;
 use napi::bindgen_prelude::{Buffer, Error, Promise, PromiseRaw, Result, Status};

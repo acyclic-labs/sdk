@@ -37,6 +37,7 @@ SEPARATE_DEPS = [
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/napi-3.15.0:napi",
@@ -110,6 +111,7 @@ SEPARATE_DEPS = [
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/napi-3.15.0:napi",
@@ -176,6 +178,7 @@ SEPARATE_DEPS = [
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/napi-3.15.0:napi",
@@ -358,6 +361,7 @@ rust_library(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//base64_0_23_1-0.23.1",
@@ -418,6 +422,7 @@ rust_library(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//base64_0_23_1-0.23.1",
@@ -471,6 +476,7 @@ rust_library(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//base64_0_23_1-0.23.1",
@@ -601,6 +607,7 @@ rust_test(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/napi-3.15.0:napi",
@@ -674,6 +681,7 @@ rust_test(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/napi-3.15.0:napi",
@@ -740,6 +748,7 @@ rust_test(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/napi-3.15.0:napi",
@@ -1429,6 +1438,7 @@ rust_test(
     ] + [
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1489,6 +1499,7 @@ rust_test(
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1612,6 +1623,7 @@ rust_test(
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//tokio-1.54.1",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1677,6 +1689,7 @@ rust_test(
         "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tokio-1.54.1",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1933,6 +1946,7 @@ rust_test(
     ] + [
         "@sdk_crates//tokio-1.54.1",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1996,6 +2010,7 @@ rust_test(
     ] + [
         "@sdk_crates//tokio-1.54.1",
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -2117,6 +2132,7 @@ rust_test(
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/objects:acyclic_objects",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -2183,6 +2199,7 @@ rust_test(
         "@sdk_crates//tonic-0.14.9",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
         "//rust/crates/objects:acyclic_objects",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
     ],
     proc_macro_deps = [
@@ -2384,6 +2401,7 @@ rust_test(
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//loom-0.7.3",
     ],
@@ -2660,6 +2678,7 @@ rust_library(
         "//rust/crates/filesystem-wire:acyclic_fs_wire_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",
+        "//rust/crates/stream-wire:acyclic_stream_wire_wasm",
         "//rust/crates/stream:acyclic_stream_wasm",
         "@wasm_crates//base64_0_23_1-0.23.1",
         "@wasm_crates//blake3-1.8.7",

@@ -145,7 +145,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
     for (relative, bytes) in [
         ("proto/demo.proto", b"syntax = \"proto3\";".as_slice()),
         (
-            "rust/crates/stream/proto/stream/v2/stream.proto",
+            "rust/crates/stream-wire/proto/stream/v2/stream.proto",
             b"message Stream {}".as_slice(),
         ),
         (
@@ -184,7 +184,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
     let before = source_file_hashes(&root, &output).expect("source inventory should build");
     for required in [
         "proto/demo.proto",
-        "rust/crates/stream/proto/stream/v2/stream.proto",
+        "rust/crates/stream-wire/proto/stream/v2/stream.proto",
         "rust/crates/stream/conformance/stream.json",
         "compatibility/descriptors/stream-v1.bin",
         "plugin/bin/install.js",

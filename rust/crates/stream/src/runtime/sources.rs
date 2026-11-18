@@ -1,8 +1,9 @@
 //! One persistent wake and queue node per provider source.
 use super::signal;
 use super::sync::{AtomicU64, Ordering};
-use crate::{StreamError, wire};
+use crate::StreamError;
 use acyclic_collections::{FixedIndex, IndexWork};
+use acyclic_stream_wire::wire;
 use futures::{
     Stream,
     task::{ArcWake, AtomicWaker},

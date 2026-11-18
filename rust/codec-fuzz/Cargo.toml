@@ -18,7 +18,7 @@ build-script-data = [
     "../crates/inference/proto",
     "../crates/machines/proto",
     "../crates/objects/proto",
-    "../crates/stream/proto",
+    "../crates/stream-wire/proto",
 ]
 
 [features]
@@ -43,6 +43,7 @@ acyclic-native-runtime = { path = "../crates/native-runtime" }
 acyclic-objects = { path = "../crates/objects", default-features = false, features = ["test-support"] }
 acyclic-protobuf-json = { path = "../crates/protobuf-json" }
 acyclic-stream = { path = "../crates/stream", default-features = false, features = ["test-support"] }
+acyclic-stream-wire = { path = "../crates/stream-wire" }
 libfuzzer-sys = "0.4"
 futures = "0.3.31"
 ed25519-dalek = "=3.0.0"

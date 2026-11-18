@@ -1,7 +1,8 @@
 //! Thin projection of the original Actors decoder and Stream publication.
 use super::{WasmActorHost, failed};
 use acyclic_actors::local::{FailureDisposition, FailureEntry, FailureResolution};
-use acyclic_stream::{IdempotencyKey, Record, StreamPath, wire, wire_codec};
+use acyclic_stream::{IdempotencyKey, Record, StreamPath, wire_codec};
+use acyclic_stream_wire::wire;
 use js_sys::Uint8Array;
 use prost::Message as _;
 use wasm_bindgen::prelude::*;

@@ -1,11 +1,12 @@
 // One independent oracle drives the property suite and the actual fuzz target.
 use acyclic_stream::{
-    CommitId, StreamCategory, StreamWatermarks, wire,
+    CommitId, StreamCategory, StreamWatermarks,
     wire_codec::{
         session::{confirm_follow, preceding_follow, record_anchor, record_cursor},
         watermarks_from_wire,
     },
 };
+use acyclic_stream_wire::wire;
 use prost::Message;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

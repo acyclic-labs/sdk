@@ -14,9 +14,8 @@
 //!
 //! Retained v1 records use the original canonical protobuf ChangeRecord and
 //! indexed headers. Reading never rewrites either format or its retry identity.
-use crate::{
-    AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamCategory, StreamError, wire,
-};
+use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamCategory, StreamError};
+use acyclic_stream_wire::wire;
 
 #[cfg(test)]
 mod golden;

@@ -13,6 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 acyclic-stream = { path = "..", default-features = false }
+acyclic-stream-wire = { path = "../../stream-wire" }
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
 

@@ -1116,7 +1116,7 @@ mod tests {
             loop {
                 let (event, delivery) = attached_events.next_projected().await?;
                 if delivery.resource == resource
-                    && matches!(delivery.frame.body, Some(acyclic_stream::wire::session_frame::Body::Data(_)))
+                    && matches!(delivery.frame.body, Some(acyclic_stream_wire::wire::session_frame::Body::Data(_)))
                 {
                     assert!(event?.is_none(), "old idle status must not replace the opening phase");
                     break;

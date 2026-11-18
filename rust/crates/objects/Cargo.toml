@@ -37,6 +37,7 @@ acyclic-auth = { version = "=0.2.0", path = "../auth" }
 pin-project-lite = "0.2.16"
 http-body = { version = "1" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 async-trait.workspace = true
 blake3 = "1.8.2"
 bytes.workspace = true

@@ -136,11 +136,11 @@ mod journal_command {
     #[derive(Clone, PartialEq, prost::Oneof)]
     pub(super) enum Operation {
         #[prost(message, tag = "1")]
-        Append(crate::wire::AppendRequest),
+        Append(acyclic_stream_wire::wire::AppendRequest),
         #[prost(message, tag = "2")]
-        Fork(crate::wire::ForkRequest),
+        Fork(acyclic_stream_wire::wire::ForkRequest),
         #[prost(message, tag = "5")]
-        Commit(crate::wire::CommitRequest),
+        Commit(acyclic_stream_wire::wire::CommitRequest),
     }
 }
 

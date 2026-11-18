@@ -1,10 +1,8 @@
 #![no_main]
 //! Check original session frames and checked-follow confirmations at every input size.
 
-use acyclic_stream::{
-    wire,
-    wire_codec::session::{confirm_follow, preceding_follow},
-};
+use acyclic_stream::wire_codec::session::{confirm_follow, preceding_follow};
+use acyclic_stream_wire::wire;
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 

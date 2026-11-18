@@ -1063,7 +1063,7 @@ pub async fn codec_seeds(
             for (record, (label, expected)) in records.into_iter().zip(expected) {
                 let bytes = wire_codec::record_wire(record, None).encode_to_vec();
                 let record = wire_codec::record(
-                    acyclic_stream::wire::Record::decode(bytes.as_slice())?,
+                    acyclic_stream_wire::wire::Record::decode(bytes.as_slice())?,
                     None,
                 )
                 .map_err(Error::Stream)?;

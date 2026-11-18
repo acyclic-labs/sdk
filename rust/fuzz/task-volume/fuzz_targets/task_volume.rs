@@ -1,6 +1,7 @@
 #![no_main]
 //! Exercise production interaction, approval and stream persistence admission.
-use acyclic_stream::{wire, wire_codec};
+use acyclic_stream::wire_codec;
+use acyclic_stream_wire::wire;
 use libfuzzer_sys::fuzz_target;
 use prost::Message as _;
 

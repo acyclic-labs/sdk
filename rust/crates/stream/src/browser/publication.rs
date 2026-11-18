@@ -160,7 +160,7 @@ impl Before {
                                 key: None,
                                 path: path.clone(),
                                 from: next,
-                                limit: crate::wire::StreamLimit::MaxItems as u32,
+                                limit: acyclic_stream_wire::wire::StreamLimit::MaxItems as u32,
                                 at_least: Default::default(),
                             })
                             .await?;

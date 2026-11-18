@@ -1,6 +1,7 @@
 //! Checks session subscriptions and canonical change records through the serving decoders.
 #![no_main]
-use acyclic_stream::{FollowFilter, wire};
+use acyclic_stream::FollowFilter;
+use acyclic_stream_wire::wire;
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 fn check(data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {

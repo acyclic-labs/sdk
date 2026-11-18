@@ -476,9 +476,10 @@ mod proofs {
 #[cfg(kani)]
 mod framing {
     use acyclic_stream::{
-        StreamCategory, StreamError, wire,
+        StreamCategory, StreamError,
         wire_codec::session::{FrameDecoder, grant_credit},
     };
+    use acyclic_stream_wire::wire;
 
     fn lengths(bytes: &[u8], chunk: usize) -> Result<Vec<usize>, StreamError> {
         let mut decoder = FrameDecoder::with_decoder(usize::MAX, |body| Ok(body.len()));

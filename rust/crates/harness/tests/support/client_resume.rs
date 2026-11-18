@@ -1,8 +1,9 @@
 //! Shared cursor oracle for native properties and arbitrary untrusted protobuf.
 use acyclic_stream::{
-    CommitId, wire,
+    CommitId,
     wire_codec::session::{record_anchor, record_cursor},
 };
+use acyclic_stream_wire::wire;
 use prost::Message as _;
 
 pub fn check(cursor: &wire::SessionCursor, next: u64, anchor: [u8; 32]) {

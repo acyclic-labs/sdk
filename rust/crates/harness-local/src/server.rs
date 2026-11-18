@@ -289,7 +289,7 @@ pub async fn serve<C: Composition>(
         endpoint,
         observation,
     });
-    use acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer;
+    use acyclic_stream_wire::wire::stream_session_service_server::StreamSessionServiceServer;
     let router =
         tonic::transport::Server::builder().add_service(StreamSessionServiceServer::new(service));
     let serving = async {

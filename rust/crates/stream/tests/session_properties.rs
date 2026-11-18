@@ -1,8 +1,6 @@
 //! Bounded verification of the canonical Streams session.
-use acyclic_stream::{
-    wire,
-    wire_codec::session::{consume_credit, grant_credit},
-};
+use acyclic_stream::wire_codec::session::{consume_credit, grant_credit};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use proptest::prelude::*;
 use prost::Message;

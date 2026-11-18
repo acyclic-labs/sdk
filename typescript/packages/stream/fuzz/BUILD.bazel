@@ -33,6 +33,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/tonic-web-wasm-client-0.9.2:tonic_web_wasm_client",
@@ -63,6 +64,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "//rust/vendor/tonic-web-wasm-client-0.9.2:tonic_web_wasm_client",

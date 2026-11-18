@@ -1,6 +1,7 @@
 //! Session receive-credit accounting shared by transport adapters.
 
-use crate::{CommitId, Record, StreamError, StreamProvider, wire};
+use crate::{CommitId, Record, StreamError, StreamProvider};
+use acyclic_stream_wire::wire;
 use prost::Message as _;
 
 mod resource;

@@ -12,7 +12,7 @@ pub(super) struct Position {
 struct State {
     position: Position,
     /// An indexed read's committed continuation: its selector and `from`.
-    read: Option<(crate::wire::ReadKeySeek, u64)>,
+    read: Option<(acyclic_stream_wire::wire::ReadKeySeek, u64)>,
     generation: u64,
     track_records: bool,
     bootstrap: Option<(u64, [u8; 32])>,
@@ -37,7 +37,7 @@ impl Progress {
     #[cfg(any(test, loom))]
     pub(super) fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
         Self::from_cursor(
-            &crate::wire::SessionCursor {
+            &acyclic_stream_wire::wire::SessionCursor {
                 next: from,
                 opaque: Default::default(),
             },
@@ -45,7 +45,7 @@ impl Progress {
         )
     }
     pub(super) fn from_cursor(
-        cursor: &crate::wire::SessionCursor,
+        cursor: &acyclic_stream_wire::wire::SessionCursor,
         preceding: Option<[u8; 32]>,
     ) -> Self {
         Self {
@@ -129,7 +129,9 @@ impl Progress {
         Ok(state.position.clone())
     }
     /// The committed continuation of an indexed read, if one advanced.
-    pub(super) fn read(&self) -> Result<Option<(crate::wire::ReadKeySeek, u64)>, StreamError> {
+    pub(super) fn read(
+        &self,
+    ) -> Result<Option<(acyclic_stream_wire::wire::ReadKeySeek, u64)>, StreamError> {
         Ok(self
             .state
             .lock()
@@ -139,7 +141,7 @@ impl Progress {
     }
     pub(super) fn continue_read(
         &self,
-        read: (crate::wire::ReadKeySeek, u64),
+        read: (acyclic_stream_wire::wire::ReadKeySeek, u64),
     ) -> Result<(), StreamError> {
         self.state
             .lock()

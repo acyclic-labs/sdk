@@ -1,9 +1,9 @@
 //! Bounded canonical protobuf codecs for retained Stream v1 facts.
 use crate::{
     AppendOutcome, CommitId, CommittedEnvelope, CommittedMutation, IdempotencyObservation,
-    IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError, StreamPath, wire,
-    wire_codec,
+    IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError, StreamPath, wire_codec,
 };
+use acyclic_stream_wire::wire;
 use prost::Message;
 
 pub(crate) const OBSERVATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V1\0";

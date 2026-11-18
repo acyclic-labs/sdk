@@ -46,7 +46,7 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
         &["proto/objects/v1/objects.proto"],
     ),
     (
-        "stream",
+        "stream-wire",
         "stream-v1.bin",
         &[
             "proto/stream/v1/stream.proto",

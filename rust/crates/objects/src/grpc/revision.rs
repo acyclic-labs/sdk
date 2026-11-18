@@ -82,7 +82,7 @@ pub(super) fn requested(metadata: &MetadataMap) -> Result<RevisionCut, tonic::St
                 value
                     .to_bytes()
                     .ok()
-                    .and_then(|bytes| acyclic_stream::wire::Revision::decode(bytes).ok())
+                    .and_then(|bytes| acyclic_stream_wire::wire::Revision::decode(bytes).ok())
                     .ok_or_else(|| {
                         tonic::Status::invalid_argument("invalid Objects minimum revision")
                     })

@@ -184,16 +184,18 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             // A selected frontend follows the child's private tool-output
             // resource as well as its conversation and status streams.
             let _changes = session
-                .subscribe(acyclic_stream::wire::SessionSubscription {
+                .subscribe(acyclic_stream_wire::wire::SessionSubscription {
                     credential: selected.controls.observation_credential(),
-                    resume: Some(acyclic_stream::wire::SessionCursor::default()),
-                    kind: Some(acyclic_stream::wire::session_subscription::Kind::Follow(
-                        acyclic_stream::wire::SessionFollow {
-                            resource: selected.tools.clone(),
-                            delivery: acyclic_stream::wire::SessionDelivery::All as i32,
-                            ..Default::default()
-                        },
-                    )),
+                    resume: Some(acyclic_stream_wire::wire::SessionCursor::default()),
+                    kind: Some(
+                        acyclic_stream_wire::wire::session_subscription::Kind::Follow(
+                            acyclic_stream_wire::wire::SessionFollow {
+                                resource: selected.tools.clone(),
+                                delivery: acyclic_stream_wire::wire::SessionDelivery::All as i32,
+                                ..Default::default()
+                            },
+                        ),
+                    ),
                     ..Default::default()
                 })
                 .await
@@ -201,18 +203,20 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             // Prompt recall follows the selected agent's accepted input with
             // the same read-only credential, without actor invocation rights.
             let mut inputs = session
-                .subscribe(acyclic_stream::wire::SessionSubscription {
+                .subscribe(acyclic_stream_wire::wire::SessionSubscription {
                     credential: selected.controls.observation_credential(),
-                    resume: Some(acyclic_stream::wire::SessionCursor::default()),
-                    kind: Some(acyclic_stream::wire::session_subscription::Kind::Follow(
-                        acyclic_stream::wire::SessionFollow {
-                            resource: acyclic_stream::wire_codec::session::stream_resource(
-                                child.inbox().map_err(storage)?.as_str(),
-                            ),
-                            delivery: acyclic_stream::wire::SessionDelivery::All as i32,
-                            ..Default::default()
-                        },
-                    )),
+                    resume: Some(acyclic_stream_wire::wire::SessionCursor::default()),
+                    kind: Some(
+                        acyclic_stream_wire::wire::session_subscription::Kind::Follow(
+                            acyclic_stream_wire::wire::SessionFollow {
+                                resource: acyclic_stream::wire_codec::session::stream_resource(
+                                    child.inbox().map_err(storage)?.as_str(),
+                                ),
+                                delivery: acyclic_stream_wire::wire::SessionDelivery::All as i32,
+                                ..Default::default()
+                            },
+                        ),
+                    ),
                     ..Default::default()
                 })
                 .await
@@ -223,8 +227,8 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .ok_or_else(|| Error::Conflict("accepted input follow ended".into()))?
                 .map_err(storage)?;
             assert!(matches!(&frame.wire().body,
-                Some(acyclic_stream::wire::session_frame::Body::Data(data))
-                if matches!(&data.item, Some(acyclic_stream::wire::session_data::Item::Record(_)))));
+                Some(acyclic_stream_wire::wire::session_frame::Body::Data(data))
+                if matches!(&data.item, Some(acyclic_stream_wire::wire::session_data::Item::Record(_)))));
 
             // Adoption publishes the first status; the turn's own status
             // event announces its committed conversation entry.

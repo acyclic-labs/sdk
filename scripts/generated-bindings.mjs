@@ -81,7 +81,7 @@ export const compatibilityArtifacts = {
     conformanceDigest: "rust/crates/filesystem/conformance/dependency-content-range-v1.json",
   },
   stream: {
-    schemaDigest: "rust/crates/stream/proto/stream/v1/stream.proto",
+    schemaDigest: "rust/crates/stream-wire/proto/stream/v1/stream.proto",
     descriptorDigest: "compatibility/descriptors/stream-v1.bin",
     conformanceDigest: "rust/crates/stream/conformance/stream.json",
   },

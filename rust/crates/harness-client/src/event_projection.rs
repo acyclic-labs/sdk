@@ -2,7 +2,7 @@
 use crate::AgentDelivery;
 use acyclic_harness_core::{agent::AgentPath, executor::ExecutionRecord};
 use acyclic_harness_core::{conversation::FileRef, executor::ExecutionPayloadField};
-use acyclic_stream::wire;
+use acyclic_stream_wire::wire;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};

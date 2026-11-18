@@ -42,6 +42,7 @@ acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["conf
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["conformance"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["conformance"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 async-trait = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 acyclic-plugin = { path = "../../../plugin", optional = true }

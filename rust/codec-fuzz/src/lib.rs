@@ -262,7 +262,7 @@ fn framed(
     bytes: &[u8],
     grpc: bool,
     chunk: usize,
-) -> Result<Vec<acyclic_stream::wire::SessionFrame>, acyclic_stream::StreamError> {
+) -> Result<Vec<acyclic_stream_wire::wire::SessionFrame>, acyclic_stream::StreamError> {
     use acyclic_stream::wire_codec::session::FrameDecoder;
     let mut decoder = if grpc {
         FrameDecoder::grpc()
@@ -519,7 +519,7 @@ pub fn actor_seeds()
     let invocation_bytes =
         acyclic_stream::wire_codec::record_wire(ticket.record().clone(), None).encode_to_vec();
     let record = acyclic_stream::wire_codec::record(
-        acyclic_stream::wire::Record::decode(invocation_bytes.as_slice())?,
+        acyclic_stream_wire::wire::Record::decode(invocation_bytes.as_slice())?,
         None,
     )?;
     assert_eq!(
@@ -1335,7 +1335,7 @@ pub fn actor_codecs(bytes: &[u8]) {
             canonical
         );
     }
-    if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
+    if let Ok(value) = acyclic_stream_wire::wire::Record::decode(bytes)
         && let Ok(record) = acyclic_stream::wire_codec::record(value, None)
     {
         // Both readers consume this same committed Stream wire envelope.
@@ -1445,7 +1445,7 @@ fn historical_invocations_are_typed_format_refusals() {
         &include_bytes!("../corpus/actor_codecs/invocation-committed-v2")[..],
     ] {
         let record = acyclic_stream::wire_codec::record(
-            acyclic_stream::wire::Record::decode(bytes).unwrap(),
+            acyclic_stream_wire::wire::Record::decode(bytes).unwrap(),
             None,
         )
         .unwrap();

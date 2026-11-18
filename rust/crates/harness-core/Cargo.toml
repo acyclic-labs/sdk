@@ -77,6 +77,7 @@ acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = fa
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 base64 = "=0.23.1"
 blake3.workspace = true
 bytes.workspace = true
@@ -158,6 +159,7 @@ serde-saphyr = { version = "=2.0.0", default-features = false, features = ["seri
 tracing-subscriber.workspace = true
 loom = { version = "0.7.3", features = ["futures"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 tempfile = "3.27.0"
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util", "process", "io-util"] }

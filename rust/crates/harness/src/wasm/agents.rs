@@ -939,10 +939,10 @@ impl WasmAgents {
         from: u64,
     ) -> std::result::Result<acyclic_stream::WasmProviderRequest, JsValue> {
         use prost::Message as _;
-        let request = acyclic_stream::wire::FollowRequest {
+        let request = acyclic_stream_wire::wire::FollowRequest {
             path: record_path(agent, &stream)?.to_string(),
             from,
-            when_absent: acyclic_stream::wire::WhenAbsent::Wait as i32,
+            when_absent: acyclic_stream_wire::wire::WhenAbsent::Wait as i32,
             ..Default::default()
         };
         acyclic_stream::WasmStream::from_provider(self.agents.provider().clone())
