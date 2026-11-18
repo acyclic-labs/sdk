@@ -5,11 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Portable Actors guest socket messages"
+description = "Portable Actors guest messages and HTTP body adapters"
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 bytes = { workspace = true, features = ["serde"] }
+http.workspace = true
+http-body = "1.1.0"
 serde.workspace = true
 thiserror.workspace = true
 ts-rs = "=12.0.1"

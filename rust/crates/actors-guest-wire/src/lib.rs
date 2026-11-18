@@ -1,5 +1,12 @@
 //! Portable Actors guest socket messages shared by host adapters and code generation.
 
+mod body;
+pub use body::{
+    GuestBody, GuestStreamingRequest, GuestStreamingResponse, JAVASCRIPT_FETCH_RESPONSE,
+    streaming_request,
+};
+mod events;
+pub use events::{GuestEvent, GuestRequest, GuestResponse};
 mod codec;
 pub use codec::{Checkpoint, CodecIdentity, GuestError};
 mod sockets;
