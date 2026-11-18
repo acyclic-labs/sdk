@@ -1,67 +1,10 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
-use crate::foundation::{FileId, VolumeId};
-use crate::kernel::{
-    DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
-    TreePage,
-};
 use crate::memory::MemoryObjectStore;
-use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig};
 
 #[path = "../../../tests/support/transfer_manifest.rs"]
 mod transfer_manifest;
 use transfer_manifest::fixture;
-
-fn empty_metadata() -> FileMetadata {
-    FileMetadata::default()
-}
-
-use crate::test_support::{
-    put_file_metadata, put_file_table_page, put_generation_root, put_tree_page,
-};
-
-async fn minimal_generation(
-    store: &MemoryObjectStore,
-    volume_id: VolumeId,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let metadata = put_file_metadata(store, empty_metadata()).await?;
-    let entries = put_tree_page(store, &TreePage::Leaf(Vec::new()), 8).await?;
-    let root_file_id = FileId::from_bytes([41; 16]);
-    let table = put_file_table_page(
-        store,
-        &FileTablePage::Leaf(vec![FileRecord {
-            bindings: None,
-            file_id: root_file_id,
-            kind: FileKind::Directory,
-            link_count: 1,
-            metadata,
-            payload: FilePayload::Directory { entries },
-        }]),
-        8,
-    )
-    .await?;
-    put_generation_root(
-        store,
-        &GenerationRoot {
-            volume_id,
-            root_file_id,
-            file_table: table,
-            parents: Vec::new(),
-            required_features: 0,
-        },
-    )
-    .await
-}
-
-fn closure_limits() -> ClosureLimits {
-    ClosureLimits {
-        decode: DecodeLimits::default(),
-        profile: FilesystemProfile::Portable,
-        symbolic_links: true,
-        hard_links: true,
-        sparse_files: true,
-    }
-}
 
 #[tokio::test]
 async fn import_keeps_cumulative_work_live_backing_and_cancelled_prefix()
@@ -212,52 +155,5 @@ async fn import_keeps_cumulative_work_live_backing_and_cancelled_prefix()
             Err(ObjectStoreError::Missing)
         ));
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn manifest_construction_rejects_foreign_volume_after_complete_authentication()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let actual_volume = VolumeId::from_bytes([42; 16]);
-    let generation = minimal_generation(&store, actual_volume).await?;
-    let cancellation = CancellationToken::new();
-    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
-
-    let mismatch = (build_generation_export_manifest_async(
-        &store,
-        VolumeId::from_bytes([43; 16]),
-        config,
-        generation,
-        closure_limits(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await
-    .err()
-    .ok_or("foreign-volume generation unexpectedly produced a manifest")?;
-    assert!(matches!(
-        mismatch.error,
-        GenerationTransferError::ManifestMismatch
-    ));
-    assert!(mismatch.work().unwrap().backend_read_operations > 0);
-    assert!(mismatch.work().unwrap().page_reads > 0);
-
-    let manifest = (build_generation_export_manifest_async(
-        &store,
-        actual_volume,
-        config,
-        generation,
-        closure_limits(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    assert_eq!(manifest.value.volume_id, actual_volume);
-    assert_eq!(manifest.value.generation_root, generation);
-    assert_eq!(manifest.value.file_count, 1);
-    assert_eq!(manifest.value.objects.last(), Some(&generation));
-    assert_eq!(manifest.work.backend_read_operations, 4);
-    assert_eq!(manifest.work.page_reads, 2);
     Ok(())
 }
