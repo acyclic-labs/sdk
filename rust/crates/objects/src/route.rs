@@ -72,8 +72,8 @@ impl ObjectsMethod {
     /// An absent, foreign or non-singleton declaration refuses admission.
     #[must_use]
     pub const fn action(self) -> Option<ObjectsAction> {
-        match self.authorization().admitted {
-            [Action::Objects(action)] => Some(*action),
+        match self.authorization().single_action() {
+            Some(Action::Objects(action)) => Some(action),
             _ => None,
         }
     }

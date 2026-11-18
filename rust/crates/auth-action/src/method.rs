@@ -34,6 +34,16 @@ pub struct MethodAuth<M: 'static> {
 }
 
 impl<M: 'static> MethodAuth<M> {
+    /// The method's single unconditional action, if it declares exactly one.
+    /// Dynamic rules still require request-dependent authorization.
+    #[must_use]
+    pub const fn single_action(&self) -> Option<Action> {
+        match self.admitted {
+            [action] => Some(*action),
+            _ => None,
+        }
+    }
+
     /// Enumerate the action ceiling of the method's rules for account-wide
     /// grant selection. Fixed actions take precedence over an extractor's
     /// vocabulary when the extractor only selects resources.

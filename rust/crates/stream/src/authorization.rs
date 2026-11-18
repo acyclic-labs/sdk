@@ -31,14 +31,9 @@ pub(crate) const HEAD_ACTION: Action = observation_action(StreamMethod::Head);
 pub(crate) const CHILDREN_ACTION: Action = observation_action(StreamMethod::ChildrenPage);
 
 const fn observation_action(method: StreamMethod) -> Action {
-    let admitted = method.authorization().admitted;
-    assert!(
-        admitted.len() == 1,
-        "Session observations require exactly one declared action"
-    );
-    match admitted {
-        [action] => *action,
-        _ => unreachable!(),
+    match method.authorization().single_action() {
+        Some(action) => action,
+        None => panic!("Session observations require exactly one declared action"),
     }
 }
 
