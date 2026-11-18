@@ -757,7 +757,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
         // A root batch is acknowledged only once its closure and index keys
         // are durable, so one missing any of them was never acknowledged.
-        for kind in ["r", "f"] {
+        for kind in ['r', 'f'] {
             let mut pages = self.pages(self.namespace_prefix(kind));
             while let Some(page) = pages.next().await? {
                 for (key, _) in page {
