@@ -87,10 +87,12 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
     let target = args.skip_while(|arg| *arg != "--target").nth(1).unwrap();
     let mut artifacts = Vec::new();
     for directory in [directory.join("doc"), directory.join(target).join("doc")] {
-        if !directory.is_dir() {
-            continue;
-        }
-        for entry in fs::read_dir(directory)? {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
             let path = entry?.path();
             if path
                 .extension()
