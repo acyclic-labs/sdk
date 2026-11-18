@@ -1,4 +1,13 @@
-use super::*;
+use acyclic_machines::*;
+use futures::stream;
+use serde::Serialize;
+use sha2::{Digest as _, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU32,
+    sync::Arc,
+};
+use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) enum MemoryIntent {
@@ -273,7 +282,7 @@ impl SimulatedMachines {
 fn result_cut(
     state: &MemoryState,
     operation: OperationId,
-) -> Result<crate::results::ResultCut, ProviderError> {
+) -> Result<acyclic_machines::results::ResultCut, ProviderError> {
     let replay = state
         .replays
         .get(&operation)
@@ -281,7 +290,7 @@ fn result_cut(
     let revision = std::num::NonZeroU64::new(state.now)
         .ok_or_else(|| ProviderError::Rejected("fork settlement revision is empty".into()))?;
     Ok(
-        crate::results::NativeResults::open(operation, revision, &replay.results)?
+        acyclic_machines::results::NativeResults::open(operation, revision, &replay.results)?
             .cursor()
             .cut,
     )
@@ -412,3 +421,5 @@ fn change_state(
 mod backend;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "test-support")]
+pub mod codec_fuzz;

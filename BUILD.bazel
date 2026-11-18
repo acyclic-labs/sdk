@@ -171,6 +171,7 @@ filegroup(
         "//rust/crates/log-frame:Cargo.toml",
         "//rust/crates/machines-daytona:Cargo.toml",
         "//rust/crates/machines-limits:Cargo.toml",
+        "//rust/crates/machines-simulation:Cargo.toml",
         "//rust/crates/machines-wasm:Cargo.toml",
         "//rust/crates/machines:Cargo.toml",
         "//rust/crates/manifest:Cargo.toml",

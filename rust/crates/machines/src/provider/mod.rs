@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) mod events;
+pub mod events;
 
 /// Public provider interface shared by deterministic and managed implementations.
 /// Native providers retain thread-safe futures; browser providers retain their

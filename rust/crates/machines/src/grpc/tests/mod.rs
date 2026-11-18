@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_machines_simulation::SimulatedMachines;
 use futures::{Stream, stream};
 use std::pin::Pin;
 use tokio::net::TcpListener;

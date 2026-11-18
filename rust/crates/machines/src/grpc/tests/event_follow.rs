@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_machines_simulation::SimulatedMachines;
 
 #[tokio::test]
 async fn event_follow_retains_cursor_and_original_terminal_over_authenticated_rpc()

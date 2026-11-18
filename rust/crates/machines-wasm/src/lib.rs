@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::SimulatedMachines;
+use acyclic_machines_simulation::SimulatedMachines;
 use tsify::Tsify;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -60,7 +60,7 @@ impl Default for WasmSimulatedMachines {
     }
 }
 
-/// Stateful adapter around `acyclic_machines::SimulatedMachines`.
+/// Stateful adapter around `acyclic_machines_simulation::SimulatedMachines`.
 #[wasm_bindgen]
 pub struct WasmSimulatedMachines {
     inner: SimulatedMachines,

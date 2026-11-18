@@ -322,7 +322,7 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
                 vec![crate::machines::ProvisionedTarget {
                     name: "generated-target".into(),
                     host: crate::machines::MachinesHost::new(
-                        std::sync::Arc::new(acyclic_machines::SimulatedMachines::default()),
+                        std::sync::Arc::new(acyclic_machines_simulation::SimulatedMachines::default()),
                         provider_ref.clone(),
                     )
                     .unwrap(),

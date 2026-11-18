@@ -61,6 +61,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
+acyclic-machines-simulation = { version = "=0.2.0", path = "../machines-simulation", features = ["test-support"] }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false, features = ["conformance"] }
 proptest.workspace = true

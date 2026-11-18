@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn failed_fork_cuts_every_birth_and_cleanup_replays_after_recovery()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::results::{ResultCursor, cleanup};
+    use acyclic_machines::results::{ResultCursor, cleanup};
     // Both physical fork intents use the same birth retention and cleanup path.
     for live in [false, true] {
         for k in 1..4 {
@@ -77,7 +77,7 @@ async fn failed_fork_cuts_every_birth_and_cleanup_replays_after_recovery()
 #[tokio::test]
 async fn settled_fork_pages_keep_original_custody_and_credit_after_recovery()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::results::{ResultCursor, Settlement};
+    use acyclic_machines::results::{ResultCursor, Settlement};
     let provider = SimulatedMachines::default();
     let MutationOutcome::Created(parent) = provider.create(request(key(0x40))).await? else {
         unreachable!("original create");
@@ -157,14 +157,14 @@ async fn settled_fork_pages_keep_original_custody_and_credit_after_recovery()
             ..cursor
         },
         ResultCursor {
-            cut: crate::results::ResultCut {
+            cut: acyclic_machines::results::ResultCut {
                 count: results.count + 1,
                 ..results
             },
             ..cursor
         },
         ResultCursor {
-            cut: crate::results::ResultCut {
+            cut: acyclic_machines::results::ResultCut {
                 settlement: Settlement::NativeController(
                     revision.checked_add(1).ok_or("revision overflow")?,
                 ),
@@ -173,7 +173,7 @@ async fn settled_fork_pages_keep_original_custody_and_credit_after_recovery()
             ..cursor
         },
         ResultCursor {
-            cut: crate::results::ResultCut {
+            cut: acyclic_machines::results::ResultCut {
                 operation: provider.recover_operation(key(0x40)).await?,
                 ..results
             },
@@ -230,7 +230,7 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            acyclic_machines::results::ResultCursor {
                 cut: children,
                 from: 0,
             },
@@ -304,7 +304,7 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            acyclic_machines::results::ResultCursor {
                 cut: children,
                 from: 0,
             },
@@ -362,7 +362,7 @@ async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
     };
     let grandchildren = provider
         .read_results(
-            crate::results::ResultCursor {
+            acyclic_machines::results::ResultCursor {
                 cut: grandchildren,
                 from: 0,
             },
@@ -389,7 +389,7 @@ async fn live_fork_sources_are_joined_after_their_children() {
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            acyclic_machines::results::ResultCursor {
                 cut: children,
                 from: 0,
             },
@@ -432,7 +432,7 @@ async fn live_fork_forks_a_suspended_source_without_waking_it() {
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            acyclic_machines::results::ResultCursor {
                 cut: children,
                 from: 0,
             },

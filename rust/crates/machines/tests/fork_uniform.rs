@@ -1,8 +1,8 @@
 //! Public fork/create provenance through the Streams facade and Machines.
 use acyclic_machines::{
     CreateMachine, ForkFidelity, ForkSource, Image, MachinesProvider, MutationOutcome,
-    SimulatedMachines,
 };
+use acyclic_machines_simulation::SimulatedMachines;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey, MemoryStream, Provenance, Stream, StreamError,
 };

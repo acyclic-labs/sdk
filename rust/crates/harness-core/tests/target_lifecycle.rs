@@ -10,9 +10,9 @@ use acyclic_harness_core::{
     resources::{ArtifactRef, ProviderRef, SandboxRef},
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
+use acyclic_machines_simulation::SimulatedMachines;
 use acyclic_machines::{
     Capability, ExecCommand, MachineObservation, MachineState, MachinesProvider as _,
-    SimulatedMachines,
 };
 use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use std::sync::{

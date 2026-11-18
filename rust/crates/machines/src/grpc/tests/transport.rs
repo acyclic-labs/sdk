@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_machines_simulation::SimulatedMachines;
 
 #[tokio::test]
 async fn bearer_crosses_every_generated_rpc_and_client_clone()

@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use acyclic_machines_simulation::SimulatedMachines;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use tokio::sync::mpsc;

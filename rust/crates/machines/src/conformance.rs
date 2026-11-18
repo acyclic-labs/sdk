@@ -72,13 +72,13 @@ pub trait AttachedBackend: Backend {
 }
 
 #[async_trait::async_trait]
-impl AttachedBackend for Fixture<crate::SimulatedMachines> {
+impl AttachedBackend for Fixture<acyclic_machines_simulation::SimulatedMachines> {
     async fn attach(&self) -> Result<MachineObservation, String> {
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000a01")
             .map_err(|error| error.to_string())?;
         self.provider
             .inner()
-            .attach(key, crate::SIMULATED_PLATFORM)
+            .attach(key, acyclic_machines_simulation::SIMULATED_PLATFORM)
             .await
             .map_err(|error| error.to_string())
     }
@@ -890,7 +890,7 @@ async fn live_fork(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SimulatedMachines;
+    use acyclic_machines_simulation::SimulatedMachines;
     use acyclic_stream::testing::RequestClass;
     async fn simulated() -> Result<Fixture<SimulatedMachines>, String> {
         Ok(Fixture::new(

@@ -236,6 +236,7 @@ dependencies = [
  "acyclic-inference",
  "acyclic-log-frame",
  "acyclic-machines",
+ "acyclic-machines-simulation",
  "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
@@ -288,6 +289,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-providers",
  "acyclic-machines",
+ "acyclic-machines-simulation",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
@@ -825,6 +827,7 @@ dependencies = [
  "acyclic-harness-sse",
  "acyclic-host-platform",
  "acyclic-machines",
+ "acyclic-machines-simulation",
  "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
@@ -1421,6 +1424,7 @@ dependencies = [
  "acyclic-auth-action",
  "acyclic-grpc-observability",
  "acyclic-machines-limits",
+ "acyclic-machines-simulation",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
@@ -1459,6 +1463,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-machines-simulation"
+version = "0.2.0"
+dependencies = [
+ "acyclic-machines",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "async-trait",
+ "futures",
+ "hex",
+ "serde",
+ "sha2 0.11.1",
+ "tokio",
+]
+
+[[package]]
 name = "acyclic-machines-daytona"
 version = "0.2.0"
 dependencies = [
@@ -1491,6 +1510,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-machines",
+ "acyclic-machines-simulation",
  "acyclic-stream",
  "futures",
  "hex",

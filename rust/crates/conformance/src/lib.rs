@@ -89,7 +89,7 @@ pub async fn machines(backend: &dyn acyclic_machines::conformance::Backend) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_machines::SimulatedMachines;
+    use acyclic_machines_simulation::SimulatedMachines;
     use acyclic_stream::MemoryStream;
     use std::sync::Arc;
 

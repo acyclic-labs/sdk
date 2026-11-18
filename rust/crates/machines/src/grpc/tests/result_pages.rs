@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_machines_simulation::SimulatedMachines;
 use crate::results::{ResultCursor, ResultCut};
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_machines::SimulatedMachines;
+use acyclic_machines_simulation::SimulatedMachines;
 
 #[test]
 fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()> {
@@ -292,7 +292,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
             expiration: acyclic_machines::ExpirationPolicy::Never,
             network_policy_digest: [2; 32],
             budgets: Default::default(),
-            platform: acyclic_machines::SIMULATED_PLATFORM,
+            platform: acyclic_machines_simulation::SIMULATED_PLATFORM,
             lifecycle: acyclic_machines::LifecycleClass::Provisioned,
         },
         endpoints: Vec::new(),
@@ -522,7 +522,7 @@ async fn one_heap_scope_admits_each_actors_machine_on_its_own_private_volume() -
                     expiration: acyclic_machines::ExpirationPolicy::Never,
                     network_policy_digest: [2; 32],
                     budgets: Default::default(),
-                    platform: acyclic_machines::SIMULATED_PLATFORM,
+                    platform: acyclic_machines_simulation::SIMULATED_PLATFORM,
                     lifecycle: acyclic_machines::LifecycleClass::Provisioned,
                 },
                 endpoints: Vec::new(),

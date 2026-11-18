@@ -669,7 +669,7 @@ impl MachinesProvider for SimulatedMachines {
         }
         let receiver = events.subscribe();
         drop(state);
-        Ok(crate::provider::events::checked(
+        Ok(acyclic_machines::provider::events::checked(
             machine,
             after_sequence,
             (receiver, from),
@@ -724,9 +724,9 @@ impl MachinesProvider for SimulatedMachines {
     }
     async fn read_results(
         &self,
-        cursor: crate::results::ResultCursor,
+        cursor: acyclic_machines::results::ResultCursor,
         credit: NonZeroU32,
-    ) -> Result<crate::results::ResultPage, ProviderError> {
+    ) -> Result<acyclic_machines::results::ResultPage, ProviderError> {
         let state = self.state.lock().await;
         let replay = state
             .replays
@@ -741,15 +741,15 @@ impl MachinesProvider for SimulatedMachines {
                 ));
             }
         };
-        let crate::results::Settlement::NativeController(revision) = results.settlement else {
+        let acyclic_machines::results::Settlement::NativeController(revision) = results.settlement else {
             return Err(ProviderError::Rejected(
                 "native settlement owner differs; recovery: use the original fork provider".into(),
             ));
         };
         let page =
-            crate::results::NativeResults::open(results.operation, revision, &replay.results)?
+            acyclic_machines::results::NativeResults::open(results.operation, revision, &replay.results)?
                 .page(cursor, credit)?;
-        Ok(crate::results::ResultPage {
+        Ok(acyclic_machines::results::ResultPage {
             cursor: page.cursor,
             machines: page.machines.to_vec(),
             next: page.next,

@@ -154,6 +154,7 @@ test = false
 required-features = ["client-session"]
 
 [dev-dependencies]
+acyclic-machines-simulation = { version = "=0.2.0", path = "../machines-simulation", features = ["test-support"] }
 acyclic-observability = { version = "=0.2.0", path = "../observability", features = ["research"] }
 acyclic-test-support = { path = "../test-support" }
 divan.workspace = true

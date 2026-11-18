@@ -2,7 +2,7 @@ use super::*;
 use crate::Error;
 use crate::agent::*;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
-use acyclic_machines::SimulatedMachines;
+use acyclic_machines_simulation::SimulatedMachines;
 use acyclic_stream::{MemoryStream, StreamCategory, testing::Counted};
 use tokio::sync::Semaphore;
 
