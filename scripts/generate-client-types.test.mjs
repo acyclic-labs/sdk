@@ -5,7 +5,7 @@ import { render as renderTokens } from "./generate-stream-token-operations.mjs";
 import { render as renderWidths, rust as widthSource } from "./generate-inference-widths.mjs";
 
 test("Stream HTTP generator keeps route result types without a runtime contract export", () => {
-  assert.deepEqual(httpSource, ["//rust/crates/stream:stream-http-contract"]);
+  assert.deepEqual(httpSource, ["//rust/crates/stream-wire:stream-http-contract"]);
   const source = renderHttp([JSON.stringify([["tail", "tail"], ["read", "read"]])])["typescript/packages/stream/src/http-contract.ts"];
   assert.match(source, /type HttpResponseContract = \{\n  "tail": "tail";\n  "read": "read";\n\};/);
   assert.match(source, /export type HttpRoute = keyof HttpResponseContract;/);

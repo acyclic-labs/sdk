@@ -44,10 +44,6 @@ name = "stream-rpc-inventory"
 path = "src/bin/stream-rpc-inventory.rs"
 test = false
 
-[[bin]]
-name = "stream-http-contract"
-test = false
-
 [features]
 conformance = []
 model-checking = ["conformance", "dep:loom", "dep:tempfile"]

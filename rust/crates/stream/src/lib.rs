@@ -146,21 +146,6 @@ pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKe
 /// Maximum canonical path text accepted by the single-command wire format.
 pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 
-/// Route-to-response families for the hosted HTTP projection.
-pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
-    ("head", "head"),
-    ("heads", "heads"),
-    ("idempotency/inspect", "observation"),
-    ("tail", "tail"),
-    ("append", "append"),
-    ("fork", "fork"),
-    ("read", "read"),
-    ("children/page", "children_page"),
-    ("commit", "commit"),
-    ("commits/read", "envelope"),
-    ("tokens/create", "token"),
-];
-
 #[path = "lib/token.rs"]
 mod token;
 pub use token::TokenOperation;
