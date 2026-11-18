@@ -126,7 +126,7 @@ impl Client {
         executor: Arc<dyn Executor>,
         lifetime: Option<tokio::sync::watch::Receiver<()>>,
     ) -> Self {
-        let endpoint: transport::Endpoint = Arc::new(Local {
+        let endpoint: transport::Endpoint = transport::Shared::new(Local {
             provider,
             authority,
             products,
@@ -135,7 +135,7 @@ impl Client {
         let local = endpoint.clone();
         Self::with_transport(
             endpoint,
-            Arc::new(move |node| {
+            transport::Shared::new(move |node| {
                 let local = local.clone();
                 Box::pin(async move {
                     if node.node_id != "local" {
