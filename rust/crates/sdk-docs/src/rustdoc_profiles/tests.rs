@@ -184,20 +184,20 @@ fn profile_ids_distinguish_defaults_for_the_same_features() {
 
 #[test]
 fn rustdoc_version_must_match_cargo_package_even_without_items() {
-    let valid = RustdocObservation {
+    let metadata = metadata();
+    let mut observation = RustdocObservation {
         format_version: FORMAT_VERSION,
         crate_name: "feature_rich".into(),
         crate_version: Some("0.1.0".into()),
         target: "host".into(),
         includes_private: false,
-        item_count: 1,
+        item_count: 0,
     };
-    validate_rustdoc_version(&metadata(), "feature-rich", &valid).unwrap();
-    let mut invalid = valid.clone();
-    invalid.crate_version = Some("0.9.0".into());
-    assert!(validate_rustdoc_version(&metadata(), "feature-rich", &invalid).is_err());
-    invalid.crate_version = None;
-    assert!(validate_rustdoc_version(&metadata(), "feature-rich", &invalid).is_err());
+    validate_rustdoc_version(&metadata, "feature-rich", &observation).unwrap();
+    for version in [Some("0.9.0".into()), None] {
+        observation.crate_version = version;
+        assert!(validate_rustdoc_version(&metadata, "feature-rich", &observation).is_err());
+    }
 }
 
 #[test]
