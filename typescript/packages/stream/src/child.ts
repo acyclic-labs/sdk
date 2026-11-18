@@ -3,7 +3,8 @@ import { StreamError, type ChildrenPageRequest, type StreamChild } from "./types
 
 export function isDirectChild(path: string, parent?: string): boolean {
   const slash = path.lastIndexOf("/");
-  return (slash === -1 ? "" : path.slice(0, slash)) === (parent ?? "");
+  const selected = parent ?? "";
+  return Math.max(0, slash) === selected.length && path.startsWith(selected);
 }
 
 export function validateChildCursor({ parent, after, hierarchyVersion }: Pick<ChildrenPageRequest, "parent" | "after" | "hierarchyVersion">): void {
@@ -23,8 +24,9 @@ export function validateChildCursor({ parent, after, hierarchyVersion }: Pick<Ch
 export function checkedChild(child: StreamChild | undefined, parent?: string): StreamChild {
   try {
     if (child === undefined) throw new Error("missing child");
-    validatePathValue(child.path);
-    if (!isDirectChild(child.path, parent)) throw new Error("non-direct child");
-    return { path: child.path };
+    const { path } = child;
+    validatePathValue(path);
+    if (!isDirectChild(path, parent)) throw new Error("non-direct child");
+    return { path };
   } catch { throw new StreamError("invalid_response", "invalid child discovery response"); }
 }
