@@ -27,7 +27,7 @@ kani_test(
     src = _SRC,
     srcs = _SRCS,
     harness = "proofs::every_lease_path_fits_its_exact_buffer",
-    args = ["-Z", "stubbing"],
+    args = ["-Z", "function-contracts", "-Z", "stubbing"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     size = "small",
 )
@@ -37,7 +37,7 @@ kani_test(
     src = _SRC,
     srcs = _SRCS,
     harness = "proofs::maximum_expiry_overflows_a_116_byte_buffer",
-    args = ["-Z", "stubbing"],
+    args = ["-Z", "function-contracts", "-Z", "stubbing"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     size = "small",
 )

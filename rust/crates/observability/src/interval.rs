@@ -42,7 +42,8 @@ pub struct IntervalOrigin {
 
 /// Fixed coordinates suitable for the existing research exporter. Durations
 /// use the full nanosecond representation; no history or origin map is retained.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(not(kani), derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntervalCoordinates {
     /// The original producer's domain; coordinates in other domains cannot be
     /// ordered without separate original clock synchronization evidence.
@@ -58,7 +59,8 @@ pub struct IntervalCoordinates {
 /// not OS clock resolution, absolute accuracy, later drift or clock steps.
 /// Retain this once alongside the origin, not once per operation. Missing
 /// observations and foreign domains cannot supply Unix timestamps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(not(kani), derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnixClockAnchor {
     /// Original origin's domain; never a cross-machine synchronization claim.
     pub domain: [u8; 16],
@@ -73,7 +75,8 @@ pub struct UnixClockAnchor {
 /// midpoint of its read window; that window remains explicit evidence, not a
 /// bound on absolute clock error. Synchronization, resolution and drift are
 /// unknown. These estimates alone cannot order work in different domains.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(not(kani), derive(serde::Serialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnixIntervalEstimate {
     /// Original local time domain, preserved through projection.
     pub domain: [u8; 16],

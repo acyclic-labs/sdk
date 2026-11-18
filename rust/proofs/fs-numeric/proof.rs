@@ -1,8 +1,10 @@
 //! The filesystem crate's numeric admission harness over the shared codec.
 
+#[path = "../../crates/filesystem-base/src/numeric.rs"]
+mod numeric;
+
 mod acyclic_fs_base {
-    #[path = "../../crates/filesystem-base/src/numeric.rs"]
-    pub mod numeric;
+    pub use super::numeric;
 }
 
 #[path = "../../crates/filesystem/src/kani_proofs.rs"]
