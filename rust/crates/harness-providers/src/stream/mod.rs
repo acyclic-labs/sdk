@@ -93,7 +93,7 @@ pub(crate) fn events_named<'a>(
             for event in deltas { yield event; }
             if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
-        if let Some(names) = names { state.restore_names(names, |_| Ok(()))?; }
+        if let Some(names) = names { state.restore_names(|wire| names.canonical(wire), |_| Ok(()))?; }
         let events = finish(state, adapter, dispatch)?;
         for event in events { yield event; }
     }
@@ -300,9 +300,9 @@ fn native(
 }
 
 impl<'work> State<'work> {
-    pub(crate) fn restore_names(
+    pub(crate) fn restore_names<'names>(
         &mut self,
-        names: &crate::tool_names::Names,
+        mut canonical: impl FnMut(&str) -> Result<Option<&'names str>>,
         mut fund: impl FnMut(usize) -> Result<()>,
     ) -> Result<()> {
         if self
@@ -313,7 +313,7 @@ impl<'work> State<'work> {
             return Ok(());
         }
         for call in self.calls.values_mut() {
-            if let Some(name) = names.canonical(&call.name)? {
+            if let Some(name) = canonical(&call.name)? {
                 fund(name.len())?;
                 self.budget.string(&mut call.name, name)?;
             }

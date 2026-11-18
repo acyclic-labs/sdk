@@ -356,7 +356,7 @@ fn parse_response<'a>(
             let (reasoning_bytes, reasoning_nodes) = parser.state.reasoning_shape()?;
             let mut admission = reserve(work, bytes.checked_add(reasoning_bytes).ok_or_else(|| invalid("reasoning size overflow"))?, nodes.checked_add(reasoning_nodes).ok_or_else(|| invalid("reasoning size overflow"))?, parser.allocation.bytes())?;
             parser.allocation.absorb(&mut admission)?;
-            let restored = parser.state.restore_names(names, |length| {
+            let restored = parser.state.restore_names(|wire| names.canonical(wire), |length| {
                 let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;
                 parser.allocation.absorb(&mut custody)?;
                 Ok(())
