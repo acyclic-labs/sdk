@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs_format::object_reference::GenerationId;
 
 #[test]
 fn every_identity_round_trips_and_authority_hash_inputs_are_bound()

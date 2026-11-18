@@ -5,6 +5,7 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FsError, Head, ObjectId, VolumeId,
     WorkError,
 };
+use acyclic_fs_format::object_reference::GenerationId;
 
 pub(crate) struct FrontierRequest<'a> {
     pub(crate) volume: VolumeId,
@@ -84,70 +85,64 @@ async fn replay_frontier<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         while position.sequence < request.head.0.sequence {
             let facts =
                 replay_facts(authority, &request, position, accounting, cancellation).await?;
-            let result =
-                async {
-                    for (head, object) in &facts.value {
-                        accounting.charge_items(1)?;
-                        let (root, allocation) =
-                            super::read_generation_root_with_limits_and_accounting(
-                                objects,
-                                *object,
-                                request.limits,
-                                accounting,
-                                cancellation,
-                            )
-                            .await?;
-                        let bytes = crate::foundation::usize_to_u64(
-                            root.parents.capacity()
-                                * std::mem::size_of::<
-                                    acyclic_fs_format::object_reference::GenerationId,
-                                >(),
-                        );
-                        let root = Owned::new(root, allocation, bytes);
-                        let result = async {
-                            if root.value.volume_id != request.volume
-                                || root.value.root_file_id != request.base.1.root_file_id
-                            {
-                                return Err(FsError::VolumeMismatch);
-                            }
-                            let (change, allocation) = super::diff_generation_file_tables(
-                                objects,
-                                table,
-                                root.value.file_table,
-                                None,
-                                request.limits,
-                                accounting,
-                                cancellation,
-                            )
-                            .await?;
-                            let bytes = change.retained_bytes()?;
-                            let change = Owned::new(change, allocation, bytes);
-                            if change.value.truncated {
-                                change.retire(accounting)?;
-                                return Err(FsError::InvalidDiff);
-                            }
-                            let maximum = usize::try_from(
-                                request.head.0.sequence.get() - request.base.0.sequence.get(),
-                            )
-                            .map_err(|_| WorkError::Overflow)?;
-                            if let Err(error) =
-                                frontier.changes.ensure_for_push(maximum, accounting)
-                            {
-                                change.retire(accounting)?;
-                                return Err(error);
-                            }
-                            frontier.changes.value.push(change);
-                            table = root.value.file_table;
-                            position = *head;
-                            last_root = Some(*object);
-                            Ok(())
+            let result = async {
+                for (head, object) in &facts.value {
+                    accounting.charge_items(1)?;
+                    let (root, allocation) =
+                        super::read_generation_root_with_limits_and_accounting(
+                            objects,
+                            *object,
+                            request.limits,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    let bytes = crate::foundation::usize_to_u64(
+                        root.parents.capacity() * std::mem::size_of::<GenerationId>(),
+                    );
+                    let root = Owned::new(root, allocation, bytes);
+                    let result = async {
+                        if root.value.volume_id != request.volume
+                            || root.value.root_file_id != request.base.1.root_file_id
+                        {
+                            return Err(FsError::VolumeMismatch);
                         }
-                        .await;
-                        root.retire(accounting).and(result)?;
+                        let (change, allocation) = super::diff_generation_file_tables(
+                            objects,
+                            table,
+                            root.value.file_table,
+                            None,
+                            request.limits,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                        let bytes = change.retained_bytes()?;
+                        let change = Owned::new(change, allocation, bytes);
+                        if change.value.truncated {
+                            change.retire(accounting)?;
+                            return Err(FsError::InvalidDiff);
+                        }
+                        let maximum = usize::try_from(
+                            request.head.0.sequence.get() - request.base.0.sequence.get(),
+                        )
+                        .map_err(|_| WorkError::Overflow)?;
+                        if let Err(error) = frontier.changes.ensure_for_push(maximum, accounting) {
+                            change.retire(accounting)?;
+                            return Err(error);
+                        }
+                        frontier.changes.value.push(change);
+                        table = root.value.file_table;
+                        position = *head;
+                        last_root = Some(*object);
+                        Ok(())
                     }
-                    Ok(())
+                    .await;
+                    root.retire(accounting).and(result)?;
                 }
-                .await;
+                Ok(())
+            }
+            .await;
             facts.retire(accounting).and(result)?;
         }
         if position.digest != request.head.0.digest || last_root != Some(request.head.1) {
