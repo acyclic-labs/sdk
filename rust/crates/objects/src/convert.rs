@@ -377,7 +377,7 @@ pub(crate) fn verified_put(
 /// Lowers a sealed body once, retaining its original bytes and expected receipt.
 pub(crate) fn put_blob(
     body: crate::Sealed,
-    references: Vec<Digest>,
+    references: &[Digest],
 ) -> (wire::PutBlobRequest, (Digest, u64)) {
     let digest = Digest::sealed(&body);
     let expected = (digest, body.bytes().len() as u64);
@@ -385,7 +385,7 @@ pub(crate) fn put_blob(
         wire::PutBlobRequest {
             digest: Some(digest.into()),
             body: bytes::Bytes::from_owner(body.into_bytes()),
-            references: wire_digests(&references),
+            references: wire_digests(references),
         },
         expected,
     )
@@ -397,7 +397,7 @@ pub(crate) fn put_blobs(
 ) -> (wire::PutBlobsRequest, Vec<(Digest, u64)>) {
     let (puts, expected) = requests
         .into_iter()
-        .map(|(body, references)| put_blob(body, references))
+        .map(|(body, references)| put_blob(body, &references))
         .unzip();
     (wire::PutBlobsRequest { puts }, expected)
 }

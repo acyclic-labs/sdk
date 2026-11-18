@@ -327,7 +327,7 @@ impl Blobs for GrpcObjects {
 
     async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let (request, (digest, length)) = convert::put_blob(body, references);
+            let (request, (digest, length)) = convert::put_blob(body, &references);
             let reply = call!(self, put_blob, request, self.transfer_timeout)?;
             convert::verified_put(&reply.0, digest, length, reply.1)
         })

@@ -96,7 +96,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     }
 
     async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        let (request, (digest, length)) = convert::put_blob(body, references);
+        let (request, (digest, length)) = convert::put_blob(body, &references);
         self.publish("blobs/put", request, digest, length).await
     }
 
