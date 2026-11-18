@@ -1,6 +1,6 @@
 //! Original JavaScript request ownership over the canonical binary client.
 use super::{Reply, Transport};
-use crate::{Availability, Blobs, Digest, Error, wire};
+use crate::{Availability, Blobs, Digest, Error, ObjectsMethod, wire};
 use bytes::Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
 use js_sys::{Function, Promise, Reflect, Uint8Array};
@@ -228,7 +228,7 @@ impl Transport for JavaScriptTransport {
     async fn availability(&self, digest: Digest) -> Result<Availability, Error> {
         use crate::availability::framing;
         let request = self.request(
-            "blobs/availability",
+            ObjectsMethod::Availability.http_route(),
             &wire::AvailabilityRequest {
                 digest: Some(digest.into()),
             }
@@ -309,7 +309,7 @@ impl ObjectsV1Request {
         input: &Uint8Array,
     ) -> Result<Self, JsValue> {
         let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
-        let request = if route == "blobs/availability" {
+        let request = if route == ObjectsMethod::Availability.http_route() {
             futures::stream::once(async move {
                 Ok::<_, Error>(
                     crate::route::invoke_stream(blobs.as_ref(), &route, input.into())
