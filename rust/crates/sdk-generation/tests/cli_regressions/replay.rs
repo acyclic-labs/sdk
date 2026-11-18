@@ -41,20 +41,17 @@ fn copy_tree_inner(
 }
 
 pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
-    fn rebase(value: &mut Value, original: &Fixture, relocated: &Fixture) {
-        let scratch = relocated.output.join(".profile-build");
-        let cargo_target = relocated.root.join("target");
+    let scratch = relocated.output.join(".profile-build");
+    let cargo_target = relocated.root.join("target");
+    let roots = [
+        (&original.root, &relocated.root),
+        (&original.output, &relocated.output),
+    ]
+    .map(|(old, new)| (old.to_str().unwrap(), new.to_str().unwrap()));
+    let rebase = |value: &mut Value| {
         rustdoc_paths::visit(value, |_, text| {
-            for (old, new) in [
-                (&original.root, &relocated.root),
-                (&original.output, &relocated.output),
-            ] {
-                if let Some(rebased) = super::paths::rebase(
-                    text,
-                    old.to_str().unwrap(),
-                    new.to_str().unwrap(),
-                    cfg!(windows),
-                ) {
+            for (old, new) in roots {
+                if let Some(rebased) = super::paths::rebase(text, old, new, cfg!(windows)) {
                     let destination = Path::new(&rebased);
                     if (destination.starts_with(&scratch) || destination.starts_with(&cargo_target))
                         && !destination.exists()
@@ -68,7 +65,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
                 }
             }
         });
-    }
+    };
     let manifest_path = original.output.join("generation-manifest.v1.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     let release_path = PathBuf::from(manifest["releaseManifest"].as_str().unwrap());
@@ -104,7 +101,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             let logical = rustdoc_digest(&original_file, &original.root).unwrap();
             let mut value = (*value).clone();
             assert_eq!(digest.as_str().unwrap(), logical);
-            rebase(&mut value, original, relocated);
+            rebase(&mut value);
             let rebased_bytes = serde_json::to_vec(&value).unwrap();
             fs::write(&file, &rebased_bytes).unwrap();
             assert_eq!(
