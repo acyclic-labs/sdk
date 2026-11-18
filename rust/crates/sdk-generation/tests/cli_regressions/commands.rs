@@ -185,15 +185,15 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     {
         return Ok(None);
     }
-    let value = |name: &str| argument_value(command.get_args(), name);
-    let Some(manifest) = value("--manifest-path").and_then(OsStr::to_str) else {
+    let value = |name: &str| argument_value(command.get_args(), name).and_then(OsStr::to_str);
+    let Some(manifest) = value("--manifest-path") else {
         return Ok(None);
     };
     let manifest_path = Path::new(manifest);
-    let Some(package) = value("--package").and_then(|arg| arg.to_str()) else {
+    let Some(package) = value("--package") else {
         return Ok(None);
     };
-    let Some(target) = value("--target").and_then(|arg| arg.to_str()) else {
+    let Some(target) = value("--target") else {
         return Ok(None);
     };
     let env = |name: &str| command_env(command, name);
