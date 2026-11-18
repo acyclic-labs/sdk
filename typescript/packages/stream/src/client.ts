@@ -73,13 +73,13 @@ export class StreamClient {
   }
   bytes(path: string): Stream<Uint8Array> { return new Stream(this.provider, path, bytesCodec); }
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
-    return this.provider.inspectIdempotency(key.slice() as IdempotencyKey);
+    return this.provider.inspectIdempotency(snapshotBytes(key) as IdempotencyKey);
   }
   heads(request: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> { return this.provider.heads(structuredClone(request)); }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const { parent, after, offset, hierarchyVersion, limit } = request;
     const origin = { limit, ...(offset === undefined ? {} : { offset }), ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
-    const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
+    const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: snapshotBytes(hierarchyVersion) as CommitId }) };
     validateChildCursor(authored);
     positiveInteger(authored.limit, "limit");
     const page = await this.provider.childrenPage(authored);
@@ -154,7 +154,7 @@ export class StreamClient {
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
   }
-  readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId.slice() as CommitId); }
+  readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(snapshotBytes(commitId) as CommitId); }
 }
 
 /** One exact keyed submission. Waiters share one Promise and never replay it. */

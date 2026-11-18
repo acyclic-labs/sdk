@@ -100,11 +100,11 @@ export class DefaultStreamProvider implements StreamProvider {
   }
 
   inspectIdempotency(key: Parameters<StreamProvider["inspectIdempotency"]>[0]) {
-    const authored = key.slice() as typeof key;
+    const authored = snapshotBytes(key) as typeof key;
     return this.provider().then(provider => provider.inspectIdempotency(authored));
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
-    const authored = credential.slice();
+    const authored = snapshotBytes(credential);
     const provider = await this.provider();
     if (provider.registerCredential === undefined) throw new StreamError("unsupported", "provider does not support session credentials");
     await provider.registerCredential(slot, authored);
@@ -159,7 +159,7 @@ export class DefaultStreamProvider implements StreamProvider {
     return this.provider().then(provider => provider.commit(authoredRequest, authoredOptions));
   }
   readCommit(id: Parameters<StreamProvider["readCommit"]>[0]) {
-    const authored = id.slice() as typeof id;
+    const authored = snapshotBytes(id) as typeof id;
     return this.provider().then(provider => provider.readCommit(authored));
   }
   createToken(request: Parameters<NonNullable<StreamProvider["createToken"]>>[0]) {
