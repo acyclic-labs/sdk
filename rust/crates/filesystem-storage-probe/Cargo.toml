@@ -11,6 +11,7 @@ description = "Native filesystem storage capability discovery"
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/storage_capabilities_linux.rs"]
 "@platforms//os:macos" = ["src/native_mount/storage_capabilities_macos.rs"]
+"@platforms//os:windows" = ["src/native_mount/storage_capabilities_windows.rs"]
 
 [dependencies]
 thiserror.workspace = true
