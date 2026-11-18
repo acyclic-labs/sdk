@@ -26,8 +26,8 @@ proptest! {
     #[test]
     fn marker_lines_survive_line_ending_round_trip(lines in prop::collection::vec(
         prop_oneof!["[^\r\n]{0,24}", prop::sample::select(vec![
-            "<<<<<<< ours".to_string(), "||||||| base".to_string(),
-            "=======".to_string(), ">>>>>>> theirs".to_string(),
+            "<<<<<<< ours".to_owned(), "||||||| base".to_owned(),
+            "=======".to_owned(), ">>>>>>> theirs".to_owned(),
         ])], 0..12)) {
         let lf = lines.join("\n");
         let crlf = lines.join("\r\n");

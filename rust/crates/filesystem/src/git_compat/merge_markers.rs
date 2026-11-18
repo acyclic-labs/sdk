@@ -27,8 +27,8 @@ impl Scanner {
                 } else {
                     byte == b'\r'
                 };
-                if self.length < 8 {
-                    self.prefix[self.length] = byte;
+                if let Some(slot) = self.prefix.get_mut(self.length) {
+                    *slot = byte;
                     self.length += 1;
                     if self.length == 8 {
                         self.found |=
