@@ -2149,25 +2149,17 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             async {
                 self.scrubbed().await?;
                 let mut usage = Usage::default();
-                let mut after: Option<String> = None;
-                loop {
-                    let page = self
-                        .medium
-                        .list(&format!("{}e/", self.state.prefix), after.as_deref(), PAGE)
-                        .await
-                        .map_err(medium)?;
-                    for (key, _) in &page {
-                        let digest = self.digest_from_key(key)?;
+                let mut pages = self.pages(format!("{}e/", self.state.prefix));
+                while let Some(page) = pages.next().await? {
+                    for (key, _) in page {
+                        let digest = self.digest_from_key(&key)?;
                         if let Some(envelope) = self.blob(&digest).await? {
                             usage.blobs += 1;
                             usage.unique_bytes += envelope.stored;
                         }
                     }
-                    if page.len() < PAGE {
-                        return Ok(usage);
-                    }
-                    after = page.last().map(|(key, _)| key.clone());
                 }
+                Ok(usage)
             }
         )
     }
