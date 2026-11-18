@@ -172,11 +172,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
     let imported_lock = fixture.path().join(directory).join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
-    fixture_archive::pack(&fixture.path().join(directory), &archive);
-    release.checksum = crate::sha256_file(&archive)
-        .unwrap()
-        .trim_start_matches("sha256:")
-        .into();
+    release.checksum = pack_registry_archive(&fixture.path().join(directory), &archive);
     let mut identity = ArchiveSource {
         package: release.package.clone(),
         version: release.num.clone(),
@@ -352,11 +348,8 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
     );
     fs::write(manifest, original_manifest).unwrap();
     fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
-    fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
-    release.checksum = crate::sha256_file(&archive)
-        .unwrap()
-        .trim_start_matches("sha256:")
-        .into();
+    release.checksum =
+        pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
             .unwrap_err()
@@ -480,11 +473,8 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
         let archived = fixture.path().join("historical-fixture-0.1.0").join(name);
         fs::create_dir_all(archived.parent().unwrap()).unwrap();
         fs::copy(&path, &archived).unwrap();
-        fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
-        release.checksum = crate::sha256_file(&archive)
-            .unwrap()
-            .trim_start_matches("sha256:")
-            .into();
+        release.checksum =
+            pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
         let (_, files) =
             verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
         assert!(files.contains_key(name));
