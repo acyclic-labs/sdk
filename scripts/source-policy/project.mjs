@@ -215,7 +215,17 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    // token. Keep their identity in the graph rather than dropping the binding.
    return file + ':' + node.kind + ':' + (index ?? digest(node.getText()));
   }).sort();
-  const unit = digest(declarations.map(node => required(units, node.getSourceFile().fileName.slice(1)).fingerprint).sort());
+  const unit = digest(declarations.map(node => {
+   const file = node.getSourceFile().fileName.slice(1);
+   const source = required(units, file);
+   // Top-level functions have no enclosing executable context. Hash their
+   // declaration and let graph edges account for the declarations they use.
+   if (!ts.isFunctionDeclaration(node) || !ts.isSourceFile(node.parent)) return source.fingerprint;
+   const start = required(required(indices, file), node.getStart());
+   let end = start;
+   while (end < source.stream.length && source.stream[end].start < node.end) end++;
+   return digest(source.stream.slice(start, end).map(token => [token.kind, token.value]));
+  }).sort());
   // A named default export and its local spelling can be distinct symbols for
   // the same declaration. Declaration identity joins them without joining names
   // in unrelated lexical scopes or source files.
