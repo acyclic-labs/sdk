@@ -10,7 +10,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateChildrenPageRequest, validateHeadsRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateHeadsRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -174,7 +174,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
-    const input = await validateWireRequest({ kind: "fork" as const, source, destination, options: structuredClone(options) });
+    const input = await validateForkRequest(source, destination, options);
     const value = await this.operation("fork", this.request(client => client.forkResult(Buffer.from(input))));
     return this.project("fork", value) as ForkReceipt;
   }

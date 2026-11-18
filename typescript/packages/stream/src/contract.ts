@@ -210,6 +210,10 @@ export function validateHeadsRequest(options: import("./types.js").HeadsRequest)
   return validateWireRequest({ ...options, kind: "heads" });
 }
 
+export function validateForkRequest(source: string, destination: string, options: ForkOptions): Promise<Uint8Array> {
+  return validateWireRequest({ kind: "fork", source, destination, options });
+}
+
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
   let input: Uint8Array;
   try {

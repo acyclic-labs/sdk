@@ -17,7 +17,7 @@ import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/p
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { StreamError, type StreamRefusal } from "./types.js";
 import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
@@ -282,8 +282,7 @@ export class GrpcStreamProvider implements StreamProvider {
     return result;
   }
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
-    const request = { kind: "fork" as const, source, destination, options: structuredClone(options) };
-    const input = await validateWireRequest(request);
+    const input = await validateForkRequest(source, destination, options);
     const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, input)));
     const receipt = this.#project<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));
     this.#sessions.observe(receipt.revision);

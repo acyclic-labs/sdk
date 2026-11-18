@@ -9,7 +9,7 @@ import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateHeadsRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateHeadsRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -71,8 +71,7 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
-    const authored = structuredClone(options);
-    const request = await validateWireRequest({ kind: "fork", source, destination, options: authored });
+    const request = await validateForkRequest(source, destination, options);
     return this.#project<ForkReceipt>("fork", request);
   }
 
