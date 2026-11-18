@@ -2119,7 +2119,9 @@ name = "acyclic-stream-wire"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-decimal-u64",
  "acyclic-proto-build",
+ "base64 0.23.1",
  "prost",
  "serde_json",
  "tonic",

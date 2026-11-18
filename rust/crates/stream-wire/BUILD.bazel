@@ -67,6 +67,8 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/decimal-u64:acyclic_decimal_u64",
+        "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//tonic-0.14.9",
@@ -140,6 +142,8 @@ rust_binary(
         ":build_script",
     ] + [
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/decimal-u64:acyclic_decimal_u64",
+        "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//tonic-0.14.9",
@@ -173,6 +177,8 @@ rust_binary(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/decimal-u64:acyclic_decimal_u64",
+        "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//tonic-0.14.9",
@@ -206,6 +212,8 @@ rust_binary(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
+        "//rust/crates/decimal-u64:acyclic_decimal_u64",
+        "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//tonic-0.14.9",
@@ -269,6 +277,8 @@ rust_library(
         ":build_script_wasm",
     ] + [
         "//rust/crates/auth-action:acyclic_auth_action_wasm",
+        "//rust/crates/decimal-u64:acyclic_decimal_u64_wasm",
+        "@wasm_crates//base64_0_23_1-0.23.1",
         "@wasm_crates//prost-0.14.4",
         "@wasm_crates//serde_json-1.0.154",
         "@wasm_crates//tonic-0.14.9",

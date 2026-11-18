@@ -5,6 +5,8 @@ pub mod authorization;
 pub mod changes;
 /// Canonical record header grammar.
 pub mod headers;
+/// Hosted HTTP field and receipt validation.
+pub mod http_fields;
 /// Hosted token operation vocabulary derived from Stream admission.
 pub mod token;
 /// Canonical input grammar for Stream paths and retry identities.

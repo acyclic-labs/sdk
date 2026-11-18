@@ -160,7 +160,7 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
 
 mod http {
     use super::*;
-    use crate::http_validation::{
+    use acyclic_stream_wire::http_fields::{
         array, boolean, bytes, field, id, key, object, path, string, u64_string,
     };
 
