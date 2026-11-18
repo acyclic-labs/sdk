@@ -19,7 +19,7 @@ prompt to recover its original answer. It uses the catalog default without ambie
 settings and refuses interactive approval requests. Its model and tools execute through the harness:
 
 ```sh
-cargo run --locked -p acyclic-plugin --example embedded -- WORKSPACE CATALOG STATE OPERATION PROMPT
+bazel run //plugin:embedded_example -- WORKSPACE CATALOG STATE OPERATION PROMPT
 ```
 
 `acyclic-conformance::inference` exercises streaming, immediate response release
