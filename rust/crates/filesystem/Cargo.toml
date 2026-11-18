@@ -87,6 +87,7 @@ test-without-build-script = [
     "extent_codec",
     "metadata_codec",
     "tree_codec",
+    "directory_tree",
     "checkout_cancellation",
     "checkout_content",
     "checkout_live",
@@ -118,6 +119,7 @@ test-narrow-runfiles = [
     "extent_codec",
     "metadata_codec",
     "tree_codec",
+    "directory_tree",
     "checkout_cancellation",
     "checkout_content",
     "checkout_live",
@@ -166,7 +168,8 @@ extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_s
 extent_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
 metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
 metadata_stamps = ["acyclic_fs_format", "proptest"]
-tree_codec = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "hex", "proptest", "tokio"]
+tree_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
+directory_tree = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 memory_authority = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
 memory_objects = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
@@ -362,6 +365,10 @@ path = "tests/metadata_stamps.rs"
 [[test]]
 name = "tree_codec"
 path = "tests/tree_codec.rs"
+
+[[test]]
+name = "directory_tree"
+path = "tests/directory_tree.rs"
 required-features = ["test-support"]
 
 [[test]]
