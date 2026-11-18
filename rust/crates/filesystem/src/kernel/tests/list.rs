@@ -6,12 +6,17 @@ use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
 
+use crate::test_support::put_tree_page;
 use crate::test_support::put_tree_page as put;
 use crate::test_support::tree_entries::{entry as tree_entry, name};
 
 #[path = "../../../tests/support/listing_tree.rs"]
 mod fixture;
 use fixture::{entry, tree};
+
+#[path = "../../../tests/support/packed_tree.rs"]
+mod packed;
+use packed::packed_tree;
 
 #[tokio::test]
 async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
@@ -328,27 +333,10 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
     let mut costs = Vec::new();
     for population in [1_u32, 100_000] {
         let store = MemoryObjectStore::default();
-        let mut level = Vec::new();
-        for start in (0..population).step_by(32) {
-            let values = (start..(start + 32).min(population))
-                .map(|index| entry(&format!("a{index:06}"), 1))
-                .collect::<Result<Vec<_>, _>>()?;
-            let first = values[0].name.clone();
-            let page = put(&store, &TreePage::Leaf(values), 32).await?;
-            level.push(Child { first, page });
-        }
-        while level.len() > 1 {
-            let mut next = Vec::new();
-            let mut children = level.into_iter();
-            while children.len() != 0 {
-                let batch: Vec<_> = children.by_ref().take(32).collect();
-                let first = batch[0].first.clone();
-                let page = put(&store, &TreePage::Internal(batch), 32).await?;
-                next.push(Child { first, page });
-            }
-            level = next;
-        }
-        let foreign = level.pop().ok_or("foreign subtree absent")?;
+        let entries = (0..population).map(|index| entry(&format!("a{index:06}"), 1));
+        let foreign = packed_tree(&store, entries, 32)
+            .await?
+            .ok_or("foreign subtree absent")?;
         let selected = put(
             &store,
             &TreePage::Leaf(vec![
