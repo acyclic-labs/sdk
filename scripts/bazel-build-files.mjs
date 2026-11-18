@@ -28,13 +28,21 @@ if (rootAt >= 0) args.splice(rootAt, 2);
 const runnerAt = args.indexOf("--test-runner");
 const testRunner = runnerAt < 0 ? "//rust/crates/test-runner:isolated_test.bzl" : args[runnerAt + 1];
 if (runnerAt >= 0) args.splice(runnerAt, 2);
+const sourceAt = args.indexOf("--source-repository");
+const sourceRepository = sourceAt < 0 ? null : args.splice(sourceAt, 4).slice(1);
+const [gitSource, sourceRoot, repositoryName] = sourceRepository ?? [];
+if (sourceRepository && (!gitSource?.startsWith("git+") || !sourceRoot || !/^@[A-Za-z_][A-Za-z0-9_.-]*$/.test(repositoryName ?? ""))) {
+  throw new Error("STEP_FAILED bazel-build-files: expected --source-repository GIT_SOURCE DIRECTORY @REPOSITORY");
+}
+const sourceDirectory = sourceRoot ? path.resolve(sourceRoot) : null;
+const sourceRoots = sourceDirectory ? {[gitSource]: sourceDirectory} : {};
 // A generation job declares one output manifest instead of changing its source checkout.
 const outputAt = args.indexOf("--output");
 const output = outputAt < 0 ? null : path.resolve(args[outputAt + 1]);
 if (outputAt >= 0) args.splice(outputAt, 2);
 const mode = args[0];
 if (args.length !== 1 || (mode !== "write" && mode !== "check") || (output && mode !== "write")) {
-  throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR] [--test-runner LABEL] write [--output FILE]|check; recovery: node scripts/bazel-build-files.mjs write");
+  throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR] [--test-runner LABEL] [--source-repository GIT_SOURCE DIRECTORY @REPOSITORY] write [--output FILE]|check; recovery: node scripts/bazel-build-files.mjs write");
 }
 assertRegistryPinsCurrent(root);
 
@@ -114,7 +122,7 @@ const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.to
 
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
 // resolves third-party features its own way, so universeSpecs() pins each crate's all-features set.
-const runs = TRIPLES.map(triple => workspaceGraph(root, triple));
+const runs = TRIPLES.map(triple => workspaceGraph(root, triple, {sourceRoots}));
 // Published browser modules use a selected production feature closure.
 async function wasmResolution() {
   const producer = path.join(root, "scripts/wasm-packages.mjs");
@@ -619,6 +627,15 @@ const transitiveSpokes = new Set(runs.flatMap(run => run.resolve.nodes)
 // The hub names a crate by a splicing dependency key, with dashes as underscores, and its version.
 const hubLabel = id => {
   const p = packages.get(id), { name, version } = p;
+  if (sourceDirectory && (p.source === gitSource || p.source?.split(/[?#]/)[0] === gitSource)) {
+    const lib = libOf(p);
+    if (!p.manifest_path || !lib) throw new Error(`Missing pinned source library ${name}@${version} in ${repositoryName}`);
+    const pkg = path.relative(sourceDirectory, path.dirname(p.manifest_path));
+    if (path.isAbsolute(pkg) || pkg === ".." || pkg.startsWith(`..${path.sep}`)) {
+      throw new Error(`Pinned source library ${name}@${version} is outside ${repositoryName}`);
+    }
+    return `${repositoryName}//${pkg.replaceAll(path.sep, "/")}:${crateName(lib)}`;
+  }
   if (!universeIds.has(id)) return `@${spokeRepo(p)}//:${crateName(libOf(p))}`;
   return `@${HUB}//${spliceKey.has(id) ? spliceKey.get(id).replaceAll("-", "_") : name}-${version}`;
 };
