@@ -170,7 +170,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 MergeResolution::Binding(file_id) => {
                     crate::kernel::MergeConflictResolution::Binding(*file_id)
                 }
-                MergeResolution::Unresolved => {
+                _ => {
                     return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
                 }
             };

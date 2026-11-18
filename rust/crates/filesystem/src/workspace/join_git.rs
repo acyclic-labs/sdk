@@ -229,9 +229,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     .stage_merge_regular_record(volume, template, Bytes::copy_from_slice(bytes))
                     .await?
             }
-            MergeResolution::Metadata(_)
-            | MergeResolution::Binding(_)
-            | MergeResolution::Unresolved => {
+            _ => {
                 return Err(DrivenJoinError::UnsupportedResolution(ConflictKey::File(
                     file_id,
                 )));

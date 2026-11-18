@@ -166,6 +166,7 @@ pub(super) fn resolution_matches_conflict(key: &ConflictKey, resolution: &MergeR
         }
         MergeResolution::Metadata(_) => matches!(key, ConflictKey::Metadata(_)),
         MergeResolution::Binding(_) => matches!(key, ConflictKey::Binding { .. }),
+        _ => false,
     }
 }
 
