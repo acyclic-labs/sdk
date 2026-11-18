@@ -17,16 +17,16 @@ if choice == "operation-admission":
                "-E", "test(=session::authority::tests::declared_method_credentials_match_session_admission) | test(=codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle)",
                "--profile", "ci", "--no-fail-fast", "--retries", "0"]
     mutations = [
-        ("authorization.rs", b"Read => FOLLOW, Follow;",
+        ("stream-wire/src/authorization.rs", b"Read => FOLLOW, Follow;",
          b"Read => rpc::StreamRpc::Read.authorization(), Exact;", "Read, removed None", False),
-        ("lib/token.rs", b'Read => "read", StreamMethod::Read.authorization().admitted,',
-         b'Read => "read", &[],', "Read, removed None", False),
-        ("lib/token.rs", b"_ => Err(crate::StreamError::InvalidArgument),",
+        ("stream-wire/src/token.rs", b'Read => "read", StreamRpc::Read.authorization().admitted,',
+         b'Read => "read", &[],', "right: [Streams(Read), Streams(Tail)]", False),
+        ("stream-wire/src/token.rs", b"_ => Err(UnknownTokenOperation),",
          b"_ => Ok(Self::Read),", "token operation decoding", False),
-        ("authorization.rs", b"Head => rpc::StreamRpc::Head.authorization(), Exact;",
+        ("stream-wire/src/authorization.rs", b"Head => rpc::StreamRpc::Head.authorization(), Exact;",
          b"Head => MethodAuth { admitted: &[FOLLOW_ACTION, Action::Streams(StreamsAction::Read)], ..rpc::StreamRpc::Head.authorization() }, Exact;",
          "Session observations require exactly one declared action", True),
-        ("codec_fuzz.rs", b"let mut seeds = Vec::new();\n    for operation in TokenOperation::ALL {",
+        ("stream/src/codec_fuzz.rs", b"let mut seeds = Vec::new();\n    for operation in TokenOperation::ALL {",
          b"let mut seeds = Vec::new();\n    for operation in &[] as &[TokenOperation] {",
          "token corpus omitted declared operation", False),
     ]
@@ -34,7 +34,7 @@ if choice == "operation-admission":
     try:
         subprocess.run(command, cwd=repository, check=True)
         for name, check, replacement, assertion, compile_refusal in mutations:
-            source = repository / "rust/crates/stream/src" / name
+            source = repository / "rust/crates" / name
             original = source.read_bytes()
             step = "detect planted token or method defect in " + name
             try:
