@@ -295,7 +295,7 @@ fn real_binding_rustdoc_preserves_documentation_and_ownership_when_requested() {
     let items = extract_owned_api(
         path,
         &owner,
-        profile_id,
+        profile_id.clone(),
         &owner.rustdoc_package.replace('-', "_"),
     )
     .unwrap();
@@ -315,7 +315,7 @@ fn real_binding_rustdoc_preserves_documentation_and_ownership_when_requested() {
         item.key.kind == "struct" && item.key.path.starts_with("acyclic_fs_napi::Native")
     }));
     if let Some(metadata) = cargo_metadata_fixture() {
-        assert_binding_sidecar(metadata, profile, items);
+        assert_binding_sidecar(metadata, &BTreeMap::from([(profile_id, profile)]), items);
     }
 }
 
@@ -350,8 +350,11 @@ fn real_wasm_binding_rustdoc_retains_browser_owned_api_when_requested() {
     });
 }
 
-fn assert_binding_sidecar(metadata: &Metadata, profile: ProfileSpec, items: Vec<OwnedApiItem>) {
-    let profile_id = profile.id();
+fn assert_binding_sidecar(
+    metadata: &Metadata,
+    profiles: &BTreeMap<ProfileId, ProfileSpec>,
+    items: Vec<OwnedApiItem>,
+) {
     let api_items = items
         .iter()
         .map(|item| crate::ApiItem {
@@ -401,8 +404,7 @@ fn assert_binding_sidecar(metadata: &Metadata, profile: ProfileSpec, items: Vec<
             guides: Vec::new(),
         }],
     };
-    let profiles = BTreeMap::from([(profile_id, profile)]);
-    let sidecar = project_into_docs(&data, metadata, items, &profiles).unwrap();
+    let sidecar = project_into_docs(&data, metadata, items, profiles).unwrap();
     assert_eq!(sidecar.schema, PROFILE_AVAILABILITY_SCHEMA);
     let native_binding = sidecar
         .entries
