@@ -45,13 +45,7 @@ pub(crate) fn condition_from_wire(
         wire::commit_condition::Condition::Head(value) => Ok(CommitCondition::Head {
             path: path(value.path)?,
             expected: value.expected,
-            commit_id: CommitId::from_bytes(
-                value
-                    .commit_id
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| StreamError::InvalidArgument)?,
-            ),
+            commit_id: argument_commit_id(&value.commit_id)?,
         }),
         wire::commit_condition::Condition::Tail(value) => Ok(CommitCondition::Tail {
             path: path(value.path)?,
@@ -205,8 +199,11 @@ pub fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOut
 
 /// Converts a wire commit-id byte sequence into the fixed-width domain id.
 pub fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
-    let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
-    Ok(CommitId::from_bytes(bytes))
+    CommitId::try_from(value).map_err(|_| StreamError::Unavailable)
+}
+
+fn argument_commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
+    commit_id(value).map_err(|_| StreamError::InvalidArgument)
 }
 
 pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceipt, StreamError> {
@@ -338,13 +335,7 @@ pub fn children_page_from_wire(
         after: value.after.map(path).transpose()?,
         hierarchy_version: value
             .hierarchy_version
-            .map(|bytes| -> Result<_, StreamError> {
-                let array: [u8; 32] = bytes
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| StreamError::InvalidArgument)?;
-                Ok::<_, StreamError>(crate::CommitId::from_bytes(array))
-            })
+            .map(|bytes| argument_commit_id(&bytes))
             .transpose()?,
         limit: value.limit,
     })
@@ -686,20 +677,8 @@ pub(crate) fn conflict_from_wire(
         }),
         wire::commit_conflict::Conflict::Head(value) => Ok(CommitConflict::Head {
             path: path(value.path)?,
-            expected: CommitId::from_bytes(
-                value
-                    .expected
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| StreamError::InvalidArgument)?,
-            ),
-            actual: CommitId::from_bytes(
-                value
-                    .actual
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| StreamError::InvalidArgument)?,
-            ),
+            expected: argument_commit_id(&value.expected)?,
+            actual: argument_commit_id(&value.actual)?,
         }),
         wire::commit_conflict::Conflict::Tail(value) => Ok(CommitConflict::Tail {
             path: path(value.path)?,

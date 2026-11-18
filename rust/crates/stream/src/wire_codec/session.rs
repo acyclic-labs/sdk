@@ -391,12 +391,9 @@ pub fn record_anchor(cursor: &wire::SessionCursor) -> Result<Option<CommitId>, S
             )
         };
     }
-    let anchor = cursor
-        .opaque
-        .as_ref()
-        .try_into()
-        .map_err(|source| StreamError::InvalidArgument.with_source(source))?;
-    Ok(Some(CommitId::from_bytes(anchor)))
+    CommitId::try_from(cursor.opaque.as_ref())
+        .map(Some)
+        .map_err(|source| StreamError::InvalidArgument.with_source(source))
 }
 
 /// Opens the platform's ALL-record session route. Anchor checking and subscription

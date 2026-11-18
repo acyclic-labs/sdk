@@ -14,12 +14,8 @@ fn parse_bytes(value: &Value) -> Result<Bytes, StreamError> {
         .map_err(|_| StreamError::Unavailable)
 }
 fn parse_id(value: &Value) -> Result<CommitId, StreamError> {
-    Ok(CommitId::from_bytes(
-        parse_bytes(value)?
-            .as_ref()
-            .try_into()
-            .map_err(|error| StreamError::Unavailable.with_source(error))?,
-    ))
+    CommitId::try_from(parse_bytes(value)?.as_ref())
+        .map_err(|error| StreamError::Unavailable.with_source(error))
 }
 // An envelope's records belong to the mutation's path, which spells none.
 fn parse_records(value: &Value, owner: &StreamPath) -> Result<Vec<Record>, StreamError> {
