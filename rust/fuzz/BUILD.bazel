@@ -836,8 +836,8 @@ rust_binary(
     crate_root = "fuzz_targets/process_host_arguments.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/native-runtime:src/process_tree/external_host/corpus/linux-arguments.json",
-        "//rust/crates/native-runtime:src/process_tree/external_host/corpus/linux-endpoints.json",
+        "//rust/crates/process-host-arguments:tests/corpus/linux-arguments.json",
+        "//rust/crates/process-host-arguments:tests/corpus/linux-endpoints.json",
     ],
     edition = "2024",
     version = "0.0.0",

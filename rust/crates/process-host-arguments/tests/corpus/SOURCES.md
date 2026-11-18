@@ -29,7 +29,7 @@ admission and duplicate-flag refusal. The original recorded status is an oracle
 only for these exact captured bytes; mutated records do not inherit it.
 
 ```sh
-cargo run --locked -p acyclic-sdk-fuzz --no-default-features --features process-arguments --bin process_host_arguments -- rust/crates/native-runtime/src/process_tree/external_host/corpus/linux-arguments.json
+cargo run --locked -p acyclic-sdk-fuzz --no-default-features --features process-arguments --bin process_host_arguments -- rust/crates/process-host-arguments/tests/corpus/linux-arguments.json
 ```
 
 Passing a file replays that corpus without an open-ended fuzzing campaign.

@@ -1822,6 +1822,10 @@ dependencies = [
 [[package]]
 name = "acyclic-process-host-arguments"
 version = "0.2.0"
+dependencies = [
+ "proptest",
+ "serde_json",
+]
 
 [[package]]
 name = "acyclic-process-identity"

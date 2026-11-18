@@ -76,13 +76,11 @@ fn check(input: Vec<OsString>) -> bool {
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     // Reuse the original executable's kept argv/status corpus verbatim.
     let original = data
-        == include_bytes!(
-            "../../crates/native-runtime/src/process_tree/external_host/corpus/linux-arguments.json"
-        )
+        == include_bytes!("../../crates/process-host-arguments/tests/corpus/linux-arguments.json")
         || cfg!(unix)
             && data
                 == include_bytes!(
-                    "../../crates/native-runtime/src/process_tree/external_host/corpus/linux-endpoints.json"
+                    "../../crates/process-host-arguments/tests/corpus/linux-endpoints.json"
                 );
     if let Ok(records) = serde_json::from_slice::<Vec<serde_json::Value>>(data) {
         for record in records {
