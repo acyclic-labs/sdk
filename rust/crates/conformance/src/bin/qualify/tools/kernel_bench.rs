@@ -2,7 +2,10 @@ use super::*;
 
 pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
     use acyclic_fs::AuthoredMutation;
-    use acyclic_fs::kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath};
+    use {
+        acyclic_fs::kernel::{LogicalName, NameEncoding, NamespacePath},
+        acyclic_fs_format::metadata::FileMetadata,
+    };
 
     let work = PathBuf::from(args.first().ok_or("kernel-bench: missing <work>")?);
     let files: u64 = args.get(1).map_or(Ok(4_000), |value| value.parse())?;

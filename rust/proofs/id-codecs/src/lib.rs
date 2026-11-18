@@ -4,7 +4,8 @@ mod wire_metadata {
     #[kani::proof]
     #[kani::unwind(4)]
     fn scalar_metadata_preserves_all_facts_and_refuses_missing_opaque_bodies() {
-        use acyclic_fs::{WorkspaceMetadata, binding_contract::*, kernel::MetadataField};
+        use acyclic_fs::{WorkspaceMetadata, binding_contract::*};
+        use acyclic_fs_format::metadata::MetadataField;
         let input = WorkspaceMetadata {
             posix_mode: kani::any(),
             posix_uid: kani::any(),

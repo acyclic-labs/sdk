@@ -1,9 +1,9 @@
-#[cfg(unix)]
-use acyclic_fs::kernel::{FileMetadata, MetadataField};
 use acyclic_fs::{
     CancellationToken, Fs, HostPathReplacement, HostPathRestore, IdempotencyKey,
     MaterializeOptions, TransactionCommit,
 };
+#[cfg(unix)]
+use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_fs_work::performance::WorkBudget;
 use std::{error::Error, path::Path};
 

@@ -270,7 +270,7 @@ fn transaction_operations_retain_only_owned_polling_handles() {
             transaction.create_file(
                 "/file",
                 acyclic_stream::OwnedBytes::new(),
-                acyclic_fs::kernel::FileMetadata::default(),
+                acyclic_fs_format::metadata::FileMetadata::default(),
                 acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 cancellation,
             )

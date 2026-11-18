@@ -92,12 +92,6 @@ mod write;
 
 use acyclic_fs::MountPublication;
 use acyclic_fs::binding_contract::attribute_class_name as native_attribute_class_name;
-use acyclic_fs::kernel::{
-    AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
-    FileMetadata, FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding,
-    NamespacePath, RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata,
-    encode_file_metadata,
-};
 use acyclic_fs::model::{
     AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeLimits,
@@ -116,6 +110,14 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use {
+    acyclic_fs::kernel::{
+        AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
+        FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding, NamespacePath,
+        RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata, encode_file_metadata,
+    },
+    acyclic_fs_format::metadata::FileMetadata,
+};
 use {
     acyclic_fs::{
         ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, ConflictSide,

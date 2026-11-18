@@ -1,11 +1,12 @@
 //! Restore a real generation and retain its full reference at the shipping command.
+use acyclic_fs_format::metadata::FileMetadata;
 use acyclic_native_runtime::ProcessCommand;
 use std::{path::Path, time::Duration};
 use {
     acyclic_fs::{
         AuthoredMutation, CancellationToken, Fs, Lifecycle, LivePublicationObservation,
         LocalOptions, PublicationPermit, VolumeConfig,
-        kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath},
+        kernel::{LogicalName, NameEncoding, NamespacePath},
         model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
     },
     acyclic_fs_format::identity::OperationId,

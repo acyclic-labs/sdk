@@ -676,7 +676,7 @@ proptest! {
         cap.expires_at = Some(110);
         for grant in cap.layers.iter_mut().flatten() { grant.resource.generations = Generations::All; }
         let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([byte; 32]));
-        let revision = |byte| acyclic_fs::kernel::MetadataField::Value(acyclic_fs_format::object_reference::ObjectId { storage: None,
+        let revision = |byte| acyclic_fs_format::metadata::MetadataField::Value(acyclic_fs_format::object_reference::ObjectId { storage: None,
             kind: acyclic_fs_format::object_reference::ObjectKind::TreePage, digest: acyclic_fs_format::identity::Digest::from_bytes(byte),
         });
         let compile = || PathTrie::compile(&policy, &caller, Resource { head: 1, ..resource(&caller.lineage, "", 1) }, Context { now: 100, approvals: 0 }, &cap)

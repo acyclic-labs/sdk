@@ -21,7 +21,7 @@ async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_cap
         .ok_or("late.txt was not captured")?;
     assert_eq!(
         captured.metadata.modified_ns,
-        crate::kernel::MetadataField::Value(978_307_200_000_000_000),
+        acyclic_fs_format::metadata::MetadataField::Value(978_307_200_000_000_000),
         "the edit made after the boundary was lost"
     );
     session.stop()?;
@@ -51,7 +51,8 @@ async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std:
             .metadata
             .modified_ns;
         if on_disk != wanted
-            || recorded != crate::kernel::MetadataField::Value(1_700_000_000_000_000_000)
+            || recorded
+                != acyclic_fs_format::metadata::MetadataField::Value(1_700_000_000_000_000_000)
         {
             lost.push((index, on_disk, recorded));
         }

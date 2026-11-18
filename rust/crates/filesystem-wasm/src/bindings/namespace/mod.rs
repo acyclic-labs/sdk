@@ -16,7 +16,7 @@ impl BrowserCheckout {
                 file_id: None,
                 path: path,
                 bytes: (bytes).into(),
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         mutation_created(&receipt)
@@ -33,7 +33,7 @@ impl BrowserCheckout {
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
                 file_id: None,
                 path: path,
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         mutation_created(&receipt)
@@ -53,7 +53,7 @@ impl BrowserCheckout {
                 file_id: None,
                 path: path,
                 target: (target).into(),
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         mutation_created(&receipt)
@@ -73,7 +73,7 @@ impl BrowserCheckout {
                 file_id: None,
                 path: path,
                 kind: kind,
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         mutation_created(&receipt)
@@ -100,7 +100,7 @@ impl BrowserCheckout {
                 kind: kind,
                 major: major,
                 minor: minor,
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         mutation_created(&receipt)
@@ -119,7 +119,7 @@ impl BrowserCheckout {
                 file_id: None,
                 path: path,
                 payload: (bytes::Bytes::from(payload)).into(),
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         mutation_created(&receipt)
@@ -141,8 +141,8 @@ impl BrowserCheckout {
             mutate(vec![acyclic_fs::kernel::Mutation::Remove {
                 path: path,
                 expected_file_id: (expected).map_or(
-                    acyclic_fs::kernel::MetadataField::Unavailable,
-                    acyclic_fs::kernel::MetadataField::Value,
+                    acyclic_fs_format::metadata::MetadataField::Unavailable,
+                    acyclic_fs_format::metadata::MetadataField::Value,
                 ),
             }],)
         )?;

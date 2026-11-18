@@ -1,6 +1,9 @@
 use super::*;
-use acyclic_fs::kernel::{
-    FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot, TreePage,
+use {
+    acyclic_fs::kernel::{
+        FileKind, FilePayload, FileRecord, FileTablePage, GenerationRoot, TreePage,
+    },
+    acyclic_fs_format::metadata::FileMetadata,
 };
 use {
     acyclic_fs::{AuthorityWork, ObjectSealer},

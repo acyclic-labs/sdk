@@ -14,10 +14,10 @@ use std::time::Instant;
 
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
 use acyclic_fs::facade::FsWork;
-use acyclic_fs::kernel::{FileMetadata, MetadataField};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
 };
+use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_stream::OwnedBytes;
 use serde_json::json;
 use {

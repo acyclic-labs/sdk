@@ -4,25 +4,10 @@ use super::allocation::KernelAccounting;
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{AsyncObjectStore, CancellationToken, FsError, WorkCounters};
+use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 
 const DOMAIN: &[u8; 8] = b"ACYFSMET";
 const VERSION: u16 = 1;
-
-impl FileMetadata {
-    fn validate(self) -> Result<(), CanonicalDecodeError> {
-        validate_object(
-            self.named_attributes,
-            ObjectKind::AttributePage,
-            "named attributes",
-        )?;
-        validate_object(self.acl, ObjectKind::Blob, "acl")?;
-        validate_object(
-            self.security_descriptor,
-            ObjectKind::Blob,
-            "security descriptor",
-        )
-    }
-}
 
 /// Encodes one canonical object with before-effect admission.
 pub fn encode_file_metadata<E>(
@@ -69,7 +54,7 @@ where
 }
 
 fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalDecodeError> {
-    metadata.validate()?;
+    validate(metadata)?;
     fn field<T>(value: &MetadataField<T>, payload: usize) -> usize {
         match value {
             MetadataField::Unavailable => 1,
@@ -217,7 +202,7 @@ pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
         )?,
     };
     decoder.finish()?;
-    metadata.validate()?;
+    validate(metadata)?;
     observe(super::codec::ReadAllocationStep::Item)?;
     Ok(metadata)
 }
@@ -323,6 +308,20 @@ fn decode_object<E: From<CanonicalDecodeError>>(
         1 => Ok(MetadataField::Value(decoder.object(kind, observe)?)),
         tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
+}
+
+fn validate(metadata: FileMetadata) -> Result<(), CanonicalDecodeError> {
+    validate_object(
+        metadata.named_attributes,
+        ObjectKind::AttributePage,
+        "named attributes",
+    )?;
+    validate_object(metadata.acl, ObjectKind::Blob, "acl")?;
+    validate_object(
+        metadata.security_descriptor,
+        ObjectKind::Blob,
+        "security descriptor",
+    )
 }
 
 fn validate_object(

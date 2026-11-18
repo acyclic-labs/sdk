@@ -1,9 +1,9 @@
 use super::*;
-use acyclic_fs::kernel::{FileMetadata, NamespacePath};
 use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode, VolumeLimits,
 };
 use acyclic_stream::OwnedBytes;
+use {acyclic_fs::kernel::NamespacePath, acyclic_fs_format::metadata::FileMetadata};
 use {
     acyclic_fs::{
         AuthoredMutation, ContentChange, ContentTimes, FsError, LivePublicationObservation,

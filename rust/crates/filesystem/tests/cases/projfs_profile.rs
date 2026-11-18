@@ -2,7 +2,7 @@
 
 #![cfg(windows)]
 
-use acyclic_fs::kernel::FileMetadata;
+use acyclic_fs_format::metadata::FileMetadata;
 use bytes::Bytes;
 use std::time::Instant;
 use {

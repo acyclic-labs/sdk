@@ -1,8 +1,8 @@
 use acyclic_fs::{
     ApplyOptions, ConflictKind, ForkOptions, Fs, Generation, IdempotencyKey, JoinOutcome,
     PublicationPermit,
-    kernel::{FileMetadata, MetadataField},
 };
+use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 

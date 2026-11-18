@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 file_id: None,
                 path: routed.path,
                 bytes: (bytes::Bytes::from_static(b"tool output")).into(),
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },
             WorkBudget::UNBOUNDED,
             &cancellation,

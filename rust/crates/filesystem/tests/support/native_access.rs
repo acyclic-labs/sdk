@@ -16,7 +16,9 @@ pub fn compile_view(
     context: Context,
     capability: &Capability,
     head: acyclic_fs::GenerationId,
-    revision: acyclic_fs::kernel::MetadataField<acyclic_fs_format::object_reference::ObjectId>,
+    revision: acyclic_fs_format::metadata::MetadataField<
+        acyclic_fs_format::object_reference::ObjectId,
+    >,
 ) -> Result<PathTrie, InvalidPolicy> {
     let principal = Principal {
         kind: PrincipalKind::Service,
