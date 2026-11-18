@@ -52,6 +52,7 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -153,6 +154,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -206,6 +208,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -261,6 +264,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -319,6 +323,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -372,6 +377,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -425,6 +431,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -478,6 +485,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -531,6 +539,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -584,6 +593,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -637,6 +647,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -692,6 +703,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -745,6 +757,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -798,6 +811,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -851,6 +865,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -904,6 +919,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -957,6 +973,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1010,6 +1027,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1063,6 +1081,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1116,6 +1135,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1169,6 +1189,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1222,6 +1243,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1275,6 +1297,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1328,6 +1351,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1381,6 +1405,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1434,6 +1459,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1487,6 +1513,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1540,6 +1567,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1596,6 +1624,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1651,6 +1680,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1704,6 +1734,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1757,6 +1788,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1810,6 +1842,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1865,6 +1898,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1918,6 +1952,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -1971,6 +2006,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2024,6 +2060,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2077,6 +2114,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2134,6 +2172,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2187,6 +2226,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2240,6 +2280,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2297,6 +2338,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2350,6 +2392,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2403,6 +2446,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2456,6 +2500,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2509,6 +2554,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2565,6 +2611,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2618,6 +2665,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2673,6 +2721,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
@@ -2727,6 +2776,7 @@ rust_binary(
         ":acyclic_harness_fuzz",
     ] + [
         "//plugin:acyclic_plugin",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
