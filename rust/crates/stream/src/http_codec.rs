@@ -152,8 +152,11 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
     if request.include_envelope {
         return Err("unsupported");
     }
-    let deadline = request.deadline_unix_millis;
-    let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
+    let request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
+    commit_json(request)
+}
+
+fn commit_json(mut request: crate::CommitRequest) -> Result<Value> {
     crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
     if request
         .conditions()
@@ -166,7 +169,7 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
         "idempotencyKey".into(),
         json!(STANDARD.encode(request.idempotency_key.as_bytes())),
     )]);
-    if let Some(deadline) = deadline {
+    if let Some(deadline) = request.deadline_unix_millis {
         commit_options.insert("deadlineUnixMillis".into(), json!(deadline.to_string()));
     }
     let value = json!({
@@ -340,6 +343,11 @@ pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_fork(request: &crate::ForkRequest) -> Result<String> {
     serde_json::to_string(&fork_json(request)?).map_err(|_| "could not encode request")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn encode_commit(request: crate::CommitRequest) -> Result<String> {
+    serde_json::to_string(&commit_json(request)?).map_err(|_| "could not encode request")
 }
 
 /// Adds the minimum cut, one entry per authority; the host serves at or above it.

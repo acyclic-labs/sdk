@@ -1,5 +1,5 @@
 //! Authenticated hosted JSON transport implementing the canonical Stream provider.
-use crate::{http_codec, http_validation, wire_codec, *};
+use crate::{http_codec, http_validation, *};
 pub use acyclic_auth::credential::CredentialProvider;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -463,14 +463,17 @@ impl StreamProvider for HttpStream {
             }
             crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let wire = wire_codec::commit_to_wire(&request);
-                    self.request("commit", wire.encode_to_vec(), |response| {
-                        let outcome = Self::commit_response(&response)?;
-                        if let CommitOutcome::Committed(receipt) = &outcome {
-                            self.revisions()?.observe(&receipt.revision);
-                        }
-                        Ok(outcome)
-                    })
+                    self.request_json(
+                        "commit",
+                        || http_codec::encode_commit(request),
+                        |response| {
+                            let outcome = Self::commit_response(&response)?;
+                            if let CommitOutcome::Committed(receipt) = &outcome {
+                                self.revisions()?.observe(&receipt.revision);
+                            }
+                            Ok(outcome)
+                        },
+                    )
                     .await
                 },
                 crate::WriteOutcome::Commit,
