@@ -461,79 +461,43 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     .contains("absent"));
 }
 #[test]
-fn cargo_binary_target_produces_native_receipt_without_public_api_admission() {
-    compiler::with(cargo_binary_target_produces_native_receipt_without_public_api_admission_world);
+fn absent_cargo_binary_is_rejected_before_compilation() {
+    compiler::with(|| {
+        use sdk_docs::rustdoc_profiles::{
+            execute_profile, CargoExecutionContext, ProfileSpec, RustdocTarget,
+        };
+        let fixture = Fixture::new();
+        fs::write(fixture.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let metadata = fixture.metadata();
+        let target = "fixture-host".to_owned();
+        let profile = ProfileSpec {
+            package: "historical-fixture".into(),
+            target: target.clone(),
+            default_features: true,
+            features: BTreeSet::new(),
+        };
+        let target_dir = fixture.path().join("native-rustdoc");
+        let absent = execute_profile(
+            fixture.path().join("Cargo.toml"),
+            &metadata,
+            &profile,
+            &BTreeSet::from([target]),
+            &target_dir,
+            &fixture.path().join("binary.json"),
+            CargoExecutionContext {
+                cargo_path: Some(&cargo()),
+                lock_selection: None,
+            },
+            &RustdocTarget::Binary("absent".into()),
+        );
+        assert!(absent
+            .unwrap_err()
+            .to_string()
+            .contains("absent from Cargo"));
+        assert!(!target_dir.exists());
+    });
 }
 
-fn cargo_binary_target_produces_native_receipt_without_public_api_admission_world() {
-    use sdk_docs::rustdoc_profiles::{
-        execute_profile, observe_rustdoc, ProfileSpec, RustdocTarget,
-    };
-    let fixture = Fixture::new();
-    fs::write(
-        fixture.path().join("src/main.rs"),
-        "//! Source-owned historical command instructions.\nfn main() {}\n",
-    )
-    .unwrap();
-    let metadata = fixture.metadata();
-    let rustc = PathBuf::from(acyclic_test_support::host_tool!("rustc"));
-    let output = command_output(Command::new(rustc).arg("-vV")).unwrap();
-    let info = String::from_utf8(output).unwrap();
-    let host = info
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .unwrap()
-        .to_owned();
-    let profile = ProfileSpec {
-        package: "historical-fixture".into(),
-        target: host.clone(),
-        default_features: true,
-        features: BTreeSet::new(),
-    };
-    let output = fixture.path().join("binary.json");
-    let target_dir = fixture.path().join("native-rustdoc");
-    let absent = execute_profile(
-        fixture.path().join("Cargo.toml"),
-        &metadata,
-        &profile,
-        &BTreeSet::from([host.clone()]),
-        &target_dir,
-        &output,
-        sdk_docs::rustdoc_profiles::CargoExecutionContext {
-            cargo_path: Some(&cargo()),
-            lock_selection: None,
-        },
-        &RustdocTarget::Binary("absent".into()),
-    );
-    assert!(absent
-        .unwrap_err()
-        .to_string()
-        .contains("absent from Cargo"));
-    assert!(!target_dir.exists());
-    let observation = execute_profile(
-        fixture.path().join("Cargo.toml"),
-        &metadata,
-        &profile,
-        &BTreeSet::from([host]),
-        &target_dir,
-        &output,
-        sdk_docs::rustdoc_profiles::CargoExecutionContext {
-            cargo_path: Some(&cargo()),
-            lock_selection: None,
-        },
-        &RustdocTarget::Binary("historical-fixture".into()),
-    )
-    .unwrap();
-    assert_eq!(observation.format_version, 60);
-    assert_eq!(observation.crate_version.as_deref(), Some("0.1.0"));
-    assert!(observation.includes_private);
-    assert!(observe_rustdoc(&output).is_err());
-    let native: serde_json::Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
-    assert_eq!(
-        native["index"][native["root"].to_string()]["docs"],
-        "Source-owned historical command instructions."
-    );
-}
 #[test]
 fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
     let fixture = Fixture::new();

@@ -111,7 +111,10 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
     Ok(artifacts)
 }
 
-thread_local! { static ACTIVE: Cell<bool> = const { Cell::new(false) }; }
+thread_local! {
+    static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    pub(super) static DECLARED_RUSTDOC_HITS: Cell<usize> = const { Cell::new(0) };
+}
 
 pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
     if ACTIVE.get() {
@@ -122,25 +125,44 @@ pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
 
 fn execute_command(command: &mut Command) -> std::io::Result<Output> {
     if let Some(output) = declared_rustdoc(command)? {
+        DECLARED_RUSTDOC_HITS.set(DECLARED_RUSTDOC_HITS.get() + 1);
         return Ok(output);
     }
     command.output()
 }
 
+fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
+    static FIXTURES: std::sync::OnceLock<std::io::Result<Vec<Value>>> = std::sync::OnceLock::new();
+    FIXTURES
+        .get_or_init(|| {
+            let index = acyclic_test_support::source_path(
+                "rust/proofs/sdk-rustdoc-fixtures/feature_profiles.index.json",
+            );
+            match fs::read(index) {
+                Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(error) => Err(error),
+            }
+        })
+        .as_deref()
+        .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
+}
+
 // The action's metadata names every source and Cargo flag in its key. Reuse
 // its output only for byte-identical source and the same complete profile.
 fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
+    if command.get_args().next() != Some(std::ffi::OsStr::new("rustdoc")) {
+        return Ok(None);
+    }
     let args = command.get_args().collect::<Vec<_>>();
+    if !args.iter().any(|arg| *arg == "--lib" || *arg == "--bin") {
+        return Ok(None);
+    }
     let value = |name: &str| {
         args.windows(2)
             .find(|pair| pair[0] == name)
             .map(|pair| pair[1])
     };
-    if args.first().and_then(|arg| arg.to_str()) != Some("rustdoc")
-        || !args.iter().any(|arg| *arg == "--lib")
-    {
-        return Ok(None);
-    }
     let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
         return Ok(None);
     };
@@ -153,55 +175,38 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     let Some(target) = value("--target").and_then(|arg| arg.to_str()) else {
         return Ok(None);
     };
-    let environment = command.get_envs().collect::<BTreeMap<_, _>>();
+    let env = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value)
+    };
     let rustflags = if cfg!(windows) {
         "-C\u{1f}prefer-dynamic"
     } else {
         ""
     };
-    if environment
-        .get(std::ffi::OsStr::new("CARGO_ENCODED_RUSTFLAGS"))
-        .copied()
-        .flatten()
-        .and_then(|v| v.to_str())
-        != Some(rustflags)
+    if env("CARGO_ENCODED_RUSTFLAGS").and_then(std::ffi::OsStr::to_str) != Some(rustflags) {
+        return Ok(None);
+    }
+    if env("CARGO_HOME")
+        .map(Path::new)
+        .is_some_and(|home| home.join("config").exists() || home.join("config.toml").exists())
     {
         return Ok(None);
     }
-    if command.get_envs().any(|(key, value)| {
-        key == "CARGO_HOME"
-            && value.is_some_and(|home| {
-                let home = Path::new(home);
-                home.join("config").exists() || home.join("config.toml").exists()
-            })
-    }) {
-        return Ok(None);
-    }
-    let directory = acyclic_test_support::source_path("rust/proofs/sdk-rustdoc-fixtures");
-    let Ok(entries) = fs::read_dir(directory) else {
+    let Some(selected_toolchain) = env("RUSTUP_TOOLCHAIN")
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(|selected| selected.strip_suffix(target))
+        .and_then(|selected| selected.strip_suffix('-'))
+    else {
         return Ok(None);
     };
-    for entry in entries {
-        let entry = entry?;
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".fixture.json")
-        {
-            continue;
-        }
-        let metadata: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+    for metadata in rustdoc_fixtures()? {
         if metadata["package"].as_str() != Some(package) {
             continue;
         }
-        let toolchain = metadata["toolchain"].as_str().unwrap();
-        if environment
-            .get(std::ffi::OsStr::new("RUSTUP_TOOLCHAIN"))
-            .copied()
-            .flatten()
-            .and_then(|value| value.to_str())
-            != Some(format!("{toolchain}-{target}").as_str())
-        {
+        if metadata["toolchain"].as_str().unwrap() != selected_toolchain {
             continue;
         }
         let declared_manifest = Path::new(metadata["manifest_path"].as_str().unwrap());
@@ -226,10 +231,15 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             manifest,
             "--package",
             package,
-            "--lib",
-            "--target",
-            target,
         ];
+        expected_args.extend(
+            metadata["target_args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|flag| flag.as_str().unwrap()),
+        );
+        expected_args.extend(["--target", target]);
         expected_args.extend(
             metadata["cargo_flags"]
                 .as_array()
@@ -302,17 +312,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         if json["target"]["triple"].as_str() != Some(target) {
             continue;
         }
-        let target_dir = command
-            .get_envs()
-            .find(|(key, _)| *key == "CARGO_TARGET_DIR")
-            .and_then(|(_, value)| value)
-            .map(Path::new)
-            .unwrap();
+        let target_dir = Path::new(env("CARGO_TARGET_DIR").unwrap());
         let mut referenced = std::collections::BTreeSet::new();
         let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
         let owner = metadata["owner_path"].as_str().unwrap();
-        let library = Path::new("src/lib.rs");
-        let owner_library = Path::new(owner).join(library);
+        let entrypoint = Path::new(metadata["entrypoint"].as_str().unwrap());
+        let owner_entrypoint = Path::new(owner).join(entrypoint);
         rustdoc_paths::visit(&mut json, |kind, path| {
             if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
                 let relative = PathBuf::from(relative);
@@ -325,7 +330,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 let filename = Path::new(path);
                 if let Some(source) = relative_sources.iter().find(|source| {
                     filename.ends_with(source)
-                        || filename == library && **source == owner_library.as_path()
+                        || filename == entrypoint && **source == owner_entrypoint.as_path()
                 }) {
                     *path = root.join(source).to_string_lossy().into_owned();
                 }
@@ -356,7 +361,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         };
         let output = output_dir.join(format!(
             "{}.json",
-            metadata["library_name"].as_str().unwrap()
+            metadata["receipt_name"].as_str().unwrap()
         ));
         fs::create_dir_all(output.parent().unwrap())?;
         fs::write(output, serde_json::to_vec(&json)?)?;

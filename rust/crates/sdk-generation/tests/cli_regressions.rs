@@ -198,6 +198,14 @@ fn feature_profile_fixture() -> Fixture {
 }
 
 fn feature_profile_source() -> Fixture {
+    profile_source(
+        include_str!("fixtures/feature-profile/rust/crates/demo/Cargo.toml"),
+        "src/lib.rs",
+        include_str!("fixtures/feature-profile/rust/crates/demo/src/lib.rs"),
+    )
+}
+
+fn profile_source(manifest: &str, entrypoint: &str, source: &str) -> Fixture {
     let directory = fixture_directory();
     let root = directory.path().join("source");
     fs::create_dir_all(root.join("rust/crates/demo/src")).unwrap();
@@ -217,16 +225,9 @@ fn feature_profile_source() -> Fixture {
         include_str!("fixtures/feature-profile/release/cargo-crates.json"),
     )
     .unwrap();
-    fs::write(
-        root.join("rust/crates/demo/Cargo.toml"),
-        include_str!("fixtures/feature-profile/rust/crates/demo/Cargo.toml"),
-    )
-    .unwrap();
-    fs::write(
-        root.join("rust/crates/demo/src/lib.rs"),
-        include_str!("fixtures/feature-profile/rust/crates/demo/src/lib.rs"),
-    )
-    .unwrap();
+    let package = root.join("rust/crates/demo");
+    fs::write(package.join("Cargo.toml"), manifest).unwrap();
+    fs::write(package.join(entrypoint), source).unwrap();
     // This dependency-free lockfile is the exact lock input for the fixture;
     // no network or workspace checkout is involved in the producer run.
     fs::write(

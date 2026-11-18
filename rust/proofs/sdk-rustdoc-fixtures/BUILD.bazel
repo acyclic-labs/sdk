@@ -1,4 +1,4 @@
-load(":fixture.bzl", "rustdoc_fixture_set")
+load(":fixture.bzl", "rustdoc_fixture_bundle", "rustdoc_fixture_set")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(default_visibility = ["//visibility:public"])
@@ -138,9 +138,22 @@ _EXCLUDED_HELPER_DATA = rustdoc_fixture_set(
     profiles = {"excluded_helper_default": []},
 )
 
-filegroup(
+_BINARY_DATA = rustdoc_fixture_set(
+    srcs = _INPUTS[:3],
+    fixture_root = "rust/crates/sdk-generation/tests/fixtures/feature-profile/",
+    package = "demo",
+    owner_path = "rust/crates/demo",
+    mapped_sources = {
+        "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/binary.toml": "rust/crates/demo/Cargo.toml",
+        "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/binary.rs": "rust/crates/demo/src/main.rs",
+    },
+    binary_name = "demo-cli",
+    profiles = {"binary_default": []},
+)
+
+rustdoc_fixture_bundle(
     name = "feature_profiles",
-    srcs = {label: True for label in _FEATURE_DATA + _LONG_DATA +
+    fixtures = {label: True for label in _BINARY_DATA + _FEATURE_DATA + _LONG_DATA +
                                     _RELOCATION_DATA + _RELOCATION_HELPER_DATA +
                                     _EXCLUDED_DEMO_DATA + _EXCLUDED_MACROS_DATA +
                                     _EXCLUDED_HELPER_DATA}.keys(),

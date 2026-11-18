@@ -612,19 +612,29 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
 #[test]
 fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims() {
     runtime::time_control();
-    let fixture = feature_profile_fixture();
-    fs::write(fixture.root.join("rust/crates/demo/Cargo.toml"),
-        "[package]\nname = 'demo'\nversion = '1.0.0'\nedition = '2021'\n[[bin]]\nname = 'demo-cli'\npath = 'src/main.rs'\n").unwrap();
-    fs::remove_file(fixture.root.join("rust/crates/demo/src/lib.rs")).unwrap();
-    fs::write(fixture.root.join("rust/crates/demo/src/main.rs"),
-        "//! Run the source-owned command guide.\n/// PRIVATE CLI INTERNALS\nfn hidden() {}\nfn main() { hidden(); }\n").unwrap();
-    git(&fixture.root, &["add", "."]);
-    git(
-        &fixture.root,
-        &["commit", "--quiet", "-m", "binary-only fixture"],
+    let fixture = profile_source(
+        include_str!("../fixtures/feature-profile/rust/crates/demo/binary.toml"),
+        "src/main.rs",
+        include_str!("../fixtures/feature-profile/rust/crates/demo/binary.rs"),
     );
+    init_git(&fixture.root, "binary-only fixture");
+    let hits = commands::DECLARED_RUSTDOC_HITS.get();
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
+    if std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
+        assert_eq!(commands::DECLARED_RUSTDOC_HITS.get() - hits, 1);
+    }
+    let receipt = fixture.rustdoc.join("demo_cli.json");
+    let native = sdk_docs::rustdoc_profiles::observe_binary_rustdoc(&receipt).unwrap();
+    assert_eq!(native.format_version, 60);
+    assert_eq!(native.crate_version.as_deref(), Some("1.0.0"));
+    assert!(native.includes_private);
+    assert!(sdk_docs::rustdoc_profiles::observe_rustdoc(&receipt).is_err());
+    let raw: Value = serde_json::from_slice(&fs::read(receipt).unwrap()).unwrap();
+    assert_eq!(
+        raw["index"][raw["root"].to_string()]["docs"],
+        "Run the source-owned command guide."
+    );
     let data: Value = serde_json::from_slice(
         &fs::read(
             fixture

@@ -9,7 +9,9 @@ fn main() {
     let package = args.next().unwrap().into_string().unwrap();
     let manifest_path = PathBuf::from(args.next().unwrap());
     let selected_lock = PathBuf::from(args.next().unwrap());
-    let library_name = args.next().unwrap().into_string().unwrap();
+    let receipt_name = args.next().unwrap().into_string().unwrap();
+    let target_args: Vec<String> =
+        serde_json::from_str(args.next().unwrap().to_str().unwrap()).unwrap();
     let proc_macro = args.next().unwrap() == "proc-macro";
     let linker = args.next().unwrap();
     let root = output.with_extension("work");
@@ -73,7 +75,8 @@ fn main() {
         ])
         .arg("--manifest-path")
         .arg(source.join(manifest_path))
-        .args(["--package", &package, "--lib"])
+        .args(["--package", &package])
+        .args(target_args)
         .args(["--target", host])
         .args(args);
     if !selected_lock.as_os_str().is_empty() {
@@ -114,7 +117,7 @@ fn main() {
     } else {
         target.join(host).join("doc")
     })
-    .join(format!("{library_name}.json"));
+    .join(format!("{receipt_name}.json"));
     if artifacts.as_os_str().is_empty() {
         fs::copy(rustdoc, output).unwrap();
     } else {
