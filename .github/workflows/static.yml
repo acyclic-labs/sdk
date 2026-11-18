@@ -57,7 +57,5 @@ jobs:
         run: node scripts/check-incremental.mjs
       # The Bazel rustfmt aspect checks every crate with the pinned toolchain's rustfmt.
       # Each crate's check is cached and reruns only when its sources change.
-      - name: Install Bazelisk
-        run: npm install --global @bazel/bazelisk@1.26.0
       - name: Check formatting of every Rust crate
         run: bazelisk build --config=fmt //... -//rust/vendor/...
