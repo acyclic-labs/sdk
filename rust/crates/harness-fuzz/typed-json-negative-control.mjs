@@ -1,10 +1,11 @@
 // Check actual typed JSON admission mutations through the shared corpus property.
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { mkdirSync, openSync, closeSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { bazelExecutables } from "../../../scripts/bazel-executables.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const recovery = "node rust/crates/harness-fuzz/typed-json-negative-control.mjs";
@@ -25,7 +26,6 @@ try {
     const selected = Object.keys(args).filter((key) => args[key]);
     if (selected.length > 1) throw new Error("select at most one admission control");
     const mode = selected[0];
-    const nextest = ["depth-prior", "first-cause-prior", "hidden-items"].includes(mode);
     const source = join(root, "rust/crates/harness-core/src/executor/json",
       mode === "record-sequence" ? "layout.rs" : mode ? "admission.rs" : "records.rs");
     const oracle = join(root, mode === "hidden-items"
@@ -42,10 +42,8 @@ try {
     const property = mode === "hidden-items"
       ? "executor::json::value_shape_tests::hidden_raw_values_are_bounded_before_decode"
       : "executor::json::tests::object_work::checked_codec_fuzz_corpus";
-    const command = nextest
-      ? ["cargo", "nextest", "run", "--locked", "--profile", "ci", "--retries", "0", "-p", "acyclic-harness-core", "--lib",
-        ...(mode === "hidden-items" ? ["--features", "filesystem"] : []), "-E", `test(=${property})`]
-      : ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib", property, "--", "--exact", "--nocapture"];
+    const target = "//rust/crates/harness-core:acyclic_harness_core_test_cases";
+    const testArgs = [property, "--exact", "--nocapture"];
     function git(...argv) {
       const result = spawnSync("git", argv, { cwd: root, maxBuffer: 32 * 1024 * 1024 });
       if (result.error) throw result.error;
@@ -60,7 +58,7 @@ try {
     const lockHash = digest(readFileSync(lock));
     mkdirSync(out, { recursive: true });
     const corpus = join(root, "rust/crates/harness-fuzz/corpus/bounded_json");
-    const result = { source: digest(original), oracle: oracleHash, patch: digest(readFileSync(patch)), lock: lockHash, command, phases: [],
+    const result = { source: digest(original), oracle: oracleHash, patch: digest(readFileSync(patch)), lock: lockHash, target, testArgs, phases: [],
       corpus: mode === "hidden-items" ? [] : readdirSync(corpus).sort().filter((name) => statSync(join(corpus, name)).isFile())
         .map((name) => ({ name, sha256: digest(readFileSync(join(corpus, name))) })) };
     if (mode === "hidden-items") result.operand_source = portable(oracle);
@@ -71,7 +69,7 @@ try {
       git("apply", patch);
       const mutated = readFileSync(source);
       let prior;
-      const positive = nextest ? "1 test run: 1 passed" : "test result: ok. 1 passed; 0 failed";
+      const positive = "test result: ok. 1 passed; 0 failed";
       let phases = [["diagnostic-admission-refusal-red", 101, "typed JSON decode must preserve caller charge refusal at frontier 5"],
         ["restored-original-corpus", 0, positive]];
       if (typeof args[mode] === "string") {
@@ -81,11 +79,11 @@ try {
       }
       if (mode === "raw-domain-prior") phases = [["prior-oracle-mutant-miss", 0, positive],
         ["raw-domain-red", 101, "typed raw JSON must admit independently valid raw input"], ["restored-original-corpus", 0, positive]];
-      if (mode === "depth-prior") phases = [["prior-depth-false-positive", 100, "typed raw JSON must admit independently valid raw input"],
-        ["depth-omission-red", 100, "typed raw JSON must refuse documents beyond the declared depth"], ["restored-original-corpus", 0, positive]];
+      if (mode === "depth-prior") phases = [["prior-depth-false-positive", 101, "typed raw JSON must admit independently valid raw input"],
+        ["depth-omission-red", 101, "typed raw JSON must refuse documents beyond the declared depth"], ["restored-original-corpus", 0, positive]];
       if (mode === "first-cause-prior") phases = [["prior-oracle-mutant-miss", 0, positive],
-        ["first-cause-loss-red", 100, "materialized JSON admission must preserve the first caller cause"], ["restored-original-corpus", 0, positive]];
-      if (mode === "hidden-items") phases = [["hidden-item-omission-red", 100, "assertion failed: !admitted && inspected <= maximum_inspected"],
+        ["first-cause-loss-red", 101, "materialized JSON admission must preserve the first caller cause"], ["restored-original-corpus", 0, positive]];
+      if (mode === "hidden-items") phases = [["hidden-item-omission-red", 101, "assertion failed: !admitted && inspected <= maximum_inspected"],
         ["restored-original-property", 0, positive]];
       if (mode === "record-sequence") phases = [["record-sequence-refusal-red", 101, "record layout must admit every Serde record form"],
         ["restored-original-corpus", 0, positive]];
@@ -93,31 +91,28 @@ try {
         writeFileSync(source, ["prior-depth-false-positive", "restored-original-corpus", "restored-original-property"].includes(name) ? original : mutated);
         writeFileSync(oracle, ["prior-oracle-mutant-miss", "prior-depth-false-positive"].includes(name) ? prior : originalOracle);
         step = name;
+        const [executable] = bazelExecutables(root, [target]);
         const log = join(out, `${name}.log`);
         const stream = openSync(log, "w");
         let completed;
         try {
-          completed = spawnSync(command[0], command.slice(1), { cwd: root, stdio: ["ignore", stream, stream] });
+          completed = spawnSync(executable, testArgs, {
+            cwd: root, env: {...process.env, ACYCLIC_TEST_SOURCE_ROOT: root}, stdio: ["ignore", stream, stream],
+          });
         } finally {
           closeSync(stream);
         }
         const output = readFileSync(log, "utf8");
         process.stdout.write(output.slice(-6000));
         const phase = { name, exit: completed.status, source: digest(readFileSync(source)), oracle: digest(readFileSync(oracle)), log: digest(readFileSync(log)) };
-        const pattern = nextest ? /command:.*?(\/[^\s]+\/acyclic_harness_core-[a-f0-9]+)/g : /Running unittests .*? \(([^)]+)\)/g;
-        const executables = [...output.matchAll(pattern)];
-        if (executables.length) {
-          const executable = resolve(root, executables.at(-1)[1]);
-          if (existsSync(executable) && statSync(executable).isFile()) phase.executable = {
-            path: executable, sha256: digest(readFileSync(executable)), bytes: statSync(executable).size, exported: false,
-          };
-        }
-        if (!phase.executable) phase.executable_identity = "not emitted by the test runner; no binary hash inferred";
+        phase.executable = {
+          path: executable, sha256: digest(readFileSync(executable)), bytes: statSync(executable).size, exported: false,
+        };
         result.phases.push(phase);
         save();
         if (completed.error) throw completed.error;
         if (completed.status !== expected || !output.includes(assertion)) throw new Error(`expected semantic assertion absent; inspect ${log}`);
-        if ([100, 101].includes(expected) && (!output.includes("panicked at ") || !output.includes("test result: FAILED."))) {
+        if (expected === 101 && (!output.includes("panicked at ") || !output.includes("test result: FAILED."))) {
           throw new Error(`mutation did not reach the runtime assertion; inspect ${log}`);
         }
       }

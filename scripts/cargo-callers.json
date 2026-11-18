@@ -21,7 +21,6 @@
   "rust/crates/harness-fuzz/graphcoder-args-control.py",
   "rust/crates/harness-fuzz/oidc-control.py",
   "rust/crates/harness-fuzz/qualify_retained_skill_records.py",
-  "rust/crates/harness-fuzz/typed-json-negative-control.mjs",
   "rust/crates/manifest/fuzz/negative-control.py",
   "rust/crates/native-runtime/tests/exit_status_control.py",
   "rust/crates/native-runtime/tests/signal-control.py",
