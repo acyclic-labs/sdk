@@ -448,7 +448,7 @@ mod tests {
             )
             .await?;
         let generation = checkout.generation_id();
-        let before = original.receipt();
+        let before = original.receipt()?;
         let ack = seal_checkout_with_permit_guarded_with_native_work(
             &mut checkout,
             OperationId::from_bytes([0x61; 16]),
@@ -467,14 +467,14 @@ mod tests {
         )
         .await?;
         assert_eq!(ack, Some((None, generation)));
-        let after = original.receipt();
+        let after = original.receipt()?;
         assert_eq!(
-            after.unwrap().authority_records_appended,
-            before.unwrap().authority_records_appended
+            after.authority_records_appended,
+            before.authority_records_appended
         );
         assert_eq!(
-            after.unwrap().backend_write_operations,
-            before.unwrap().backend_write_operations
+            after.backend_write_operations,
+            before.backend_write_operations
         );
         assert_eq!(checkout.generation_id(), generation);
         Ok(())

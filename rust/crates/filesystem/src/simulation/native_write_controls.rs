@@ -26,7 +26,8 @@ fn budget() -> WorkBudget {
 }
 
 #[tokio::test]
-async fn native_read_cancellation_precedes_interceptor_and_backend() {
+async fn native_read_cancellation_precedes_interceptor_and_backend()
+-> Result<(), crate::WorkObservationError> {
     let (memory, object) = seeded_object().await;
     let (schedule, _events) = Schedule::new();
     let simulation = Simulation::wrap(&schedule, reference_backends().0, memory);
@@ -34,7 +35,7 @@ async fn native_read_cancellation_precedes_interceptor_and_backend() {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation)
         .expect("only actual accounting constructor");
-    let before = work.receipt();
+    let before = work.receipt()?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     assert!(matches!(
@@ -47,12 +48,14 @@ async fn native_read_cancellation_precedes_interceptor_and_backend() {
             .await,
         Err(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt()?, before);
     assert!(schedule.site_calls().is_empty());
+    Ok(())
 }
 
 #[tokio::test]
-async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias() {
+async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias()
+-> Result<(), crate::WorkObservationError> {
     let (memory, object) = seeded_object().await;
     let (schedule, _events) = Schedule::new();
     let simulation = Simulation::wrap(&schedule, reference_backends().0, memory);
@@ -78,11 +81,13 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
     assert!(work.live_allocation_bytes().unwrap() + 3 <= held);
     drop(store);
     drop(simulation);
-    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 #[tokio::test]
-async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody() {
+async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody()
+-> Result<(), crate::WorkObservationError> {
     let (memory, object) = seeded_object().await;
     let (schedule, _events) = Schedule::new();
     let simulation = Simulation::wrap(&schedule, reference_backends().0, memory);
@@ -110,11 +115,13 @@ async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody
     drop(batch);
     drop(store);
     drop(simulation);
-    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 #[tokio::test]
-async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
+async fn native_delayed_visibility_preserves_intrinsic_alias_custody()
+-> Result<(), crate::WorkObservationError> {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
     let baseline = work.live_allocation_bytes().unwrap();
@@ -155,14 +162,14 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
     assert!(work.live_allocation_bytes().unwrap() >= payload_live);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let before = work.receipt();
+    let before = work.receipt()?;
     assert!(matches!(
         simulation
             .flush_object_visibility(&mut crate::AuthorityWork::native(&work, &cancelled))
             .await,
         Err(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt()?, before);
     assert_eq!(
         simulation.state.lock().expect("state").pending_object_bytes,
         4
@@ -171,11 +178,13 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
     drop(simulation);
     assert_eq!(work.live_allocation_bytes().unwrap(), payload_live);
     drop(alias);
-    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 #[tokio::test]
-async fn native_scheduled_rejection_does_not_hash_or_write_payload() {
+async fn native_scheduled_rejection_does_not_hash_or_write_payload()
+-> Result<(), crate::WorkObservationError> {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
     let (schedule, _events) = Schedule::new();
@@ -203,16 +212,18 @@ async fn native_scheduled_rejection_does_not_hash_or_write_payload() {
             .pending_objects
             .is_empty()
     );
+    Ok(())
 }
 #[tokio::test]
-async fn native_write_hooks_preserve_original_cancellation_before_effects() {
+async fn native_write_hooks_preserve_original_cancellation_before_effects()
+-> Result<(), crate::WorkObservationError> {
     let original = CancellationToken::new();
     let argument = CancellationToken::new();
     let budget = budget();
     let work = crate::materializer::NativeMaterializationWork::new(budget, &original)
         .expect("original ledger");
     original.cancel();
-    let before = work.receipt();
+    let before = work.receipt()?;
     let (schedule, _events) = Schedule::new();
     let simulation = crate::Simulation::new(&schedule);
     let (_, store) = simulation.stores();
@@ -270,7 +281,7 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
             .await
             .is_err()
     );
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt()?, before);
     assert!(schedule.site_calls().is_empty());
     assert!(
         simulation
@@ -280,4 +291,5 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
             .pending_objects
             .is_empty()
     );
+    Ok(())
 }

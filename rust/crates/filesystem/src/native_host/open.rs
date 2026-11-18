@@ -697,25 +697,19 @@ mod prepared_leaf_tests {
         drop(file);
         // A shared original ledger owns an Arc before the operation starts.
         // Its adapter must likewise add no name allocation or encoding work.
-        let before = preparation.receipt();
-        let live = preparation.live_allocation_bytes();
+        let before = preparation.receipt()?;
+        let live = preparation.live_allocation_bytes()?;
         let file = open_ascii_leaf(
             &root.directory(),
             &name,
             &NativeOpenOptions::Read,
             &mut &preparation,
         )?;
-        let after = preparation.receipt();
-        assert_eq!(after.unwrap().bytes_encoded, before.unwrap().bytes_encoded);
-        assert_eq!(
-            after.unwrap().allocation_operations,
-            before.unwrap().allocation_operations
-        );
-        assert_eq!(
-            after.unwrap().peak_allocation_bytes,
-            before.unwrap().peak_allocation_bytes
-        );
-        assert_eq!(preparation.live_allocation_bytes(), live);
+        let after = preparation.receipt()?;
+        assert_eq!(after.bytes_encoded, before.bytes_encoded);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(preparation.live_allocation_bytes()?, live);
         drop(file);
         remove_ascii_leaf(&root.directory(), &name, &mut work)?;
         assert_eq!(work.work.items_examined, 0);

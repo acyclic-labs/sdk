@@ -42,6 +42,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
             let (result, spent, live, baseline) = registration
                 .register_root(&root, original.as_ref(), &cancellation)
                 .await;
+            let spent = spent?;
             spent.verify(budget)?;
             assert!(
                 live >= baseline,
@@ -171,6 +172,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                     baseline,
                 )
             };
+            let spent = spent?;
             spent.verify(budget)?;
             assert!(live >= baseline, "fork retired earlier original backing");
             result?
@@ -270,6 +272,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                         );
                         (result?, spent)
                     };
+                    let spent = spent?;
                     spent.verify(budget)?;
                     assert!(authority.replay_custody.lock().unwrap().is_none());
                     assert_eq!(
@@ -434,6 +437,7 @@ async fn lineage_resolution_uses_original_name_validation_work()
     let (record, spent, live, baseline) = graph
         .resolve(grandchild.id(), &original, &cancellation)
         .await;
+    let spent = spent?;
     assert_eq!(record?.parent_workspace_id, Some(child.id()));
     assert_eq!(
         spent.items_examined,

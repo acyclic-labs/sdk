@@ -163,20 +163,7 @@ impl DarwinMountContext {
         cause: NativeMountError,
         work: Result<WorkCounters, crate::WorkObservationError>,
     ) -> i32 {
-        let status = callback_errno(&cause);
-        if fatal(&cause) || work.is_err() {
-            let mut state = self
-                .handler_failure
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if let Err(error) = work {
-                state.observation_error = Some(error);
-            }
-            if state.first_fatal.is_none() {
-                state.first_fatal = Some((Some(cause), work));
-            }
-        }
-        status
+        DarwinCallbackState::record_failure(&self.handler_failure, cause, work)
     }
 
     pub(super) fn run<T>(
@@ -228,22 +215,20 @@ impl DarwinMountContext {
                 return Err(self.record_failure(cause, Err(observation)));
             }
         };
-        if future_request
-            && let Err(overflow) = self
-                .handler_failure
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .completed_future_request_work
-                .try_add_assign(&completed)
-        {
+        let recorded = if future_request {
             self.handler_failure
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .observation_error = Some(overflow.into());
+                .completed_future_request_work
+                .add(completed)
+        } else {
+            Ok(())
+        };
+        if let Err(observation) = recorded {
             match &result {
-                Ok(_) => return Err(self.record_failure(overflow.into(), Err(overflow.into()))),
+                Ok(_) => return Err(self.record_failure(observation.into(), Err(observation))),
                 Err(cause) if !fatal(cause) => {
-                    self.record_failure(overflow.into(), Err(overflow.into()));
+                    self.record_failure(observation.into(), Err(observation));
                 }
                 Err(_) => {}
             }

@@ -328,7 +328,7 @@ fn failed_completion_keeps_its_fuse_failure_and_work_prefix()
     let retained = core
         .take_handler_failure()
         .expect("failed accounting was discarded");
-    assert_eq!(retained.1, prefix);
+    assert_eq!(retained.1?, prefix?);
     assert!(matches!(
         retained.0,
         NativeMountError::Source(MountSourceError::MutationFinalization { .. })
@@ -390,10 +390,10 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
             .ok_or(MountSourceError::NotFound)
             .map_err(Into::into)
     });
-    let missing_prefix = missing.as_ref().expect_err("actual absent lookup").1;
-    assert_eq!(core.completed_callback_work(), missing_prefix);
+    let missing_prefix = missing.as_ref().expect_err("actual absent lookup").1?;
+    assert_eq!(core.completed_callback_work()?, missing_prefix);
     assert_eq!(core.finish(missing).err(), Some(libc::ENOENT));
-    assert_eq!(core.completed_callback_work(), missing_prefix);
+    assert_eq!(core.completed_callback_work()?, missing_prefix);
     assert!(core.take_handler_failure().is_none());
     assert!(!core.handler_failed.load(Ordering::Acquire));
     let result = core.request(|work| {
@@ -417,7 +417,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
         .take_handler_failure()
         .ok_or("actual fatal request failure missing")?;
     assert!(core.handler_failed.load(Ordering::Acquire));
-    assert_eq!(retained.1, prefix);
+    assert_eq!(retained.1?, prefix?);
     assert_eq!(
         core.completed_callback_work().unwrap(),
         missing_prefix.unwrap().checked_add(prefix.unwrap())?

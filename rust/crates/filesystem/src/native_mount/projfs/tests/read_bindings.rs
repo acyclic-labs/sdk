@@ -68,7 +68,10 @@ async fn native_access_projfs_cached_opens_require_current_list_authority()
     Ok(())
 }
 
-fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {
+fn close_read(
+    runtime: &Runtime,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), crate::WorkObservationError> {
     // Persisted policy validation is storage I/O, distinct from the two native
     // metadata probes this regression checks. Measure the shared authorization
     // cost rather than hiding it in an increased host-probe allowance.
@@ -94,6 +97,7 @@ fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {
         2
     );
     assert!(lock_recover(&runtime.metadata_baselines).is_empty());
+    Ok(())
 }
 
 #[derive(Default)]
@@ -265,13 +269,13 @@ async fn cached_read_close_rechecks_source_changes_and_keeps_both_host_probes()
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("read.txt"), b"contents")?;
     let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
-    close_read(&runtime, &work);
+    close_read(&runtime, &work)?;
     let binding = lock_recover(&runtime.projection)
         .get(&path)
         .copied()
         .ok_or("read did not retain its source binding")?;
     for _ in 0..2 {
-        close_read(&runtime, &work);
+        close_read(&runtime, &work)?;
         assert_eq!(
             lock_recover(&runtime.projection)
                 .get(&path)
@@ -282,7 +286,7 @@ async fn cached_read_close_rechecks_source_changes_and_keeps_both_host_probes()
     }
     source.create_file(&windows_path("other"), FileMetadata::default(), None, &work)?;
     assert_ne!(ReadBasis::sample(source.as_ref()), Some(binding.basis));
-    close_read(&runtime, &work);
+    close_read(&runtime, &work)?;
     assert!(!has_pending_capture(&runtime.post_operation_failure, &path));
     assert_eq!(
         lock_recover(&runtime.projection)
@@ -292,7 +296,7 @@ async fn cached_read_close_rechecks_source_changes_and_keeps_both_host_probes()
         "an unrelated source change should keep the original valid binding"
     );
     source.remove(&path, None, &work)?;
-    close_read(&runtime, &work);
+    close_read(&runtime, &work)?;
     assert!(!lock_recover(&runtime.projection).contains_key(&path));
     assert!(has_pending_capture(&runtime.post_operation_failure, &path));
     assert!(source.lookup(&path)?.is_none());
@@ -313,7 +317,7 @@ async fn a_current_source_binding_still_captures_a_host_metadata_edit()
     let host = root.path().join("read.txt");
     std::fs::write(&host, b"contents")?;
     let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
-    close_read(&runtime, &work);
+    close_read(&runtime, &work)?;
     let basis = ReadBasis::sample(source.as_ref()).ok_or("source is unstable")?;
     assert_eq!(notify(&runtime, PRJ_NOTIFICATION_FILE_OPENED), HR_OK);
     std::fs::OpenOptions::new()
@@ -354,7 +358,7 @@ async fn cached_read_close_charges_source_validation_to_its_callback_meter()
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("read.txt"), b"contents")?;
     let warm = callback_runtime(Arc::clone(&source), root.path(), &setup)?;
-    close_read(&warm, &setup);
+    close_read(&warm, &setup)?;
     let binding = lock_recover(&warm.projection)
         .get(&path)
         .copied()

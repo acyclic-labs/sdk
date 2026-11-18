@@ -247,7 +247,7 @@ mod tests {
                 );
                 assert_eq!(physical.count_total, 0);
                 assert_eq!(receiver.retained_slots(), 4);
-                assert_eq!(work.receipt(), before);
+                assert_eq!(work.receipt()?, before);
             } else {
                 result?;
                 assert_eq!(physical.count_total, 1);

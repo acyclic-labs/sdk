@@ -20,7 +20,8 @@ fn legacy_path(
 }
 
 #[test]
-fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody() {
+fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody()
+-> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_test_native_io();
     let workspace = WorkspaceId::from_bytes([3; 16]);
     let lease = OperationLeaseId::from_bytes([5; 16]);
@@ -64,6 +65,7 @@ fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody() {
         assert_eq!(after.live_allocation_bytes().unwrap(), baseline);
         after.receipt().unwrap().verify(BUDGET).unwrap();
     }
+    Ok(())
 }
 
 fn path_budget(length: u64, limit: u8) -> WorkBudget {

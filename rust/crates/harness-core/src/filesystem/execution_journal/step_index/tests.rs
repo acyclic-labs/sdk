@@ -40,7 +40,7 @@ async fn check_selection(native: bool) -> Result<()> {
     let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = if native {
         PreparationIo::from_native_work(&work)?
     } else {
@@ -104,7 +104,7 @@ async fn check_selection(native: bool) -> Result<()> {
         drop(reopened);
         assert_eq!(io.owned_bytes()?, owned);
         if native {
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     // The old public replay entry point is the negative control, independently
@@ -130,7 +130,7 @@ async fn check_selection(native: bool) -> Result<()> {
     drop(journal);
     assert_eq!(io.owned_bytes()?, 0);
     if native {
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -188,7 +188,7 @@ async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree(
         let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -290,7 +290,7 @@ async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree(
         }
         drop(journal);
         assert_eq!(io.owned_bytes()?, 0);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -475,7 +475,7 @@ async fn refused_selections_release_partial_output_on_both_ledgers() -> Result<(
         let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -520,7 +520,7 @@ async fn refused_selections_release_partial_output_on_both_ledgers() -> Result<(
         }
         drop(journal);
         assert_eq!(io.owned_bytes()?, 0);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

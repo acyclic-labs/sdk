@@ -155,12 +155,12 @@ pub(super) async fn withdrawal_and_producer_loss_retire_original_pins() -> Resul
                 failure.error,
             );
         }
-        let spent = reader.work();
+        let spent = reader.work()?;
         assert!(
             matches!(reader.next().await, Err(failure) if matches!(failure.error, WorkspaceError::Filesystem(crate::FsError::InvalidDiff)))
         );
         assert_eq!(
-            reader.work(),
+            reader.work()?,
             spent,
             "terminal reader dispatched another read"
         );

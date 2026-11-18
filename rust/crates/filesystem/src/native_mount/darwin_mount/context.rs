@@ -64,8 +64,7 @@ pub(super) struct DarwinMountContext {
 
 #[derive(Default)]
 pub(super) struct DarwinCallbackState {
-    pub(super) completed_future_request_work: WorkCounters,
-    pub(super) observation_error: Option<crate::WorkObservationError>,
+    pub(super) completed_future_request_work: crate::native_mount::shared::metering::CallbackWork,
     pub(super) first_fatal: Option<(
         Option<NativeMountError>,
         Result<WorkCounters, crate::WorkObservationError>,
@@ -73,6 +72,24 @@ pub(super) struct DarwinCallbackState {
 }
 
 impl DarwinCallbackState {
+    pub(super) fn record_failure(
+        state: &Mutex<Self>,
+        cause: NativeMountError,
+        work: Result<WorkCounters, crate::WorkObservationError>,
+    ) -> i32 {
+        let status = callback_errno(&cause);
+        if fatal(&cause) || work.is_err() {
+            let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Err(error) = work {
+                state.completed_future_request_work.invalidate(error);
+            }
+            if state.first_fatal.is_none() {
+                state.first_fatal = Some((Some(cause), work));
+            }
+        }
+        status
+    }
+
     pub(super) fn take_failure(
         &mut self,
     ) -> Option<(

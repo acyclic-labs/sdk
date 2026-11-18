@@ -118,6 +118,12 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     TraversalLimit,
 }
 
+impl<E: std::error::Error + 'static> From<crate::FsError> for WorkspaceLineageError<E> {
+    fn from(error: crate::FsError) -> Self {
+        Self::Workspace(WorkspaceError::from(error))
+    }
+}
+
 impl<E: std::error::Error + 'static> WorkspaceLineageError<E> {
     /// The same failure with its store cause converted.
     pub fn map_store<F: std::error::Error + 'static>(

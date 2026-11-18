@@ -30,7 +30,8 @@ fn measured<T>(operation: impl FnOnce() -> T) -> (T, acyclic_test_support::Alloc
 }
 
 #[test]
-fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling() {
+fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling()
+-> Result<(), Box<dyn std::error::Error>> {
     // Process-global framework custody is established through the public host
     // boundary before measuring finite ledger ownership. Repeated constructors
     // still cross that same boundary and must not allocate another invocation.
@@ -89,10 +90,12 @@ fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling() {
             std::mem::size_of::<WorkCounters>() as u64
         );
     }
+    Ok(())
 }
 
 #[test]
-fn resource_allowances_fund_each_actual_arc_and_release_the_chain() {
+fn resource_allowances_fund_each_actual_arc_and_release_the_chain()
+-> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let baseline = original.live_allocation_bytes().unwrap();
@@ -131,7 +134,8 @@ fn resource_allowances_fund_each_actual_arc_and_release_the_chain() {
 }
 
 #[test]
-fn denied_resource_does_not_allocate_its_arc_or_spend_work() {
+fn denied_resource_does_not_allocate_its_arc_or_spend_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let probe = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let baseline = probe.live_allocation_bytes().unwrap();
@@ -176,6 +180,7 @@ fn denied_resource_does_not_allocate_its_arc_or_spend_work() {
             before.peak_allocation_bytes
         );
     }
+    Ok(())
 }
 
 fn assert_name_layout(name: &str, native: bool) -> Result<u64, Box<dyn std::error::Error>> {
@@ -221,7 +226,8 @@ fn assert_name_layout(name: &str, native: bool) -> Result<u64, Box<dyn std::erro
 }
 
 #[test]
-fn workspace_names_fund_the_actual_arc_at_every_ascii_length() {
+fn workspace_names_fund_the_actual_arc_at_every_ascii_length()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut controls = None;
     for length in 1..=255 {
         let name = "x".repeat(length);
@@ -232,6 +238,7 @@ fn workspace_names_fund_the_actual_arc_at_every_ascii_length() {
             [false, true].map(|native| assert_name_layout(&name, native).unwrap() - length as u64);
         assert_eq!(*controls.get_or_insert(current), current);
     }
+    Ok(())
 }
 
 #[test]

@@ -175,7 +175,7 @@ where
             result.is_ok(),
             !forged,
             "{key}: {result:?}; receipt={:?}",
-            io.receipt()
+            io.receipt()?
         );
         // Removing the production attestation restores the former walk over
         // every payload and violates the positive test's identical bound.

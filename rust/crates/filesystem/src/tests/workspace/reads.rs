@@ -233,17 +233,15 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
             // the remaining allowance, including its original ledger owner.
             let prior = RetainedAllocation::claim(29, 0, &mut accounting)?;
             let live = |accounting: &KernelAccounting<'_>| match accounting {
-                KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+                KernelAccounting::Standalone { allocations, .. } => Ok(allocations.live_bytes()),
                 KernelAccounting::BorrowedStandalone { allocations, .. } => {
-                    allocations.live_bytes()
+                    Ok(allocations.live_bytes())
                 }
-                KernelAccounting::NativeOriginal { work, .. } => {
-                    work.live_allocation_bytes().unwrap()
-                }
+                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
             };
-            let baseline = live(&accounting);
+            let baseline = live(&accounting)?;
             assert!(sorted_changed_file_ids(input, &mut accounting).is_err());
-            assert_eq!(live(&accounting), baseline);
+            assert_eq!(live(&accounting)?, baseline);
             drop(prior);
         }
     }
@@ -311,6 +309,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
         let (result, spent, live, baseline) = generation
             .lookup_paths(&paths, &source, &cancellation)
             .await;
+        let spent = spent?;
         spent.verify(source.budget)?;
         if reads == 0 {
             assert!(matches!(

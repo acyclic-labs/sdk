@@ -73,7 +73,7 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes()?;
             let mut work = if native {
                 AuthorityWork::native(&original, &cancellation)
             } else {
@@ -159,7 +159,7 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
             drop(prior);
             drop(work);
             drop(store);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())

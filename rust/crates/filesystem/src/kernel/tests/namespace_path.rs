@@ -1,6 +1,6 @@
 use super::*;
 use crate::kernel::allocation::AllocationLedger;
-use crate::{MeasuredResult, OperationFailure, OperationReceipt};
+use crate::{MeasuredResult, OperationReceipt};
 
 fn parse_path(
     path: &str,

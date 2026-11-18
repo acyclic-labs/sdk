@@ -104,7 +104,8 @@ fn publication_lifetime_preserves_original_windows_resources_and_cancellation() 
 }
 
 #[test]
-fn invocation_layout_matches_allocator_through_the_last_alias() {
+fn invocation_layout_matches_allocator_through_the_last_alias()
+-> Result<(), crate::WorkObservationError> {
     for authority in [false, true] {
         let work = root(crate::performance::BOUNDARY_BUDGET);
         let baseline = work.live_allocation_bytes().unwrap(); // Warm the rank-checker TLS.
@@ -148,10 +149,12 @@ fn invocation_layout_matches_allocator_through_the_last_alias() {
             before.allocation_operations + 1
         );
     }
+    Ok(())
 }
 
 #[test]
-fn every_original_and_ancestor_resource_ceiling_admits_exactly_the_full_layout() {
+fn every_original_and_ancestor_resource_ceiling_admits_exactly_the_full_layout()
+-> Result<(), crate::WorkObservationError> {
     let probe = root(crate::performance::BOUNDARY_BUDGET);
     probe.live_allocation_bytes().unwrap();
     let (owner, observed) = measured(|| view(&probe, true).unwrap());
@@ -166,14 +169,16 @@ fn every_original_and_ancestor_resource_ceiling_admits_exactly_the_full_layout()
                     if depth == 0 { remaining } else { required + 1 },
                     &vec![remaining; depth],
                     false,
-                );
+                )?;
             }
         }
     }
+    Ok(())
 }
 
 #[test]
-fn cancelled_invocation_does_not_allocate_or_change_the_receipt() {
+fn cancelled_invocation_does_not_allocate_or_change_the_receipt()
+-> Result<(), crate::WorkObservationError> {
     let work = root(crate::performance::BOUNDARY_BUDGET);
     work.cancellation().cancel();
     let before = work.receipt().unwrap();
@@ -190,6 +195,7 @@ fn cancelled_invocation_does_not_allocate_or_change_the_receipt() {
             NativeMaterializationWork::accounting_state_bytes()
         );
     }
+    Ok(())
 }
 
 // Exercise the production admission path with every resource check except the
@@ -210,7 +216,7 @@ fn independent_ceiling_case(
     root_remaining: u64,
     limits: &[u64],
     only_innermost: bool,
-) {
+) -> Result<(), crate::WorkObservationError> {
     let metadata =
         crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<NativeResourceAllowance>())
             .unwrap() as u64;
@@ -279,10 +285,12 @@ fn independent_ceiling_case(
             *limits.iter().min().unwrap()
         );
     }
+    Ok(())
 }
 
 #[test]
-fn independently_constrained_ancestors_and_root_reject_roomy_descendants() {
+fn independently_constrained_ancestors_and_root_reject_roomy_descendants()
+-> Result<(), crate::WorkObservationError> {
     let required =
         crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<NativeInvocationView>())
             .unwrap() as u64;
@@ -297,11 +305,12 @@ fn independently_constrained_ancestors_and_root_reject_roomy_descendants() {
                         limits[constrained - 1] = remaining;
                         required + 1
                     };
-                    independent_ceiling_case(required, authority, root_remaining, &limits, false);
+                    independent_ceiling_case(required, authority, root_remaining, &limits, false)?;
                 }
             }
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -315,7 +324,7 @@ fn innermost_only_admission_is_detected_for_each_ancestor() {
                 let mut limits = vec![required + 1; depth];
                 limits[ancestor] = required - 1;
                 let failure = std::panic::catch_unwind(|| {
-                    independent_ceiling_case(required, authority, required + 1, &limits, true);
+                    independent_ceiling_case(required, authority, required + 1, &limits, true)
                 })
                 .expect_err("innermost-only admission must violate the ceiling assertion");
                 assert!(

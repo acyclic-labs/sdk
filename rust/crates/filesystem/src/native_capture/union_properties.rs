@@ -66,18 +66,18 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
             crate::performance::work_budget(100_000, 8 * 1024 * 1024),
             &cancellation,
         ).unwrap();
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?;
         let scope = CaptureWorkScope::new(&original).unwrap();
         let (observed, paths) = inputs(&host, &checkout, &stat, &scope.native);
         let original_paths: BTreeMap<_, _> = observed.iter()
             .map(|(path, _)| (path.clone(), path.components().as_ptr()))
             .collect();
         let expected: BTreeSet<_> = host.union(&checkout).copied().collect();
-        let before = original.receipt();
+        let before = original.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
         let (observations, paths) = order_host_checkout_union(
             observed, paths, Some(expected.len()), &scope.native,
         ).unwrap();
-        let after = original.receipt();
+        let after = original.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(paths.len(), expected.len());
         prop_assert_eq!(observations.len(), expected.len());
         for ((actual, observation), key) in paths.iter().zip(&observations).zip(&expected) {
@@ -91,25 +91,26 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         }
         // Each pass consumes an input per step. Reinstating insertion shifts
         // or copying duplicate path payloads violates these output-only costs.
-        prop_assert!(after.unwrap().items_examined - before.unwrap().items_examined <= 4 * (host.len() + checkout.len()) as u64);
-        prop_assert_eq!(after.unwrap().backend_read_operations, before.unwrap().backend_read_operations);
-        prop_assert_eq!(after.unwrap().allocation_operations - before.unwrap().allocation_operations, 2 * u64::from(!expected.is_empty()));
-        prop_assert_eq!(after.unwrap().bytes_copied - before.unwrap().bytes_copied,
+        prop_assert!(after.items_examined - before.items_examined <= 4 * (host.len() + checkout.len()) as u64);
+        prop_assert_eq!(after.backend_read_operations, before.backend_read_operations);
+        prop_assert_eq!(after.allocation_operations - before.allocation_operations, 2 * u64::from(!expected.is_empty()));
+        prop_assert_eq!(after.bytes_copied - before.bytes_copied,
             (expected.len() * (std::mem::size_of::<NamespacePath>() + std::mem::size_of::<Option<HostStat>>())) as u64);
         drop((paths, observations, scope));
-        prop_assert_eq!(original.live_allocation_bytes(), baseline);
+        prop_assert_eq!(original.live_allocation_bytes(), Ok(baseline));
 
         if !expected.is_empty() {
             let scope = CaptureWorkScope::new(&original).unwrap();
             let (observed, paths) = inputs(&host, &checkout, &stat, &scope.native);
-            let before = original.receipt();
+            let before = original.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert!(matches!(order_host_checkout_union(
                 observed, paths, Some(expected.len() - 1), &scope.native,
             ), Err(CaptureError::InvalidOptions)));
             // The exact cardinality refusal precedes either output allocation.
-            prop_assert_eq!(original.receipt().unwrap().allocation_operations, before.unwrap().allocation_operations);
+            let after = original.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(after.allocation_operations, before.allocation_operations);
             drop(scope);
-            prop_assert_eq!(original.live_allocation_bytes(), baseline);
+            prop_assert_eq!(original.live_allocation_bytes(), Ok(baseline));
         }
 
         let denied = original.native_volume_work(WorkBudget {
@@ -127,12 +128,12 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         ));
         prop_assert!(refused_copy, "the original output copy allowance must refuse");
         drop((scope, denied));
-        prop_assert_eq!(original.live_allocation_bytes(), baseline);
+        prop_assert_eq!(original.live_allocation_bytes(), Ok(baseline));
 
         cancellation.cancel();
         let error = order_host_checkout_union(Vec::new(), Vec::new(), Some(0), &original).unwrap_err();
         prop_assert!(matches!(error, CaptureError::Kernel(error) if matches!(*error, crate::FsError::Cancelled(_))));
-        prop_assert_eq!(original.live_allocation_bytes(), baseline);
+        prop_assert_eq!(original.live_allocation_bytes(), Ok(baseline));
         Ok(())
     }).unwrap();
 }

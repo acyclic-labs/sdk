@@ -29,7 +29,8 @@ fn cancellation_wakes_an_os_condition_without_a_timer() {
 }
 
 #[test]
-fn cancellation_notification_ends_with_its_registration() {
+fn cancellation_notification_ends_with_its_registration() -> Result<(), Box<dyn std::error::Error>>
+{
     for (funded, cancelled_first) in [(false, false), (false, true), (true, false), (true, true)] {
         let token = CancellationToken::new();
         let root = CancellationToken::new();
@@ -67,6 +68,7 @@ fn cancellation_notification_ends_with_its_registration() {
         assert_eq!(observed.load(Ordering::Acquire), cancelled_first);
         assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
+    Ok(())
 }
 
 fn budget(items: u64) -> crate::WorkBudget {
@@ -81,7 +83,8 @@ fn budget(items: u64) -> crate::WorkBudget {
 }
 
 #[test]
-fn cancelled_cleanup_wait_preserves_live_registry_and_original_prefix() {
+fn cancelled_cleanup_wait_preserves_live_registry_and_original_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = CancellationToken::new();
     let token = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(budget(64), &root)
@@ -99,6 +102,7 @@ fn cancelled_cleanup_wait_preserves_live_registry_and_original_prefix() {
     assert!(!token.is_cancelled());
     assert_eq!(original.receipt().unwrap(), before);
     drop(registered);
+    Ok(())
 }
 
 #[test]
@@ -141,7 +145,8 @@ impl std::task::Wake for DropWaiterOnWake {
 }
 
 #[test]
-fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
+fn delivery_does_not_retain_a_dropped_later_waiters_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
     let token = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(budget(64), &token)
         .map_err(|(error, _)| error)
@@ -226,11 +231,13 @@ fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
     drop(registered);
     assert_eq!(caller.standalone_parts().unwrap().0.live_bytes(), before);
     drop(anchor);
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn blocking_notifications_preserve_early_events_original_credit_and_retirement() {
+fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
     static NOTIFICATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     fn notify() {
         NOTIFICATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -312,4 +319,5 @@ fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
         NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst),
         before
     );
+    Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::shared::metering::CallbackWork;
 use crate::native_mount::{
     NativeMountCallbackGuard, NativeMountMeterActivation, NativeMountStartupAdmissionError,
     run_native_mount_handler, run_native_mount_handler_on_meter,
@@ -10,8 +11,7 @@ pub(in crate::native_mount) use crate::native_mount::callback_errno;
 
 #[derive(Default)]
 pub(super) struct FuseHandlerReports {
-    pub(super) completed_future_request_work: WorkCounters,
-    pub(super) observation_error: Option<crate::WorkObservationError>,
+    pub(super) completed_future_request_work: CallbackWork,
     pub(super) first_fatal: Option<HandlerFailure>,
 }
 
@@ -257,10 +257,7 @@ impl ProjectionCore {
             .handler_error
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        match reports.observation_error {
-            Some(error) => Err(error),
-            None => Ok(reports.completed_future_request_work),
-        }
+        reports.completed_future_request_work.total()
     }
 
     pub(super) fn retain_handler_failure(&self, failure: HandlerFailure) {
@@ -272,7 +269,7 @@ impl ProjectionCore {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Err(error) = failure.1 {
-            reports.observation_error = Some(error);
+            reports.completed_future_request_work.invalidate(error);
         }
         if reports.first_fatal.is_none() {
             tracing::error!(
@@ -354,7 +351,8 @@ impl ProjectionCore {
                 self.handler_error
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .observation_error = Some(error);
+                    .completed_future_request_work
+                    .invalidate(error);
                 return result.map(|receipt| receipt.value);
             }
         };
@@ -363,9 +361,10 @@ impl ProjectionCore {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .completed_future_request_work
-            .try_add_assign(&prefix);
+            .add(prefix);
         if let Err(error) = recorded {
-            self.retain_handler_failure((error.into(), Err(error.into())));
+            self.retain_handler_failure((error.into(), Err(error)));
+            return result.and(Err((error.into(), Err(error))));
         }
         result.map(|receipt| receipt.value)
     }

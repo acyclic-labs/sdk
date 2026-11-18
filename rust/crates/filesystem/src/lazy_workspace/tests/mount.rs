@@ -894,7 +894,11 @@ enum ParentRead {
 // Each measurement opens its own filesystem so both paths start with the same
 // cache history. Repeated measurements warm only their own original lookup.
 #[cfg(not(target_arch = "wasm32"))]
-async fn parent_read_work(published: bool, read: ParentRead, repeat: bool) -> WorkCounters {
+async fn parent_read_work(
+    published: bool,
+    read: ParentRead,
+    repeat: bool,
+) -> Result<WorkCounters, crate::WorkObservationError> {
     let root = attach(
         &Fs::memory(),
         Arc::new(CountingSource::new(Bytes::new())),
@@ -961,17 +965,17 @@ async fn parent_read_work(published: bool, read: ParentRead, repeat: bool) -> Wo
                 .await
                 .unwrap();
         }
-        spent = ctx.spent().unwrap();
+        spent = ctx.spent()?;
     }
-    spent
+    Ok(spent)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn source_parent_promotion_reads_only_the_record() {
+async fn source_parent_promotion_reads_only_the_record() -> Result<(), Box<dyn std::error::Error>> {
     for (published, repeat) in [(false, false), (true, false), (true, true)] {
-        let record = parent_read_work(published, ParentRead::Record, repeat).await;
-        let promoted = parent_read_work(published, ParentRead::Promote, repeat).await;
+        let record = parent_read_work(published, ParentRead::Record, repeat).await?;
+        let promoted = parent_read_work(published, ParentRead::Promote, repeat).await?;
         eprintln!(
             "existing source parent (published={published}, repeat={repeat}): {} reads / {} bytes (record-only control: {} / {})",
             promoted.backend_read_operations,
@@ -989,11 +993,12 @@ async fn source_parent_promotion_reads_only_the_record() {
         };
         assert_eq!(reads(promoted), reads(record), "record-only promotion");
         // Negative control: one more frontier read fails the same comparison.
-        let extra = parent_read_work(published, ParentRead::PromoteAndChild, repeat).await;
+        let extra = parent_read_work(published, ParentRead::PromoteAndChild, repeat).await?;
         assert_ne!(
             reads(extra),
             reads(record),
             "an extra frontier read must be detected"
         );
     }
+    Ok(())
 }

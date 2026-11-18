@@ -71,7 +71,7 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
             let held = Owned::<Vec<u8>>::allocate(4096, &mut accounting)?;
             let held = Retained::from_owned(held, &mut accounting)?;
             // The ordinary ledger's shared control lives until the ledger drops.
-            let ledger_baseline = live(&mut accounting) - held.value.capacity() as u64;
+            let ledger_baseline = live(&mut accounting)? - held.value.capacity() as u64;
             let mut earlier = Owned::<Vec<u8>>::allocate(128, &mut accounting)?;
             earlier.value.push(7);
             accounting.charge_items(1)?;
@@ -110,7 +110,7 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
                         let output = output.ok_or("selected point is absent")?;
                         assert_eq!(output.value, [2]);
                         assert_eq!(
-                            live(&mut accounting),
+                            live(&mut accounting)?,
                             baseline + output.value.capacity() as u64
                         );
                         output.retire(&mut accounting)?;
@@ -143,7 +143,7 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
             assert_eq!(earlier.value, [7]);
             earlier.retire(&mut accounting)?;
             drop(held);
-            assert_eq!(live(&mut accounting), ledger_baseline);
+            assert_eq!(live(&mut accounting)?, ledger_baseline);
         }
     }
     Ok(())

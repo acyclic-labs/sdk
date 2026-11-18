@@ -101,8 +101,7 @@ impl DarwinMountContext {
             MountNodeKind::BlockDevice => u32::from(libc::S_IFBLK),
             MountNodeKind::Unsupported => return Err(driver_errno(libc::EOPNOTSUPP)),
         };
-        let default_mode = if self.writable { 0o755 } else { 0o555 };
-        let mode = metadata_or(lookup.metadata.posix_mode, default_mode) & 0o7777;
+        let mode = super::super::posix_permissions(lookup.metadata.posix_mode, self.writable);
         let (accessed_seconds, accessed_nanoseconds) = metadata_time(lookup.metadata.accessed_ns);
         let (modified_seconds, modified_nanoseconds) = metadata_time(lookup.metadata.modified_ns);
         let (changed_seconds, changed_nanoseconds) = metadata_time(lookup.metadata.changed_ns);
@@ -119,7 +118,7 @@ impl DarwinMountContext {
             changed_nanoseconds,
             created_seconds,
             created_nanoseconds,
-            mode: file_kind | mode,
+            mode: file_kind | u32::from(mode),
             link_count: u32::try_from(node.link_count).unwrap_or(u32::MAX),
             uid: metadata_or(lookup.metadata.posix_uid, self.mount_uid),
             gid: metadata_or(lookup.metadata.posix_gid, self.mount_gid),

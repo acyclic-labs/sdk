@@ -80,12 +80,12 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         let encoded_before = actual.spent().unwrap().bytes_encoded;
         let live = |work: &AuthorityWork<'_>| {
             if native {
-                work.original.unwrap().live_allocation_bytes().unwrap()
+                work.original.unwrap().live_allocation_bytes()
             } else {
-                work.allocations.live_bytes()
+                Ok(work.allocations.live_bytes())
             }
         };
-        let before_replay = live(&actual);
+        let before_replay = live(&actual)?;
         let (expected_records, expected_allocation) = {
             let mut scope = expected.scope()?;
             let value = store
@@ -127,25 +127,25 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             .payload
             .clone();
         assert!(
-            live(&actual) >= before_replay + alias.len() as u64,
+            live(&actual)? >= before_replay + alias.len() as u64,
             "historical replay retired funding before its returned payload"
         );
-        let before_container_retirement = live(&actual);
+        let before_container_retirement = live(&actual)?;
         drop((records, expected_records, expected_allocation));
         assert_eq!(
-            live(&actual),
+            live(&actual)?,
             before_container_retirement - container_bytes,
             "replay container did not retire its exact original capacity"
         );
         actual.spent().unwrap().verify(BUDGET)?;
         cancel.cancel();
         assert!(
-            live(&actual) >= before_replay + alias.len() as u64,
+            live(&actual)? >= before_replay + alias.len() as u64,
             "historical replay retired funding before its last payload alias"
         );
         drop(alias);
         assert_eq!(
-            live(&actual),
+            live(&actual)?,
             before_replay,
             "last payload alias did not retire its original backing"
         );

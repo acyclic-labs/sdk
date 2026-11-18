@@ -3,7 +3,8 @@ use crate::kernel::codec::{CanonicalDecodeError, Encoder};
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 
 #[test]
-fn owned_and_borrowed_standalone_permits_keep_the_exact_header_boundary() {
+fn owned_and_borrowed_standalone_permits_keep_the_exact_header_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
     for borrowed in [false, true] {
         for limit in [9, 10] {
             let cancellation = CancellationToken::new();
@@ -50,11 +51,13 @@ fn owned_and_borrowed_standalone_permits_keep_the_exact_header_boundary() {
             );
         }
     }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn funded_output_survives_finish_and_panic_returns_only_unperformed_credit() {
+fn funded_output_survives_finish_and_panic_returns_only_unperformed_credit()
+-> Result<(), Box<dyn std::error::Error>> {
     for resource in [false, true] {
         for action in 0..3 {
             let cancellation = CancellationToken::new();
@@ -129,4 +132,5 @@ fn funded_output_survives_finish_and_panic_returns_only_unperformed_credit() {
             assert_eq!(remaining.bytes_encoded, 15 - completed);
         }
     }
+    Ok(())
 }

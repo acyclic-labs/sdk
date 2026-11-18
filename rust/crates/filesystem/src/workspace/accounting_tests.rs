@@ -106,7 +106,12 @@ pub(crate) struct Prefunded {
 }
 
 impl FsWork for &Prefunded {
-    type Output<T, E> = (Result<T, E>, WorkCounters, u64, u64);
+    type Output<T, E> = (
+        Result<T, E>,
+        Result<WorkCounters, crate::WorkObservationError>,
+        u64,
+        u64,
+    );
     type OwnedOutput<T, E> = Self::Output<(T, KernelOwnedAllocation), E>;
 
     fn finish_owned<T, E: From<FsError>>(
@@ -204,6 +209,7 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
         let (result, spent, live, baseline) = before
             .diff_to(&after, maximum, &source, &cancellation)
             .await;
+        let spent = spent?;
         spent.verify(source.budget)?;
         if reads == 0 {
             assert!(matches!(
@@ -330,6 +336,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
                 held: Mutex::new(None),
             };
             let (result, spent, live, baseline) = generation.parents(&source, &cancellation).await;
+            let spent = spent?;
             spent.verify(source.budget)?;
             if reads == 0 {
                 assert!(matches!(
@@ -375,6 +382,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
         held: Mutex::new(None),
     };
     let (result, spent, live, baseline) = foreign.parents(&source, &cancellation).await;
+    let spent = spent?;
     assert!(matches!(result, Err(WorkspaceError::ForeignGeneration)));
     assert_eq!(spent.backend_read_operations, 1);
     assert_eq!(live, baseline);
@@ -400,6 +408,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
         let (result, spent, live, baseline) = selected
             .normalized_join_parent_for(&selected, &source, &cancellation)
             .await;
+        let spent = spent?;
         if reads == 2 {
             assert_eq!(result?, selected.id().object_id().digest);
             assert!(spent.peak_allocation_bytes > baseline);
@@ -424,6 +433,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
     let (result, spent, live, baseline) = foreign
         .normalized_join_parent_for(&selected, &source, &cancellation)
         .await;
+    let spent = spent?;
     assert!(matches!(result, Err(WorkspaceError::IncompatibleWorkspace)));
     assert_eq!(spent.backend_read_operations, 2);
     assert_eq!(
@@ -443,6 +453,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
     let (result, spent, live, baseline) = selected
         .normalized_join_parent_for(&selected, &source, &cancellation)
         .await;
+    let spent = spent?;
     assert!(matches!(
         result,
         Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
@@ -567,6 +578,7 @@ async fn extent_plans_keep_original_work_and_output_custody()
                     }
                     _ => file.plan_extents(range, 8, &source, &cancellation).await,
                 };
+                let spent = spent?;
                 spent.verify(source.budget)?;
                 // Inline resolved files require no traversal or decoded items.
                 if refuse && !(inline && surface == 2) {
@@ -896,9 +908,9 @@ impl AsyncAuthorityStore for ObservedAuthority {
                     work.allocations.shares_retained_ledger(Arc::as_ptr(ledger))
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                ReplayCustody::Native(original) => work
-                    .original
-                    .is_some_and(|work| work.shares_ledger(&original)),
+                ReplayCustody::Native(original) => {
+                    work.original.is_some_and(|w| w.shares_ledger(&original))
+                }
             };
             assert!(shares, "fork replaced the original accounting ledger");
         }
@@ -964,6 +976,7 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
                         .plan_extents(path, 1, 3, 8, &source, &cancellation)
                         .await
                 };
+                let spent = spent?;
                 spent.verify(source.budget)?;
                 if reads == 0 {
                     assert!(
@@ -1080,6 +1093,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
             } else {
                 workspace.stat("/a", &source, &cancellation).await
             };
+            let spent = spent?;
             spent.verify(source.budget)?;
             assert_eq!(live, baseline, "metadata retained discarded path storage");
             if reads == 0 {
@@ -1104,6 +1118,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                     .list_directory("/", None, 1, &source, &cancellation)
                     .await
             };
+            let spent = spent?;
             spent.verify(source.budget)?;
             if reads == 0 {
                 assert!(matches!(
@@ -1161,6 +1176,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                     .matches_content(&generation, "/a", &source, &cancellation)
                     .await
             };
+            let spent = spent?;
             spent.verify(source.budget)?;
             assert_eq!(live, baseline, "comparison retained discarded path storage");
             if reads == 0 {
@@ -1413,6 +1429,7 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
                         )
                     }
                 };
+                let spent = spent?;
                 spent.verify(source.budget)?;
                 if reads == 0 {
                     assert!(matches!(
@@ -1449,6 +1466,7 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
     let (result, spent, live, baseline) =
         generation.read("/inline", 4, &source, &cancellation).await;
     assert!(matches!(result, Err(WorkspaceError::ReadLimitExceeded)));
+    let spent = spent?;
     spent.verify(budget)?;
     assert_eq!(live, baseline);
     #[cfg(not(target_arch = "wasm32"))]
@@ -1516,6 +1534,7 @@ async fn policy_revision_retires_original_scratch_on_confirmation_close_and_with
         let (result, spent, live, baseline) = workspace
             .current_access_policy_revision(&source, &cancellation)
             .await;
+        let spent = spent?;
         spent.verify(source.budget)?;
         assert_eq!(live, baseline);
         if reads == 0 {
@@ -1758,6 +1777,7 @@ async fn scalar_record_reads_retire_original_traversal_on_close_and_withdrawal()
         let (result, spent, live, baseline) = checkout
             .read_file_record_by_id(record.file_id, &source, &cancellation)
             .await;
+        let spent = spent?;
         spent.verify(source.budget)?;
         assert_eq!(live, baseline);
         if reads == 0 {

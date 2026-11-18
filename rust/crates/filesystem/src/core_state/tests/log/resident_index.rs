@@ -2,7 +2,8 @@
 use super::*;
 
 #[test]
-fn cached_absence_lookup_cost_is_bounded_by_record_identity_width() {
+fn cached_absence_lookup_cost_is_bounded_by_record_identity_width()
+-> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let mut measured = Vec::new();
     for count in [1_usize, 4, 16, 64, 256] {
@@ -38,10 +39,12 @@ fn cached_absence_lookup_cost_is_bounded_by_record_identity_width() {
         measured.iter().all(|(_, examined)| *examined <= 137),
         "one 136-bit record identity must bound the complete cached-read lookup: {measured:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn already_adopted_residents_are_not_reexamined_on_each_call() {
+fn already_adopted_residents_are_not_reexamined_on_each_call()
+-> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let cancellation = crate::CancellationToken::new();
@@ -78,7 +81,8 @@ fn already_adopted_residents_are_not_reexamined_on_each_call() {
 }
 
 #[test]
-fn borrowing_a_funded_cache_does_not_reallocate_its_original_backing() {
+fn borrowing_a_funded_cache_does_not_reallocate_its_original_backing()
+-> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let cancellation = crate::CancellationToken::new();

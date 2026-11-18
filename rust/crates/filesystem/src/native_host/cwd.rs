@@ -532,7 +532,7 @@ mod tests {
                 work.live_allocation_bytes().unwrap(),
                 baseline + path.capacity() as u64
             );
-            let receipt = work.receipt();
+            let receipt = work.receipt()?;
             drop(path);
             drop(allocation);
             assert_eq!(work.live_allocation_bytes().unwrap(), baseline);

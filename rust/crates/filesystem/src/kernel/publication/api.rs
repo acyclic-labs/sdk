@@ -68,10 +68,7 @@ where
             future
                 .await
                 .map(|receipt| Some(receipt.work))
-                .map_err(|failure| PublicationStepFailure {
-                    cause: failure.error,
-                    work: failure.work.map(|work| Some(*work)),
-                })
+                .map_err(PublicationStepFailure::from)
         }
     };
     let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| async move {
@@ -85,9 +82,10 @@ where
             .map_err(|error| error.into_error(std::convert::identity));
         work.receipt(result)
             .map(|receipt| (receipt.value, Some(receipt.work)))
-            .map_err(|failure| PublicationStepFailure {
-                cause: E::from(crate::FsError::Authority(failure.error)),
-                work: failure.work.map(|work| Some(*work)),
+            .map_err(|failure| {
+                PublicationStepFailure::from(
+                    failure.map_error(|error| E::from(crate::FsError::Authority(error))),
+                )
             })
     };
     let mut roots = |root: &crate::kernel::GenerationRoot,
@@ -96,10 +94,7 @@ where
         if let Some(prepare) = prepare_roots.as_mut() {
             let result = prepare(root, accounting.remaining().map_err(E::from)?)
                 .map(|receipt| (receipt.value, Some(receipt.work)))
-                .map_err(|failure| PublicationStepFailure {
-                    cause: failure.error,
-                    work: failure.work.map(|work| Some(*work)),
-                });
+                .map_err(PublicationStepFailure::from);
             let bytes = accept_step(accounting, result)?;
             retain(accounting, bytes).map_err(E::from)?;
         }
@@ -124,10 +119,7 @@ where
         },
     )
     .await;
-    result.map_err(|error| match accounting.spent() {
-        Ok(work) => OperationFailure::new(error, work),
-        Err(observation) => OperationFailure::without_receipt(error, observation),
-    })
+    result.map_err(|error| OperationFailure::observed(error, accounting.spent()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,7 +1,8 @@
 use super::*;
 
 #[tokio::test]
-async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
+async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop()
+-> Result<(), Box<dyn std::error::Error>> {
     let cancellation = crate::CancellationToken::new();
     let mut writer = unbounded_accounting(&cancellation);
     let leaf =
@@ -85,10 +86,12 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
             "source credit failed to retire"
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn reopened_shadow_source_alias_keeps_decoded_credit_until_last_drop() {
+async fn reopened_shadow_source_alias_keeps_decoded_credit_until_last_drop()
+-> Result<(), Box<dyn std::error::Error>> {
     let cancellation = crate::CancellationToken::new();
     let mut writer = unbounded_accounting(&cancellation);
     let source =
@@ -192,7 +195,8 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
 }
 
 #[tokio::test]
-async fn concurrent_immutable_nodes_retain_payload_and_publication_custody() {
+async fn concurrent_immutable_nodes_retain_payload_and_publication_custody()
+-> Result<(), Box<dyn std::error::Error>> {
     let cancellation = crate::CancellationToken::new();
     let mut accounting = unbounded_accounting(&cancellation);
     let directory = tempfile::tempdir().unwrap();
@@ -290,6 +294,7 @@ async fn concurrent_immutable_nodes_retain_payload_and_publication_custody() {
     assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), live);
     driver.abort();
     let _ = driver.await;
+    Ok(())
 }
 
 #[tokio::test]
@@ -351,7 +356,8 @@ async fn empty_nodes_are_implied_without_being_stored() {
 }
 
 #[tokio::test]
-async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_on_restart() {
+async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_on_restart()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xb1; 16]);
     let mut state = lazy_state(id, 1);
@@ -453,7 +459,8 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
 }
 
 #[tokio::test]
-async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancellation() {
+async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xb5; 16]);
     let store = LocalCoreStateStore::new(directory.path());
@@ -493,7 +500,8 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
 }
 
 #[tokio::test]
-async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
+async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
     let workspace = WorkspaceId::from_bytes([41; 16]);
@@ -562,6 +570,7 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
             .next()
             .is_none()
     );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

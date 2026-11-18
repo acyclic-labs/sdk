@@ -40,7 +40,8 @@ proptest! {
 }
 
 #[test]
-fn generation_index_finds_last_key_with_logarithmic_item_credit() {
+fn generation_index_finds_last_key_with_logarithmic_item_credit()
+-> Result<(), Box<dyn std::error::Error>> {
     let work =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .unwrap();
@@ -64,14 +65,16 @@ fn generation_index_finds_last_key_with_logarithmic_item_credit() {
         );
         assert!(work.receipt().unwrap().items_examined - before <= 8);
     }
+    Ok(())
 }
 
 #[test]
-fn generation_index_move_denial_preserves_entries_and_live_custody() {
+fn generation_index_move_denial_preserves_entries_and_live_custody()
+-> Result<(), Box<dyn std::error::Error>> {
     let work =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .unwrap();
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let mut receipt = GenerationReceipt::from_work(&work).unwrap();
     let mut index = GenerationIndex::<u16, u16>::default();
     assert!(index.insert(2, 6, &mut receipt).unwrap());
@@ -83,8 +86,8 @@ fn generation_index_move_denial_preserves_entries_and_live_custody() {
             })
             .unwrap();
         let mut bounded_receipt = GenerationReceipt::from_work(&bounded).unwrap();
-        let before = work.receipt();
-        let live = work.live_allocation_bytes();
+        let before = work.receipt()?;
+        let live = work.live_allocation_bytes()?;
         assert!(index.insert(1, 3, &mut bounded_receipt).is_err());
         assert_eq!(
             index
@@ -94,19 +97,15 @@ fn generation_index_move_denial_preserves_entries_and_live_custody() {
             [(2, 6)]
         );
         assert!(index.valid());
-        assert_eq!(work.live_allocation_bytes(), live);
-        assert_eq!(
-            work.receipt().unwrap().bytes_copied,
-            before.unwrap().bytes_copied
-        );
-        assert_eq!(
-            work.receipt().unwrap().allocation_operations,
-            before.unwrap().allocation_operations
-        );
+        assert_eq!(work.live_allocation_bytes()?, live);
+        let after = work.receipt()?;
+        assert_eq!(after.bytes_copied, before.bytes_copied);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
     }
     drop(index);
     drop(receipt);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 proptest! {
@@ -132,7 +131,8 @@ proptest! {
 }
 
 #[test]
-fn generation_index_insertion_copy_cost_is_bounded_in_both_orders() {
+fn generation_index_insertion_copy_cost_is_bounded_in_both_orders()
+-> Result<(), Box<dyn std::error::Error>> {
     for reverse in [false, true] {
         // At 2,048 entries a sorted-vector index needs more than8MiB just to
         // shift u16 pairs. A balanced append-only arena stays below4MiB,
@@ -145,7 +145,7 @@ fn generation_index_insertion_copy_cost_is_bounded_in_both_orders() {
             &CancellationToken::new(),
         )
         .unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let mut receipt = GenerationReceipt::from_work(&work).unwrap();
         let mut index = GenerationIndex::<u16, u16>::default();
         for step in 0..2048_u16 {
@@ -164,6 +164,7 @@ fn generation_index_insertion_copy_cost_is_bounded_in_both_orders() {
         assert_eq!(work.receipt().unwrap().bytes_copied, copied);
         drop(index);
         drop(receipt);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
+    Ok(())
 }
