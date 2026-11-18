@@ -413,7 +413,7 @@ pub(super) fn seeds(
         &pending.run_id,
         &pending.input,
     )
-    .map_err(|error| format!("pending RunView seed admission failed: {error}; recovery: review semantic::pending_run, then run bazel run //rust/codec-fuzz:capture_example"))?;
+    .map_err(|error| format!("pending RunView seed admission failed: {error}; recovery: review semantic::pending_run, then run ACYCLIC_TEST_SOURCE_ROOT=\"$PWD\" bazel run //rust/codec-fuzz:capture_example"))?;
     seeds.push(("inference.customer.v1.RunView", "watch-pending", encoded));
     use acyclic_inference::wire as i;
     for (name, sequence, event) in [
