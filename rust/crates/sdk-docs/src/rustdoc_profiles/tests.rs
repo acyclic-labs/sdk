@@ -526,32 +526,22 @@ fn real_cargo_profiles_have_distinct_public_items_when_requested() {
     let out_dir = directory.path();
     let first = out_dir.join("objects-json.json");
     let second = out_dir.join("objects-all-features.json");
-    let first_observation = execute_profile(
-        &manifest,
-        metadata,
-        json,
-        &available_targets,
-        &target_dir,
-        &first,
-        CargoExecutionContext::default(),
-        &RustdocTarget::Library,
-    )
-    .unwrap();
-    let second_observation = execute_profile(
-        &manifest,
-        metadata,
-        all_features,
-        &available_targets,
-        &target_dir,
-        &second,
-        CargoExecutionContext::default(),
-        &RustdocTarget::Library,
-    )
-    .unwrap();
-    assert_eq!(first_observation.crate_name, "acyclic_objects");
-    assert_eq!(second_observation.crate_name, "acyclic_objects");
-    assert_ne!(
-        local_item_names(&first).unwrap(),
-        local_item_names(&second).unwrap()
-    );
+    let item_names = |profile: &ProfileSpec, output: &std::path::Path| {
+        crate::with_rustdoc_cache(|| {
+            let observation = execute_profile(
+                &manifest,
+                metadata,
+                profile,
+                &available_targets,
+                &target_dir,
+                output,
+                CargoExecutionContext::default(),
+                &RustdocTarget::Library,
+            )
+            .unwrap();
+            assert_eq!(observation.crate_name, "acyclic_objects");
+            local_item_names(output).unwrap()
+        })
+    };
+    assert_ne!(item_names(json, &first), item_names(all_features, &second));
 }
