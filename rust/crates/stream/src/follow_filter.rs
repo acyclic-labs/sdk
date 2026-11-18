@@ -1,4 +1,5 @@
 use crate::{RecordHeaders, StreamError};
+use acyclic_stream_wire::filter::{FilterError, canonical};
 use acyclic_stream_wire::wire;
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -404,57 +405,13 @@ fn projection_range(key: &[u8]) -> Result<wire::KeyRange, StreamError> {
     })
 }
 
-fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, StreamError> {
-    if !filter.all_of.is_empty() {
-        return Err(StreamError::InvalidArgument);
-    }
-    if filter.encoded_len() > crate::MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
-    }
-    for range in &filter.keys {
-        if !range.end.is_empty() && range.start >= range.end {
-            return Err(StreamError::InvalidArgument);
+impl From<FilterError> for StreamError {
+    fn from(error: FilterError) -> Self {
+        match error {
+            FilterError::Invalid => Self::InvalidArgument,
+            FilterError::Limit => Self::LimitExceeded,
         }
     }
-    filter.keys.sort_unstable_by(|left, right| {
-        left.start
-            .cmp(&right.start)
-            .then_with(|| left.end.cmp(&right.end))
-    });
-    let mut ranges: Vec<wire::KeyRange> = Vec::new();
-    for range in filter.keys {
-        if let Some(last) = ranges.last_mut()
-            && (last.end.is_empty() || range.start <= last.end)
-        {
-            if !last.end.is_empty() && (range.end.is_empty() || range.end > last.end) {
-                last.end = range.end;
-            }
-        } else {
-            ranges.push(range);
-        }
-    }
-    filter.keys = ranges;
-    filter
-        .attributes
-        .sort_unstable_by(|left, right| left.name.cmp(&right.name));
-    if filter
-        .attributes
-        .windows(2)
-        .any(|pair| matches!(pair, [left, right] if left.name == right.name))
-    {
-        return Err(StreamError::InvalidArgument);
-    }
-    for attribute in &mut filter.attributes {
-        if attribute.name.is_empty()
-            || attribute.name.chars().any(char::is_control)
-            || attribute.any_of.is_empty()
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        attribute.any_of.sort_unstable();
-        attribute.any_of.dedup();
-    }
-    Ok(filter)
 }
 
 // Check selection against full decoding by the same canonical format reader.
