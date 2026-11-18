@@ -158,24 +158,18 @@ pub(super) fn project(
     fixture: &Fixture,
     metadata: &cargo_metadata::Metadata,
     rows: &[Value],
+    catalog: &[u8],
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    sdk_docs::with_rustdoc_cache(|| project_inner(fixture, metadata, rows))
+    sdk_docs::with_rustdoc_cache(|| project_inner(fixture, metadata, rows, catalog))
 }
 
 fn project_inner(
     fixture: &Fixture,
     metadata: &cargo_metadata::Metadata,
     rows: &[Value],
+    catalog: &[u8],
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    let template: sdk_docs::DocsData = serde_json::from_slice(
-        &fs::read(
-            fixture
-                .output
-                .join("preview/feature-profile-catalog/sdk-docs-data.v1.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let template: sdk_docs::DocsData = serde_json::from_slice(catalog).unwrap();
     let manifest: Value = serde_json::from_slice(
         &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
     )

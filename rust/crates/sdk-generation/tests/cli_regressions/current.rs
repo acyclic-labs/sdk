@@ -540,7 +540,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     assert_eq!(data["source"]["revision"], git_revision(&fixture.root));
 
     let metadata = super::replay::metadata(&fixture);
-    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata, &receipts);
+    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata, &receipts, &data_bytes);
     assert_eq!(serde_json::to_vec_pretty(&rebuilt).unwrap(), data_bytes);
     assert_eq!(
         serde_json::to_vec_pretty(&replayed).unwrap(),
@@ -715,7 +715,14 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     });
     let relocated_receipts =
         assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
-    let (data, availability) = super::replay::project(&relocated, &metadata, &relocated_receipts);
+    let catalog = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
+    let relocated_catalog = fs::read(relocated.output.join(catalog)).unwrap();
+    let (data, availability) = super::replay::project(
+        &relocated,
+        &metadata,
+        &relocated_receipts,
+        &relocated_catalog,
+    );
     let host = original_receipts[0]["target"].as_str().unwrap();
     let available = BTreeSet::from([host.to_owned()]);
     let mut expected = BTreeSet::new();
@@ -790,23 +797,24 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             "completed compiler artifacts share their native file identity"
         );
     }
-    for (path, replayed) in [
-        (
-            "preview/feature-profile-catalog/sdk-docs-data.v1.json",
-            serde_json::to_vec_pretty(&data).unwrap(),
-        ),
-        (
-            "sdk-docs-profile-availability.v1.json",
-            serde_json::to_vec_pretty(&availability).unwrap(),
-        ),
-    ] {
-        for checkout in [&fixture, &relocated] {
-            assert_eq!(
-                fs::read(checkout.output.join(path)).unwrap(),
-                replayed,
-                "published {path} must match the independent replay"
-            );
-        }
+    let replayed_catalog = serde_json::to_vec_pretty(&data).unwrap();
+    assert_eq!(relocated_catalog, replayed_catalog);
+    assert_eq!(
+        fs::read(fixture.output.join(catalog)).unwrap(),
+        replayed_catalog
+    );
+    let replayed_availability = serde_json::to_vec_pretty(&availability).unwrap();
+    for checkout in [&fixture, &relocated] {
+        assert_eq!(
+            fs::read(
+                checkout
+                    .output
+                    .join("sdk-docs-profile-availability.v1.json")
+            )
+            .unwrap(),
+            replayed_availability,
+            "published availability must match the independent replay"
+        );
     }
     let data: Value = serde_json::to_value(data).unwrap();
     let mut spans = BTreeSet::new();
