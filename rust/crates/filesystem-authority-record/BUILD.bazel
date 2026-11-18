@@ -39,7 +39,7 @@ rust_library(
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//thiserror-2.0.21",
     ],
-
+    visibility = ["//visibility:public"],
 )
 
 rust_test(
