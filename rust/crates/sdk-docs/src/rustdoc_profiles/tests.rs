@@ -164,18 +164,16 @@ fn feature_profiles_include_local_closure_and_all_features() {
 }
 
 #[test]
-fn profile_ids_are_order_independent_and_distinguish_defaults() {
-    let profile = |default_features, features| ProfileSpec {
+fn profile_ids_distinguish_defaults_for_the_same_features() {
+    let mut profile = ProfileSpec {
         package: "p".into(),
         target: "t".into(),
-        default_features,
-        features,
+        default_features: false,
+        features: BTreeSet::from(["a".into(), "b".into()]),
     };
-    let a = profile(false, BTreeSet::from(["b".into(), "a".into()])).id();
-    let b = profile(false, BTreeSet::from(["a".into(), "b".into()])).id();
-    let default = profile(true, BTreeSet::new()).id();
-    assert_eq!(a, b);
-    assert_ne!(a, default);
+    let without_defaults = profile.id();
+    profile.default_features = true;
+    assert_ne!(without_defaults, profile.id());
 }
 
 #[test]
