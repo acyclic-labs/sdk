@@ -1,18 +1,16 @@
 use super::{FileLock, FileLockMode};
-#[cfg(unix)]
 use crate::is_exclusive_lock_contention;
 #[cfg(unix)]
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
 #[cfg(unix)]
 use std::os::fd::AsFd as _;
 #[cfg(unix)]
 use std::path::Path;
 
-#[cfg(unix)]
 #[path = "file_lock_test_fixture.rs"]
 mod fixture;
-#[cfg(unix)]
 use fixture::{is_free, open};
 
 /// A held lock of either mode excludes only other lock holders: the file's

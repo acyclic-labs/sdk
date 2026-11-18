@@ -3,7 +3,6 @@ use super::*;
 pub(crate) use acyclic_test_support::waker::complete;
 use acyclic_test_support::waker::thread_waker as completion_waker;
 use std::fs::OpenOptions;
-use std::io::{Seek as _, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Poll, Wake};
 use std::time::Instant;

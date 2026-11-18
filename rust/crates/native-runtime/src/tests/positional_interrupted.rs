@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use std::io::{Seek as _, SeekFrom};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::FileExt as _;
 
