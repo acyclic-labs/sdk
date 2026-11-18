@@ -1,8 +1,8 @@
 //! The one wire dispatch over any [`Blobs`]: gRPC and binary adapters serve
 //! each route through these functions, each paired with the revision its
 //! result carries.
-use crate::convert;
-use crate::error::{invalid, unavailable};
+use crate::convert::{self, reply};
+use crate::error::invalid;
 use crate::{Blobs, Digest, Error, ObjectsMethod, RootId, wire};
 use acyclic_auth::action::{Action, ObjectsAction};
 use acyclic_stream::Revision;
@@ -266,8 +266,7 @@ pub async fn get_blob(
     blobs: &dyn Blobs,
     request: wire::GetBlobRequest,
 ) -> Result<Served<wire::GetBlobResponse>, Error> {
-    let digest = convert::digest(request.digest.as_ref())?;
-    let range = convert::from_range(request.range.as_ref());
+    let (digest, range) = convert::from_get(&request)?;
     let object = blobs.get(digest, range, request.maximum_bytes).await?;
     let revision = object.revision().cloned();
     Ok((
@@ -315,11 +314,7 @@ pub async fn list_blobs(
     blobs: &dyn Blobs,
     request: wire::ListBlobsRequest,
 ) -> Result<Served<wire::ListBlobsResponse>, Error> {
-    let after = request
-        .after
-        .as_ref()
-        .map(|after| convert::digest(Some(after)))
-        .transpose()?;
+    let after = convert::optional_digest(request.after.as_ref())?;
     let page = blobs.list(after, request.limit).await?;
     Ok((convert::wire_page(&page), page.revision))
 }
@@ -484,9 +479,6 @@ pub async fn invoke_at(
 /// `InvalidArgument` for an unknown route or malformed request, and
 /// `Unavailable` for a reply that is malformed or does not answer it.
 pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
-    fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
-        decode(bytes).map_err(|_| unavailable())
-    }
     match ObjectsMethod::from_http_route(route).ok_or(wire::ErrorCode::InvalidArgument)? {
         ObjectsMethod::PutBlob => {
             let request: wire::PutBlobRequest = decode(input)?;
@@ -511,8 +503,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         }
         ObjectsMethod::GetBlob => {
             let request: wire::GetBlobRequest = decode(input)?;
-            let digest = convert::digest(request.digest.as_ref())?;
-            let range = convert::from_range(request.range.as_ref());
+            let (digest, range) = convert::from_get(&request)?;
             convert::object(reply(output)?, digest, range, request.maximum_bytes, None).map(drop)
         }
         ObjectsMethod::HeadBlob => {
@@ -523,11 +514,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         ObjectsMethod::DeleteBlob => convert::delete(&reply(output)?, None).map(drop),
         ObjectsMethod::ListBlobs => {
             let request: wire::ListBlobsRequest = decode(input)?;
-            let after = request
-                .after
-                .as_ref()
-                .map(|after| convert::digest(Some(after)))
-                .transpose()?;
+            let after = convert::optional_digest(request.after.as_ref())?;
             convert::listed(&reply(output)?, after, request.limit, None).map(drop)
         }
         ObjectsMethod::Retain | ObjectsMethod::RetainFenced => {

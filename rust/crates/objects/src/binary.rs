@@ -1,5 +1,4 @@
 //! Canonical blob client over the caller's original binary account transport.
-use crate::error::unavailable;
 use crate::{
     Availability, Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object,
     ObjectsMethod, Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
@@ -64,9 +63,7 @@ impl<T: Transport> BinaryObjects<T> {
             .transport
             .invoke(method.http_route(), input.encode_to_vec().into())
             .await?;
-        // Owned decoding retains body fields in the original response allocation.
-        let reply = O::decode(body).map_err(|_| unavailable())?;
-        Ok((reply, revision))
+        Ok((convert::reply(body)?, revision))
     }
 
     async fn publish(
@@ -139,24 +136,14 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         let (reply, revision) = self
-            .call(
-                ObjectsMethod::HeadBlob,
-                wire::HeadBlobRequest {
-                    digest: Some(digest.into()),
-                },
-            )
+            .call(ObjectsMethod::HeadBlob, convert::head_request(digest))
             .await?;
         convert::headed(&reply, digest, revision)
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
         let (reply, revision) = self
-            .call(
-                ObjectsMethod::DeleteBlob,
-                wire::DeleteBlobRequest {
-                    digest: Some(digest.into()),
-                },
-            )
+            .call(ObjectsMethod::DeleteBlob, convert::delete_request(digest))
             .await?;
         convert::delete(&reply, revision)
     }

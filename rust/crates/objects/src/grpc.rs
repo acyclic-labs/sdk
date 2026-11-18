@@ -384,15 +384,7 @@ impl Blobs for GrpcObjects {
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let reply = call!(
-                self,
-                head_blob,
-                wire::HeadBlobRequest {
-                    digest: Some(digest.into()),
-                },
-                None,
-                read
-            )?;
+            let reply = call!(self, head_blob, convert::head_request(digest), None, read)?;
             convert::headed(&reply.0, digest, reply.1)
         })
         .await
@@ -400,14 +392,7 @@ impl Blobs for GrpcObjects {
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let reply = call!(
-                self,
-                delete_blob,
-                wire::DeleteBlobRequest {
-                    digest: Some(digest.into()),
-                },
-                None
-            )?;
+            let reply = call!(self, delete_blob, convert::delete_request(digest), None)?;
             convert::delete(&reply.0, reply.1)
         })
         .await

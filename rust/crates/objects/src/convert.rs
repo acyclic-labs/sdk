@@ -8,6 +8,13 @@ use crate::{
 
 use crate::{Released, Retained, Usage};
 use acyclic_stream::Revision;
+use bytes::Bytes;
+use prost::Message;
+
+/// Owned decoding lets protobuf body fields retain their response allocation.
+pub(crate) fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
+    T::decode(bytes).map_err(|_| unavailable())
+}
 
 impl From<Digest> for wire::Digest {
     fn from(digest: Digest) -> Self {
@@ -18,7 +25,13 @@ impl From<Digest> for wire::Digest {
 }
 
 pub(crate) fn digest(value: Option<&wire::Digest>) -> Result<Digest, Error> {
-    Digest::from_slice(&value.ok_or_else(invalid)?.blake3)
+    optional_digest(value)?.ok_or_else(invalid)
+}
+
+pub(crate) fn optional_digest(value: Option<&wire::Digest>) -> Result<Option<Digest>, Error> {
+    value
+        .map(|value| Digest::from_slice(&value.blake3))
+        .transpose()
 }
 
 pub(crate) fn digests(values: &[wire::Digest]) -> Result<Vec<Digest>, Error> {
@@ -46,6 +59,18 @@ pub(crate) fn get_request(
         digest: Some(digest.into()),
         range: Some(range(selection)),
         maximum_bytes,
+    }
+}
+
+pub(crate) fn head_request(digest: Digest) -> wire::HeadBlobRequest {
+    wire::HeadBlobRequest {
+        digest: Some(digest.into()),
+    }
+}
+
+pub(crate) fn delete_request(digest: Digest) -> wire::DeleteBlobRequest {
+    wire::DeleteBlobRequest {
+        digest: Some(digest.into()),
     }
 }
 
@@ -95,11 +120,15 @@ pub(crate) fn release_terminal_request(
     wire::ReleaseTerminalRequest { root, fence }
 }
 
-pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
-    range.map_or(ByteRange::FULL, |range| ByteRange {
-        start: range.start,
-        end: range.end,
-    })
+pub(crate) fn from_get(request: &wire::GetBlobRequest) -> Result<(Digest, ByteRange), Error> {
+    let range = request
+        .range
+        .as_ref()
+        .map_or(ByteRange::FULL, |range| ByteRange {
+            start: range.start,
+            end: range.end,
+        });
+    Ok((digest(request.digest.as_ref())?, range))
 }
 
 pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
@@ -266,11 +295,7 @@ pub(crate) fn page(
 ) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
-        next: value
-            .next
-            .as_ref()
-            .map(|next| digest(Some(next)))
-            .transpose()?,
+        next: optional_digest(value.next.as_ref())?,
         revision,
     };
     if page
