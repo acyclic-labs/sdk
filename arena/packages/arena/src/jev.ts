@@ -74,7 +74,8 @@ export class Jev {
       }
       const text = await res.text();
       if (attempt < this.retries && [429, 500, 502, 503].includes(res.status)) {
-        const delay = retryDelayMs(1000, Number.MAX_VALUE, Math.min(attempt, 52), 1);
+        // Saturate to the Wasm argument width; Auth caps the exponent.
+        const delay = retryDelayMs(1000, Number.MAX_VALUE, Math.min(attempt, 0xffff_ffff), 1);
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
