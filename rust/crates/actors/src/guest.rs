@@ -1,10 +1,11 @@
 //! Guest ABI v1. Artifacts own their codec; hosts own admission and publication.
 
 pub use acyclic_actors_guest_wire::{
-    Checkpoint, CodecIdentity, GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent,
-    GuestEventResult, GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest,
-    GuestStreamingResponse, SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply,
-    SocketTransport, WebSocketAutoResponse, WebSocketId,
+    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateSeed, Checkpoint,
+    CodecIdentity, GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent, GuestEventResult,
+    GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest, GuestStreamingResponse,
+    SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply, SocketTransport,
+    WebSocketAutoResponse, WebSocketId,
 };
 use ts_rs::{Config, TS};
 
@@ -24,10 +25,8 @@ mod body;
 mod state;
 pub use state::GuestState;
 mod state_transaction;
+pub use state_transaction::ActorStateHost;
 pub(crate) use state_transaction::StateCommand;
-pub use state_transaction::{
-    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateHost, ActorStateSeed,
-};
 mod handler;
 mod hosted;
 pub use handler::{

@@ -12,10 +12,12 @@ pub use codec::{Checkpoint, CodecIdentity, GuestError};
 /// Portable live-update selection contract.
 pub mod live_selection;
 mod sockets;
+mod state_packets;
 use serde::{Deserialize, Serialize};
 pub use sockets::{
     GuestEventResult, GuestSocketEvent, SocketCloseInitiator, SocketPayload, SocketTransport,
 };
+pub use state_packets::{ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateSeed};
 use ts_rs::TS;
 
 /// Runtime-owned hibernatable socket identity, unrelated to the actor's identity.
