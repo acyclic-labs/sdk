@@ -118,6 +118,6 @@ fn conversation_enforces_binding_order_and_call_links() -> Result<()> {
         extensions: BTreeMap::new(),
     };
     state.append(result, &mut None)?;
-    assert_eq!(state.logical_revision(), 2);
+    assert_eq!(state.messages().len(), 2);
     Ok(())
 }
