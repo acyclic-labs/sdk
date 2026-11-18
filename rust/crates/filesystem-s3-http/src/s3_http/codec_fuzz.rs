@@ -124,7 +124,7 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Capture each production writer with complete plain and sealed references.
-pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
+pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
     let mut seeds = vec![
         ("multipart-created", created()?.to_vec()),
         (

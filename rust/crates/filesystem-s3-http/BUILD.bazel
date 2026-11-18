@@ -76,6 +76,7 @@ rust_test(
         "@sdk_crates//hmac-0.13.0",
         "@sdk_crates//http-1.5.0",
         "@sdk_crates//sha2-0.11.1",
+        "@sdk_crates//time-0.3.55",
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//tower-0.5.3",
     ],
