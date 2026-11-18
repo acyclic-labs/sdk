@@ -6,7 +6,6 @@
 // below the default 128; a by-value chain across layers fails here first.
 #![recursion_limit = "112"]
 use acyclic_harness_providers::Adapter;
-mod benchmark_catalog;
 #[cfg(loom)]
 #[path = "../src/sync.rs"]
 mod sync;

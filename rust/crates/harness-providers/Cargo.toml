@@ -90,7 +90,12 @@ proptest.workspace = true
 [lints]
 workspace = true
 
+[package.metadata.bazel]
+test-narrow-runfiles = ["benchmark-catalog"]
+test-without-build-script = ["benchmark-catalog"]
+
 [package.metadata.bazel.test-dependencies]
+benchmark-catalog = ["acyclic_harness_providers", "acyclic_test_support", "serde_json", "tempfile"]
 credential-fixture = ["acyclic_harness_providers"]
 live-cache = ["acyclic_harness_core", "acyclic_harness_providers", "acyclic_stream", "async_stream", "bytes", "futures", "serde_json", "tokio"]
 prefix-cache = ["acyclic_actors", "acyclic_fs", "acyclic_harness_core", "acyclic_harness_local", "acyclic_harness_providers", "acyclic_objects", "acyclic_stream", "bytes", "futures", "harness_mock_model", "serde_json", "tempfile", "tokio"]
@@ -106,3 +111,7 @@ path = "tests/live_cache.rs"
 [[test]]
 name = "prefix-cache"
 path = "tests/prefix_cache_cases.rs"
+
+[[test]]
+name = "benchmark-catalog"
+path = "tests/benchmark_catalog_cases.rs"
