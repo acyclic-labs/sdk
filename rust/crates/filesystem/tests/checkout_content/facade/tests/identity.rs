@@ -1,12 +1,13 @@
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, FileKind, FileRangeReadError, RebaseDecision,
 };
-use acyclic_fs::model::CheckoutMode;
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, DependencyRegion,
-    ExtentSeekTarget, FilesystemProfile, FsError, NamedAttributeWriteMode, OperationFailure,
+    ExtentSeekTarget, FsError, NamedAttributeWriteMode, OperationFailure,
 };
 use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+use acyclic_fs_format::model::CheckoutMode;
+use acyclic_fs_format::model::FilesystemProfile;
 use acyclic_stream::OwnedBytes;
 
 use super::B;

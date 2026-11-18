@@ -2318,7 +2318,9 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
             &principal,
             action,
             access::Resource {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
+                config: acyclic_fs_format::model::VolumeConfig::portable(
+                    acyclic_fs_format::model::Lifecycle::Durable,
+                ),
                 lineage: &[],
                 volume: "00000000-0000-0000-0000-000000000000",
                 reference,

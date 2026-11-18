@@ -4211,8 +4211,8 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     policy.push(b'\n');
     let mut writer = workspace
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
             WorkBudget::UNBOUNDED,
             &cancel,
         )

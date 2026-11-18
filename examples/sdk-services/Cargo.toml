@@ -12,6 +12,7 @@ acyclic-stream = { path = "../../rust/crates/stream", default-features = false }
 acyclic-actors = { path = "../../rust/crates/actors" }
 acyclic-workers = { path = "../../rust/crates/workers" }
 acyclic-fs = { path = "../../rust/crates/filesystem", default-features = false }
+acyclic-fs-format = { version = "=0.2.0", path = "../../rust/crates/filesystem-format" }
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

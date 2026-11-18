@@ -1,6 +1,7 @@
-use acyclic_fs::{AuthoredMutation, CancellationToken, VolumeConfig};
+use acyclic_fs::{AuthoredMutation, CancellationToken};
 use acyclic_fs_format::identity::FileId;
 use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_fs_format::model::VolumeConfig;
 use acyclic_stream::OwnedBytes;
 
 use super::B;

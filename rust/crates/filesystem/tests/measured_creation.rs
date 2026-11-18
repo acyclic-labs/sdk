@@ -4,7 +4,7 @@ use acyclic_stream::StreamProviderExt as _;
 #[path = "support/unbounded.rs"]
 mod unbounded;
 
-use acyclic_fs::model::{Lifecycle, VolumeConfig};
+use acyclic_fs_format::model::{Lifecycle, VolumeConfig};
 use {
     acyclic_fs::{CancellationToken, Fs, IdempotencyKey, WorkspaceError},
     acyclic_fs_format::identity::OperationId,
@@ -273,11 +273,11 @@ mod source_bound_lost_ack {
     use super::*;
     use acyclic_fs::demand::{SourceReference, native::NativeDemandSource};
     use acyclic_fs::facade::FsWork;
-    use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
     use acyclic_fs::{
         EmbeddedCapabilities, LazyWorkspace, LazyWorkspaceStore, LogicalObjectStore,
         MemoryLazyWorkspaceStore, StreamAuthorityStore,
     };
+    use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
     use acyclic_stream::{MemoryStream, ReadRequest, StreamError, StreamProvider};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

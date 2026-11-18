@@ -1,7 +1,8 @@
 use acyclic_fs::kernel::FileKind;
-use acyclic_fs::{AuthoredMutation, CancellationToken, FilesystemProfile, Fs};
+use acyclic_fs::{AuthoredMutation, CancellationToken, Fs};
 use acyclic_fs_format::identity::VolumeId;
 use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_fs_format::model::FilesystemProfile;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 

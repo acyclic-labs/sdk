@@ -84,7 +84,11 @@ fn portable_path(path: &str) -> Option<acyclic_fs::path::PortablePath> {
     } else {
         format!("/{path}")
     };
-    acyclic_fs::path::PortablePath::parse(&absolute, acyclic_fs::VolumeLimits::default()).ok()
+    acyclic_fs::path::PortablePath::parse(
+        &absolute,
+        acyclic_fs_format::model::VolumeLimits::default(),
+    )
+    .ok()
 }
 
 // Each literal search consumes its matched prefix. Unlike regex backtracking,

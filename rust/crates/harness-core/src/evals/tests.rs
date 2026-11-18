@@ -7,7 +7,8 @@ use crate::{
 use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
 use std::sync::Arc;
 use {
-    acyclic_fs::{CancellationToken, NativeMaterializationWork, VolumeLimits},
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_format::model::VolumeLimits,
     acyclic_fs_work::performance::WorkBudget,
 };
 
@@ -17,7 +18,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 fn path(text: &str) -> NamespacePath {
     NamespacePath::from_text_in_profile(
         text,
-        acyclic_fs::FilesystemProfile::Portable,
+        acyclic_fs_format::model::FilesystemProfile::Portable,
         VolumeLimits::default(),
     )
     .unwrap()

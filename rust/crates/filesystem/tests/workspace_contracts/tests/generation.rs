@@ -1,7 +1,9 @@
 use acyclic_fs::{
     ForkOptions, Fs, IdempotencyKey, PublicationPermit, TransactionCommit, WorkspaceDelete,
     WorkspaceError, WorkspaceRestore,
-    model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
+};
+use acyclic_fs_format::model::{
+    AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode,
 };
 use std::error::Error;
 

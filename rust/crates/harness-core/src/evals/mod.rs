@@ -287,8 +287,8 @@ impl<C: Inputs> acyclic_fs::demand::View for View<C> {
         let cancellation = ctx.cancellation();
         let (root, mut allocation) = NamespacePath::parse_in_profile(
             "/",
-            acyclic_fs::FilesystemProfile::Portable,
-            acyclic_fs::VolumeLimits::default(),
+            acyclic_fs_format::model::FilesystemProfile::Portable,
+            acyclic_fs_format::model::VolumeLimits::default(),
             ctx,
             cancellation,
         )?;

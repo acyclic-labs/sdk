@@ -699,8 +699,8 @@ impl Fixture {
             .value;
         let mut checkout = workspace
             .checkout(
-                acyclic_fs::model::GenerationSelector::Head,
-                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                acyclic_fs_format::model::GenerationSelector::Head,
+                acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
                 work,
                 &cancel,
             )

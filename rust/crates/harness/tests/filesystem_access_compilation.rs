@@ -15,7 +15,9 @@ fn caller() -> Principal {
 
 fn resource() -> Resource<'static> {
     Resource {
-        config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+        config: acyclic_fs_format::model::VolumeConfig::portable(
+            acyclic_fs_format::model::Lifecycle::Ephemeral,
+        ),
         lineage: &[],
         volume: "project",
         reference: None,
@@ -182,7 +184,7 @@ proptest! {
         let caller = caller();
         let context = Context { now: 10, approvals: 0 };
         let mut resource = resource();
-        if folded { resource.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
+        if folded { resource.config.case_sensitivity = acyclic_fs_format::model::CaseSensitivity::ProfileFolded; }
         // Admission is per discovered state, so the number of cuts depends on
         // the policy. Learn them from an unrefused run, then refuse at one of them.
         let run = |refuse_at: Option<usize>| {

@@ -1,5 +1,5 @@
 //! Complete rescans of a published native tree, including unchanged files.
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use {
     acyclic_fs::{
         CancellationToken, CaptureOptions, CapturePolicy, Fs, capture_baseline,

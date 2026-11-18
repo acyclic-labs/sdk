@@ -21,8 +21,9 @@ mod tests {
     use super::*;
     use acyclic_fs::access::{Action, ActionSet};
     use {
-        acyclic_fs::{CancellationToken, Lifecycle, MaterializeOptions, VolumeConfig},
+        acyclic_fs::{CancellationToken, MaterializeOptions},
         acyclic_fs_format::identity::OperationId,
+        acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     };
 
     #[tokio::test]

@@ -4,12 +4,13 @@
 use std::{borrow::Cow, sync::Arc};
 use {
     acyclic_fs::{
-        CancellationToken, Fs, LazyDirectoryCursor, LazyWorkspace, Lifecycle,
-        MemoryLazyWorkspaceStore, NativeMaterializationWork, VolumeConfig, VolumeInitialization,
+        CancellationToken, Fs, LazyDirectoryCursor, LazyWorkspace, MemoryLazyWorkspaceStore,
+        NativeMaterializationWork, VolumeInitialization,
         demand::{Empty, Routed, native::NativeDemandSource},
         kernel::{KernelAccounting, LogicalName, NameEncoding},
     },
     acyclic_fs_format::identity::OperationId,
+    acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     acyclic_fs_work::performance::WorkBudget,
 };
 

@@ -3,10 +3,8 @@ use acyclic_fs::kernel::{
     GenerationTransferError, TransferCursor, TreePage, build_generation_export_manifest_async,
     export_generation_batch_async, import_generation_batch_async,
 };
-use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, CancellationToken, FilesystemProfile, Lifecycle,
-    MemoryObjectStore, VolumeConfig,
-};
+use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectStore};
+use acyclic_fs_format::model::{FilesystemProfile, Lifecycle, VolumeConfig};
 use acyclic_fs_format::{
     identity::{FileId, VolumeId},
     metadata::FileMetadata,

@@ -50,8 +50,8 @@ fn accounting_bench(bencher: Bencher, observers: usize, shared: bool) {
         checkouts.push(
             runtime
                 .block_on(Box::pin(workspace.checkout(
-                    acyclic_fs::model::GenerationSelector::Head,
-                    acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                    acyclic_fs_format::model::GenerationSelector::Head,
+                    acyclic_fs_format::model::CheckoutMode::read_only_pinned(),
                     &work,
                     &cancellation,
                 )))
@@ -91,7 +91,7 @@ fn accounting_charge_local(bencher: Bencher) {
 #[divan::bench(args = [(0, false), (128, false), (128, true)], threads = [1, 4], sample_count = 200, sample_size = 64)]
 fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) {
     use acyclic_fs::demand::native::NativeDemandSource;
-    use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
+    use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let runtime = Runtime::new().unwrap();
     let root = tempfile::tempdir().unwrap();

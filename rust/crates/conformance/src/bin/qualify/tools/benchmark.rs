@@ -123,8 +123,8 @@ pub(super) fn with_lazy_mount<T>(
     measure: impl FnOnce(&Path, &dyn Fn() -> Result<(), Failure>) -> Result<T, Failure>,
 ) -> (Result<T, Failure>, Result<f64, Failure>) {
     use acyclic_fs::demand::native::NativeDemandSource;
-    use acyclic_fs::model::VolumeLimits;
     use acyclic_fs::{LazyWorkspace, LocalCoreStateStore};
+    use acyclic_fs_format::model::VolumeLimits;
     use std::sync::Arc;
 
     let mount_dir = work.join("mnt");

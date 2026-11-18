@@ -257,8 +257,8 @@ pub fn check(bytes: &[u8]) {
 /// Produce SDK encoder output; the capture executable records its provenance.
 pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
     use {
-        acyclic_fs::{Lifecycle, VolumeConfig},
         acyclic_fs_format::identity::{Digest, FileId, VolumeId},
+        acyclic_fs_format::model::{Lifecycle, VolumeConfig},
         acyclic_fs_format::object_reference::GenerationId,
         acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
     };

@@ -2,7 +2,8 @@ use super::*;
 use acyclic_fs::facade::FsWork;
 use proptest::prelude::*;
 use {
-    acyclic_fs::{CancellationToken, Lifecycle, VolumeConfig},
+    acyclic_fs::CancellationToken,
+    acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     acyclic_fs_work::performance::WorkBudget,
 };
 
@@ -113,8 +114,8 @@ async fn new_owner_creation_is_atomic_and_recovery_keeps_its_policy() -> TestRes
     let cancel = CancellationToken::new();
     let mut checkout = reopened
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::read_only_pinned(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::read_only_pinned(),
             WorkBudget::UNBOUNDED,
             &cancel,
         )
@@ -396,8 +397,8 @@ where
     let cancel = CancellationToken::new();
     let mut checkout = workspace
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
             WorkBudget::UNBOUNDED,
             &cancel,
         )
@@ -467,8 +468,8 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
         // Former preparation order: raw copying happened before any admission.
         let mut checkout = target
             .checkout(
-                acyclic_fs::model::GenerationSelector::Exact(generation.id()),
-                acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                acyclic_fs_format::model::GenerationSelector::Exact(generation.id()),
+                acyclic_fs_format::model::CheckoutMode::read_only_pinned(),
                 WorkBudget::UNBOUNDED,
                 &cancel,
             )

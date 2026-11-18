@@ -1187,8 +1187,8 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
         .view()
         .workspace()
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
             budget,
             &cancellation,
         )

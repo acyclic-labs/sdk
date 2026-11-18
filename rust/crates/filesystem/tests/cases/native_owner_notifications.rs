@@ -4,7 +4,7 @@
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
 use acyclic_fs::facade::FsWork;
 use acyclic_fs::kernel::NamespacePath;
-use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
+use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
 use std::path::Path;
 use {
     acyclic_fs::{CancellationToken, NativeMaterializationWork},

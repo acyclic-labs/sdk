@@ -1,7 +1,7 @@
 use acyclic_fs::kernel::{AttributeClass, AttributeName};
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{AuthoredMutation, CancellationToken, Fs, FsError, NamedAttributeWriteMode};
 use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use acyclic_stream::OwnedBytes;
 
 use super::B;

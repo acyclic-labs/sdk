@@ -25,7 +25,9 @@ async fn fixture() -> Result<(
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "session-fs",
             acyclic_fs::VolumeInitialization::new(
-                acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                acyclic_fs_format::model::VolumeConfig::portable(
+                    acyclic_fs_format::model::Lifecycle::Ephemeral,
+                ),
                 Some(access::INITIAL_POLICY),
             ),
             acyclic_fs_format::identity::OperationId::new(),
@@ -44,8 +46,8 @@ async fn policy(workspace: &Space) -> Result {
     let cancel = CancellationToken::new();
     let mut checkout = workspace
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
             WorkBudget::UNBOUNDED,
             &cancel,
         )

@@ -1,6 +1,6 @@
 use acyclic_fs::kernel::{Mutation, RebaseDecision};
-use acyclic_fs::model::CheckoutMode;
 use acyclic_fs::{ByteRange, CancellationToken, ContentChange, ContentTimes, DependencyRegion};
+use acyclic_fs_format::model::CheckoutMode;
 use acyclic_fs_format::{identity::FileId, metadata::MetadataField};
 use acyclic_stream::OwnedBytes;
 

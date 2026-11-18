@@ -1,8 +1,8 @@
-use acyclic_fs::model::VolumeLimits;
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
     CancellationToken, Fs, LocalOptions, ReconcileOutcome, SourceError, SourceOptions, SourceState,
 };
+use acyclic_fs_format::model::VolumeLimits;
 use acyclic_fs_work::performance::WorkBudget;
 
 #[tokio::test]

@@ -14,10 +14,10 @@ use std::time::Instant;
 
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
 use acyclic_fs::facade::FsWork;
-use acyclic_fs::model::{
+use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+use acyclic_fs_format::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
 };
-use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 use acyclic_stream::OwnedBytes;
 use serde_json::json;
 use {
@@ -127,11 +127,13 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         demand,
         MemoryLazyWorkspaceStore::default(),
         acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
-                acyclic_fs::Lifecycle::Durable
-            } else {
-                acyclic_fs::Lifecycle::Ephemeral
-            }),
+            config: acyclic_fs_format::model::VolumeConfig::portable(
+                if (&fs).capabilities().durable {
+                    acyclic_fs_format::model::Lifecycle::Durable
+                } else {
+                    acyclic_fs_format::model::Lifecycle::Ephemeral
+                },
+            ),
             access_policy: None,
         },
         acyclic_fs_format::identity::OperationId::new(),
@@ -452,11 +454,13 @@ async fn attach_ntfs(
         demand,
         MemoryLazyWorkspaceStore::default(),
         acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::portable(if fs.capabilities().durable {
-                acyclic_fs::Lifecycle::Durable
-            } else {
-                acyclic_fs::Lifecycle::Ephemeral
-            }),
+            config: acyclic_fs_format::model::VolumeConfig::portable(
+                if fs.capabilities().durable {
+                    acyclic_fs_format::model::Lifecycle::Durable
+                } else {
+                    acyclic_fs_format::model::Lifecycle::Ephemeral
+                },
+            ),
             access_policy: None,
         },
         acyclic_fs_format::identity::OperationId::new(),

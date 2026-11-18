@@ -1,8 +1,8 @@
 use acyclic_fs::{
-    VolumeLimits,
     kernel::{LogicalName, NameEncoding, TreePageError},
     path::PortablePath,
 };
+use acyclic_fs_format::model::VolumeLimits;
 
 const FOLDS: &[(&str, &str)] = &[
     ("A", "a"),

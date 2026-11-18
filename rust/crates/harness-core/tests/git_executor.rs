@@ -6,11 +6,10 @@ use std::{borrow::Cow, sync::Arc};
 use {
     acyclic_fs::{
         CancellationToken, GitCommandOutput, IdempotencyKey, LazyWorkspace, LocalCoreStateStore,
-        LocalFs, LocalOptions, PublicationPermit,
-        demand::native::NativeDemandSource,
-        model::{Lifecycle, VolumeConfig},
+        LocalFs, LocalOptions, PublicationPermit, demand::native::NativeDemandSource,
     },
     acyclic_fs_format::identity::OperationId,
+    acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     acyclic_fs_work::performance::WorkBudget,
 };
 

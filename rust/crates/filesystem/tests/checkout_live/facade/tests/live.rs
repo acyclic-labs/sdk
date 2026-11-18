@@ -1,11 +1,11 @@
 use acyclic_fs::kernel::{DependencyRegion, Mutation, RebaseDecision};
-use acyclic_fs::model::GenerationSelector;
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, FsError,
     LiveMutationOutcome,
 };
 use acyclic_fs_format::identity::OperationId;
 use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_fs_format::model::GenerationSelector;
 use acyclic_stream::OwnedBytes;
 
 use super::B;

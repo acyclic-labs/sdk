@@ -1,8 +1,8 @@
-use acyclic_fs::model::{
+use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_fs_format::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
 };
-use acyclic_fs_format::metadata::FileMetadata;
 use bytes::Bytes;
 use std::sync::Arc;
 use {
@@ -32,7 +32,7 @@ pub async fn windows_checkout_source_with_files(
     files: usize,
 ) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
     let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    config.profile = acyclic_fs::model::FilesystemProfile::Windows;
+    config.profile = acyclic_fs_format::model::FilesystemProfile::Windows;
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume = fs

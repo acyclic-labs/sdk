@@ -959,6 +959,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-executable-search",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-harness",
  "acyclic-harness-client",
  "acyclic-harness-core",
@@ -8404,6 +8405,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
+ "acyclic-fs-format",
  "acyclic-fs-work",
  "acyclic-objects",
  "acyclic-stream",

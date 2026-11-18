@@ -34,7 +34,9 @@ fuzz_target!(|data: &[u8]| {
         attributes: Default::default(),
     };
     let resource = access::Resource {
-        config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+        config: acyclic_fs_format::model::VolumeConfig::portable(
+            acyclic_fs_format::model::Lifecycle::Ephemeral,
+        ),
         lineage: &[],
         volume: "home",
         reference: None,

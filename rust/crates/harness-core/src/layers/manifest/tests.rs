@@ -52,7 +52,9 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
             Some(&open),
             &principal,
             access::Resource {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                config: acyclic_fs_format::model::VolumeConfig::portable(
+                    acyclic_fs_format::model::Lifecycle::Ephemeral,
+                ),
                 lineage: &[],
                 volume: "home",
                 reference: None,
@@ -399,7 +401,9 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 "restricted-configuration",
                 acyclic_fs::VolumeInitialization {
-                    config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                    config: acyclic_fs_format::model::VolumeConfig::portable(
+                        acyclic_fs_format::model::Lifecycle::Ephemeral,
+                    ),
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
                 acyclic_fs_format::identity::OperationId::new(),
@@ -422,8 +426,8 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
         let selected = io.sdk(reader.head(&io, &cancellation).await)?;
         let mut checkout = denied
             .checkout(
-                acyclic_fs::model::GenerationSelector::Head,
-                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                acyclic_fs_format::model::GenerationSelector::Head,
+                acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -819,7 +823,9 @@ async fn every_original_layer_fences_the_same_consuming_commit()
                 attributes: Default::default(),
             };
             let resource = access::Resource {
-                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                config: acyclic_fs_format::model::VolumeConfig::portable(
+                    acyclic_fs_format::model::Lifecycle::Ephemeral,
+                ),
                 lineage: &[],
                 volume: "seed",
                 reference: None,

@@ -83,12 +83,12 @@ mod write;
 
 use super::{IndexedDbObjectStore, OpfsAcceleratedObjectStore};
 use acyclic_fs::compat_wire;
-use acyclic_fs::model::{
+use acyclic_fs::workspace_context_wire;
+use acyclic_fs_format::model::{
     AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
     VolumeLimits,
 };
-use acyclic_fs::workspace_context_wire;
 use backend::{BrowserAuthority, BrowserObjects};
 pub use operation_windows::BrowserOperationWindowCoordinator;
 use operation_windows::browser_publication_permit;

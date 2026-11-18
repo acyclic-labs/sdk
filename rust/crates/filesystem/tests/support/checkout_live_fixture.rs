@@ -1,4 +1,4 @@
-use acyclic_fs::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
+use acyclic_fs_format::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
 
 pub(crate) fn writable_live() -> CheckoutMode {
     CheckoutMode {

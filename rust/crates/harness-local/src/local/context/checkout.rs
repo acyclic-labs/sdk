@@ -825,8 +825,8 @@ mod tests {
                 .view()
                 .workspace()
                 .checkout(
-                    acyclic_fs::model::GenerationSelector::Head,
-                    acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                    acyclic_fs_format::model::GenerationSelector::Head,
+                    acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
                     acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
@@ -894,8 +894,8 @@ mod tests {
             .view()
             .workspace()
             .checkout(
-                acyclic_fs::model::GenerationSelector::Head,
-                acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                acyclic_fs_format::model::GenerationSelector::Head,
+                acyclic_fs_format::model::CheckoutMode::read_only_pinned(),
                 acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )

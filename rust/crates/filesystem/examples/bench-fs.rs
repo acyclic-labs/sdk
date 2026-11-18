@@ -6,7 +6,7 @@ mod unbounded;
 
 use std::time::Instant;
 
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use bytes::Bytes;
 use futures::future::LocalBoxFuture;
 use std::future::Future;

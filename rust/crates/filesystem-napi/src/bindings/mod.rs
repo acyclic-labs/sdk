@@ -92,12 +92,12 @@ mod write;
 
 use acyclic_fs::MountPublication;
 use acyclic_fs::binding_contract::attribute_class_name as native_attribute_class_name;
-use acyclic_fs::model::{
+use acyclic_fs::path::PortablePath;
+use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
+use acyclic_fs_format::model::{
     AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeLimits,
 };
-use acyclic_fs::path::PortablePath;
-use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;

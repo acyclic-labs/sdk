@@ -1,4 +1,4 @@
-use acyclic_fs::model::{CheckoutMode, ConsistencyMode, Lifecycle, VolumeConfig};
+use acyclic_fs_format::model::{CheckoutMode, ConsistencyMode, Lifecycle, VolumeConfig};
 
 pub(crate) fn writable_pinned() -> CheckoutMode {
     CheckoutMode {

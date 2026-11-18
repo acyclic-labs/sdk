@@ -51,7 +51,7 @@ fn scratch_mount_owner() -> TestResult {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        use acyclic_fs::model::{
+        use acyclic_fs_format::model::{
             AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
             VolumeConfig,
         };

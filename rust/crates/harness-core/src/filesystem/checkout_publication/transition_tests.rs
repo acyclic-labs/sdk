@@ -560,8 +560,8 @@ async fn staged_recovery_stays_out_of_capture_and_lazy_discovery_after_reopen() 
         .from
         .workspace()
         .checkout(
-            acyclic_fs::model::GenerationSelector::Exact(fixture.from.id()),
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs_format::model::GenerationSelector::Exact(fixture.from.id()),
+            acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
             WorkBudget::UNBOUNDED,
             stop,
         )

@@ -31,9 +31,11 @@ async fn publish(transaction: &mut MemoryTransaction) -> Result<(), WorkspaceErr
 }
 
 async fn workspace(folded: bool) -> Result<MemoryWorkspace, WorkspaceError> {
-    let mut config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral);
+    let mut config = acyclic_fs_format::model::VolumeConfig::portable(
+        acyclic_fs_format::model::Lifecycle::Ephemeral,
+    );
     if folded {
-        config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded;
+        config.case_sensitivity = acyclic_fs_format::model::CaseSensitivity::ProfileFolded;
     }
     unbounded!(
         acyclic_fs::Fs::memory(),

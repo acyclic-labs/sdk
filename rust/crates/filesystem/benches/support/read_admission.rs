@@ -1,6 +1,7 @@
 use acyclic_fs::facade::FsWork;
 use acyclic_fs::kernel::{KernelAccounting, NamespacePath};
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, VolumeConfig};
+use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+use acyclic_fs_format::model::VolumeConfig;
 use divan::Bencher;
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
@@ -15,7 +16,7 @@ fn fail<T>(error: impl std::fmt::Debug) -> T {
 fn namespace_parse(bencher: Bencher, (depth, context): (usize, u8)) {
     let path = "/segment".repeat(depth);
     let cancellation = CancellationToken::new();
-    let config = VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral);
+    let config = VolumeConfig::portable(acyclic_fs_format::model::Lifecycle::Ephemeral);
     let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let markers = std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some();
     let operation = || {

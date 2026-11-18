@@ -1,7 +1,8 @@
 use acyclic_fs::kernel::{DependencyRegion, Mutation, RebaseDecision};
-use acyclic_fs::model::{CaseSensitivity, UnicodePolicy};
-use acyclic_fs::{AuthoredMutation, ByteRange, CancellationToken, FsError, VolumeConfig};
+use acyclic_fs::{AuthoredMutation, ByteRange, CancellationToken, FsError};
 use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+use acyclic_fs_format::model::VolumeConfig;
+use acyclic_fs_format::model::{CaseSensitivity, UnicodePolicy};
 use acyclic_fs_work::performance::OperationFailure;
 use acyclic_stream::OwnedBytes;
 

@@ -6,8 +6,8 @@ use acyclic_fs::{
     demand::{
         DemandError, DemandSource, SourceChange, SourceChangeSink, native::NativeDemandSource,
     },
-    model::{FilesystemProfile, VolumeLimits},
 };
+use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
 use std::{error::Error, sync::Arc};
 #[derive(Default)]
 struct Changes(CancellationToken);

@@ -1,4 +1,5 @@
-use acyclic_fs::{CancellationToken, VolumeConfig};
+use acyclic_fs::CancellationToken;
+use acyclic_fs_format::model::VolumeConfig;
 
 #[path = "checkout_defaults.rs"]
 mod checkout_defaults;

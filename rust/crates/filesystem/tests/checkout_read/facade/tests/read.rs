@@ -1,9 +1,9 @@
 use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, FileRangeReadError};
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, ExtentSeekTarget,
     FsError, NamedAttributeWriteMode, OperationFailure, ResolvedFileRangeReadRequest,
 };
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs_format::{identity::FileId, metadata::FileMetadata};
 use acyclic_fs_work::performance::WorkCounters;
 use acyclic_stream::OwnedBytes;

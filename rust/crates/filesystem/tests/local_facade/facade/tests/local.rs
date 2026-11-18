@@ -1,10 +1,10 @@
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
-    AuthoredMutation, ByteRange, CancellationToken, Fs, FsError, Lifecycle, LocalOptions,
-    PublicationPermit, VolumeConfig,
+    AuthoredMutation, ByteRange, CancellationToken, Fs, FsError, LocalOptions, PublicationPermit,
 };
 use acyclic_fs_format::identity::{OperationId, VolumeId};
 use acyclic_fs_format::metadata::FileMetadata;
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs_format::model::{Lifecycle, VolumeConfig};
 #[cfg(any(unix, windows))]
 use acyclic_fs_format::object_reference::{ObjectId, ObjectKind};
 use acyclic_fs_work::performance::WorkBudget;

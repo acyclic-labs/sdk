@@ -1,5 +1,6 @@
-use acyclic_fs::{CancellationToken, Fs, FsError, Lifecycle};
+use acyclic_fs::{CancellationToken, Fs, FsError};
 use acyclic_fs_format::identity::VolumeId;
+use acyclic_fs_format::model::Lifecycle;
 use acyclic_fs_work::performance::WorkCounters;
 
 use super::B;

@@ -39,8 +39,8 @@ fn workspace_create(bencher: Bencher, native: bool) {
                 fs.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     "bench",
                     acyclic_fs::VolumeInitialization {
-                        config: acyclic_fs::VolumeConfig::portable(
-                            acyclic_fs::Lifecycle::Ephemeral,
+                        config: acyclic_fs_format::model::VolumeConfig::portable(
+                            acyclic_fs_format::model::Lifecycle::Ephemeral,
                         ),
                         access_policy: None,
                     },
@@ -58,8 +58,8 @@ fn workspace_create(bencher: Bencher, native: bool) {
                 fs.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     "bench",
                     acyclic_fs::VolumeInitialization {
-                        config: acyclic_fs::VolumeConfig::portable(
-                            acyclic_fs::Lifecycle::Ephemeral,
+                        config: acyclic_fs_format::model::VolumeConfig::portable(
+                            acyclic_fs_format::model::Lifecycle::Ephemeral,
                         ),
                         access_policy: None,
                     },

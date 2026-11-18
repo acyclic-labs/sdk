@@ -1,7 +1,6 @@
-use acyclic_fs::{
-    CancellationToken, Fs, FsError, Lifecycle, VolumeConfig, VolumeInitialization, WorkspaceError,
-};
+use acyclic_fs::{CancellationToken, Fs, FsError, VolumeInitialization, WorkspaceError};
 use acyclic_fs_format::identity::OperationId;
+use acyclic_fs_format::model::{Lifecycle, VolumeConfig};
 use std::error::Error;
 
 use crate::creation_budget::FINITE_BUDGET;

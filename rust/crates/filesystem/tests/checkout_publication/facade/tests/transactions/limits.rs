@@ -1,5 +1,5 @@
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{AuthoredMutation, CancellationToken, Fs, FsError, PublicationPermit};
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs_format::{
     identity::{OperationId, VolumeId},
     metadata::FileMetadata,

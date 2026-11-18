@@ -58,16 +58,18 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
         Capability::from_scope_label(&label)?,
         Some(input.capability.clone())
     );
-    let mut config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
+    let mut config = acyclic_fs_format::model::VolumeConfig::portable(
+        acyclic_fs_format::model::Lifecycle::Durable,
+    );
     config.profile = match input.profile % 4 {
-        0 => acyclic_fs::model::FilesystemProfile::Portable,
-        1 => acyclic_fs::model::FilesystemProfile::Browser,
-        2 => acyclic_fs::model::FilesystemProfile::Posix,
-        _ => acyclic_fs::model::FilesystemProfile::Windows,
+        0 => acyclic_fs_format::model::FilesystemProfile::Portable,
+        1 => acyclic_fs_format::model::FilesystemProfile::Browser,
+        2 => acyclic_fs_format::model::FilesystemProfile::Posix,
+        _ => acyclic_fs_format::model::FilesystemProfile::Windows,
     };
-    config.unicode = acyclic_fs::model::UnicodePolicy::Preserve;
+    config.unicode = acyclic_fs_format::model::UnicodePolicy::Preserve;
     if input.folded {
-        config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded;
+        config.case_sensitivity = acyclic_fs_format::model::CaseSensitivity::ProfileFolded;
     }
     let resource = Resource {
         config,
@@ -168,7 +170,7 @@ fn check_publications(
             2 => principal.id.push_str("/other"),
             3 => capability.layers.push(Vec::new()),
             4 => {
-                use acyclic_fs::model::CaseSensitivity;
+                use acyclic_fs_format::model::CaseSensitivity;
                 next.config.case_sensitivity = match next.config.case_sensitivity {
                     CaseSensitivity::Sensitive => CaseSensitivity::ProfileFolded,
                     CaseSensitivity::ProfileFolded => CaseSensitivity::Sensitive,
@@ -240,10 +242,12 @@ fn check_native_name(
             };
             let native = trie.prepare("")?.child_name(&name);
             let expected_encoding = match config.profile {
-                acyclic_fs::model::FilesystemProfile::Portable
-                | acyclic_fs::model::FilesystemProfile::Browser => NameEncoding::Utf8,
-                acyclic_fs::model::FilesystemProfile::Posix => NameEncoding::PosixBytes,
-                acyclic_fs::model::FilesystemProfile::Windows => NameEncoding::WindowsUtf16Le,
+                acyclic_fs_format::model::FilesystemProfile::Portable
+                | acyclic_fs_format::model::FilesystemProfile::Browser => NameEncoding::Utf8,
+                acyclic_fs_format::model::FilesystemProfile::Posix => NameEncoding::PosixBytes,
+                acyclic_fs_format::model::FilesystemProfile::Windows => {
+                    NameEncoding::WindowsUtf16Le
+                }
             };
             assert_eq!(
                 native.is_ok(),

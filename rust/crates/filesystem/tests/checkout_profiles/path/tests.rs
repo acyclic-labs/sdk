@@ -1,6 +1,6 @@
-use acyclic_fs::VolumeLimits;
 use acyclic_fs::kernel::NamespacePath;
 use acyclic_fs::path::{PathError, PortablePath};
+use acyclic_fs_format::model::VolumeLimits;
 
 #[test]
 fn parsing_is_canonical_and_bounded() {

@@ -120,15 +120,15 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     let _: Input = serde_json::from_value(recipe)?;
     let cancellation = CancellationToken::new();
     let lifecycle = if filesystem.capabilities().durable {
-        acyclic_fs::Lifecycle::Durable
+        acyclic_fs_format::model::Lifecycle::Durable
     } else {
-        acyclic_fs::Lifecycle::Ephemeral
+        acyclic_fs_format::model::Lifecycle::Ephemeral
     };
     let source = filesystem
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "policy-owner-source",
             acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::portable(lifecycle),
+                config: acyclic_fs_format::model::VolumeConfig::portable(lifecycle),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
             acyclic_fs_format::identity::OperationId::new(),
@@ -142,8 +142,8 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     let forked = fork(&source, "policy-owner-child").await.is_ok();
     let mut checkout = source
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -187,8 +187,8 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     );
     let mut checkout = reopened
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )

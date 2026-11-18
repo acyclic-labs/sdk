@@ -2,7 +2,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::demand::native::NativeDemandSource;
-use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
+use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
 use std::path::Path;
 use {
     acyclic_fs::{CancellationToken, NativeMaterializationWork},

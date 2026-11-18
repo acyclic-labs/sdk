@@ -1,7 +1,7 @@
 use super::*;
 use crate::store::history::HistoryIo as _;
 use acyclic_fs::access::{Action, Capability, Context, PathTrie, Principal, PrincipalKind};
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use acyclic_stream::UnixMillisClock as _;
 use std::marker::PhantomData;
 

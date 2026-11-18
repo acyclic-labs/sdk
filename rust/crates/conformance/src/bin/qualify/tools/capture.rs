@@ -57,8 +57,8 @@ pub(super) fn bench(args: &[String]) -> Result<(), Failure> {
 }
 
 async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(), Failure> {
-    use acyclic_fs::model::VolumeLimits;
     use acyclic_fs::{NativeWatch, NativeWatchOptions, WatchBatch};
+    use acyclic_fs_format::model::VolumeLimits;
 
     let cancel = CancellationToken::new();
     let arrival = acyclic_fs::NativeMaterializationWork::new(WorkCounters::UNBOUNDED, &cancel)

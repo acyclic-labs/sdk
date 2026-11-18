@@ -66,7 +66,9 @@ fn capability() -> Capability {
 
 fn resource<'a>(lineage: &'a [String], path: &'a str, generation: u64) -> Resource<'a> {
     Resource {
-        config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
+        config: acyclic_fs_format::model::VolumeConfig::portable(
+            acyclic_fs_format::model::Lifecycle::Durable,
+        ),
         lineage,
         volume: "project",
         reference: None,
@@ -869,8 +871,8 @@ proptest! {
         let cap = Capability::from_scope_label(&encoded)?.unwrap();
         let context = Context { now: 100, approvals: 0 };
         let mut res = resource(&caller.lineage, "", 10);
-        res.config.profile = acyclic_fs::model::FilesystemProfile::Posix;
-        res.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::Sensitive;
+        res.config.profile = acyclic_fs_format::model::FilesystemProfile::Posix;
+        res.config.case_sensitivity = acyclic_fs_format::model::CaseSensitivity::Sensitive;
         let view = PathTrie::compile(&policy, &caller, res, context, &cap)?;
         let mut remaining = usize::MAX;
         let program = std::sync::Arc::new(CompiledPolicy::compile_with_work(
@@ -917,12 +919,12 @@ proptest! {
         let path = path.join("/");
         let mut res = resource(&principal.lineage, &path, 10);
         res.config.profile = [
-            acyclic_fs::model::FilesystemProfile::Portable,
-            acyclic_fs::model::FilesystemProfile::Browser,
-            acyclic_fs::model::FilesystemProfile::Posix,
-            acyclic_fs::model::FilesystemProfile::Windows,
+            acyclic_fs_format::model::FilesystemProfile::Portable,
+            acyclic_fs_format::model::FilesystemProfile::Browser,
+            acyclic_fs_format::model::FilesystemProfile::Posix,
+            acyclic_fs_format::model::FilesystemProfile::Windows,
         ][profile];
-        if folded { res.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
+        if folded { res.config.case_sensitivity = acyclic_fs_format::model::CaseSensitivity::ProfileFolded; }
         let trie = PathTrie::compile(&policy, &principal, res, context, &cap)?;
         let prepared = trie.prepare(&path)?;
         let mode = prepared.mount_mode(100);
@@ -961,7 +963,9 @@ fn unrestricted_projection_accepts_only_universal_decisions() -> Result<(), Inva
         approvals: 0,
     };
     let resource = Resource {
-        config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+        config: acyclic_fs_format::model::VolumeConfig::portable(
+            acyclic_fs_format::model::Lifecycle::Ephemeral,
+        ),
         lineage: &[],
         volume: "project",
         reference: None,
@@ -999,7 +1003,7 @@ proptest! {
     ) {
         let principal = principal();
         let context = Context { now: 10, approvals: 0 };
-        let mut resource = Resource { config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+        let mut resource = Resource { config: acyclic_fs_format::model::VolumeConfig::portable(acyclic_fs_format::model::Lifecycle::Ephemeral),
             lineage: &[], volume: "project", reference: None, generation: 1, head: 1, path: &path };
         let action = *Action::ALL.get(deny_action).ok_or(InvalidPolicy("missing fixture action"))?;
         let mut policy = policy(vec![rule("all", Effect::Allow, &Action::ALL, "**")]);

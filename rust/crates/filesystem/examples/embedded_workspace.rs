@@ -1,10 +1,10 @@
 //! Graphcoder-shaped embedded consumption with independently configured volumes.
 
-use acyclic_fs::model::{
+use acyclic_fs::path::PortablePath;
+use acyclic_fs_format::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
 };
-use acyclic_fs::path::PortablePath;
 use {
     acyclic_fs::{CancellationToken, Fs, LocalOptions, MountedView},
     acyclic_fs_work::performance::WorkBudget,
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let tool_path = PortablePath::parse(
         "/.scratch/tool-output.txt",
-        acyclic_fs::model::VolumeLimits::default(),
+        acyclic_fs_format::model::VolumeLimits::default(),
     )?;
     let routed = view.route_mut(&tool_path)?;
     routed

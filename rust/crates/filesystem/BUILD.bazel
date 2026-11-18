@@ -1524,6 +1524,7 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tempfile-3.27.0",

@@ -1,9 +1,8 @@
 //! Real native demand source with a sparse authored overlay.
 use super::*;
-use acyclic_fs::{
-    CancellationToken, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore, VolumeConfig,
-};
+use acyclic_fs::{CancellationToken, LazyWorkspace, MemoryLazyWorkspaceStore};
 use acyclic_fs_format::identity::OperationId;
+use acyclic_fs_format::model::{Lifecycle, VolumeConfig};
 use acyclic_fs_work::performance::WorkBudget;
 use std::sync::Arc;
 
@@ -14,8 +13,8 @@ pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
     let cancel = CancellationToken::new();
     let source = acyclic_fs::demand::native::NativeDemandSource::open(
         std::borrow::Cow::Borrowed(directory.path()),
-        acyclic_fs::FilesystemProfile::Portable,
-        acyclic_fs::VolumeLimits::default(),
+        acyclic_fs_format::model::FilesystemProfile::Portable,
+        acyclic_fs_format::model::VolumeLimits::default(),
         None,
         None,
         WorkBudget::UNBOUNDED,

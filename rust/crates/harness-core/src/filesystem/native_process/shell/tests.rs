@@ -110,7 +110,9 @@ fn agent_table(
             lineage: principal.lineage.clone(),
             generation: 1,
             head: 1,
-            config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Ephemeral),
+            config: acyclic_fs_format::model::VolumeConfig::native(
+                acyclic_fs_format::model::Lifecycle::Ephemeral,
+            ),
             policy: policy.clone(),
             source: Arc::clone(&native),
         })

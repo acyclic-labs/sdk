@@ -1,8 +1,8 @@
 use acyclic_fs::CancellationToken;
 use acyclic_fs::kernel::LogicalName;
-use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::mount::{MountError, MountedCheckout, MountedView};
 use acyclic_fs::path::PortablePath;
+use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
 
 #[path = "../../support/mount_checkout.rs"]
 mod fixture;

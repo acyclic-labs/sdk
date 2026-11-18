@@ -622,7 +622,11 @@ async fn lazy_view(
         None
     };
     let config = selected.as_ref().map_or_else(
-        || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+        || {
+            acyclic_fs_format::model::VolumeConfig::native(
+                acyclic_fs_format::model::Lifecycle::Durable,
+            )
+        },
         |workspace| workspace.volume_config(),
     );
     let source = held_source(
@@ -656,7 +660,9 @@ async fn lazy_view(
             source,
             store.clone(),
             acyclic_fs::VolumeInitialization::new(
-                acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                acyclic_fs_format::model::VolumeConfig::native(
+                    acyclic_fs_format::model::Lifecycle::Durable,
+                ),
                 Some(acyclic_fs::access::INITIAL_POLICY),
             ),
             operation,
@@ -672,7 +678,7 @@ async fn lazy_view(
 /// Every path below the held root is authored source data.
 async fn held_source(
     root: acyclic_fs::HeldRoot,
-    config: acyclic_fs::VolumeConfig,
+    config: acyclic_fs_format::model::VolumeConfig,
     reference: Option<acyclic_fs::demand::SourceReference>,
     work: &NativeMaterializationWork,
     cancellation: &acyclic_fs::CancellationToken,

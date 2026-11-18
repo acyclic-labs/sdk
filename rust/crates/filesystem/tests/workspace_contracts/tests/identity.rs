@@ -1,10 +1,11 @@
 use acyclic_fs::kernel::NamespacePath;
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    CancellationToken, FilesystemProfile, ForkOptions, Fs, IdempotencyKey, Lifecycle, VolumeConfig,
-    WorkspaceError, WorkspaceName, WorkspaceNameError,
+    CancellationToken, ForkOptions, Fs, IdempotencyKey, WorkspaceError, WorkspaceName,
+    WorkspaceNameError,
 };
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs_format::model::{FilesystemProfile, Lifecycle, VolumeConfig};
 use acyclic_fs_work::performance::WorkBudget;
 use std::error::Error;
 

@@ -1,10 +1,10 @@
 use acyclic_fs::kernel::NameEncoding;
-use acyclic_fs::model::{
-    AccessMode, CaseSensitivity, CheckoutMode, CheckoutModeError, ConcurrencyMode, ConsistencyMode,
-    FilesystemProfile, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
-};
 use acyclic_fs::speculation::{
     PromotionRejection, ResidencyReason, ResidencyRejection, StorageTier,
+};
+use acyclic_fs_format::model::{
+    AccessMode, CaseSensitivity, CheckoutMode, CheckoutModeError, ConcurrencyMode, ConsistencyMode,
+    FilesystemProfile, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
 };
 
 #[test]

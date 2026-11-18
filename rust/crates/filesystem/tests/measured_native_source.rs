@@ -12,7 +12,7 @@ use acyclic_fs::facade::FsWork;
 use acyclic_fs::kernel::{
     KernelAccounting, KernelOwnedAllocation, LogicalName, NameEncoding, NamespacePath,
 };
-use acyclic_fs::model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
+use acyclic_fs_format::model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use {

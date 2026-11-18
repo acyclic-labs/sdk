@@ -25,18 +25,20 @@ fn check(data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         // projector; accepting the outer envelope does not validate its facts.
         let _ = acyclic_fs::PublicationContext::from_bytes(&value.context);
         for profile in [
-            acyclic_fs::model::FilesystemProfile::Portable,
-            acyclic_fs::model::FilesystemProfile::Posix,
-            acyclic_fs::model::FilesystemProfile::Windows,
+            acyclic_fs_format::model::FilesystemProfile::Portable,
+            acyclic_fs_format::model::FilesystemProfile::Posix,
+            acyclic_fs_format::model::FilesystemProfile::Windows,
         ] {
             for case_sensitivity in [
-                acyclic_fs::model::CaseSensitivity::Sensitive,
-                acyclic_fs::model::CaseSensitivity::ProfileFolded,
+                acyclic_fs_format::model::CaseSensitivity::Sensitive,
+                acyclic_fs_format::model::CaseSensitivity::ProfileFolded,
             ] {
-                let config = acyclic_fs::VolumeConfig {
+                let config = acyclic_fs_format::model::VolumeConfig {
                     profile,
                     case_sensitivity,
-                    ..acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral)
+                    ..acyclic_fs_format::model::VolumeConfig::portable(
+                        acyclic_fs_format::model::Lifecycle::Ephemeral,
+                    )
                 };
                 for entry in &value.entries {
                     let _ = acyclic_fs::PublicationEntry::from_parts(

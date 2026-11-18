@@ -132,7 +132,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
         // another concurrency contract. Its config and content remain intact.
         let (name, operation) = host.volume_creation(&volume)?;
         let mut initialization = host.volume_initialization();
-        initialization.config.concurrency = acyclic_fs::model::ConcurrencyMode::Optimistic;
+        initialization.config.concurrency = acyclic_fs_format::model::ConcurrencyMode::Optimistic;
         host.filesystem
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 &name,

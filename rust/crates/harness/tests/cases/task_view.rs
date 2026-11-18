@@ -17,11 +17,13 @@ fn workspace_hints(environment: &BTreeMap<String, String>) -> BTreeMap<String, S
     serde_json::from_str(&environment["ACYCLIC_WORKSPACES"]).expect("native discovery is JSON")
 }
 
-fn volume_config() -> acyclic_fs::VolumeConfig {
+fn volume_config() -> acyclic_fs_format::model::VolumeConfig {
     #[cfg(not(target_arch = "wasm32"))]
-    return acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+    return acyclic_fs_format::model::VolumeConfig::native(
+        acyclic_fs_format::model::Lifecycle::Durable,
+    );
     #[cfg(target_arch = "wasm32")]
-    acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable)
+    acyclic_fs_format::model::VolumeConfig::portable(acyclic_fs_format::model::Lifecycle::Durable)
 }
 
 fn principal(agent: &str) -> Principal {

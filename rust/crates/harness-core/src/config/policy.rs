@@ -274,7 +274,9 @@ mod tests {
         };
         let capability = access::Capability::whole_volume(None, &access::Action::ALL);
         let resource = access::Resource {
-            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+            config: acyclic_fs_format::model::VolumeConfig::portable(
+                acyclic_fs_format::model::Lifecycle::Ephemeral,
+            ),
             lineage: &[],
             volume: "home",
             reference: None,

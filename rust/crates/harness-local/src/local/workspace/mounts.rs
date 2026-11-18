@@ -99,7 +99,9 @@ pub(super) fn owner<T>(
         lineage: principal.lineage.clone(),
         generation: 0,
         head: 0,
-        config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+        config: acyclic_fs_format::model::VolumeConfig::native(
+            acyclic_fs_format::model::Lifecycle::Durable,
+        ),
         // Compile each alias independently. A writable sibling of the same
         // volume must not promote this binding's read-only mode.
         policy: Arc::clone(match mode {

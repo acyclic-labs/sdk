@@ -3,8 +3,8 @@ mod tests {
     use acyclic_fs::kernel::{
         DependencyUse, ExtentSeekTarget, FileKind as EngineFileKind, NameEncoding,
     };
-    use acyclic_fs::model::FilesystemProfile as EngineProfile;
     use acyclic_fs::workspace::{JoinHistory, WorkspaceExtentKind};
+    use acyclic_fs_format::model::FilesystemProfile as EngineProfile;
     use serde_json::Value;
 
     #[test]

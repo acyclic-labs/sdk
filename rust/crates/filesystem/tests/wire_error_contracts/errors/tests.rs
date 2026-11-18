@@ -256,8 +256,8 @@ cases! {
     fs_accounting_handoff: fs(FsError::AccountingHandoffActive) => FailedPrecondition;
     fs_handle_allocation: fs(FsError::HandleAllocationFailed) => ResourceExhausted;
     fs_encoding_allocation: fs(FsError::EncodedAllocationFailed(allocation()?)) => ResourceExhausted;
-    fs_config: fs(FsError::Config(acyclic_fs::model::VolumeConfigError::ZeroLimit)) => InvalidArgument;
-    fs_checkout: fs(FsError::CheckoutMode(acyclic_fs::model::CheckoutModeError::ReadOnlyMutation)) => InvalidArgument;
+    fs_config: fs(FsError::Config(acyclic_fs_format::model::VolumeConfigError::ZeroLimit)) => InvalidArgument;
+    fs_checkout: fs(FsError::CheckoutMode(acyclic_fs_format::model::CheckoutModeError::ReadOnlyMutation)) => InvalidArgument;
     fs_durability: fs(FsError::UnsupportedDurability) => FailedPrecondition;
     fs_name_collision: fs(FsError::NameCollision) => AlreadyExists;
     fs_identity_collision: fs(FsError::FileIdentityCollision) => AlreadyExists;

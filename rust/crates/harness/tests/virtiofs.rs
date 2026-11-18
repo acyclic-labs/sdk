@@ -50,7 +50,9 @@ async fn config(root: &Path) -> Result<(PathBuf, serde_json::Value)> {
     fs.create_workspace_with_operation::<_, (), WorkspaceError>(
         &volume.storage_name(&mut None)?,
         acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+            config: acyclic_fs_format::model::VolumeConfig::native(
+                acyclic_fs_format::model::Lifecycle::Durable,
+            ),
             access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
         },
         acyclic_fs_format::identity::OperationId::new(),

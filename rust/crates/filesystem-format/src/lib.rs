@@ -3,6 +3,7 @@
 
 pub mod identity;
 pub mod metadata;
+pub mod model;
 pub mod object_reference;
 pub mod s3_limits;
 

@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::kernel::{LogicalName, NameEncoding};
-use acyclic_fs::model::{CaseSensitivity, FilesystemProfile, UnicodePolicy};
+use acyclic_fs_format::model::{CaseSensitivity, FilesystemProfile, UnicodePolicy};
 
 #[test]
 fn a_later_head_revokes_head_only_reads_without_a_policy_edit() -> Result<(), InvalidPolicy> {

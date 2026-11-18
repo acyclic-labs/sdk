@@ -1,4 +1,4 @@
-use acyclic_fs::model::{ConcurrencyMode, VolumeConfig};
+use acyclic_fs_format::model::{ConcurrencyMode, VolumeConfig};
 
 use super::checkout_fixture::config;
 

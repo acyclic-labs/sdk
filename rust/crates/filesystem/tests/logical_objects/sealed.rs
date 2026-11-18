@@ -607,7 +607,7 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     // Transfer exact CAS bytes across a different writer origin and cold reopen.
     let limits = acyclic_fs::kernel::ClosureLimits {
         decode: Default::default(),
-        profile: acyclic_fs::FilesystemProfile::Portable,
+        profile: acyclic_fs_format::model::FilesystemProfile::Portable,
         symbolic_links: true,
         hard_links: true,
         sparse_files: true,
@@ -616,7 +616,9 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     let manifest = acyclic_fs::kernel::build_generation_export_manifest_async(
         &source,
         root.volume_id,
-        acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+        acyclic_fs_format::model::VolumeConfig::portable(
+            acyclic_fs_format::model::Lifecycle::Ephemeral,
+        ),
         recovered,
         limits,
         WorkBudget::UNBOUNDED,
@@ -764,14 +766,14 @@ async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
 -> Result<(), Box<dyn std::error::Error>> {
     use {
         acyclic_fs::{
-            CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
-            MemoryAuthorityBackend, PublicationPermit, TransactionCommit, VolumeConfig,
-            VolumeInitialization, WorkspaceError,
+            CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, MemoryAuthorityBackend,
+            PublicationPermit, TransactionCommit, VolumeInitialization, WorkspaceError,
         },
         acyclic_fs_format::identity::OperationId,
+        acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     };
 
-    use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+    use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 
     acyclic_native_runtime::initialize_native_io_services()?;
     let provider = Arc::new(acyclic_objects::MemoryObjects::memory());

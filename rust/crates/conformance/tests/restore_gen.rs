@@ -4,12 +4,15 @@ use acyclic_native_runtime::ProcessCommand;
 use std::{path::Path, time::Duration};
 use {
     acyclic_fs::{
-        AuthoredMutation, CancellationToken, Fs, Lifecycle, LivePublicationObservation,
-        LocalOptions, PublicationPermit, VolumeConfig,
+        AuthoredMutation, CancellationToken, Fs, LivePublicationObservation, LocalOptions,
+        PublicationPermit,
         kernel::{LogicalName, NameEncoding, NamespacePath},
-        model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
     },
     acyclic_fs_format::identity::OperationId,
+    acyclic_fs_format::model::{
+        AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode,
+    },
+    acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     acyclic_fs_work::performance::WorkBudget,
 };
 

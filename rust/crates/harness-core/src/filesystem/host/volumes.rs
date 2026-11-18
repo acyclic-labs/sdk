@@ -284,13 +284,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
     ) -> acyclic_fs::VolumeInitialization<'static> {
         acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig {
-                concurrency: acyclic_fs::model::ConcurrencyMode::SerializedAuthority,
-                ..acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
-                    acyclic_fs::Lifecycle::Durable
-                } else {
-                    acyclic_fs::Lifecycle::Ephemeral
-                })
+            config: acyclic_fs_format::model::VolumeConfig {
+                concurrency: acyclic_fs_format::model::ConcurrencyMode::SerializedAuthority,
+                ..acyclic_fs_format::model::VolumeConfig::portable(
+                    if self.filesystem.capabilities().durable {
+                        acyclic_fs_format::model::Lifecycle::Durable
+                    } else {
+                        acyclic_fs_format::model::Lifecycle::Ephemeral
+                    },
+                )
             },
             access_policy: Some(access::INITIAL_POLICY),
         }

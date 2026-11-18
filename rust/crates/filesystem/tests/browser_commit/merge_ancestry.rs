@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::model::{CheckoutMode, GenerationSelector, VolumeLimits};
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector, VolumeLimits};
 use acyclic_stream::OwnedBytes;
 use {acyclic_fs::kernel::NamespacePath, acyclic_fs_format::metadata::FileMetadata};
 use {

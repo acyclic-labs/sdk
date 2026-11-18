@@ -207,8 +207,8 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
             let cancel = ctx.cancellation();
             let (path, mut allocation) = NamespacePath::parse_in_profile(
                 text,
-                acyclic_fs::FilesystemProfile::Portable,
-                acyclic_fs::VolumeLimits::default(),
+                acyclic_fs_format::model::FilesystemProfile::Portable,
+                acyclic_fs_format::model::VolumeLimits::default(),
                 ctx,
                 cancel,
             )?;

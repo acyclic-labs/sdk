@@ -1,4 +1,4 @@
-use acyclic_fs::model::{CheckoutMode, ConsistencyMode};
+use acyclic_fs_format::model::{CheckoutMode, ConsistencyMode};
 
 pub(crate) fn writable_manual() -> CheckoutMode {
     CheckoutMode {

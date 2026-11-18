@@ -34,8 +34,8 @@ fn navigation(
 fn namespace(path: &str) -> acyclic_fs::kernel::NamespacePath {
     acyclic_fs::kernel::NamespacePath::from_text_in_profile(
         path,
-        acyclic_fs::FilesystemProfile::Portable,
-        acyclic_fs::VolumeLimits::default(),
+        acyclic_fs_format::model::FilesystemProfile::Portable,
+        acyclic_fs_format::model::VolumeLimits::default(),
     )
     .expect("test namespace")
 }
@@ -380,10 +380,11 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     acyclic_native_runtime::initialize_native_io_services()?;
     use acyclic_fs::{
         Fs, IdempotencyKey as FsKey, LazyWorkspace, LazyWorkspaceError, LocalCoreStateStore,
-        PublicationPermit, VolumeLimits,
+        PublicationPermit,
         demand::{Empty, Routed},
         kernel::{LogicalName, NameEncoding},
     };
+    use acyclic_fs_format::model::VolumeLimits;
     use acyclic_harness_core::{
         Capabilities, OperationId,
         agent::{AgentId, ConversationEntry, IntentId, TurnInput, create_root, spawn},
@@ -537,7 +538,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         next.retire(&mut ctx)?;
         cursor = Some(acyclic_fs::LazyDirectoryCursor::decode(
             &encoded.0,
-            acyclic_fs::FilesystemProfile::Portable,
+            acyclic_fs_format::model::FilesystemProfile::Portable,
             VolumeLimits::default(),
             &native,
         )?);

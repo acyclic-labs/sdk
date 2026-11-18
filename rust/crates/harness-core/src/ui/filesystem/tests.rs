@@ -10,11 +10,11 @@ use futures::StreamExt;
 use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 use {
     acyclic_fs::{
-        CancellationToken, Fs, IdempotencyKey, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore,
-        NativeMaterializationWork, PublicationPermit, VolumeConfig, VolumeInitialization,
-        VolumeLimits,
+        CancellationToken, Fs, IdempotencyKey, LazyWorkspace, MemoryLazyWorkspaceStore,
+        NativeMaterializationWork, PublicationPermit, VolumeInitialization,
     },
     acyclic_fs_format::identity::OperationId,
+    acyclic_fs_format::model::{Lifecycle, VolumeConfig, VolumeLimits},
     acyclic_fs_work::performance::WorkBudget,
 };
 
@@ -174,7 +174,7 @@ fn computed(snapshot: Snapshot) -> Computed<FilesystemView<Snapshot>, Frozen> {
 fn path(text: &str) -> NamespacePath {
     NamespacePath::from_text_in_profile(
         text,
-        acyclic_fs::FilesystemProfile::Portable,
+        acyclic_fs_format::model::FilesystemProfile::Portable,
         VolumeLimits::default(),
     )
     .unwrap()

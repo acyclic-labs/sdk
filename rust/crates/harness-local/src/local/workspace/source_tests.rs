@@ -21,7 +21,9 @@ async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() 
     );
     std::fs::create_dir(path.join(&name)).map_err(storage)?;
     std::fs::write(path.join(&name).join("authored"), b"retained").map_err(storage)?;
-    let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+    let config = acyclic_fs_format::model::VolumeConfig::native(
+        acyclic_fs_format::model::Lifecycle::Durable,
+    );
     let prefix = acyclic_fs::kernel::NamespacePath::from_text_in_profile(
         &format!("/{name}"),
         config.profile,

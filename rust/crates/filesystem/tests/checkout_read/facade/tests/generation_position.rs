@@ -1,5 +1,5 @@
-use acyclic_fs::model::CheckoutMode;
 use acyclic_fs::{CancellationToken, FsError, Sequence};
+use acyclic_fs_format::model::CheckoutMode;
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget};
 use acyclic_stream::OwnedBytes;
 

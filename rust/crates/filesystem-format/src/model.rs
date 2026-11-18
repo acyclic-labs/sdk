@@ -1,6 +1,6 @@
 //! Explicit, backend-independent volume and checkout semantics.
 
-use acyclic_fs_format::object_reference::GenerationId;
+use crate::object_reference::GenerationId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -272,6 +272,8 @@ impl CheckoutMode {
 }
 
 /// Defines the stable public string for each variant, shared by host bindings.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! public_names {
     ($($type:ty { $($variant:ident => $name:literal),+ $(,)? })+) => {$(
         impl $type {
@@ -322,42 +324,6 @@ public_names! {
     }
     CaseSensitivity { Sensitive => "sensitive", ProfileFolded => "profile-folded" }
     UnicodePolicy { Preserve => "preserve", RequireNfc => "require-nfc" }
-    crate::kernel::NameEncoding {
-        Utf8 => "utf8",
-        PosixBytes => "posix-bytes",
-        WindowsUtf16Le => "windows-utf16le",
-    }
-    crate::speculation::ResidencyReason {
-        DirectorySuccessor => "directory-successor",
-        SequentialRange => "sequential-range",
-        MetadataSuccessor => "metadata-successor",
-        ConsumerHint => "consumer-hint",
-    }
-    crate::speculation::ResidencyRejection {
-        WrongVolume => "wrong-volume",
-        StaleGeneration => "stale-generation",
-        InvalidRequest => "invalid-request",
-        DuplicateObject => "duplicate-object",
-        DuplicateOperation => "duplicate-operation",
-        CostBudget => "cost-budget",
-        LowUsefulness => "low-usefulness",
-    }
-    crate::speculation::StorageTier {
-        ProcessMemory => "process-memory",
-        NodeLocal => "node-local",
-        SharedCache => "shared-cache",
-        DurableOrigin => "durable-origin",
-    }
-    crate::speculation::PromotionRejection {
-        WrongVolume => "wrong-volume",
-        StaleGeneration => "stale-generation",
-        InvalidRequest => "invalid-request",
-        MissingSource => "missing-source",
-        DuplicateObject => "duplicate-object",
-        DuplicateOperation => "duplicate-operation",
-        NoDestination => "no-destination",
-        LowUsefulness => "low-usefulness",
-    }
 }
 
 /// Volume configuration failures.

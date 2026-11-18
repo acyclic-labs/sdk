@@ -1,8 +1,9 @@
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, Fs, FsError,
-    MemoryAuthorityBackend, MemoryObjectBackend, Volume, VolumeConfig,
+    MemoryAuthorityBackend, MemoryObjectBackend, Volume,
 };
+use acyclic_fs_format::model::VolumeConfig;
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget};
 
 pub(crate) type TestVolume = Volume<MemoryAuthorityBackend, MemoryObjectBackend>;

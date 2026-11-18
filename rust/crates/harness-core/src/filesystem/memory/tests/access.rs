@@ -3,10 +3,8 @@ use crate::filesystem::PreparationIo;
 use acyclic_fs::access::{Action as FsAction, Effect, Policy};
 use proptest::prelude::*;
 use {
-    acyclic_fs::{
-        CancellationToken,
-        model::{CheckoutMode, GenerationSelector},
-    },
+    acyclic_fs::CancellationToken,
+    acyclic_fs_format::model::{CheckoutMode, GenerationSelector},
     acyclic_fs_work::performance::WorkBudget,
 };
 

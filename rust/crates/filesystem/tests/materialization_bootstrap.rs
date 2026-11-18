@@ -1,7 +1,7 @@
 //! Cold-process native operations must use the production library graph.
 //! Unit-test accounting initializes IO and cannot establish this precondition.
 
-use acyclic_fs::model::{
+use acyclic_fs_format::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode,
 };
 use std::path::Path;
@@ -12,11 +12,12 @@ use {
 use {
     acyclic_fs::{
         AuthoredMutation, CancellationToken, CaptureOptions, CapturePolicy, Fs,
-        HostPathReplacement, Lifecycle, MaterializeOptions, NativeMaterializationWork,
-        VolumeConfig, capture_baseline, capture_paths, capture_root_identity, capture_subtree,
-        materialize_checkout, materialize_checkout_paths, restore_checkout_host_path,
+        HostPathReplacement, MaterializeOptions, NativeMaterializationWork, capture_baseline,
+        capture_paths, capture_root_identity, capture_subtree, materialize_checkout,
+        materialize_checkout_paths, restore_checkout_host_path,
     },
     acyclic_fs_format::identity::VolumeId,
+    acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     acyclic_fs_work::performance::WorkBudget,
 };
 

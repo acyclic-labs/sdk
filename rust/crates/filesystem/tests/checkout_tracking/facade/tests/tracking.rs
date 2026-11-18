@@ -1,6 +1,6 @@
 use acyclic_fs::kernel::{DependencyRegion, ExtentSeekTarget, RebaseDecision};
-use acyclic_fs::model::CheckoutMode;
 use acyclic_fs::{ByteRange, CancellationToken, ContentChange, ContentTimes};
+use acyclic_fs_format::model::CheckoutMode;
 use acyclic_stream::OwnedBytes;
 
 use super::B;

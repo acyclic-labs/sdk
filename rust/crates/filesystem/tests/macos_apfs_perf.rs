@@ -8,7 +8,7 @@ mod native_access;
 use std::time::Instant;
 
 use acyclic_fs::kernel::KernelAccounting;
-use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
+use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
 use serde_json::json;
 use {
     acyclic_fs::{CancellationToken, Fs, LocalOptions, MaterializeOptions, PublicationPermit},
@@ -48,13 +48,13 @@ async fn has_record(
 #[tokio::test]
 #[ignore = "local-only APFS watcher to canonical checkout rename diagnostic"]
 async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_fs::model::{
-        AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
-        VolumeConfig,
-    };
     use acyclic_fs::{
         CaptureOptions, NativeWatch, NativeWatchOptions, WatchBatch, WatchChange, capture_baseline,
         capture_root_identity, capture_watch_batch, host_path_to_namespace,
+    };
+    use acyclic_fs_format::model::{
+        AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
+        VolumeConfig,
     };
 
     let root = tempfile::tempdir()?;

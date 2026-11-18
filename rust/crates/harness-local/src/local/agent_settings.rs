@@ -656,8 +656,8 @@ mod tests {
         policy.layers[0].push(deny);
         let mut writer = home
             .checkout(
-                acyclic_fs::model::GenerationSelector::Head,
-                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                acyclic_fs_format::model::GenerationSelector::Head,
+                acyclic_fs_format::model::CheckoutMode::tracking_transaction(),
                 acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )

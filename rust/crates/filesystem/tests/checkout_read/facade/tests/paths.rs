@@ -1,9 +1,9 @@
 use acyclic_fs::kernel::{ExtentSeekTarget, Mutation};
-use acyclic_fs::model::CheckoutMode;
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, ContentChange, ContentTimes, FileCloneRequest,
     Fs,
 };
+use acyclic_fs_format::model::CheckoutMode;
 use acyclic_fs_format::{
     identity::VolumeId,
     metadata::{FileMetadata, MetadataField},

@@ -2,13 +2,14 @@ use std::{path::Path, sync::Arc};
 
 use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::kernel::KernelAccounting;
-use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
+use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
 use {
     acyclic_fs::{
-        CancellationToken, LazyWorkspace, Lifecycle, LocalAuthorityBackend, LocalFs,
-        LocalObjectBackend, MemoryLazyWorkspaceStore, NativeMaterializationWork, VolumeConfig,
+        CancellationToken, LazyWorkspace, LocalAuthorityBackend, LocalFs, LocalObjectBackend,
+        MemoryLazyWorkspaceStore, NativeMaterializationWork,
     },
     acyclic_fs_format::identity::OperationId,
+    acyclic_fs_format::model::{Lifecycle, VolumeConfig},
     acyclic_fs_work::performance::WorkBudget,
 };
 pub(super) fn work(

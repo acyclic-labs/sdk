@@ -116,7 +116,8 @@ mod lock_order;
 pub mod materializer;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory;
-pub mod model;
+use acyclic_fs_format::model;
+mod model_names;
 pub mod mount;
 pub mod multi_root;
 #[cfg(not(target_arch = "wasm32"))]
@@ -309,7 +310,7 @@ pub use materializer::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
-pub use model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
+use model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
     MountedViewSnapshot, RoutedCheckout,

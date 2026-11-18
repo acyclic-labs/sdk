@@ -2,13 +2,15 @@ use acyclic_fs::kernel::{
     DependencyRegion, FileKind, FilePayload, FileRecord, InlineFileData, Mutation, NamespacePath,
     RebaseDecision,
 };
-use acyclic_fs::model::{CheckoutMode, ConcurrencyMode, ConsistencyMode, GenerationSelector};
 use acyclic_fs::{
-    AuthoredMutation, CancellationToken, Fs, FsError, LivePublicationObservation,
-    PublicationPermit, VolumeConfig,
+    AuthoredMutation, CancellationToken, Fs, FsError, LivePublicationObservation, PublicationPermit,
 };
 use acyclic_fs_format::identity::{FileId, OperationId, VolumeId};
 use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+use acyclic_fs_format::model::VolumeConfig;
+use acyclic_fs_format::model::{
+    CheckoutMode, ConcurrencyMode, ConsistencyMode, GenerationSelector,
+};
 use acyclic_stream::OwnedBytes;
 
 use super::checkout_fixture::{config, path, writable_pinned};

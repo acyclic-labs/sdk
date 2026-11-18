@@ -1644,10 +1644,10 @@ where
                 let mut checkout = io.sdk(
                     retained
                         .checkout(
-                            acyclic_fs::model::GenerationSelector::Exact(
+                            acyclic_fs_format::model::GenerationSelector::Exact(
                                 source.retained_generation,
                             ),
-                            acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                            acyclic_fs_format::model::CheckoutMode::read_only_pinned(),
                             &io,
                             &cancel,
                         )

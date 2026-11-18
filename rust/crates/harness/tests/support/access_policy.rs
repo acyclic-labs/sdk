@@ -1,5 +1,5 @@
 use acyclic_fs::access::Policy;
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
 use {
     acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Workspace},
     acyclic_fs_work::performance::WorkBudget,

@@ -1,4 +1,5 @@
-use acyclic_fs::{GenerationExportManifest, Lifecycle, VolumeConfig, object_digest};
+use acyclic_fs::{GenerationExportManifest, object_digest};
+use acyclic_fs_format::model::{Lifecycle, VolumeConfig};
 use acyclic_fs_format::{
     identity::VolumeId,
     object_reference::{GenerationId, ObjectId, ObjectKind},

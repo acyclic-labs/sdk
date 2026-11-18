@@ -185,8 +185,8 @@ async fn stream_policy_revocation_survives_durable_provider_restart()
     ));
     let mut checkout = source
         .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::read_only_pinned(),
+            acyclic_fs_format::model::GenerationSelector::Head,
+            acyclic_fs_format::model::CheckoutMode::read_only_pinned(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )

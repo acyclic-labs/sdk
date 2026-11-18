@@ -1,9 +1,9 @@
 use super::*;
-use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
-    ForkOptions, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore, PublicationPermit,
-    VolumeConfig, VolumeInitialization,
+    ForkOptions, LazyWorkspace, MemoryLazyWorkspaceStore, PublicationPermit, VolumeInitialization,
 };
+use acyclic_fs_format::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs_format::model::{Lifecycle, VolumeConfig};
 
 type Cases = Computed<View<Snapshot>, StreamProvider<MemoryStream>>;
 

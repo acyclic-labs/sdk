@@ -9,8 +9,9 @@ use futures::{
     future::{Either, select},
 };
 use {
-    acyclic_fs::{PublicationContext, PublicationEntry, VolumeConfig},
+    acyclic_fs::{PublicationContext, PublicationEntry},
     acyclic_fs_format::identity::VolumeId,
+    acyclic_fs_format::model::VolumeConfig,
 };
 
 /// Original exclusive follow position. It conveys no read authority.

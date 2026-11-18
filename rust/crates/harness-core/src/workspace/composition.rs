@@ -31,7 +31,7 @@ pub struct VolumeView<T> {
     /// Authoritative current published head sequence.
     pub head: u64,
     /// Name semantics and limits of this volume.
-    pub config: acyclic_fs::VolumeConfig,
+    pub config: acyclic_fs_format::model::VolumeConfig,
     /// Host-selected policy, including this binding's access restrictions.
     pub policy: Arc<Policy>,
     /// Lazy provider binding, retained without opening or copying its files.

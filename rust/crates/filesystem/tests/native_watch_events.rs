@@ -2,11 +2,11 @@
 #![cfg(all(not(target_arch = "wasm32"), any(target_os = "linux", windows)))]
 
 use acyclic_fs::kernel::NamespacePath;
-use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::watch::{
     NativeWatch, NativeWatchError, NativeWatchOptions, WatchBatch, WatchChange,
 };
+use acyclic_fs_format::model::{FilesystemProfile, VolumeLimits};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

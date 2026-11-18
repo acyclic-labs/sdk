@@ -4,8 +4,8 @@ use {
     acyclic_fs::{
         CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
         NativeWatchOptions, WatchBatch, capture_baseline, capture_watch_batch,
-        model::{CheckoutMode, GenerationSelector},
     },
+    acyclic_fs_format::model::{CheckoutMode, GenerationSelector},
     acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 

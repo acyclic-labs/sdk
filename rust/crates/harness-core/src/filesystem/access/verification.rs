@@ -144,7 +144,7 @@ mod facts {
         #[test]
         fn unknown_facts_are_rejected_regardless_of_value(value in "[a-z]{1,16}", selector in 0u8..6) {
             let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY).unwrap();
-            let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral);
+            let config = acyclic_fs_format::model::VolumeConfig::portable(acyclic_fs_format::model::Lifecycle::Ephemeral);
             let mut remaining = usize::MAX;
             let compiled = CompiledPolicy::compile_with_work(&policy, config, &mut remaining, |_| Ok(())).unwrap();
             prop_assert!(compiled.uses_only_authenticated_identity());

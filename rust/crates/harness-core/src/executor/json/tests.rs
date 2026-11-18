@@ -19,7 +19,7 @@ fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
         Empty,
         LogicalName::new(NameEncoding::Utf8, b"view".to_vec()).unwrap(),
         Empty,
-        acyclic_fs::VolumeLimits::default(),
+        acyclic_fs_format::model::VolumeLimits::default(),
     );
     let source = futures::executor::block_on(routed.reference(&mut accounting)).unwrap();
     let snapshot = LazySnapshotRef::new(

@@ -45,10 +45,10 @@ enum Fault {
 fn path_oracle() -> acyclic_test_support::differential::oracle::Oracle<Vec<u8>, Fault, input::Seen>
 {
     use acyclic_fs::{
-        VolumeLimits,
         kernel::{LogicalName, NameEncoding, TreePageError},
         path::PortablePath,
     };
+    use acyclic_fs_format::model::VolumeLimits;
     use acyclic_test_support::differential::oracle::Oracle;
     let mut builder = Oracle::declare(|data: &Vec<u8>, fault: Option<&Fault>, see| {
         let parse: input::Parse = if matches!(fault, Some(Fault::WrongPath)) {

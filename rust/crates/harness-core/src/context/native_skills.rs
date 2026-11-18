@@ -416,7 +416,9 @@ impl NativeSkills {
             return Err(Error::Invalid("skill body exceeds byte bound".into()));
         }
         let cancellation = work.cancellation();
-        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+        let config = acyclic_fs_format::model::VolumeConfig::native(
+            acyclic_fs_format::model::Lifecycle::Durable,
+        );
         let source = NativeDemandSource::open(
             std::borrow::Cow::Borrowed(&record.root),
             config.profile,
@@ -483,7 +485,9 @@ impl NativeSkills {
                 return Ok(skills);
             }
             let (generation, mut skills) = self.owned_user_catalog(bounds)?.await?;
-            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let config = acyclic_fs_format::model::VolumeConfig::native(
+                acyclic_fs_format::model::Lifecycle::Durable,
+            );
             let native = NativeDemandSource::open(
                 std::borrow::Cow::Borrowed(root),
                 config.profile,
@@ -619,7 +623,9 @@ impl NativeSkills {
             }
             let generation = self.user_watch.arm(&self.user_roots, bounds);
             let cancellation = acyclic_fs::CancellationToken::new();
-            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let config = acyclic_fs_format::model::VolumeConfig::native(
+                acyclic_fs_format::model::Lifecycle::Durable,
+            );
             let mut skills = Vec::new();
             let mut roots = std::collections::HashSet::new();
             let mut records = RetainedBatch::default();
@@ -798,7 +804,9 @@ impl DiscoverySource for UserCatalogSource<'_> {
             let reference = revision.cloned().unwrap_or_else(|| self.source.reference());
             let cancellation = self.cancellation;
             let work = &native_work(cancellation)?;
-            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let config = acyclic_fs_format::model::VolumeConfig::native(
+                acyclic_fs_format::model::Lifecycle::Durable,
+            );
             let mut accounting = acyclic_fs::kernel::KernelAccounting::native(work, cancellation);
             let (path, _allocation) = NamespacePath::parse_in_profile(
                 &format!("/{directory}"),
@@ -869,7 +877,9 @@ impl SkillReader for UserCatalogSource<'_> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = self.cancellation;
             let work = &native_work(cancellation)?;
-            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let config = acyclic_fs_format::model::VolumeConfig::native(
+                acyclic_fs_format::model::Lifecycle::Durable,
+            );
             let mut accounting = acyclic_fs::kernel::KernelAccounting::native(work, cancellation);
             let path = format!("/{path}");
             let (parsed, _allocation) = NamespacePath::parse_in_profile(
@@ -996,7 +1006,9 @@ mod binding_tests {
             .map_err(storage)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = native_work(&cancellation)?;
-        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+        let config = acyclic_fs_format::model::VolumeConfig::native(
+            acyclic_fs_format::model::Lifecycle::Durable,
+        );
         let native = NativeDemandSource::open(
             std::borrow::Cow::Borrowed(&checkout),
             config.profile,

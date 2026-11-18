@@ -2,10 +2,9 @@ use std::sync::Arc;
 use {
     acyclic_fs::{
         AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, MountOptions,
-        Workspace,
-        access::*,
-        model::{CheckoutMode, GenerationSelector},
+        Workspace, access::*,
     },
+    acyclic_fs_format::model::{CheckoutMode, GenerationSelector},
     acyclic_fs_work::performance::WorkBudget,
 };
 
