@@ -28,6 +28,7 @@
   "acyclic-actors",
   "acyclic-machines-limits",
   "acyclic-machines",
+  "acyclic-machines-conformance",
   "acyclic-manifest",
   "acyclic-workers",
   "acyclic-fs-base",

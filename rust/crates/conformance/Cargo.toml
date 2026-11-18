@@ -42,7 +42,7 @@ rustls = { workspace = true, optional = true }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["conformance"] }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", optional = true }
-acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["conformance"] }
+acyclic-machines-conformance = { version = "=0.2.0", path = "../machines-conformance" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["conformance"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["conformance"] }
@@ -146,6 +146,7 @@ test = false
 required-features = ["client-session"]
 
 [dev-dependencies]
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-observability = { version = "=0.2.0", path = "../observability", features = ["research"] }
 acyclic-test-support = { path = "../test-support" }
 divan.workspace = true

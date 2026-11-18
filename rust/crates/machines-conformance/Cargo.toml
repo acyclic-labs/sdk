@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-machines-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider-neutral Machines qualification and request accounting"
+
+[dependencies]
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"] }
+async-trait.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

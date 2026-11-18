@@ -127,14 +127,14 @@ view alone does not make a complete-array storage format lazy.
 
 `SimulatedMachines` is a bounded process-local state machine. It does **not** execute an operating system, isolate tenants, provide durability, or guarantee availability. Real providers must state their own assurance level. See the [Rust API](https://docs.rs/acyclic-machines/latest/acyclic_machines/) and [v1 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines).
 
-With the `conformance` feature, downstream providers run the same public
-`acyclic_machines::conformance::{Backend, Fixture, verify, bench, suite}`.
+Downstream providers run the shared suite through
+`acyclic_machines_conformance::{Backend, Fixture, verify, bench, suite}`.
 `Fixture::new(provider, image, network_policy)` wraps the real provider in the shared
 `acyclic_stream::testing::Counted<P>` counter before type erasure. Factories retain
 their services and disposable storage for the whole invocation, and supply the
 actual enrolled immutable image and network policy commitment. The suite uses
 those resources for every create without substituting their identities. Register an async
-factory with `acyclic_machines::conformance::suite!(MyBackend::fresh)`.
+factory with `acyclic_machines_conformance::suite!(MyBackend::fresh)`.
 
 The suite checks capability negotiation, lifecycle, operation recovery/watch,
 idempotent replay, checkpoint and live fork fidelity, wake on exec, and exact
@@ -144,7 +144,7 @@ counted and keep their original error. Instrument the transport boundary as well
 when qualifying physical request traffic. Run the reference adapter on demand:
 
 ```sh
-cargo test --locked -p acyclic-machines --features conformance --lib conformance::
+cargo test --locked -p acyclic-machines-conformance --lib
 ```
 
 Fork admissions retain operation, provenance, requested extent and the original

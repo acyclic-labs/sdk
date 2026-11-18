@@ -25,7 +25,7 @@ pub const OBJECTS_SUITE: &[u8] = acyclic_objects::conformance::SUITE;
 pub const HARNESS_SUITE: &[u8] = acyclic_harness::conformance::LEGACY_MARKER_INVENTORY;
 
 /// Canonical language-neutral Machines conformance inventory.
-pub const MACHINES_SUITE: &[u8] = acyclic_machines::conformance::SUITE;
+pub use acyclic_machines_conformance::SUITE as MACHINES_SUITE;
 const _: () = assert!(!MACHINES_SUITE.is_empty(), "conformance inventory is empty");
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -82,9 +82,7 @@ pub async fn objects(first: &dyn Blobs, second: &dyn Blobs) -> Result<(), String
 }
 
 /// Runs the shared public Machines suite against a fresh provider.
-pub async fn machines(backend: &dyn acyclic_machines::conformance::Backend) -> Result<(), String> {
-    acyclic_machines::conformance::verify(backend).await
-}
+pub use acyclic_machines_conformance::verify as machines;
 
 #[cfg(test)]
 mod tests {
@@ -147,7 +145,7 @@ mod tests {
                 .map_err(|error| error.to_string())?,
         )
         .await?;
-        machines(&acyclic_machines::conformance::Fixture::new(
+        machines(&acyclic_machines_conformance::Fixture::new(
             SimulatedMachines::default(),
             acyclic_machines::Image::custom([17; 32]).map_err(|error| error.to_string())?,
             [19; 32],
