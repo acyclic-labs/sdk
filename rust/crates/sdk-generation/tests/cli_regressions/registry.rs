@@ -59,14 +59,10 @@ fn archive_locks_override_foreign_cargo_authority() {
                             .env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
                         authority.configure(&mut control);
                         let rejected = control.output().unwrap();
+                        let diagnostic = output_message(&rejected);
                         assert!(
-                            !rejected.status.success(),
-                            "automatic config negative control did not select foreign lock"
-                        );
-                        assert!(
-                            output_message(&rejected).contains("lock"),
-                            "{}",
-                            output_message(&rejected)
+                            !rejected.status.success() && diagnostic.contains("foreign-automatic"),
+                            "Cargo must reject the configured foreign lock: {diagnostic}"
                         );
                     }
                     let result = queries.run(|| {
