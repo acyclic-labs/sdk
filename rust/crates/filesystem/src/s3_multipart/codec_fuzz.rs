@@ -83,9 +83,6 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
             consumed, 0,
             "unsupported version must not consume a payload field"
         );
-        let error: s3s::S3Error =
-            multipart_storage_error(MultipartStorageError::UnsupportedVersion(version));
-        assert_eq!(error.code(), &s3s::S3ErrorCode::NotImplemented);
         let record = Bytes::copy_from_slice(&[version]).into();
         assert!(matches!(
             decode_multipart(vec![record], 1, FilesystemS3Limits::default()),
@@ -118,8 +115,6 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
         ),
         Err(MultipartStorageError::Malformed)
     ));
-    let malformed: s3s::S3Error = multipart_storage_error(MultipartStorageError::Malformed);
-    assert_eq!(malformed.code(), &s3s::S3ErrorCode::InvalidRequest);
     Ok(())
 }
 
@@ -135,12 +130,12 @@ pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
     ];
     for sealed in [false, true] {
         let root = ObjectId {
-            kind: acyclic_fs::ObjectKind::Blob,
-            digest: acyclic_fs::Digest::from_bytes([1; 32]),
-            storage: sealed.then_some(acyclic_fs::ObjectStorage {
-                locator: acyclic_fs::Digest::from_bytes([2; 32]),
-                root_file_id: acyclic_fs::FileId::from_bytes([3; 16]),
-                origin_generation: acyclic_fs::Digest::from_bytes([4; 32]),
+            kind: crate::ObjectKind::Blob,
+            digest: crate::Digest::from_bytes([1; 32]),
+            storage: sealed.then_some(crate::ObjectStorage {
+                locator: crate::Digest::from_bytes([2; 32]),
+                root_file_id: crate::FileId::from_bytes([3; 16]),
+                origin_generation: crate::Digest::from_bytes([4; 32]),
             }),
         };
         seeds.push((
@@ -152,8 +147,8 @@ pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
             encode_multipart_part(1, root, 4, IdempotencyKey::from_bytes([6; 16]), &etag())
                 .to_vec(),
         ));
-        let generation = acyclic_fs::GenerationId::from_root(ObjectId {
-            kind: acyclic_fs::ObjectKind::GenerationRoot,
+        let generation = crate::GenerationId::from_root(ObjectId {
+            kind: crate::ObjectKind::GenerationRoot,
             ..root
         });
         seeds.push((

@@ -260,3 +260,7 @@ pub struct MultipartSnapshot {
 
 include!("multipart_record.rs");
 include!("multipart_retention.rs");
+
+/// Codec checks and corpus samples for the canonical multipart record format.
+#[cfg(feature = "test-support")]
+pub mod codec_fuzz;

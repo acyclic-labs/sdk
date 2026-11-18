@@ -356,7 +356,7 @@ pub fn decode_multipart(
 
 /// Returns the decoded record tag and the byte count consumed by header validation.
 #[cfg(feature = "test-support")]
-pub fn inspect_multipart_header(bytes: &[u8]) -> (MultipartStorageResult<u8>, usize) {
+fn inspect_multipart_header(bytes: &[u8]) -> (MultipartStorageResult<u8>, usize) {
     let mut cursor = RecordCursor::new(bytes);
     let tag = cursor.any_header();
     (tag, cursor.offset)

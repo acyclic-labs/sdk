@@ -567,7 +567,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         )?;
     }
     capture_filesystem_records(&mut manifest)?;
-    for (name, bytes) in acyclic_fs_s3_http::s3_http::codec_fuzz::seeds()? {
+    for (name, bytes) in acyclic_fs::s3_multipart::codec_fuzz::seeds()? {
         save(
             "filesystem_codecs",
             name,

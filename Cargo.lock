@@ -238,7 +238,6 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-format",
- "acyclic-fs-s3-http",
  "acyclic-fs-wire",
  "acyclic-fs-work",
  "acyclic-harness-client",

@@ -4,23 +4,19 @@
 //! `s3s`. This module contains no namespace or storage implementation: every
 //! accepted operation resolves one scoped workspace and invokes [`acyclic_fs::S3Workspace`].
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use acyclic_fs::ObjectId;
 use acyclic_fs::WorkBudget;
 use acyclic_fs::kernel::AsyncBlobSource;
 #[cfg(test)]
 use acyclic_fs::s3_multipart::read_multipart_snapshot;
-#[cfg(feature = "test-support")]
-use acyclic_fs::s3_multipart::{
-    MULTIPART_RECORD_VERSION, decode_multipart_header, inspect_multipart_header,
-};
 use acyclic_fs::s3_multipart::{
     MultipartPart, MultipartSnapshot, MultipartStorageError, MultipartTerminal,
     StreamBackedAuthority, encode_multipart_aborted, encode_multipart_completed,
     encode_multipart_completing, encode_multipart_created, encode_multipart_part,
     multipart_cas_operation,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use acyclic_fs::s3_multipart::{MultipartStorageResult, decode_multipart};
 use acyclic_fs::{
     AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, S3Error, S3ListCursor,
@@ -412,11 +408,6 @@ include!("s3_http/operations_0.rs");
 include!("s3_http/operations_1.rs");
 include!("s3_http/body.rs");
 include!("s3_http/helpers.rs");
-
-#[cfg(feature = "test-support")]
-#[path = "s3_http/codec_fuzz.rs"]
-#[doc(hidden)]
-pub mod codec_fuzz;
 
 #[cfg(test)]
 mod tests;

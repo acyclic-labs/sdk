@@ -863,6 +863,12 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
 
 #[test]
 fn multipart_records_preserve_sealed_parts_and_completed_generations() -> MultipartStorageResult {
+    for version in [0, 2, u8::MAX] {
+        let error = multipart_storage_error(MultipartStorageError::UnsupportedVersion(version));
+        assert_eq!(error.code(), &s3s::S3ErrorCode::NotImplemented);
+    }
+    let malformed = multipart_storage_error(MultipartStorageError::Malformed);
+    assert_eq!(malformed.code(), &s3s::S3ErrorCode::InvalidRequest);
     let storage = acyclic_fs::ObjectStorage {
         locator: acyclic_fs::Digest::from_bytes([1; 32]),
         root_file_id: acyclic_fs::FileId::from_bytes([2; 16]),
