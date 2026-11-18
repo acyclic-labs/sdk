@@ -2,6 +2,7 @@
 //! and its dependencies link once. Loom models keep their own targets because
 //! each replaces production modules with instrumented copies.
 mod cached_flush;
+mod file_lock;
 mod native_claim_record;
 mod native_owner_record;
 mod native_report_port;
