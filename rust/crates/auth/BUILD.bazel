@@ -195,13 +195,23 @@ isolated_test(
 )
 
 rust_test(
+    name = "backoff",
+    crate_root = "tests/backoff.rs",
+    srcs = [
+        "src/operation/backoff.rs",
+        "tests/backoff.rs",
+    ],
+    edition = "2024",
+    deps = ["@sdk_crates//proptest-1.12.0"],
+)
+
+rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
     srcs = [
         "tests/admission.rs",
         "tests/authorization.rs",
         "tests/authorization_regressions.rs",
-        "tests/backoff.rs",
         "tests/caller.rs",
         "tests/channel.rs",
         "tests/common/credential.rs",
