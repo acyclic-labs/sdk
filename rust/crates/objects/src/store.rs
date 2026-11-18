@@ -1865,22 +1865,18 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                     .list(&format!("{}e/", self.state.prefix), after.as_deref(), limit)
                     .await
                     .map_err(medium)?;
-                for (key, _) in &keys {
-                    let digest = self.digest_from_key(key)?;
+                let full = keys.len() == limit;
+                let mut last = None;
+                for (key, _) in keys {
+                    let digest = self.digest_from_key(&key)?;
+                    last = Some(digest);
                     if self.blob(&digest).await?.is_some() {
                         digests.push(digest);
                     }
                 }
-                let next = if keys.len() == limit {
-                    keys.last()
-                        .map(|(key, _)| self.digest_from_key(key))
-                        .transpose()?
-                } else {
-                    None
-                };
                 Ok(Page {
                     digests,
-                    next,
+                    next: last.filter(|_| full),
                     revision: served,
                 })
             }
