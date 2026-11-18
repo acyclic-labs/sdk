@@ -450,13 +450,13 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     let data_path = fixture
         .output
         .join("preview/feature-profile-catalog/sdk-docs-data.v1.json");
-    let data: Value = serde_json::from_slice(&fs::read(&data_path).unwrap()).unwrap();
+    let data_bytes = fs::read(&data_path).unwrap();
+    let data: Value = serde_json::from_slice(&data_bytes).unwrap();
     assert!(data.to_string().contains("FeatureOnly"));
 
-    let availability: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
-    )
-    .unwrap();
+    let availability_bytes =
+        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap();
+    let availability: Value = serde_json::from_slice(&availability_bytes).unwrap();
     let entries = availability["entries"].as_array().unwrap();
     for (path, expected) in [
         ("demo::FeatureOnly", 2),
@@ -548,19 +548,12 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     );
     assert_eq!(data["source"]["revision"], git_revision(&fixture.root));
 
-    let availability_hash =
-        hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json"));
     let metadata = super::replay::metadata(&fixture);
     let (rebuilt, replayed) = super::replay::project(&fixture, &metadata, &receipts);
-    sdk_docs::write_bundle_files(&rebuilt, &fixture.output, false).unwrap();
+    assert_eq!(serde_json::to_vec_pretty(&rebuilt).unwrap(), data_bytes);
     assert_eq!(
-        hash_bytes(&serde_json::to_vec_pretty(&replayed).unwrap()),
-        availability_hash
-    );
-
-    assert_eq!(
-        hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json")),
-        availability_hash
+        serde_json::to_vec_pretty(&replayed).unwrap(),
+        availability_bytes
     );
 
     let source = fixture.root.join("rust/crates/demo/src/lib.rs");
