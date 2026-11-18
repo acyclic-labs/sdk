@@ -153,7 +153,7 @@ fn empty_notebook_insert_delete_retains_metadata() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
+fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() -> crate::Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 
     let cancellation = CancellationToken::new();
@@ -161,11 +161,11 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         acyclic_fs_work::performance::work_budget(1_048_576, 1_048_576),
         &cancellation,
     )
-    .unwrap();
+    .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
     // Escaped field names and IDs exercise serde's owned escape scratch;
     // the raw source/output spans remain borrowed from this same document.
     let source = r#"{"nbformat":4,"cells":[{"i\u0064":"\u0061","cell_type":"code","source":["x\n"],"outputs":[],"execution_count":1}],"metadata":{"keep":true}}"#;
-    let baseline = native.live_allocation_bytes();
+    let baseline = native.live_allocation_bytes()?;
     let (text, hold, facts) = edit(
         source,
         &NotebookEdit::Replace {
@@ -176,7 +176,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         Some(&native),
     )
     .unwrap();
-    assert!(native.live_allocation_bytes() > baseline);
+    assert!(native.live_allocation_bytes()? > baseline);
     assert_eq!(facts.index, 0);
     let prior = facts._prior.as_ref().unwrap();
     assert_eq!(prior.id.as_deref(), Some("a"));
@@ -191,7 +191,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     drop(facts);
     drop(text);
     drop(hold);
-    assert_eq!(native.live_allocation_bytes(), baseline);
+    assert_eq!(native.live_allocation_bytes()?, baseline);
 
     // Declared language uses the same decoder and retains escaped strings until
     // publication facts are released; unrelated metadata stays byte-for-byte.
@@ -237,10 +237,10 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         drop(text);
         drop(hold);
         if owned {
-            assert!(native.live_allocation_bytes() > baseline);
+            assert!(native.live_allocation_bytes()? > baseline);
         }
         drop(facts);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
     }
 
     for metadata in [
@@ -265,7 +265,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
             .expect("malformed declared language refused");
         assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
         drop(error);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
     }
 
     for (source, kind) in [
@@ -312,7 +312,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         drop(facts);
         drop(text);
         drop(hold);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
     }
 
     // Borrowed and ignored subtrees retain their original JSON spelling, even
@@ -347,7 +347,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         drop(facts);
         drop(text);
         drop(hold);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
     }
 
     // A differently encoded spelling of the same stable ID must conflict.
@@ -366,7 +366,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     .expect("duplicate ID refused");
     assert!(matches!(error, Error::ToolRejected { .. }));
     drop(error);
-    assert_eq!(native.live_allocation_bytes(), baseline);
+    assert_eq!(native.live_allocation_bytes()?, baseline);
 
     // Typed field diagnostics retain the same recoverable classification and
     // original ownership on malformed cells, missing fields and duplicates.
@@ -391,7 +391,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
         assert!(error.is_tool_failure(), "{error:?}");
         drop(error);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
     }
 
     // Refusal happens on the original ledger before a decoded value escapes.
@@ -406,5 +406,6 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         )
         .is_err()
     );
-    assert_eq!(native.live_allocation_bytes(), baseline);
+    assert_eq!(native.live_allocation_bytes()?, baseline);
+    Ok(())
 }
