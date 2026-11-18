@@ -40,6 +40,6 @@ pub use display_text::{display_text, display_text_prefix};
 #[cfg(not(target_arch = "wasm32"))]
 pub use input_keymap::InputKeymap;
 #[cfg(not(target_arch = "wasm32"))]
-pub use key_decode::{DecodedKey, decode_key, event_chord, key_chord};
+pub use key_decode::{ChordContinuation, DecodedKey, PendingChord, decode_key, key_chord};
 #[cfg(not(target_arch = "wasm32"))]
 pub use transcript_anchor::{RowPosition, TranscriptAnchor, TranscriptOrigin, TranscriptPart};
