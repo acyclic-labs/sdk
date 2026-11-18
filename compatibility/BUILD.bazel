@@ -189,6 +189,7 @@ rust_test(
         "//rust/crates/stream/fuzz:tree",
         "//rust/crates/stream/models:tree",
         "//rust/crates/stream/publication-models:tree",
+        "//rust/crates/stream-body:tree",
         "//rust/crates/stream-wire:tree",
         "//rust/crates/stream:tree",
         "//rust/crates/test-runner:tree",

@@ -1,5 +1,5 @@
 use super::{GuestError, GuestRequest, GuestResponse};
-use acyclic_stream::body::BodyChunk;
+use acyclic_stream_body::BodyChunk;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use std::pin::Pin;
