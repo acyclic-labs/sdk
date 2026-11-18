@@ -1,6 +1,6 @@
 //! Shared request and node values exposed by native mounts.
 
-use crate::MountNodeKind;
+use crate::{MountNodeKind, NativeMountKind};
 use acyclic_fs_format::identity::{FileId, MountId, VolumeId};
 use acyclic_fs_format::metadata::FileMetadata;
 use std::path::PathBuf;
