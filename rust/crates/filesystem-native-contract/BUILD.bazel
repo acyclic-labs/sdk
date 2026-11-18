@@ -35,12 +35,15 @@ rust_library(
     lint_config = ":lints",
     deps = select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//libc-0.2.191",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//libc-0.2.191",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//cap-primitives-4.0.3",
         "@sdk_crates//cap-std-4.0.3",
     ],
@@ -69,12 +72,15 @@ rust_test(
     lint_config = ":lints",
     deps = select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//libc-0.2.191",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//libc-0.2.191",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//cap-primitives-4.0.3",
         "@sdk_crates//cap-std-4.0.3",
     ],
