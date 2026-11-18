@@ -672,39 +672,40 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
     let (fixture, support) = historical_source_fixture(mutation);
     init_git(&fixture.root, "historical docs fixture");
     let package = fixture.root.join("rust/crates/demo");
-    let archives = support.join("registry");
-    let archive_source = support.join("archive-source/demo-1.0.0");
-    fs::create_dir_all(&archives).unwrap();
-    fs::create_dir_all(archive_source.join("src")).unwrap();
-    fs::create_dir_all(archive_source.join("examples")).unwrap();
-    for name in [
+    let mut members = [
         "src/lib.rs",
         "examples/historical.rs",
         "README.md",
         "descriptor.bin",
         "input.json",
         "schema.proto",
-    ] {
-        fs::copy(package.join(name), archive_source.join(name)).unwrap();
-    }
-    fs::copy(
-        package.join("Cargo.toml"),
-        archive_source.join("Cargo.toml.orig"),
-    )
-    .unwrap();
+    ]
+    .into_iter()
+    .map(|path| (path.to_owned(), fs::read(package.join(path)).unwrap()))
+    .collect::<BTreeMap<_, _>>();
+    members.extend([
+        (
+            "Cargo.toml.orig".into(),
+            fs::read(package.join("Cargo.toml")).unwrap(),
+        ),
+        (
+            "Cargo.toml".into(),
+            b"# Cargo-produced normalized manifest fixture\n".to_vec(),
+        ),
+        (
+            "Cargo.lock".into(),
+            b"# Cargo-produced standalone package lock fixture\n".to_vec(),
+        ),
+        (
+            ".cargo_vcs_info.json".into(),
+            packaging::publisher_vcs(&fixture.root, false),
+        ),
+    ]);
     fs::write(
-        archive_source.join("Cargo.toml"),
-        "# Cargo-produced normalized manifest fixture\n",
+        support.join("registry/demo-1.0.0.crate"),
+        archives::encode("demo-1.0.0", &members),
     )
     .unwrap();
-    fs::write(
-        archive_source.join("Cargo.lock"),
-        "# Cargo-produced standalone package lock fixture\n",
-    )
-    .unwrap();
-    packaging::write_publisher_vcs(&fixture.root, &archive_source, false);
-    let archive = archives.join("demo-1.0.0.crate");
-    archives::pack(&archive_source, &archive);
     write_registry_transport(&support);
     (fixture, support)
 }
@@ -919,7 +920,11 @@ fn registry_archive_fixture_configured(
     }
     let source = packaging::materialize(&package, &support, package_name);
     if publisher_vcs {
-        packaging::write_publisher_vcs(&fixture.root, &source, dirty);
+        fs::write(
+            source.join(".cargo_vcs_info.json"),
+            packaging::publisher_vcs(&fixture.root, dirty),
+        )
+        .unwrap();
     }
     if !published_lock {
         fs::remove_file(source.join("Cargo.lock")).unwrap();

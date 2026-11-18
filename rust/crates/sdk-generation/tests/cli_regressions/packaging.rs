@@ -92,14 +92,10 @@ pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) ->
     source
 }
 
-pub(super) fn write_publisher_vcs(root: &Path, archive: &Path, dirty: bool) {
-    let vcs = json!({
+pub(super) fn publisher_vcs(root: &Path, dirty: bool) -> Vec<u8> {
+    serde_json::to_vec(&json!({
         "git": {"sha1": git_revision(root), "dirty": dirty},
         "path_in_vcs": "rust/crates/demo",
-    });
-    fs::write(
-        archive.join(".cargo_vcs_info.json"),
-        serde_json::to_vec(&vcs).unwrap(),
-    )
-    .unwrap();
+    }))
+    .unwrap()
 }
