@@ -6,9 +6,9 @@ load("@rules_cc//cc/private/toolchain:unix_cc_toolchain_config.bzl", "cc_toolcha
 def wasm_cc_toolchain():
     """Declare the browser C toolchain for Linux execution."""
     root = Label("@wasm_llvm_distribution//:bin/clang").workspace_root
-    package = Label("//toolchains/browser:wasm_cc")
-    package_path = [part for part in [package.workspace_root, package.package] if part]
-    tool_root = "../" * len("/".join(package_path).split("/")) + root
+    # C++ actions start at the execution root. Cargo's build-script runner
+    # resolves this anchor before changing to the crate's manifest directory.
+    tool_root = "/proc/self/cwd/" + root
     binaries = {
         "gcc": "clang", "cpp": "clang-cpp", "ar": "llvm-ar", "ld": "wasm-ld",
         "nm": "llvm-nm", "objdump": "llvm-objdump", "strip": "llvm-strip", "gcov": "llvm-cov",

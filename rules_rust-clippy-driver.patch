@@ -126,3 +126,30 @@ diff --git a/cargo/private/cargo_build_script_runner/lib.rs b/cargo/private/carg
 +            "rustc-check-cfg" => Some(BuildScriptOutput::Flags(format!("--check-cfg={param}"))),
              "rustc-flags" => Some(BuildScriptOutput::Flags(param)),
              "rustc-link-arg" => Some(BuildScriptOutput::LinkArg(param)),
+diff --git a/cargo/private/cargo_build_script_runner/bin.rs b/cargo/private/cargo_build_script_runner/bin.rs
+--- a/cargo/private/cargo_build_script_runner/bin.rs
++++ b/cargo/private/cargo_build_script_runner/bin.rs
+@@ -156,9 +156,13 @@
+         }
+     }
+ 
++    let tool_at_exec_root = |tool: &std::ffi::OsStr| {
++        let path = Path::new(tool);
++        exec_root.join(path.strip_prefix("/proc/self/cwd").unwrap_or(path))
++    };
+     for tool_env_var in &["CC", "CXX", "LD"] {
+         if let Some(tool_path) = env::var_os(tool_env_var) {
+-            command.env(tool_env_var, exec_root.join(tool_path));
++            command.env(tool_env_var, tool_at_exec_root(&tool_path));
+         }
+     }
+ 
+@@ -174,7 +178,7 @@
+             command.env_remove("AR");
+             command.env_remove("ARFLAGS");
+         } else {
+-            command.env("AR", exec_root.join(ar_path));
++            command.env("AR", tool_at_exec_root(&ar_path));
+         }
+     }
+ 
