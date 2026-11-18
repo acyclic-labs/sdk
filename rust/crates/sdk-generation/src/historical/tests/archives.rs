@@ -466,18 +466,16 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
         "build.rs",
         ".cargo/config.toml",
     ];
-    let (mut release, archive) = fixture.archive(&revision, "");
-    let entry = fixture.path().join("historical-fixture-0.1.0");
+    let entry = fixture.stage_archive(&revision, "", false);
     let original = b"original archived input";
-    for name in names {
-        let path = fixture.path().join(name);
-        let archived = entry.join(name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::create_dir_all(archived.parent().unwrap()).unwrap();
-        fs::write(path, original).unwrap();
-        fs::write(archived, original).unwrap();
+    for root in [fixture.path(), entry.as_path()] {
+        for name in names {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, original).unwrap();
+        }
     }
-    release.checksum = pack_registry_archive(&entry, &archive);
+    let (release, archive) = fixture.pack_archive(&entry);
     let (_, files) =
         verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
     for name in names {

@@ -721,6 +721,10 @@ impl Fixture {
         vcs_path: &str,
         dirty: bool,
     ) -> (RegistryVersion, PathBuf) {
+        let entry = self.stage_archive(revision, vcs_path, dirty);
+        self.pack_archive(&entry)
+    }
+    fn stage_archive(&self, revision: &str, vcs_path: &str, dirty: bool) -> PathBuf {
         let entry = self.path().join("historical-fixture-0.1.0");
         fs::create_dir_all(&entry).unwrap();
         fs::write(
@@ -744,8 +748,11 @@ impl Fixture {
             entry.join("Cargo.toml.orig"),
         )
         .unwrap();
+        entry
+    }
+    fn pack_archive(&self, entry: &Path) -> (RegistryVersion, PathBuf) {
         let archive = self.path().join("release.crate");
-        let checksum = pack_registry_archive(&entry, &archive);
+        let checksum = pack_registry_archive(entry, &archive);
         (
             RegistryVersion {
                 package: "historical-fixture".into(),
