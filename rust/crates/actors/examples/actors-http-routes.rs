@@ -60,7 +60,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))?,
         )?;
     } else {
-        println!("{}", serde_json::to_string(acyclic_actors::HTTP_ROUTES)?);
+        println!(
+            "{}",
+            serde_json::to_string(acyclic_actors_inventory::HTTP_ROUTES)?
+        );
     }
     Ok(())
 }

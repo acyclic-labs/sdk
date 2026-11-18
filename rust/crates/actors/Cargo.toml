@@ -15,6 +15,7 @@ test-build-script = ["actors-authorization"]
 
 [package.metadata.bazel.test-dependencies]
 actors-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
+actors-http-routes = ["acyclic_actors", "acyclic_actors_diagnostics", "acyclic_actors_guest_wire", "acyclic_actors_inventory", "serde_json", "ts_rs"]
 
 [features]
 conformance = ["acyclic-stream/conformance"]
