@@ -67,6 +67,7 @@ test('Bash substitutions and heredocs preserve the following command', () => {
   "node --input-type=module - <<'JS'",
   "// a payload's quote does not start shell syntax",
   'JS',
+  '((value = 1 << shift))',
   'sleep 1',
  ].join('\n');
  assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));

@@ -124,21 +124,24 @@ function scriptTokens(file, source, parser) {
 }
 
 function shellQuoteEnd(source, end, quote, escaped) {
+ const scopes = [{quote, escaped}];
  while (end < source.length) {
-  if (source[end] === quote) return end + 1;
-  if (escaped && source[end] === '\\') { end += 2; continue; }
-  if (quote === '"' && source.startsWith('$(', end)) {
-   let depth = 1;
-   end += 2;
-   while (end < source.length && depth) {
-    const character = source[end++];
-    if (character === "'" || character === '"')
-     end = shellQuoteEnd(source, end, character, character === '"' || source[end - 2] === '$');
-    else if (character === '\\') end++;
-    else if (character === '(') depth++;
-    else if (character === ')') depth--;
+  const scope = scopes[scopes.length - 1];
+  const character = source[end++];
+  if (scope.quote !== undefined) {
+   if (character === scope.quote) {
+    scopes.pop();
+    if (!scopes.length) return end;
+   } else if (scope.escaped && character === '\\') end++;
+   else if (scope.quote === '"' && character === '$' && source[end] === '(') {
+    scopes.push({depth: 1});
+    end++;
    }
-  } else end++;
+  } else if (character === "'" || character === '"')
+   scopes.push({quote: character, escaped: character === '"' || source[end - 2] === '$'});
+  else if (character === '\\') end++;
+  else if (character === '(') scope.depth++;
+  else if (character === ')' && --scope.depth === 0) scopes.pop();
  }
  return source.length + 1;
 }
@@ -172,6 +175,7 @@ function nativeTokens(source, file) {
  let yamlFlow = 0;
  let wordBoundary = true;
  const hereDocuments = [];
+ let arithmeticDepth = 0;
  const malformed = message => new SourceSyntaxError(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
@@ -186,8 +190,16 @@ function nativeTokens(source, file) {
  };
  while (at < source.length) {
   const tail = source.slice(at);
-  if (shell && tail.startsWith('<<<')) { emit(at + 3, 'punctuation'); continue; }
-  const redirect = shell && tail.match(/^<<(-?)[ \t]*(?:'([^'\r\n]+)'|"([^"\r\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/);
+  if (shell && !arithmeticDepth && tail.startsWith('((')) {
+   arithmeticDepth = 2;
+   emit(at + 1, 'punctuation');
+   emit(at + 1, 'punctuation');
+   continue;
+  }
+  if (arithmeticDepth && tail[0] === '(') arithmeticDepth++;
+  if (arithmeticDepth && tail[0] === ')') arithmeticDepth--;
+  if (shell && !arithmeticDepth && tail.startsWith('<<<')) { emit(at + 3, 'punctuation'); continue; }
+  const redirect = shell && !arithmeticDepth && tail.match(/^<<(-?)[ \t]*(?:'([^'\r\n]+)'|"([^"\r\n]+)"|([A-Za-z_][A-Za-z0-9_]*))/);
   if (redirect) {
    hereDocuments.push({delimiter: redirect[2] ?? redirect[3] ?? redirect[4], tabs: redirect[1] === '-'});
    emit(at + redirect[0].length, 'punctuation');
@@ -302,6 +314,7 @@ function nativeTokens(source, file) {
    ? powershell && tail.startsWith('`\r\n') ? 3 : Math.min(2, tail.length) : 1;
   emit(at + width, word ? 'word' : 'punctuation', spelling);
  }
+ if (hereDocuments.length) throw malformed('unterminated shell here-document');
  return out;
 }
 
