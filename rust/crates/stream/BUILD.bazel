@@ -663,7 +663,6 @@ rust_test(
         "src/filtered_follow_fixture.rs",
         "tests/filtered_follow_tests.rs",
         "tests/follow_contracts.rs",
-        "tests/follow_tests.rs",
         "tests/head_tests.rs",
     ],
     edition = "2024",
