@@ -11,6 +11,7 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, ObjectId,
     S3Error, S3ListCursor, S3ListOptions, StagedContent, StreamAuthorityStore, Workspace,
 };
+use acyclic_fs_format::s3_limits::{FilesystemS3Limits, S3MultipartRetentionLimits};
 use acyclic_stream::StreamProviderExt as _;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -42,78 +43,6 @@ const SDK_INVOCATION_HEADER: &str = "amz-sdk-invocation-id";
 const SESSION_TOKEN_HEADER: &str = "x-amz-security-token";
 const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
 const MULTIPART_RECORD_VERSION: u8 = 1;
-
-/// Streaming chunk sizes and optional caller policies for the S3 edge.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FilesystemS3Limits {
-    /// Largest single request body accepted before publication.
-    pub maximum_request_bytes: Option<u64>,
-    /// Largest response chunk returned from the canonical range reader.
-    pub response_chunk_bytes: u64,
-    /// Largest combined object/prefix page.
-    pub maximum_list_keys: u32,
-    /// Largest number of parts retained by one durable multipart upload.
-    pub maximum_multipart_parts: Option<u32>,
-    /// Largest logical byte count admitted for one multipart part.
-    pub maximum_multipart_part_bytes: Option<u64>,
-    /// Minimum size of every completed part except the final part.
-    pub minimum_multipart_part_bytes: u64,
-}
-
-/// Optional caller policy for discovering active multipart roots before reclamation.
-/// Absence admits the complete scan under the supplied work budget.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct S3MultipartRetentionLimits {
-    /// Largest number of durable upload registry entries examined.
-    pub maximum_uploads: Option<u64>,
-    /// Largest number of distinct staged immutable objects retained.
-    pub maximum_objects: Option<u64>,
-    /// Largest cumulative canonical bytes authenticated while tracing roots.
-    pub maximum_object_bytes: Option<u64>,
-}
-
-impl S3MultipartRetentionLimits {
-    fn validate(self) -> S3Result<Self> {
-        if self.maximum_uploads == Some(0)
-            || self.maximum_objects == Some(0)
-            || self.maximum_object_bytes == Some(0)
-        {
-            return Err(s3s::s3_error!(InvalidArgument));
-        }
-        Ok(self)
-    }
-}
-
-impl Default for FilesystemS3Limits {
-    fn default() -> Self {
-        Self {
-            maximum_request_bytes: None,
-            response_chunk_bytes: 8 * 1024 * 1024,
-            maximum_list_keys: 1_000,
-            maximum_multipart_parts: None,
-            maximum_multipart_part_bytes: None,
-            minimum_multipart_part_bytes: 5 * 1024 * 1024,
-        }
-    }
-}
-
-impl FilesystemS3Limits {
-    /// Validates every protocol bound before a listener is created.
-    pub fn validate(self) -> S3Result<Self> {
-        if self.maximum_request_bytes == Some(0)
-            || self.response_chunk_bytes == 0
-            || self.maximum_list_keys == 0
-            || self.maximum_multipart_parts == Some(0)
-            || self.maximum_multipart_part_bytes == Some(0)
-            || self
-                .maximum_multipart_part_bytes
-                .is_some_and(|maximum| self.minimum_multipart_part_bytes > maximum)
-        {
-            return Err(s3s::s3_error!(InvalidArgument));
-        }
-        Ok(self)
-    }
-}
 
 /// Authority adapter that retains filesystem state in the canonical public hierarchical Stream provider.
 pub trait StreamBackedAuthority: AsyncAuthorityStore {
@@ -232,7 +161,9 @@ impl<R, A, O> FilesystemS3Adapter<R, A, O> {
     pub fn new(resolver: Arc<R>, limits: FilesystemS3Limits) -> S3Result<Self> {
         Ok(Self {
             resolver,
-            limits: limits.validate()?,
+            limits: limits
+                .validate()
+                .map_err(|_| s3s::s3_error!(InvalidArgument))?,
             marker: PhantomData,
         })
     }

@@ -41,8 +41,12 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
     budget: crate::WorkBudget,
     cancellation: &CancellationToken,
 ) -> S3Result<crate::OperationReceipt<Vec<ObjectId>>> {
-    let protocol_limits = protocol_limits.validate()?;
-    let retention_limits = retention_limits.validate()?;
+    let protocol_limits = protocol_limits
+        .validate()
+        .map_err(|_| s3s::s3_error!(InvalidArgument))?;
+    let retention_limits = retention_limits
+        .validate()
+        .map_err(|_| s3s::s3_error!(InvalidArgument))?;
     cancellation
         .check()
         .map_err(|_| s3s::s3_error!(RequestTimeout))?;

@@ -134,8 +134,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 let multipart = crate::active_s3_multipart_objects(
                     self.inner.authority.provider().as_ref(),
                     &self.inner.objects,
-                    crate::FilesystemS3Limits::default(),
-                    crate::S3MultipartRetentionLimits::default(),
+                    acyclic_fs_format::s3_limits::FilesystemS3Limits::default(),
+                    acyclic_fs_format::s3_limits::S3MultipartRetentionLimits::default(),
                     WorkBudget::UNBOUNDED,
                     cancellation,
                 )
