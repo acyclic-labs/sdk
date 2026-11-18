@@ -133,7 +133,10 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
                 .and_then(|request| wire_codec::path(request.path).map(|_| ())),
             "tail" => wire::TailRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
-                .and_then(|request| wire_codec::path(request.path).map(|_| ())),
+                .and_then(|request| {
+                    wire_codec::path(request.path)?;
+                    wire_codec::cut_from_wire(request.at_least).map(|_| ())
+                }),
             "fork" => wire::ForkRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::fork_from_wire)
