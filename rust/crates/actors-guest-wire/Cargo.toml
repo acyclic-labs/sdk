@@ -27,3 +27,7 @@ acyclic-test-support = { path = "../test-support" }
 
 [lints]
 workspace = true
+
+# Proofs compose separately proved functions through Kani stubs.
+[package.metadata.kani.unstable]
+stubbing = true
