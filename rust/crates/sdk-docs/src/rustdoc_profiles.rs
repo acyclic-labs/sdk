@@ -359,10 +359,11 @@ fn extend_feature_closure(
         result.insert(feature.to_owned());
         for dependency in dependencies.into_iter().flatten() {
             let local = dependency.strip_prefix("?").unwrap_or(dependency);
-            if !local.starts_with("dep:") && !local.contains('/') {
-                if let Some(children) = features.get(local) {
-                    pending.push((local, Some(children)));
-                }
+            if local.starts_with("dep:") || local.contains('/') || result.contains(local) {
+                continue;
+            }
+            if let Some(children) = features.get(local) {
+                pending.push((local, Some(children)));
             }
         }
     }
