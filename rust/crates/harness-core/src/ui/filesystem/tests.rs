@@ -190,7 +190,7 @@ async fn computed_ui_native_ranges_links_and_original_custody() -> TestResult {
     let cancel = CancellationToken::new();
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(error, _)| error)?;
-    let baseline = native.live_allocation_bytes();
+    let baseline = native.live_allocation_bytes()?;
     let reference = source.reference(&mut accounting(&native)).await?;
     let status = path("/status.md");
     let node = source
@@ -198,7 +198,7 @@ async fn computed_ui_native_ranges_links_and_original_custody() -> TestResult {
         .await?
         .ok_or("missing default")?;
     assert_eq!(node.logical_bytes, Some(expected.len() as u64));
-    assert_eq!(native.live_allocation_bytes(), baseline);
+    assert_eq!(native.live_allocation_bytes()?, baseline);
     let output = source
         .read_range(
             reference.clone(),
@@ -214,11 +214,11 @@ async fn computed_ui_native_ranges_links_and_original_custody() -> TestResult {
     let alias = output.bytes.clone();
     drop(output);
     assert!(
-        native.live_allocation_bytes() > baseline,
+        native.live_allocation_bytes()? > baseline,
         "last output alias must retain its original credit"
     );
     drop(alias);
-    assert_eq!(native.live_allocation_bytes(), baseline);
+    assert_eq!(native.live_allocation_bytes()?, baseline);
     let start = expected.find('é').ok_or("UTF8 fixture")? + 1;
     let output = source
         .read_range(
@@ -307,7 +307,7 @@ async fn computed_ui_native_ranges_links_and_original_custody() -> TestResult {
             .await,
         Err(DemandError::StaleVersion)
     ));
-    assert_eq!(native.live_allocation_bytes(), baseline);
+    assert_eq!(native.live_allocation_bytes()?, baseline);
 
     let denied = NativeMaterializationWork::new(
         WorkBudget {
