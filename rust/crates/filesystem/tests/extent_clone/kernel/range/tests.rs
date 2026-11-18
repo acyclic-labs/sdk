@@ -3,13 +3,16 @@ use acyclic_fs::kernel::{
     ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent,
 };
 use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
-use acyclic_fs::{ByteRange, CancellationToken, MemoryObjectBackend, ObjectReadRequest};
+use acyclic_fs::{
+    ByteRange, CancellationToken, LogicalObjectStore, MemoryObjectBackend, ObjectReadRequest,
+};
 use acyclic_fs_format::{
     identity::Digest,
     object_reference::{ObjectId, ObjectKind},
 };
-use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
+use acyclic_fs_work::performance::{WorkBudget, WorkCounters, WorkError};
 
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use super::super::extent_objects::put_extent_page;
@@ -667,5 +670,81 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
             reason: ResidencyReason::SequentialRange,
         })
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let root = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![
+            Extent {
+                offset: 0,
+                length: 1,
+                kind: ExtentKind::Hole,
+            },
+            Extent {
+                offset: 1,
+                length: 1,
+                kind: ExtentKind::AllocatedZero,
+            },
+            Extent {
+                offset: 2,
+                length: 1,
+                kind: ExtentKind::Hole,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    let limits = DecodeLimits {
+        maximum_page_height: 1,
+        ..DecodeLimits::default()
+    };
+    let request = ExtentRangeRequest {
+        root,
+        file_size: 3,
+        range: ByteRange {
+            offset: 0,
+            length: 3,
+        },
+        maximum_spans: Some(3),
+        limits,
+        budget: WorkBudget::UNBOUNDED,
+    };
+    let baseline = plan_extent_range(&store, request, &CancellationToken::new()).await?;
+    assert_eq!(
+        baseline.retained_allocation_bytes,
+        u64::try_from(3 * size_of::<ExtentSlice>())?
+    );
+    let maximum = baseline.work.peak_allocation_bytes - 1;
+    // Measure the same cold path with the tighter budget.
+    let store = LogicalObjectStore::new(Arc::clone(store.provider()));
+    let failure = plan_extent_range(
+        &store,
+        ExtentRangeRequest {
+            budget: WorkBudget {
+                peak_allocation_bytes: maximum,
+                ..WorkBudget::UNBOUNDED
+            },
+            ..request
+        },
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("one-byte-short range allocation budget unexpectedly succeeded")?;
+    assert!(matches!(
+        failure.error,
+        ExtentReadError::Work(WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes",
+            observed,
+            maximum: observed_maximum,
+        }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum
+    ));
+    assert_eq!(failure.work()?.backend_read_operations, 1);
+    assert_eq!(failure.work()?.backend_write_operations, 0);
     Ok(())
 }
