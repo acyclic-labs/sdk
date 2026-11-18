@@ -10,7 +10,10 @@ extract_cargo_lints(
 )
 
 _SRCS = glob(["src/**/*.rs"], exclude = ["src/tests/**"])
-_FLAGS = ["--check-cfg=cfg(feature, values(\"test-support\"))"]
+_FLAGS = [
+    "--check-cfg=cfg(docsrs,test)",
+    "--check-cfg=cfg(feature, values(\"test-support\"))",
+]
 _NATIVE_DEPS = [
     "@sdk_crates//serde-1.0.229",
     "@sdk_crates//thiserror-2.0.21",
