@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
 control=preparation::tests::effect_selection_and_condition_membership_walk_the_original_slices_once
+oracle=(bazel test //rust/crates/stream:acyclic_stream_test
+  "--test_arg=$control" --test_arg=--exact --test_output=all --nocache_test_results)
 selection=rust/crates/stream/src/preparation/repeated_search.patch
 shape=rust/crates/stream/src/preparation/repeated_shape_search.patch
 temporary=$(mktemp -d)
@@ -14,13 +16,13 @@ restore() {
   rm -r "$temporary"
 }
 trap restore EXIT
-cargo test --locked -p acyclic-stream --no-default-features --lib "$control" -- --exact
+"${oracle[@]}"
 git apply "$selection"
 selection_applied=1
 git apply "$shape"
 shape_applied=1
 printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" > "$temporary/mutant.log"
-if cargo test --locked -p acyclic-stream --no-default-features --lib "$control" -- --exact >> "$temporary/mutant.log" 2>&1; then
+if "${oracle[@]}" >> "$temporary/mutant.log" 2>&1; then
   cat "$temporary/mutant.log"
   echo 'repeated-search mutation was accepted' >&2
   exit 1
@@ -32,4 +34,4 @@ git apply -R "$shape"
 shape_applied=0
 git apply -R "$selection"
 selection_applied=0
-cargo test --locked -p acyclic-stream --no-default-features --lib "$control" -- --exact
+"${oracle[@]}"
