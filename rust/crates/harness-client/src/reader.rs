@@ -1340,15 +1340,14 @@ impl Reader {
         };
         self.failures = self.failures.saturating_add(1);
         self.since.get_or_insert(now);
-        let shift = (self.failures - 1).min(20);
-        let backoff = self
-            .policy
-            .backoff_min_ms
-            .saturating_mul(1 << shift)
-            .min(self.policy.backoff_max_ms);
+        let backoff = acyclic_auth::operation::Backoff::ceiling_ms_at(
+            self.policy.backoff_min_ms,
+            self.policy.backoff_max_ms,
+            (self.failures - 1).min(20),
+        );
         // Deterministic jitter spreads reconnecting clients apart.
         let jitter = self.next_id.wrapping_mul(0x9E37_79B9) % (backoff / 4 + 1);
-        self.retry_at = now.saturating_add(backoff + jitter);
+        self.retry_at = now.saturating_add(backoff).saturating_add(jitter);
         if overloaded {
             self.prefetch_paused_until = now.saturating_add(backoff.saturating_mul(4));
         }

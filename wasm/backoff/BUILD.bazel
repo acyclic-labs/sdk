@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("//:wasm.bzl", "wasm_bindings")
+
+rust_shared_library(
+    name = "module",
+    crate_name = "acyclic_backoff_wasm",
+    crate_root = "lib.rs",
+    srcs = [
+        "lib.rs",
+        "//rust/crates/auth:src/operation/backoff.rs",
+    ],
+    edition = "2024",
+    target_compatible_with = ["@platforms//os:none", "@platforms//cpu:wasm32"],
+    deps = [
+        "@wasm_crates//wasm-bindgen-0.2.117",
+    ],
+)
+
+wasm_bindings(
+    name = "backoff",
+    module = ":module",
+    out_name = "acyclic_backoff_wasm",
+    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    visibility = ["//visibility:public"],
+)
