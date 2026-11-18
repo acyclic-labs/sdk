@@ -50,6 +50,9 @@ path = "tests/projection_selection.rs"
 name = "conversation_contract"
 path = "tests/conversation_contract.rs"
 
+[package.metadata.bazel]
+test-narrow-runfiles = ["conversation_contract"]
+
 [package.metadata.bazel.test-dependencies]
 contract_error_cases = ["acyclic_fs", "acyclic_fs_work", "acyclic_harness_core", "acyclic_stream", "acyclic_test_support", "proptest", "prost", "serde_json", "tempfile", "tracing", "tracing_subscriber"]
 conversation_contract = ["acyclic_harness_core", "serde_json", "uuid"]
