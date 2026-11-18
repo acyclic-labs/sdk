@@ -2,103 +2,13 @@ use super::*;
 
 use crate::kernel::{FileMetadata, MetadataField};
 
-use crate::{Digest, Fs, WorkspaceName};
+use crate::{Digest, Fs};
 
 use std::sync::Mutex;
 
-#[derive(Debug, Error)]
-#[error("test executor failure")]
-pub(super) struct TestExecutorError;
-
-pub(super) struct TestExecutor {
-    result: Result<GitFilesystemResult, TestExecutorError>,
-    operations: Mutex<Vec<OperationId>>,
-}
-
-impl TestExecutor {
-    fn returning(result: GitFilesystemResult) -> Self {
-        Self {
-            result: Ok(result),
-            operations: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn failing() -> Self {
-        Self {
-            result: Err(TestExecutorError),
-            operations: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl GitFilesystemExecutor for TestExecutor {
-    type Error = TestExecutorError;
-
-    fn validate_merge_resolution<'a>(
-        &'a self,
-        _operation: OperationId,
-        action: &'a GitFilesystemAction,
-        tree: GitTreeRef,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
-        Box::pin(std::future::ready(
-            self.result
-                .as_ref()
-                .map(|_| GitFilesystemResult::Applied {
-                    tree: Some(tree),
-                    tracked_paths: match action {
-                        GitFilesystemAction::Join { tracked_paths, .. } => {
-                            Some(tracked_paths.clone())
-                        }
-                        _ => None,
-                    },
-                })
-                .map_err(|_| TestExecutorError),
-        ))
-    }
-
-    fn execute<'a>(
-        &'a self,
-        operation_id: OperationId,
-        _action: &'a GitFilesystemAction,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
-        self.operations
-            .lock()
-            .expect("operation lock")
-            .push(operation_id);
-        Box::pin(std::future::ready(
-            self.result
-                .as_ref()
-                .map(Clone::clone)
-                .map_err(|_| TestExecutorError),
-        ))
-    }
-}
-
-pub(super) fn generation(byte: u8) -> GenerationId {
-    GenerationId::new(Digest::from_bytes([byte; 32]))
-}
-
-pub(super) fn workspace() -> WorkspaceId {
-    workspace_identity([9; 16], "repo")
-}
-
-fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
-    let name = WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .expect("workspace name")
-        .value;
-    WorkspaceId::derive(
-        namespace,
-        &name,
-        &WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value
-}
-
-pub(super) fn tree(byte: u8) -> GitTreeRef {
-    GitTreeRef::exact(workspace(), generation(byte))
-}
+#[path = "../../../tests/support/git_history.rs"]
+mod fixtures;
+use fixtures::{TestExecutor, generation, tree, workspace, workspace_identity};
 
 pub(super) fn declared_fields(declaration: &str, variant: &str) -> BTreeSet<String> {
     declaration
