@@ -720,7 +720,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
   const libInputs = (target, unitTest = false) => {
-    const extra = extras(target, libCovered);
+    const preciseData = bazel?.["precise-library-compile-data"] === true;
+    const extra = extras(target, file => libCovered(file) && (!preciseData || file.endsWith(".rs")));
     const testOnly = file => !unitTest && testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
     return [
       ["srcs", plus(
@@ -728,7 +729,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
         list(extra.srcs.filter(file => !platformSourcePatterns.includes(file) && !testOnly(file))),
         configuredSources,
       )],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
+      ["compile_data", plus(preciseData ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
     ];
   };
   const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
