@@ -256,7 +256,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
 }
 
 #[test]
-fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
+fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
@@ -300,15 +300,14 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
     .unwrap_err()
     .contains("revision differs"));
     let manifest = fixture.path().join("Cargo.toml");
-    let original_manifest = fs::read(&manifest).unwrap();
     fs::write(&manifest, "different manifest").unwrap();
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
             .unwrap_err()
             .contains("source bytes differ")
     );
-    fs::write(manifest, original_manifest).unwrap();
     let entry = fixture.path().join("historical-fixture-0.1.0");
+    fs::copy(entry.join("Cargo.toml.orig"), manifest).unwrap();
     fs::remove_file(entry.join("src/lib.rs")).unwrap();
     let (release, archive) = fixture.pack_archive(&entry);
     assert!(
