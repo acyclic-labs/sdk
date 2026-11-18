@@ -1,3 +1,4 @@
+import { isTransportEndpoint } from "@acyclic-labs/core";
 import { credentialProvider, credentialStream, resolveCredential, websocketCredential, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionQueue } from "./session-queue.js";
@@ -18,7 +19,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
       const lease = await resolveCredential(provider, sourceSignal);
       const credential = websocketCredential(lease.token());
       const base = new URL(node?.endpoint ?? endpoint);
-      if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new StreamError("configuration", "session node must be an authenticated HTTPS endpoint");
+      if (!isTransportEndpoint(base)) throw new StreamError("configuration", "session node must be an authenticated HTTPS endpoint");
       if (!base.pathname.endsWith("/")) base.pathname += "/";
       const url = new URL("v1/stream/session", base);
       url.protocol = "wss:";

@@ -1,3 +1,4 @@
+import { isTransportEndpoint, validateByteLimit } from "@acyclic-labs/core";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import type { Opened } from "./opened.js";
@@ -31,14 +32,13 @@ export class HttpStreamProvider implements StreamProvider {
   readonly #observer: AcyclicObserver | undefined;
   constructor(options: HttpStreamProviderOptions) {
     const endpoint = new URL(options.endpoint);
-    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
+    if (!isTransportEndpoint(endpoint)) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#credential = credentialProvider(options);
     this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, this.#credential, options.webSocketFactory), true, options.revisionScope);
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#observer = resolveObserver(options.observer);
-    this.#maximum = options.maximumResponseBytes;
-    if (this.#maximum !== undefined && (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    this.#maximum = validateByteLimit(options.maximumResponseBytes, "maximumResponseBytes");
   }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const input = wireInspectIdempotencyRequest(key);

@@ -1,3 +1,4 @@
+import { isTransportEndpoint, validateByteLimit } from "@acyclic-labs/core";
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { credentialProvider, type CredentialOptions } from "@acyclic-labs/auth/credential";
 import { rootCertificates } from "node:tls";
@@ -33,10 +34,9 @@ function grpcError(error: unknown): ObjectsV1Error {
 /** The generated Blobs service client over one owned HTTP/2 session. */
 export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
+  if (!isTransportEndpoint(endpoint)) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   const credential = credentialProvider(options);
-  const maximum = options.maximumMessageBytes;
-  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  const maximum = validateByteLimit(options.maximumMessageBytes, "maximumMessageBytes");
   const timeoutMs = options.timeoutMs;
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0x7fff_ffff)) throw new RangeError("timeoutMs must be a non-negative int32");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");

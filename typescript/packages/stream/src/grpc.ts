@@ -1,3 +1,4 @@
+import { isTransportEndpoint, validateByteLimit } from "@acyclic-labs/core";
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { refusalFromGrpcHeaders } from "@acyclic-labs/auth/grpc-refusal";
 import type { Opened } from "./opened.js";
@@ -68,9 +69,8 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
 
 function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof CredentialOptions>, credential: CredentialProvider) {
   const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  const maximum = options.maximumMessageBytes;
-  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  if (!isTransportEndpoint(endpoint)) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
+  const maximum = validateByteLimit(options.maximumMessageBytes, "maximumMessageBytes");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate = credentialInterceptor(credential);
   const transportOptions: GrpcTransportOptions = { baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), nodeOptions: {
