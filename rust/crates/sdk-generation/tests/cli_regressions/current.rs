@@ -551,7 +551,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     let availability_hash =
         hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json"));
     let metadata = super::replay::metadata(&fixture);
-    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata);
+    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata, &receipts);
     sdk_docs::write_bundle_files(&rebuilt, &fixture.output, false).unwrap();
     assert_eq!(
         hash_bytes(&serde_json::to_vec_pretty(&replayed).unwrap()),
@@ -729,7 +729,9 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             });
         }
     });
-    let (data, availability) = super::replay::project(&relocated, &metadata);
+    let relocated_receipts =
+        assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
+    let (data, availability) = super::replay::project(&relocated, &metadata, &relocated_receipts);
     super::replay::assert_catalog_matches(&relocated, &data);
     sdk_docs::write_bundle_files(&data, &relocated.output, false).unwrap();
     assert_eq!(
@@ -791,8 +793,6 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         paths
     };
     let original_dependencies = dependency_paths(&fixture, &original_receipts);
-    let relocated_receipts =
-        assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
     assert_ne!(
         original_dependencies,
         dependency_paths(&relocated, &relocated_receipts),

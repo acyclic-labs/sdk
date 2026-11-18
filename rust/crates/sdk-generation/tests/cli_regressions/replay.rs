@@ -170,13 +170,15 @@ pub(super) fn metadata(fixture: &Fixture) -> cargo_metadata::Metadata {
 pub(super) fn project(
     fixture: &Fixture,
     metadata: &cargo_metadata::Metadata,
+    rows: &[Value],
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    sdk_docs::with_rustdoc_cache(|| project_inner(fixture, metadata))
+    sdk_docs::with_rustdoc_cache(|| project_inner(fixture, metadata, rows))
 }
 
 fn project_inner(
     fixture: &Fixture,
     metadata: &cargo_metadata::Metadata,
+    rows: &[Value],
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
     let template: sdk_docs::DocsData = serde_json::from_slice(
         &fs::read(
@@ -197,16 +199,10 @@ fn project_inner(
             digest.as_str().unwrap()
         );
     }
-    let rows: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
-    let rows = rows.as_array().unwrap();
     let mut specs = BTreeMap::new();
     let mut items = Vec::new();
     let mut prepared = Vec::new();
     for row in rows {
-        assert_eq!(row["rustdocProfilesCovered"], true);
         let spec = ProfileSpec {
             package: row["package"].as_str().unwrap().to_owned(),
             target: row["target"].as_str().unwrap().to_owned(),
