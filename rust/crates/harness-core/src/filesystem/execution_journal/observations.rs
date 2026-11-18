@@ -177,7 +177,7 @@ where
             let path = self.index_path(operation, "head", io)?;
             let mut history = io.map(PreparationIo::history_io);
             let latest = crate::store::operations::tail_optional_with_work(
-                &self.stream,
+                self.stream.as_ref(),
                 &path,
                 &mut history
                     .as_mut()
@@ -382,9 +382,10 @@ where
         let position = sequence
             .checked_sub(1)
             .ok_or(Error::Indeterminate(operation))?;
-        let record = crate::store::operations::one_record(&self.stream, &path, position, &mut work)
-            .await?
-            .ok_or(Error::Indeterminate(operation))?;
+        let record =
+            crate::store::operations::one_record(self.stream.as_ref(), &path, position, &mut work)
+                .await?
+                .ok_or(Error::Indeterminate(operation))?;
         let record_hold = io
             .map(|io| {
                 io.guard_owned(crate::store::operations::sdk_record_retained_bytes(

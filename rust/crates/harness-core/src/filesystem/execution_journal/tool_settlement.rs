@@ -69,10 +69,14 @@ where
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         let record_hold;
-        let record =
-            crate::store::operations::one_record(&self.stream, &path, sequence - 1, &mut work)
-                .await?
-                .ok_or_else(|| invalid(io))?;
+        let record = crate::store::operations::one_record(
+            self.stream.as_ref(),
+            &path,
+            sequence - 1,
+            &mut work,
+        )
+        .await?
+        .ok_or_else(|| invalid(io))?;
         record_hold = io
             .map(|io| {
                 io.guard_owned(crate::store::operations::sdk_record_retained_bytes(

@@ -1111,7 +1111,7 @@ where
         use crate::agent::AgentRecord as _;
         self.admit_path(agent)?;
         let record = crate::store::operations::one_record(
-            self.agents.provider(),
+            self.agents.provider().as_ref(),
             &agent.status()?,
             status,
             &mut None,

@@ -153,14 +153,21 @@ where
             })?;
             let mut history = io.history_io();
             let mut work = Some(&mut history as &mut dyn crate::store::HistoryIo);
-            let tail =
-                crate::store::operations::tail_optional_with_work(&self.stream, &path, &mut work)
-                    .await?;
+            let tail = crate::store::operations::tail_optional_with_work(
+                self.stream.as_ref(),
+                &path,
+                &mut work,
+            )
+            .await?;
             if let Some(sequence) = tail.and_then(|tail| tail.checked_sub(1)) {
-                let record =
-                    crate::store::operations::one_record(&self.stream, &path, sequence, &mut work)
-                        .await?
-                        .ok_or_else(|| invalid(Some(io)))?;
+                let record = crate::store::operations::one_record(
+                    self.stream.as_ref(),
+                    &path,
+                    sequence,
+                    &mut work,
+                )
+                .await?
+                .ok_or_else(|| invalid(Some(io)))?;
                 let record_hold = io.guard_owned(
                     crate::store::operations::sdk_record_retained_bytes(&record, &work),
                 )?;

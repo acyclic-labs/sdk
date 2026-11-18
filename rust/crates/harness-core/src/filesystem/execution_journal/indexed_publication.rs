@@ -65,7 +65,8 @@ where
             at_least: Default::default(),
         };
         let observed =
-            crate::store::operations::heads_with_work(&self.stream, &request, &mut work).await?;
+            crate::store::operations::heads_with_work(self.stream.as_ref(), &request, &mut work)
+                .await?;
         for (closed, head) in request.paths[closed_start..]
             .iter()
             .zip(&observed.heads[closed_start..])
@@ -128,7 +129,7 @@ async fn condition<P: crate::store::JournalProvider + ?Sized>(
     work: &mut Option<&mut dyn crate::store::HistoryIo>,
 ) -> Result<CommitCondition> {
     let exists = if expected == 0 {
-        crate::store::operations::tail_optional_with_work(provider, path, work)
+        crate::store::operations::tail_optional_with_work(provider.as_ref(), path, work)
             .await?
             .is_some()
     } else {
@@ -213,10 +214,13 @@ where
         let mut work = history
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
-        let base =
-            crate::store::operations::tail_optional_with_work(&self.stream, &pages, &mut work)
-                .await?
-                .unwrap_or(0);
+        let base = crate::store::operations::tail_optional_with_work(
+            self.stream.as_ref(),
+            &pages,
+            &mut work,
+        )
+        .await?
+        .unwrap_or(0);
         let mut writer =
             persistent_index::Writer::new(&self.stream, &pages, base, io, summary.scratch.take())?;
         writer.set_cache(std::mem::take(&mut summary.pages), io)?;

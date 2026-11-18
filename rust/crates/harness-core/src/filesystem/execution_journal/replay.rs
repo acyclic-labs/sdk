@@ -197,7 +197,7 @@ where
             tracing::trace!(target: "acyclic_harness::journal_work",
                 journal_reads = 1_u64, "execution journal page requested");
             let mut entries = match crate::store::operations::read_records(
-                &self.stream,
+                self.stream.as_ref(),
                 stream.path(),
                 after,
                 page_maximum,

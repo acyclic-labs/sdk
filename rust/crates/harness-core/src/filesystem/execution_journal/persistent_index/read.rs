@@ -65,7 +65,7 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> Reader<'a, P> {
             tracing::trace!(target: "acyclic_harness::journal_work",
                 journal_reads = 1_u64, "execution index record requested");
             let record = crate::store::operations::one_record(
-                self.provider,
+                self.provider.as_ref(),
                 self.path,
                 reference.sequence,
                 &mut work,

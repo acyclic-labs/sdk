@@ -159,7 +159,7 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> SettingsAdmissions<'a, P> {
                 at_least: Default::default(),
             };
             let heads = crate::store::operations::heads_with_work(
-                self.provider,
+                self.provider.as_ref(),
                 &request,
                 &mut Some(&mut history),
             )
@@ -173,7 +173,7 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> SettingsAdmissions<'a, P> {
             drop(heads);
             if tail != 0 {
                 let current = crate::store::operations::one_selected_record(
-                    self.provider,
+                    self.provider.as_ref(),
                     ReadRequest {
                         key: Some(ReadKeySeek::latest(latest.to_vec(), tail)),
                         path: stream.clone(),
@@ -217,7 +217,7 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> SettingsAdmissions<'a, P> {
                 idempotency_key: IdempotencyKey::new(identity).map_err(invalid)?,
             };
             match &*crate::store::operations::append_with_work(
-                self.provider,
+                self.provider.as_ref(),
                 request,
                 &mut Some(&mut history),
             )
@@ -241,25 +241,31 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> SettingsAdmissions<'a, P> {
         let before = io.owned_bytes()?;
         let path = SettingsAdmissions::payload_path(agent, digest, Some(io))?;
         let _path_hold = io.guard_owned(io.owned_since(before)?)?;
-        crate::store::operations::stage_chunks(self.provider, &path, bytes, Some(io), |sequence| {
-            let mut chunk = [0; 40];
-            chunk[..32].copy_from_slice(digest);
-            chunk[32..].copy_from_slice(&sequence.to_be_bytes());
-            let digest = crate::model::hash_bytes(&chunk, Some(io))?;
-            let key = crate::executor::with_history_io(Some(io), |work| {
-                crate::executor::preparation_format(
-                    format_args!(
-                        "settings-admission-chunk:v{FORMAT}:{}",
-                        blake3::Hash::from_bytes(digest)
-                    ),
-                    work,
-                )
-            })?;
-            let retained = key.capacity() as u64;
-            IdempotencyKey::new(key)
-                .map(|key| (key, retained))
-                .map_err(invalid)
-        })
+        crate::store::operations::stage_chunks(
+            self.provider.as_ref(),
+            &path,
+            bytes,
+            Some(io),
+            |sequence| {
+                let mut chunk = [0; 40];
+                chunk[..32].copy_from_slice(digest);
+                chunk[32..].copy_from_slice(&sequence.to_be_bytes());
+                let digest = crate::model::hash_bytes(&chunk, Some(io))?;
+                let key = crate::executor::with_history_io(Some(io), |work| {
+                    crate::executor::preparation_format(
+                        format_args!(
+                            "settings-admission-chunk:v{FORMAT}:{}",
+                            blake3::Hash::from_bytes(digest)
+                        ),
+                        work,
+                    )
+                })?;
+                let retained = key.capacity() as u64;
+                IdempotencyKey::new(key)
+                    .map(|key| (key, retained))
+                    .map_err(invalid)
+            },
+        )
         .await
     }
 
@@ -277,7 +283,7 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> SettingsAdmissions<'a, P> {
         let request = SettingsAdmissions::query(agent, path, cut, version, Some(&io))?;
         let mut observer = io.history_io();
         let Some(record) = crate::store::operations::one_selected_record(
-            self.provider,
+            self.provider.as_ref(),
             request,
             &mut Some(&mut observer),
         )
@@ -299,9 +305,14 @@ impl<'a, P: crate::store::JournalProvider + ?Sized> SettingsAdmissions<'a, P> {
             let before = io.owned_bytes()?;
             let path = SettingsAdmissions::payload_path(agent, &digest, Some(&io))?;
             let _path_hold = io.guard_owned(io.owned_since(before)?)?;
-            let (body, _hold) =
-                crate::store::operations::read_chunks(self.provider, &path, bytes, &digest, &io)
-                    .await?;
+            let (body, _hold) = crate::store::operations::read_chunks(
+                self.provider.as_ref(),
+                &path,
+                bytes,
+                &digest,
+                &io,
+            )
+            .await?;
             decision =
                 serde_json::from_slice(&body).map_err(|error| Error::Storage(error.to_string()))?;
         }

@@ -48,7 +48,7 @@ impl RecordCache {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         let mut observer = io.history_io();
         let record = crate::store::operations::one_keyed_record(
-            &self.provider,
+            self.provider.as_ref(),
             &path()?,
             digest.as_bytes().to_vec(),
             &mut Some(&mut observer),

@@ -477,9 +477,12 @@ where
         let mut work = history
             .as_mut()
             .map(|work| work as &mut dyn crate::store::HistoryIo);
-        let through =
-            crate::store::operations::tail_optional_with_work(&self.stream, &path, &mut work)
-                .await?;
+        let through = crate::store::operations::tail_optional_with_work(
+            self.stream.as_ref(),
+            &path,
+            &mut work,
+        )
+        .await?;
         let value = encode(&event, io)?;
         let call = super::super::bounded_io::clone_bytes(&event.call.into_bytes(), io)?;
         let headers = if matches!(

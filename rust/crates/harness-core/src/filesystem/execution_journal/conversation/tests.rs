@@ -220,15 +220,17 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
     let mut work = None;
     let execution = crate::distributed::execution_path(operation, &mut work)?;
     let observation =
-        crate::store::operations::one_record(&journal.stream, &execution, 1, &mut work)
+        crate::store::operations::one_record(journal.stream.as_ref(), &execution, 1, &mut work)
             .await?
             .unwrap();
-    let epoch_value = crate::store::operations::one_record(&journal.stream, &epoch, 0, &mut work)
-        .await?
-        .unwrap();
-    let source_value = crate::store::operations::one_record(&journal.stream, &source, 0, &mut work)
-        .await?
-        .unwrap();
+    let epoch_value =
+        crate::store::operations::one_record(journal.stream.as_ref(), &epoch, 0, &mut work)
+            .await?
+            .unwrap();
+    let source_value =
+        crate::store::operations::one_record(journal.stream.as_ref(), &source, 0, &mut work)
+            .await?
+            .unwrap();
     assert_eq!(observation.commit_id, epoch_value.commit_id);
     assert_eq!(observation.commit_id, source_value.commit_id);
     assert_eq!(&*epoch_value.value, &*epoch_record);
