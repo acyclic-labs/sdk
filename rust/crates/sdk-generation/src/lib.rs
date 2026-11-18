@@ -159,7 +159,7 @@ fn run_inner(
 
 fn print_help(stdout: &mut dyn Write) -> Result<(), CliError> {
     writeln!(stdout,
-        "sdk-generation generate --root ROOT --output DIR --version VERSION [--rustdoc-dir DIR | --execute-profiles] [--channel preview|release] [--skip-scenarios] [--historical-archives DIR] [--historical-source git|registry-archives] [--registry-frontier-repository REPO --registry-frontier-revisions SHA,...]\nHistorical archives require --channel release --execute-profiles.\nsdk-generation drift --root ROOT --output DIR --rustdoc-dir DIR"
+        "sdk-generation generate --root ROOT --output DIR --version VERSION [--rustdoc-dir DIR | --execute-profiles] [--channel preview|release] [--skip-scenarios] [--historical-archives DIR] [--historical-source git|registry-archives] [--registry-frontier-repository REPO --registry-frontier-revisions SHA,...]\nOmit --rustdoc-dir to execute profiles. Use --rustdoc-dir only with preview. Historical archives require --channel release.\nsdk-generation drift --root ROOT --output DIR --rustdoc-dir DIR"
     ).map_err(io_error)
 }
 
@@ -213,7 +213,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
     }
     if channel == Channel::Release && rustdoc_dir.is_some() {
         return Err(CliError(
-            "release generation requires --execute-profiles; hand-supplied Rustdoc receipts are preview-only".into(),
+            "release generation does not accept --rustdoc-dir; omit it to execute profiles".into(),
         ));
     }
     let historical_archives = flags.get("historical-archives").map(PathBuf::from);

@@ -646,6 +646,7 @@ fn historical_source_help_and_flag_contract_are_explicit() {
     assert_eq!(direct.stderr, help.stderr);
     let text = output_message(&help);
     assert!(text.contains("--historical-archives DIR"));
+    assert!(text.contains("Omit --rustdoc-dir to execute profiles."));
     assert!(text.contains("--historical-source git|registry-archives"));
     let generate = [
         "generate",

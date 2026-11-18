@@ -351,7 +351,9 @@ fn release_generation_requires_executed_profiles() {
     assert!(!result.status.success());
     let message = output_message(&result);
     assert!(
-        message.contains("release generation requires --execute-profiles"),
+        message.contains(
+            "release generation does not accept --rustdoc-dir; omit it to execute profiles"
+        ),
         "{message}"
     );
     assert!(!fixture.output.join("generation-manifest.v1.json").exists());
