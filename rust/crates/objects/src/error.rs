@@ -86,27 +86,25 @@ impl Error {
     /// Classifies a gRPC status when no usable typed detail is present.
     #[must_use]
     pub fn from_grpc_status_code(code: i32) -> Self {
-        Self::decode_status(code, &[])
+        match code {
+            3 => wire::ErrorCode::InvalidArgument,
+            4 => wire::ErrorCode::DeadlineElapsed,
+            5 => wire::ErrorCode::NotFound,
+            7 | 16 => wire::ErrorCode::AccessDenied,
+            8 => wire::ErrorCode::QuotaExceeded,
+            11 => wire::ErrorCode::RangeNotSatisfiable,
+            12 => wire::ErrorCode::Unsupported,
+            15 => wire::ErrorCode::Corrupt,
+            _ => wire::ErrorCode::Unavailable,
+        }
+        .into()
     }
 
     pub(crate) fn decode_status(code: i32, details: &[u8]) -> Self {
         wire::ErrorDetail::decode(details)
             .ok()
             .and_then(Self::from_detail)
-            .unwrap_or_else(|| {
-                match code {
-                    3 => wire::ErrorCode::InvalidArgument,
-                    5 => wire::ErrorCode::NotFound,
-                    7 | 16 => wire::ErrorCode::AccessDenied,
-                    8 => wire::ErrorCode::QuotaExceeded,
-                    11 => wire::ErrorCode::RangeNotSatisfiable,
-                    12 => wire::ErrorCode::Unsupported,
-                    15 => wire::ErrorCode::Corrupt,
-                    4 => wire::ErrorCode::DeadlineElapsed,
-                    _ => wire::ErrorCode::Unavailable,
-                }
-                .into()
-            })
+            .unwrap_or_else(|| Self::from_grpc_status_code(code))
     }
 
     /// Canonical gRPC status code, independent of retained refusal diagnostics.
