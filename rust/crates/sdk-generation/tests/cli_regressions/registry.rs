@@ -864,19 +864,7 @@ fn excluded_published_path_owners_have_executed_api_and_drift() {
         &["commit", "--quiet", "-m", "procedural macro owner fixture"],
     );
 
-    let cargo = runtime::cargo();
-    let mut compiler = Command::new(cargo.as_path());
-    runtime::configure(&mut compiler);
-    let workspace_only = sdk_docs::with_command_environment(&compiler, || {
-        sdk_docs::rustdoc_profiles::load_metadata(
-            fixture.root.join("Cargo.toml"),
-            sdk_docs::rustdoc_profiles::CargoExecutionContext {
-                cargo_path: Some(cargo.as_path()),
-                ..Default::default()
-            },
-        )
-    })
-    .unwrap();
+    let workspace_only = super::replay::metadata(&fixture);
     assert!(!workspace_only
         .packages
         .iter()
