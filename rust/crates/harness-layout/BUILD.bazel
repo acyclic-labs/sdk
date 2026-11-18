@@ -7,7 +7,9 @@ FEATURES = [
         "test-support",
     ]
 
-WASM_FEATURES = []
+WASM_FEATURES = [
+        "test-support",
+    ]
 
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-harness-layout","CARGO_PKG_DESCRIPTION":"Typed JSON heap layouts and allocation accounting for the harness","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 

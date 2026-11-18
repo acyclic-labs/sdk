@@ -14,6 +14,7 @@ FEATURES = [
 
 WASM_FEATURES = [
         "browser",
+        "test-support",
         "wasm",
     ]
 
@@ -312,7 +313,6 @@ rust_test(
     deps = [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/decimal-u64:acyclic_decimal_u64",
         "//rust/crates/differential:acyclic_differential",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-control-checks:acyclic_harness_control_checks",
@@ -1287,6 +1287,7 @@ rust_library(
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/collections:acyclic_collections_wasm",
         "//rust/crates/decimal-u64:acyclic_decimal_u64_wasm",
+        "//rust/crates/differential:acyclic_differential_wasm",
         "//rust/crates/filesystem-base:acyclic_fs_base_wasm",
         "//rust/crates/filesystem-format:acyclic_fs_format_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
