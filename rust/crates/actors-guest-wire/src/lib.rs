@@ -7,6 +7,8 @@ pub use body::{
 };
 mod events;
 pub use events::{GuestEvent, GuestRequest, GuestResponse};
+mod context;
+pub use context::{GuestContext, GuestContextBuilder, retry_key};
 mod codec;
 /// Live-update compatibility declarations.
 pub mod compatibility;

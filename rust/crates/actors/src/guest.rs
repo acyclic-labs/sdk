@@ -6,7 +6,7 @@ pub use acyclic_actors_guest_wire::{
     GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent, GuestEventResult, GuestMetadataError,
     GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest, GuestStreamingResponse,
     RuntimeHandle, SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply,
-    SocketTransport, WebSocketAutoResponse, WebSocketId,
+    SocketTransport, WebSocketAutoResponse, WebSocketId, retry_key,
 };
 use ts_rs::{Config, TS};
 
@@ -58,18 +58,6 @@ pub fn negotiate_abi(version: u32) -> Result<(), GuestError> {
     }
 }
 
-/// Derive an unambiguous effect retry key from a stable delivery and effect name.
-/// Hosts must reuse delivery identity on retries; this promises no external atomicity.
-pub fn retry_key(delivery_id: &str, effect: &str) -> Result<String, GuestError> {
-    if delivery_id.is_empty() || effect.is_empty() {
-        return Err(GuestError::MissingIdentity);
-    }
-    Ok(format!(
-        "guest-v1:{}:{delivery_id}:{effect}",
-        delivery_id.len()
-    ))
-}
-
 /// Generate one self-contained authoring contract directly from Rust declarations.
 pub fn typescript() -> String {
     let config = Config::default();
@@ -82,7 +70,7 @@ pub fn typescript() -> String {
         )+};
     }
     declarations!(
-        GuestState<()>, GuestContext<()>, ActorDefinition<(), ()>);
+        GuestState<()>, acyclic_actors_guest_wire::GuestContext<(), ()>, ActorDefinition<(), ()>);
     output
         .lines()
         .map(str::trim_end)
