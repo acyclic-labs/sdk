@@ -1,12 +1,16 @@
 use acyclic_fs::kernel::{
-    BlobBuildError, BlobBuildOptions, BlobNode, BlobPage, CanonicalDecodeError, DecodeLimits,
-    build_blob, decode_blob_page, read_blob_range,
+    BlobBuildError, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage, BlobReadError,
+    BlobReadFailure, CanonicalDecodeError, DecodeLimits, build_blob, decode_blob_page,
+    read_blob_range,
 };
 use acyclic_fs::{AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken};
+use acyclic_fs_format::object_reference::ObjectKind;
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters};
 use acyclic_stream::OwnedBytes;
 
+use super::super::blob_objects::put_blob_page;
 use super::super::memory::memory_objects;
+use super::super::put_object;
 
 #[tokio::test]
 async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std::error::Error>>
@@ -115,5 +119,55 @@ async fn pre_cancelled_async_blob_build_performs_zero_work()
     assert!(matches!(failure.error, BlobBuildError::Cancelled));
     assert_eq!(*failure.work()?, WorkCounters::default());
     assert_eq!(source.position(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let chunk = put_object(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"abcd"),
+    )
+    .await?;
+    let leaf = BlobPage {
+        first_offset: 0,
+        end_offset: 4,
+        node: BlobNode::Leaf(vec![BlobChunkRef {
+            first_offset: 0,
+            end_offset: 4,
+            chunk,
+        }]),
+    };
+    let leaf_id = put_blob_page(&store, &leaf, 8).await?;
+    let root = BlobPage {
+        first_offset: 1,
+        end_offset: 4,
+        node: BlobNode::Internal(vec![BlobChild {
+            first_offset: 1,
+            end_offset: 4,
+            page: leaf_id,
+        }]),
+    };
+    let root_id = put_blob_page(&store, &root, 8).await?;
+    assert!(matches!(
+        read_blob_range(
+            &store,
+            root_id,
+            ByteRange {
+                offset: 1,
+                length: 1
+            },
+            DecodeLimits::default(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await,
+        Err(BlobReadFailure {
+            error: BlobReadError::ChildBoundsMismatch,
+            ..
+        })
+    ));
     Ok(())
 }

@@ -550,6 +550,7 @@ rust_test(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
         "tests/support/allow_publication.rs",
         "tests/support/append.rs",
+        "tests/support/blob_objects.rs",
         "tests/support/checkout_defaults.rs",
         "tests/support/checkout_fixture.rs",
         "tests/support/checkout_live_fixture.rs",
@@ -2935,6 +2936,7 @@ rust_test(
         "tests/extent_clone/kernel/mod.rs",
         "tests/extent_clone/kernel/range/mod.rs",
         "tests/extent_clone/kernel/range/tests.rs",
+        "tests/support/blob_objects.rs",
         "tests/support/extent_objects.rs",
         "tests/support/memory_objects.rs",
         "tests/support/put_object.rs",
