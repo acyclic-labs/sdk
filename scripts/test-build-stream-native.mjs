@@ -760,17 +760,13 @@ test("native builds create a Cargo cache tag only for an empty producer target d
   }
 });
 
-test("native builds reuse Cargo's configured target across producer processes", async () => {
+test("native target ownership survives a producer restart", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "native-cargo-target-owner-"));
-  const target = resolve(directory, "target"), manifest = resolve(directory, "Cargo.toml");
+  const target = resolve(directory, "target");
   try {
-    await writeFile(manifest, '[package]\nname = "native-target-owner-control"\nversion = "0.0.0"\nedition = "2024"\n[workspace]\n[lib]\npath = "lib.rs"\n');
-    await writeFile(resolve(directory, "lib.rs"), "pub fn value() -> u8 { 7 }\n");
-    execFileSync("cargo", ["generate-lockfile", "--offline", "--manifest-path", manifest], { cwd: root, stdio: "pipe" });
-    execFileSync("cargo", ["build", "--locked", "--offline", "--manifest-path", manifest, "--target-dir", target], { cwd: root, stdio: "pipe" });
-    // A prior Cargo producer can leave a populated configured target without
-    // a cache tag. Its ownership must survive that producer's retirement.
-    await rm(resolve(target, "CACHEDIR.TAG"), { force: true });
+    await mkdir(target);
+    const priorOutput = resolve(target, "prior-output");
+    await writeFile(priorOutput, "previous producer output");
     const module = new URL("./build-stream-native.mjs", import.meta.url).href;
     const script = `import {ensureCargoTargetDirectory} from ${JSON.stringify(module)}; await ensureCargoTargetDirectory(process.argv[1]);`;
     const run = () => execFileSync(process.execPath, ["--input-type=module", "-e", script, target], {
@@ -778,8 +774,8 @@ test("native builds reuse Cargo's configured target across producer processes", 
     });
     run();
     run();
-    assert.ok((await readdir(resolve(target, "debug"))).some(name => name.startsWith("libnative_target_owner_control.")));
-    execFileSync("cargo", ["clean", "--package", "native-target-owner-control", "--manifest-path", manifest, "--target-dir", target], { cwd: root, stdio: "pipe" });
+    assert.equal(await readFile(priorOutput, "utf8"), "previous producer output");
+    assert.match(await readFile(resolve(target, "CACHEDIR.TAG"), "utf8"), /^Signature: 8a477f597d28d172789f06886806bc55\n/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
