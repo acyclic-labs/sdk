@@ -241,6 +241,10 @@ function requireLimitType(value: unknown): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new StreamError("invalid_argument", "stream limit must be a safe integer");
 }
 
+function wireAppendRecords(values: readonly Uint8Array[]) {
+  return values.map(value => create(AppendRecordSchema, { value }));
+}
+
 export function wireAppendRequest(path: string, records: readonly Uint8Array[], options?: AppendOptions): Uint8Array {
   requirePathType(path);
   if (!Array.isArray(records)) throw new StreamError("invalid_argument", "append records must be an array");
@@ -248,7 +252,7 @@ export function wireAppendRequest(path: string, records: readonly Uint8Array[], 
   if (options?.ifTail !== undefined) requireSequenceType(options.ifTail);
   if (options?.idempotencyKey !== undefined) requireBytesType(options.idempotencyKey);
   return toBinary(AppendRequestSchema, create(AppendRequestSchema, {
-    path, records: records.map(value => create(AppendRecordSchema, { value })),
+    path, records: wireAppendRecords(records),
     ...(options?.ifTail === undefined ? {} : { ifTail: options.ifTail }),
     ...(options?.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
   }));
@@ -318,7 +322,7 @@ function wireConditions(conditions: ProviderCommitEffect["conditions"]) {
 function wireMutations(mutations: ProviderCommitEffect["mutations"]) {
   return mutations.map(mutation => {
     if ("append" in mutation) return create(CommitMutationSchema, {
-      mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: mutation.append.values.map(value => create(AppendRecordSchema, { value })) }) },
+      mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: wireAppendRecords(mutation.append.values) }) },
     });
     if ("fork" in mutation) return create(CommitMutationSchema, {
       mutation: { case: "fork", value: create(ForkMutationSchema, {
@@ -326,7 +330,7 @@ function wireMutations(mutations: ProviderCommitEffect["mutations"]) {
         destination: mutation.fork.destination,
         atTail: mutation.fork.atTail,
         exclude: [...(mutation.fork.exclude ?? [])],
-        records: mutation.fork.values.map(value => create(AppendRecordSchema, { value })),
+        records: wireAppendRecords(mutation.fork.values),
       }) },
     });
     throw new StreamError("invalid_argument", "commit mutation is invalid");
