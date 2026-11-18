@@ -51,8 +51,8 @@ wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
 wire_error_contracts = ["acyclic_fs", "acyclic_auth", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "tokio", "tonic"]
 wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
 workspace_context_contracts = ["acyclic_fs", "tokio"]
-workspace_contracts = ["acyclic_fs", "acyclic_stream", "sha2", "tokio"]
-workspace_merge = ["acyclic_fs", "acyclic_stream", "tokio"]
+workspace_contracts = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "sha2", "tokio"]
+workspace_merge = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
 
 [[test]]
 name = "main"

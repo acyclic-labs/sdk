@@ -1,7 +1,8 @@
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, FsError, WorkBudget,
-    Workspace, WorkspaceError,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, FsError, Workspace,
+    WorkspaceError,
 };
+use acyclic_fs_work::performance::WorkBudget;
 
 #[path = "transaction.rs"]
 mod transaction;
