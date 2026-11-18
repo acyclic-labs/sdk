@@ -965,17 +965,13 @@ impl Medium for LocalMedium {
             return Err(failed(std::io::ErrorKind::InvalidInput.into()));
         }
         // The index is never held over disk work, so a listing reads it here.
-        let index = self.shared.index();
-        let start = match after {
-            Some(after) if after >= prefix => std::ops::Bound::Excluded(after),
-            _ => std::ops::Bound::Included(prefix),
-        };
-        Ok(index
-            .range::<str, _>((start, std::ops::Bound::Unbounded))
-            .take_while(|(key, _)| key.starts_with(prefix))
-            .take(limit)
-            .map(|(key, entry)| (key.clone(), entry.slot.length))
-            .collect())
+        Ok(crate::medium::list_index(
+            &self.shared.index(),
+            prefix,
+            after,
+            limit,
+            |entry| entry.slot.length,
+        ))
     }
 }
 

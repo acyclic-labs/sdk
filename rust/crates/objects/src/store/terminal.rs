@@ -49,28 +49,28 @@ impl Fence {
     }
 }
 
+fn batch_fence(name: &str) -> Result<u64, Error> {
+    let (encoded, _) = name.split_once('.').unwrap_or((name, ""));
+    u64::from_str_radix(encoded, 16).map_err(|_| corrupt())
+}
+
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
-    fn terminal_key(&self, root: &RootId) -> String {
-        format!(
-            "{}t/{}",
-            self.state.prefix,
-            Digest::of(root.as_bytes()).to_hex()
-        )
+    fn terminal_key(&self, root_hash: &str) -> String {
+        format!("{}t/{root_hash}", self.state.prefix)
     }
 
-    async fn terminal_observed(&self, root: &RootId) -> Result<(Fence, Observed<'_>), Error> {
-        let key = self.terminal_key(root);
-        let mut observed = self.medium.observe(key.clone()).await.map_err(medium)?;
+    async fn terminal_observed(&self, key: &str) -> Result<(Fence, Observed<'_>), Error> {
+        let mut observed = self.medium.observe(key.to_owned()).await.map_err(medium)?;
         if observed.is_none() {
             let initial = Fence {
                 terminal: None,
                 nonce: version()?,
             };
             self.medium
-                .create(&key, initial.encode())
+                .create(key, initial.encode())
                 .await
                 .map_err(moved)?;
-            observed = self.medium.observe(key).await.map_err(medium)?;
+            observed = self.medium.observe(key.to_owned()).await.map_err(medium)?;
         }
         let observed = observed.ok_or_else(changed)?;
         Ok((Fence::decode(&observed.bytes)?, observed))
@@ -93,14 +93,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .is_some())
     }
 
-    fn fenced_prefix(&self, root: &RootId) -> String {
-        format!(
-            "{}f/{}/",
-            self.state.prefix,
-            Digest::of(root.as_bytes()).to_hex()
-        )
-    }
-
     async fn remove_fenced_batch(
         &self,
         key: &str,
@@ -111,30 +103,26 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // This batch is terminal or its admission lost the conditional commit.
         // Keep it as a cleanup receipt until its index removals are durable,
         // so interruption cannot leave a permanent orphan pin.
-        let tag = format!("f{root}.{name}");
-        self.unreference(references, &tag).await?;
-        let indexes: Vec<_> = references
-            .iter()
-            .map(|child| self.index_key(child, &tag))
-            .collect();
+        let tag = Self::batch_tag("f", root, name);
+        let mut indexes = Vec::with_capacity(references.len());
+        self.unreference(references, &tag, Some(&mut indexes))
+            .await?;
         self.medium.flush(&indexes).await.map_err(medium)?;
         let removed = self.medium.remove(key).await.map_err(moved)?;
         self.medium.flush(&[key.to_owned()]).await.map_err(medium)?;
         Ok(removed)
     }
 
-    pub(super) async fn fenced_rooted(&self) -> Result<Vec<Digest>, Error> {
-        let mut references = Vec::new();
-        let mut pages = self.pages(format!("{}f/", self.state.prefix));
+    pub(super) async fn fenced_rooted(
+        &self,
+        mut visit: impl FnMut(Vec<Digest>),
+    ) -> Result<(), Error> {
+        let mut pages = self.pages(self.namespace_prefix('f'));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
-                let (root, name) = key
-                    .strip_prefix(&format!("{}f/", self.state.prefix))
-                    .and_then(|key| key.split_once('/'))
-                    .ok_or_else(corrupt)?;
-                let encoded = name.split('.').next().ok_or_else(corrupt)?;
-                let fence = u64::from_str_radix(encoded, 16).map_err(|_| corrupt())?;
-                let terminal_key = format!("{}t/{root}", self.state.prefix);
+                let (root, name) = pages.relative(&key)?.split_once('/').ok_or_else(corrupt)?;
+                let fence = batch_fence(name)?;
+                let terminal_key = self.terminal_key(root);
                 let terminal = self
                     .medium
                     .read(&terminal_key, None)
@@ -155,11 +143,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     self.medium.flush(&[terminal_key]).await.map_err(medium)?;
                     self.remove_fenced_batch(&key, root, name, &batch).await?;
                 } else {
-                    references.extend(batch);
+                    visit(batch);
                 }
             }
         }
-        Ok(references)
+        Ok(())
     }
 
     /// Retains one batch under the exact observed terminal fence.
@@ -175,32 +163,38 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        let (state, observed) = self.terminal_observed(root).await?;
+        let encoded = Digest::of(root.as_bytes()).encoded_hex();
+        let root_hash = encoded.as_ref();
+        let terminal_key = self.terminal_key(root_hash);
+        let (state, observed) = self.terminal_observed(&terminal_key).await?;
         state.require_open(fence)?;
         self.medium
             .allocate(references.len() as u64 * 32)
             .map_err(medium)?;
         let batch = encode_batch(&references);
-        let name = format!("{fence:016x}.{}.{}", Digest::of(&batch).to_hex(), nonce()?);
-        let root_hash = Digest::of(root.as_bytes()).to_hex();
-        let tag = format!("f{root_hash}.{name}");
-        let key = format!("{}{name}", self.fenced_prefix(root));
+        let name = format!(
+            "{fence:016x}.{}.{:032x}",
+            Digest::of(&batch),
+            u128::from_be_bytes(version()?)
+        );
+        let tag = Self::batch_tag("f", root_hash, &name);
+        let key = self.retention_key('f', root_hash, &name);
         self.commit_retention(&references, &tag, &key, batch, 2)
             .await?;
         if !self.terminal_replace(observed, state.terminal).await? {
-            self.remove_fenced_batch(&key, &root_hash, &name, &references)
+            self.remove_fenced_batch(&key, root_hash, &name, &references)
                 .await?;
-            let (current, _) = self.terminal_observed(root).await?;
+            let (current, _) = self.terminal_observed(&terminal_key).await?;
             current.require_open(fence)?;
             return Err(changed());
         }
         self.medium
-            .flush(&[self.terminal_key(root)])
+            .flush(std::slice::from_ref(&terminal_key))
             .await
             .map_err(medium)?;
-        let (current, _) = self.terminal_observed(root).await?;
+        let (current, _) = self.terminal_observed(&terminal_key).await?;
         if let Err(error) = current.require_open(fence) {
-            self.remove_fenced_batch(&key, &root_hash, &name, &references)
+            self.remove_fenced_batch(&key, root_hash, &name, &references)
                 .await?;
             return Err(error);
         }
@@ -214,30 +208,30 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     pub async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        let (state, observed) = self.terminal_observed(root).await?;
+        let encoded = Digest::of(root.as_bytes()).encoded_hex();
+        let root_hash = encoded.as_ref();
+        let terminal_key = self.terminal_key(root_hash);
+        let (state, observed) = self.terminal_observed(&terminal_key).await?;
         if state.terminal.is_none_or(|current| fence > current)
             && !self.terminal_replace(observed, Some(fence)).await?
         {
             return Err(changed());
         }
         self.medium
-            .flush(&[self.terminal_key(root)])
+            .flush(std::slice::from_ref(&terminal_key))
             .await
             .map_err(medium)?;
-        let root_hash = Digest::of(root.as_bytes()).to_hex();
-        let mut pages = self.pages(self.fenced_prefix(root));
+        let mut pages = self.pages(self.retention_key('f', root_hash, ""));
         let mut existed = false;
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
-                let name = key.rsplit('/').next().ok_or_else(corrupt)?;
-                let encoded_fence = name.split('.').next().ok_or_else(corrupt)?;
-                let batch_fence = u64::from_str_radix(encoded_fence, 16).map_err(|_| corrupt())?;
-                if batch_fence > fence {
+                let name = pages.relative(&key)?;
+                if batch_fence(name)? > fence {
                     continue;
                 }
                 if let Some(references) = self.batch(&key).await? {
                     existed |= self
-                        .remove_fenced_batch(&key, &root_hash, name, &references)
+                        .remove_fenced_batch(&key, root_hash, name, &references)
                         .await?;
                 }
             }

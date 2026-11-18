@@ -7,6 +7,25 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
 
+pub(crate) fn list_index<V>(
+    index: &BTreeMap<String, V>,
+    prefix: &str,
+    after: Option<&str>,
+    limit: usize,
+    size: impl Fn(&V) -> u64,
+) -> Vec<(String, u64)> {
+    use std::ops::Bound;
+    let start = after
+        .filter(|&key| key >= prefix)
+        .map_or(Bound::Included(prefix), Bound::Excluded);
+    index
+        .range::<str, _>((start, Bound::Unbounded))
+        .take_while(|(key, _)| key.starts_with(prefix))
+        .take(limit)
+        .map(|(key, value)| (key.clone(), size(value)))
+        .collect()
+}
+
 /// The SDK-owned meaning of an account-relative medium key.
 ///
 /// Adapters can select physical payload I/O without maintaining a second
@@ -35,23 +54,21 @@ impl MediumKey {
     /// # Errors
     /// Returns `InvalidArgument` when the key is outside the engine format.
     pub fn parse(key: &str) -> Result<Self, Error> {
-        fn hash(text: &str) -> Result<Digest, Error> {
-            if text.len() != 64
-                || !text
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        fn fixed_hex<const N: usize>(text: &str) -> Result<[u8; N], Error> {
+            let mut bytes = [0; N];
+            if hex::decode_to_slice(text, &mut bytes).is_err()
+                || text.as_bytes().iter().any(u8::is_ascii_uppercase)
             {
                 return Err(ErrorCode::InvalidArgument.into());
             }
-            Digest::from_hex(text)
+            Ok(bytes)
         }
         fn sharded(text: &str) -> Result<Digest, Error> {
             let (shard, digest) = text.split_once('/').ok_or(ErrorCode::InvalidArgument)?;
-            let parsed = hash(digest)?;
             if shard.len() != 2 || !digest.starts_with(shard) {
                 return Err(ErrorCode::InvalidArgument.into());
             }
-            Ok(parsed)
+            Ok(Digest::from_bytes(fixed_hex(digest)?))
         }
         if matches!(key, "epoch" | "incarnation") {
             return Ok(Self::Control);
@@ -61,22 +78,12 @@ impl MediumKey {
             "e" => Ok(Self::Envelope(sharded(rest)?)),
             "p" => {
                 let (path, version) = rest.rsplit_once('.').ok_or(ErrorCode::InvalidArgument)?;
-                if version.len() != 32
-                    || !version
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                {
-                    return Err(ErrorCode::InvalidArgument.into());
-                }
-                let mut bytes = [0; 16];
-                hex::decode_to_slice(version, &mut bytes)
-                    .map_err(|_| ErrorCode::InvalidArgument)?;
                 Ok(Self::Payload {
+                    version: fixed_hex(version)?,
                     digest: sharded(path)?,
-                    version: bytes,
                 })
             }
-            "t" => Ok(Self::Terminal(hash(rest)?)),
+            "t" => Ok(Self::Terminal(Digest::from_bytes(fixed_hex(rest)?))),
             "r" | "i" | "f" if !rest.is_empty() => Ok(Self::Control),
             _ => Err(ErrorCode::InvalidArgument.into()),
         }
@@ -500,19 +507,13 @@ impl Medium for MemoryMedium {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError> {
-        use std::ops::Bound;
-        let start = match after {
-            Some(after) if after >= prefix => Bound::Excluded(after),
-            _ => Bound::Included(prefix),
-        };
-        Ok(self
-            .keys()
-            .keys
-            .range::<str, _>((start, Bound::Unbounded))
-            .take_while(|(key, _)| key.starts_with(prefix))
-            .take(limit)
-            .map(|(key, value)| (key.clone(), value.bytes.len() as u64))
-            .collect())
+        Ok(list_index(
+            &self.keys().keys,
+            prefix,
+            after,
+            limit,
+            |value| value.bytes.len() as u64,
+        ))
     }
 
     async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {

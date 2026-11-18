@@ -114,12 +114,14 @@ mod format_recovery_tests {
             condemned: 0,
         }
         .encode()?;
+        let mut version = [0; 16];
+        version[15] = 0xab;
+        let payload_key = account.payload_key(&digest, &version);
+        assert!(payload_key.ends_with(".000000000000000000000000000000ab"));
+        assert_eq!(account.payload_of(&payload_key)?, (digest, version));
         let envelope_key = account.envelope_key(&digest);
         let batch = encode_batch(&[]);
-        let batch_key = format!(
-            "{}batch",
-            account.root_prefix(&RootId::new(b"root".to_vec())?)
-        );
+        let batch_key = account.retention_key('r', &Digest::of(b"root").to_hex(), "batch");
         account.issued().await?;
         for (key, original) in [(&envelope_key, &envelope), (&batch_key, &batch)] {
             assert!(account.medium.create(key, original.clone().into()).await?);
@@ -423,12 +425,7 @@ impl<M: Medium> Store<M> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .entry(id)
-                .or_insert_with(|| {
-                    Arc::new(State::new(
-                        format!("{}/", id.to_hex()),
-                        Arc::clone(&self.scrub),
-                    ))
-                }),
+                .or_insert_with(|| Arc::new(State::new(format!("{id}/"), Arc::clone(&self.scrub)))),
         );
         Ok(Account {
             medium: Arc::clone(&self.medium),
@@ -462,6 +459,10 @@ struct Pages<'a, M> {
 }
 
 impl<M: Medium> Pages<'_, M> {
+    fn relative<'a>(&self, key: &'a str) -> Result<&'a str, Error> {
+        key.strip_prefix(self.prefix.as_str()).ok_or_else(corrupt)
+    }
+
     async fn next(&mut self) -> Result<Option<Vec<(String, u64)>>, Error> {
         if self.done {
             return Ok(None);
@@ -472,7 +473,9 @@ impl<M: Medium> Pages<'_, M> {
             .await
             .map_err(medium)?;
         self.done = page.len() < PAGE;
-        self.after = page.last().map(|(key, _)| key.clone());
+        if !self.done {
+            self.after = page.last().map(|(key, _)| key.clone());
+        }
         Ok(Some(page))
     }
 }
@@ -514,7 +517,7 @@ impl MemoryObjects {
         Self {
             medium: Arc::new(medium),
             state: Arc::new(State::new(
-                format!("{}/", Digest::of(b"memory").to_hex()),
+                format!("{}/", Digest::of(b"memory")),
                 Arc::default(),
             )),
             _medium: PhantomData,
@@ -534,11 +537,6 @@ fn medium(error: MediumError) -> Error {
         MediumError::Failed(_) => "failed",
     };
     Error::caused(ErrorCode::Unavailable, Cause::new("objects.medium", reason)).with_source(error)
-}
-
-/// A fresh owner nonce.
-fn nonce() -> Result<String, Error> {
-    Ok(hex::encode(version()?))
 }
 
 /// A conditional write's unknown outcome means this actor's work may no
@@ -618,7 +616,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Ac
 
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
-        self.sharded_key('p', digest, format_args!(".{}", hex::encode(version)))
+        self.sharded_key(
+            'p',
+            digest,
+            format_args!(".{:032x}", u128::from_be_bytes(*version)),
+        )
     }
 
     /// This account's revisions, opening them on first use.
@@ -696,7 +698,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let mut repaired = Vec::new();
         let mut blobs = HashMap::new();
         let mut parents: HashMap<Digest, Vec<Digest>> = HashMap::new();
-        let mut pages = self.pages(format!("{}e/", self.state.prefix));
+        let mut pages = self.pages(self.namespace_prefix('e'));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 let digest = self.digest_from_key(&key)?;
@@ -756,7 +758,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // A root batch is acknowledged only once its closure and index keys
         // are durable, so one missing any of them was never acknowledged.
         for kind in ["r", "f"] {
-            let mut pages = self.pages(format!("{}{kind}/", self.state.prefix));
+            let mut pages = self.pages(self.namespace_prefix(kind));
             while let Some(page) = pages.next().await? {
                 for (key, _) in page {
                     if !self.batch_survived(&key, &blobs).await? {
@@ -766,7 +768,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 }
             }
         }
-        self.fenced_rooted().await?;
+        self.fenced_rooted(drop).await?;
         Ok(repaired)
     }
 
@@ -791,7 +793,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .filter(|(kind, _)| matches!(*kind, "r" | "f"))
             .ok_or_else(corrupt)?;
         let (root, name) = rest.split_once('/').ok_or_else(corrupt)?;
-        let tag = format!("{kind}{root}.{name}");
+        let tag = Self::batch_tag(kind, root, name);
         for member in &members {
             if !blobs.contains_key(member)
                 || self
@@ -854,20 +856,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn sharded_key(&self, kind: char, digest: &Digest, suffix: impl std::fmt::Display) -> String {
-        let hex = digest.to_hex();
+        let hex = digest.encoded_hex();
+        let hex = hex.as_ref();
         format!("{}{kind}/{}/{hex}{suffix}", self.state.prefix, &hex[..2])
     }
 
-    fn root_prefix(&self, root: &RootId) -> String {
-        format!(
-            "{}r/{}/",
-            self.state.prefix,
-            Digest::of(root.as_bytes()).to_hex()
-        )
-    }
-
-    fn index_prefix(&self, child: &Digest) -> String {
-        format!("{}i/{}/", self.state.prefix, child.to_hex())
+    fn retention_key(&self, namespace: char, root_hash: &str, name: &str) -> String {
+        format!("{}{namespace}/{root_hash}/{name}", self.state.prefix)
     }
 
     /// Whether any key exists under `prefix`.
@@ -882,12 +877,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 
     /// The `i/` holder tag of an envelope.
     fn envelope_tag(parent: &Digest, version: &[u8; 16]) -> String {
-        format!("e{}.{}", parent.to_hex(), hex::encode(version))
+        format!("e{parent}.{:032x}", u128::from_be_bytes(*version))
     }
 
     /// The `i/` holder tag of the root batch named `batch`.
-    fn batch_tag(root: &RootId, batch: &str) -> String {
-        format!("r{}.{batch}", Digest::of(root.as_bytes()).to_hex())
+    fn batch_tag(namespace: &str, root_hash: &str, batch: &str) -> String {
+        format!("{namespace}{root_hash}.{batch}")
     }
 
     /// Marks `tag` as holding each of `children`, then admits them: refused
@@ -916,7 +911,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn index_key(&self, child: &Digest, tag: &str) -> String {
-        format!("{}{tag}", self.index_prefix(child))
+        format!("{}i/{child}/{tag}", self.state.prefix)
     }
 
     /// Indexes `references` under `tag`, creates the root batch `key` that
@@ -974,37 +969,44 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Ok(()) => Ok(()),
             Err(Commit::Unknown(error) | Commit::Unflushed(error)) => Err(error),
             Err(Commit::Failed(error)) => {
-                self.unreference(references, tag).await?;
+                self.unreference(references, tag, None).await?;
                 Err(error)
             }
         }
     }
 
-    /// Removes `tag`'s index keys, once its holder is gone.
-    async fn unreference(&self, children: &[Digest], tag: &str) -> Result<(), Error> {
+    /// Removes the holder's index keys, optionally retaining them for a batched flush.
+    async fn unreference(
+        &self,
+        children: &[Digest],
+        tag: &str,
+        mut removed: Option<&mut Vec<String>>,
+    ) -> Result<(), Error> {
         for child in children {
-            self.medium
-                .remove(&self.index_key(child, tag))
-                .await
-                .map_err(medium)?;
+            let key = self.index_key(child, tag);
+            self.medium.remove(&key).await.map_err(medium)?;
+            if let Some(keys) = &mut removed {
+                keys.push(key);
+            }
         }
         Ok(())
     }
 
-    fn digest_from_key(&self, key: &str) -> Result<Digest, Error> {
+    fn medium_key(&self, key: &str) -> Result<crate::MediumKey, Error> {
         let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
-        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
-            crate::MediumKey::Envelope(digest) | crate::MediumKey::Payload { digest, .. } => {
-                Ok(digest)
-            }
+        crate::MediumKey::parse(relative).map_err(|_| corrupt())
+    }
+
+    fn digest_from_key(&self, key: &str) -> Result<Digest, Error> {
+        match self.medium_key(key)? {
+            crate::MediumKey::Envelope(digest) => Ok(digest),
             _ => Err(corrupt()),
         }
     }
 
     /// The digest and version a payload key names.
     fn payload_of(&self, key: &str) -> Result<(Digest, [u8; 16]), Error> {
-        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
-        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+        match self.medium_key(key)? {
             crate::MediumKey::Payload { digest, version } => Ok((digest, version)),
             _ => Err(corrupt()),
         }
@@ -1189,7 +1191,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             }
             None | Some(_) => {}
         }
-        if self.any(&self.index_prefix(&digest)).await? {
+        if self.any(&self.index_key(&digest, "")).await? {
             // A kept blob outlives a mark its deleter left behind.
             if envelope.dying.is_some() && fence.is_some() {
                 self.revive(observed, envelope).await?;
@@ -1209,7 +1211,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         else {
             return Err(changed());
         };
-        if self.any(&self.index_prefix(&digest)).await? {
+        if self.any(&self.index_key(&digest, "")).await? {
             self.revive(marked, envelope).await?;
             return Ok((Delete::Referenced, Vec::new()));
         }
@@ -1225,6 +1227,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         self.unreference(
             &envelope.references,
             &Self::envelope_tag(&digest, &envelope.version),
+            None,
         )
         .await?;
         Ok((Delete::Deleted, envelope.references))
@@ -1322,6 +1325,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         Ok(())
     }
 
+    fn namespace_prefix(&self, kind: char) -> String {
+        format!("{}{kind}/", self.state.prefix)
+    }
+
     /// One listing page at a time, so a pass over a prefix holds one page.
     fn pages(&self, prefix: String) -> Pages<'_, M> {
         Pages {
@@ -1332,24 +1339,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
     }
 
-    async fn list_all(&self, prefix: &str) -> Result<Vec<(String, u64)>, Error> {
+    async fn list_keys(&self, prefix: String) -> Result<Vec<String>, Error> {
         let mut keys = Vec::new();
-        loop {
-            let page = self
-                .medium
-                .list(
-                    prefix,
-                    keys.last().map(|(key, _): &(String, u64)| key.as_str()),
-                    PAGE,
-                )
-                .await
-                .map_err(medium)?;
-            let done = page.len() < PAGE;
-            keys.extend(page);
-            if done {
-                return Ok(keys);
-            }
+        let mut pages = self.pages(prefix);
+        while let Some(page) = pages.next().await? {
+            keys.extend(page.into_iter().map(|(key, _)| key));
         }
+        Ok(keys)
     }
 
     /// Publishes the blob `wanted` describes: creates its envelope under a
@@ -1545,19 +1541,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             }
         };
         let mut references = Vec::new();
-        for (key, _) in self
-            .list_all(&format!("{}r/", self.state.prefix))
-            .await
-            .map_err(suspended)?
-        {
-            let batch = self
-                .batch(&key)
-                .await
-                .and_then(|batch| batch.ok_or_else(corrupt))
-                .map_err(suspended)?;
-            references.extend(batch);
+        let mut pages = self.pages(self.namespace_prefix('r'));
+        while let Some(page) = pages.next().await.map_err(suspended)? {
+            for (key, _) in page {
+                let batch = self
+                    .batch(&key)
+                    .await
+                    .and_then(|batch| batch.ok_or_else(corrupt))
+                    .map_err(suspended)?;
+                references.extend(batch);
+            }
         }
-        references.extend(self.fenced_rooted().await.map_err(suspended)?);
+        self.fenced_rooted(|batch| references.extend(batch))
+            .await
+            .map_err(suspended)?;
         Ok(references)
     }
 
@@ -1631,9 +1628,15 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let batch = encode_batch(&references);
                 // Each retain owns its batch and keys, so a concurrent release of an
                 // equal batch never removes them.
-                let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
-                let tag = Self::batch_tag(root, &name);
-                let key = format!("{}{name}", self.root_prefix(root));
+                let name = format!(
+                    "{}.{:032x}",
+                    Digest::of(&batch),
+                    u128::from_be_bytes(version()?)
+                );
+                let encoded = Digest::of(root.as_bytes()).encoded_hex();
+                let root_hash = encoded.as_ref();
+                let tag = Self::batch_tag("r", root_hash, &name);
+                let key = self.retention_key('r', root_hash, &name);
                 self.commit_retention(&references, &tag, &key, batch, 0)
                     .await?;
                 Ok(Retained {
@@ -1880,25 +1883,21 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let mut digests = Vec::new();
                 let keys = self
                     .medium
-                    .list(&format!("{}e/", self.state.prefix), after.as_deref(), limit)
+                    .list(&self.namespace_prefix('e'), after.as_deref(), limit)
                     .await
                     .map_err(medium)?;
-                for (key, _) in &keys {
-                    let digest = self.digest_from_key(key)?;
+                let full = keys.len() == limit;
+                let mut last = None;
+                for (key, _) in keys {
+                    let digest = self.digest_from_key(&key)?;
+                    last = Some(digest);
                     if self.blob(&digest).await?.is_some() {
                         digests.push(digest);
                     }
                 }
-                let next = if keys.len() == limit {
-                    keys.last()
-                        .map(|(key, _)| self.digest_from_key(key))
-                        .transpose()?
-                } else {
-                    None
-                };
                 Ok(Page {
                     digests,
-                    next,
+                    next: last.filter(|_| full),
                     revision: served,
                 })
             }
@@ -1930,34 +1929,41 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             async {
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                let batches = self.list_all(&self.root_prefix(root)).await?;
-                let mut removed = Vec::new();
-                for (key, _) in &batches {
-                    let Some(references) = self.batch(key).await? else {
+                let encoded = Digest::of(root.as_bytes()).encoded_hex();
+                let root_hash = encoded.as_ref();
+                let batches = self
+                    .list_keys(self.retention_key('r', root_hash, ""))
+                    .await?;
+                let existed = !batches.is_empty();
+                let mut batch_keys = Vec::new();
+                let mut batch_references = Vec::new();
+                for key in batches {
+                    let Some(references) = self.batch(&key).await? else {
                         continue;
                     };
-                    self.medium.remove(key).await.map_err(moved)?;
-                    removed.push((key, references));
+                    self.medium.remove(&key).await.map_err(moved)?;
+                    batch_keys.push(key);
+                    batch_references.push(references);
                 }
                 // A batch back from a crash must find its index keys: its removal is
                 // durable before theirs.
-                let batch_keys: Vec<_> = removed.iter().map(|(key, _)| (*key).clone()).collect();
                 self.medium.flush(&batch_keys).await.map_err(medium)?;
                 let mut index_keys = Vec::new();
-                for (key, references) in &removed {
-                    let tag = Self::batch_tag(root, key.rsplit('/').next().ok_or_else(corrupt)?);
-                    self.unreference(references, &tag).await?;
-                    index_keys.extend(references.iter().map(|child| self.index_key(child, &tag)));
+                for (key, references) in batch_keys.into_iter().zip(batch_references) {
+                    let name = key.rsplit('/').next().ok_or_else(corrupt)?;
+                    let tag = Self::batch_tag("r", root_hash, name);
+                    self.unreference(&references, &tag, Some(&mut index_keys))
+                        .await?;
                 }
                 // An index key back from a crash would pin its child forever.
                 self.medium.flush(&index_keys).await.map_err(medium)?;
-                let revision = if batches.is_empty() {
-                    issued.applied.current()
-                } else {
+                let revision = if existed {
                     issued.commit()
+                } else {
+                    issued.applied.current()
                 };
                 Ok(Released {
-                    existed: !batches.is_empty(),
+                    existed,
                     revision: Some(revision),
                 })
             }
@@ -2036,7 +2042,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                     epoch,
                     ..Collection::default()
                 };
-                let mut pages = self.pages(format!("{}e/", self.state.prefix));
+                let mut pages = self.pages(self.namespace_prefix('e'));
                 while let Some(page) = pages.next().await? {
                     for (key, _) in page {
                         let digest = self.digest_from_key(&key)?;
@@ -2055,7 +2061,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                     }
                 }
                 // Payloads of no envelope or of a removed version: none can return.
-                let mut pages = self.pages(format!("{}p/", self.state.prefix));
+                let mut pages = self.pages(self.namespace_prefix('p'));
                 while let Some(page) = pages.next().await? {
                     for (key, size) in page {
                         let (digest, version) = self.payload_of(&key)?;
@@ -2160,25 +2166,17 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
             async {
                 self.scrubbed().await?;
                 let mut usage = Usage::default();
-                let mut after: Option<String> = None;
-                loop {
-                    let page = self
-                        .medium
-                        .list(&format!("{}e/", self.state.prefix), after.as_deref(), PAGE)
-                        .await
-                        .map_err(medium)?;
-                    for (key, _) in &page {
-                        let digest = self.digest_from_key(key)?;
+                let mut pages = self.pages(self.namespace_prefix('e'));
+                while let Some(page) = pages.next().await? {
+                    for (key, _) in page {
+                        let digest = self.digest_from_key(&key)?;
                         if let Some(envelope) = self.blob(&digest).await? {
                             usage.blobs += 1;
                             usage.unique_bytes += envelope.stored;
                         }
                     }
-                    if page.len() < PAGE {
-                        return Ok(usage);
-                    }
-                    after = page.last().map(|(key, _)| key.clone());
                 }
+                Ok(usage)
             }
         )
     }
