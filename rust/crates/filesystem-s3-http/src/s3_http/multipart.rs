@@ -3,7 +3,7 @@ enum MultipartCompletionIntent {
     /// The upload is admitted at the requested part set and ready to commit.
     Admitted(Box<MultipartSnapshot>),
     /// The upload was already completed at this exact generation.
-    AlreadyCompleted(acyclic_fs_format::object_reference::GenerationId),
+    AlreadyCompleted(acyclic_fs::GenerationId),
 }
 
 impl<R, A, O> FilesystemS3Adapter<R, A, O>
@@ -154,7 +154,7 @@ where
         upload_id: &str,
         operation: IdempotencyKey,
         requested: &[(u32, String)],
-        generation: acyclic_fs_format::object_reference::GenerationId,
+        generation: acyclic_fs::GenerationId,
     ) -> S3Result<bool> {
         let latest = self.multipart_snapshot(workspace, upload_id).await?;
         match latest.terminal {

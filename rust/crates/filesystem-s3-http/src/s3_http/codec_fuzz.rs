@@ -137,12 +137,12 @@ pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
     ];
     for sealed in [false, true] {
         let root = ObjectId {
-            kind: crate::ObjectKind::Blob,
-            digest: crate::Digest::from_bytes([1; 32]),
-            storage: sealed.then_some(crate::ObjectStorage {
-                locator: crate::Digest::from_bytes([2; 32]),
-                root_file_id: crate::FileId::from_bytes([3; 16]),
-                origin_generation: crate::Digest::from_bytes([4; 32]),
+            kind: acyclic_fs::ObjectKind::Blob,
+            digest: acyclic_fs::Digest::from_bytes([1; 32]),
+            storage: sealed.then_some(acyclic_fs::ObjectStorage {
+                locator: acyclic_fs::Digest::from_bytes([2; 32]),
+                root_file_id: acyclic_fs::FileId::from_bytes([3; 16]),
+                origin_generation: acyclic_fs::Digest::from_bytes([4; 32]),
             }),
         };
         seeds.push((
@@ -154,8 +154,8 @@ pub fn seeds() -> S3Result<Vec<(&'static str, Vec<u8>)>> {
             encode_multipart_part(1, root, 4, IdempotencyKey::from_bytes([6; 16]), &etag())
                 .to_vec(),
         ));
-        let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
-            kind: crate::ObjectKind::GenerationRoot,
+        let generation = acyclic_fs::GenerationId::from_root(ObjectId {
+            kind: acyclic_fs::ObjectKind::GenerationRoot,
             ..root
         });
         seeds.push((

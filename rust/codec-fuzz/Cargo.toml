@@ -33,6 +33,7 @@ tokio-util = { version = "0.7.17", features = ["codec"] }
 acyclic-actors = { path = "../crates/actors", features = ["test-support"] }
 acyclic-auth = { path = "../crates/auth", features = ["test-support"] }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, features = ["test-support"] }
+acyclic-fs-s3-http = { path = "../crates/filesystem-s3-http", features = ["test-support"] }
 acyclic-fs-wire = { path = "../crates/filesystem-wire" }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, features = ["test-support"] }
 acyclic-harness-client = { path = "../crates/harness-client" }

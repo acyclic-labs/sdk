@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Digest, ObjectKind};
+use acyclic_fs::{Digest, ObjectKind};
 include!("access_tests.rs");
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7,8 +7,11 @@ include!("access_tests.rs");
 async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cancellation = CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes().unwrap();
     let data = b"canonical HTTP chunk".to_vec();
     let allocation = {
@@ -16,7 +19,7 @@ async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
         work.claim(
             claim_bytes,
             u64::from(claim_bytes != 0),
-            crate::WorkCounters::UNCHARGED,
+            acyclic_fs::WorkCounters::UNCHARGED,
         )
     }?;
     let carrier =
@@ -44,7 +47,7 @@ async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
 const SIGNATURE_DATE_HEADER: &str = "x-amz-date";
 const SIGNATURE_ALGORITHM: &str = "AWS4-HMAC-SHA256";
 const AUTHORIZATION_HEADER: &str = "authorization";
-use crate::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
+use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use futures::TryStreamExt;
 use hmac::{Hmac, KeyInit, Mac};
 use http::{Extensions, HeaderMap, HeaderValue, Method, Uri};
@@ -126,13 +129,13 @@ async fn adapter_with_limits(
 ) -> S3Result<FilesystemS3Adapter<Resolver, MemoryAuthorityBackend, MemoryObjectBackend>> {
     let filesystem = Fs::memory();
     let workspace = filesystem
-        .create_workspace_with_operation::<_, (), crate::WorkspaceError>(
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "s3-http",
-            crate::VolumeInitialization {
-                config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
-                access_policy: Some(crate::access::INITIAL_POLICY),
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
-            crate::OperationId::new(),
+            acyclic_fs::OperationId::new(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,
@@ -663,7 +666,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
                 maximum_uploads: Some(1),
                 ..S3MultipartRetentionLimits::default()
             },
-            crate::WorkBudget::UNBOUNDED,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -678,7 +681,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
                 maximum_object_bytes: Some(1),
                 ..S3MultipartRetentionLimits::default()
             },
-            crate::WorkBudget::UNBOUNDED,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -689,7 +692,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
         restarted.resolver.principal.workspace.volume.fs.objects(),
         FilesystemS3Limits::default(),
         S3MultipartRetentionLimits::default(),
-        crate::WorkBudget::UNBOUNDED,
+        acyclic_fs::WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .await
@@ -744,7 +747,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
             restarted.resolver.principal.workspace.volume.fs.objects(),
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits::default(),
-            crate::WorkBudget::UNBOUNDED,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -817,7 +820,7 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
             adapter.resolver.principal.workspace.volume.fs.objects(),
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits::default(),
-            crate::WorkBudget::UNBOUNDED,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -841,7 +844,7 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
             adapter.resolver.principal.workspace.volume.fs.objects(),
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits::default(),
-            crate::WorkBudget::UNBOUNDED,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -867,18 +870,18 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
 
 #[test]
 fn multipart_records_preserve_sealed_parts_and_completed_generations() -> S3Result {
-    let storage = crate::ObjectStorage {
-        locator: crate::Digest::from_bytes([1; 32]),
-        root_file_id: crate::FileId::from_bytes([2; 16]),
-        origin_generation: crate::Digest::from_bytes([3; 32]),
+    let storage = acyclic_fs::ObjectStorage {
+        locator: acyclic_fs::Digest::from_bytes([1; 32]),
+        root_file_id: acyclic_fs::FileId::from_bytes([2; 16]),
+        origin_generation: acyclic_fs::Digest::from_bytes([3; 32]),
     };
     let part = ObjectId {
-        kind: crate::ObjectKind::Blob,
-        digest: crate::Digest::from_bytes([4; 32]),
+        kind: acyclic_fs::ObjectKind::Blob,
+        digest: acyclic_fs::Digest::from_bytes([4; 32]),
         storage: Some(storage),
     };
-    let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
-        kind: crate::ObjectKind::GenerationRoot,
+    let generation = acyclic_fs::GenerationId::from_root(ObjectId {
+        kind: acyclic_fs::ObjectKind::GenerationRoot,
         ..part
     });
     let etag = format!("\"{}\"", hex::encode([5; 32]));

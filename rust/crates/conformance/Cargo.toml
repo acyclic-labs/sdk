@@ -23,7 +23,7 @@ actors-hosting = ["client-session", "acyclic-harness/conformance", "dep:acyclic-
 storage-backends = ["acyclic-fs/conformance", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
 harness-accounting = []
 local-runner = ["dep:tempfile", "dep:rusqlite", "dep:notify"]
-s3-fixture = ["local-runner", "dep:async-trait", "dep:axum", "dep:s3s"]
+s3-fixture = ["local-runner", "dep:acyclic-fs-s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
 # Drives a built `graphcoder` binary against the local harness, its
 # self-hosted endpoint, and the same server through injected seams
 # (`graphcoder-seams`; see tests/graphcoder_backends.rs).
@@ -40,6 +40,7 @@ acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-f
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
 rustls = { workspace = true, optional = true }
+acyclic-fs-s3-http = { version = "=0.2.0", path = "../filesystem-s3-http", optional = true }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["conformance"] }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", optional = true }

@@ -2,17 +2,20 @@
 //!
 //! Request parsing, `SigV4` verification, XML, and HTTP framing are delegated to
 //! `s3s`. This module contains no namespace or storage implementation: every
-//! accepted operation resolves one scoped workspace and invokes [`crate::S3Workspace`].
+//! accepted operation resolves one scoped workspace and invokes [`acyclic_fs::S3Workspace`].
 
-use crate::WorkBudget;
-use crate::kernel::{AsyncBlobSource, ClosureLimits, DecodeLimits};
-use crate::model::FilesystemProfile;
-use crate::s3_multipart::*;
-use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, ObjectId,
-    S3Error, S3ListCursor, S3ListOptions, StagedContent, StreamAuthorityStore, Workspace,
+#[cfg(any(test, feature = "test-support"))]
+use acyclic_fs::ObjectId;
+use acyclic_fs::WorkBudget;
+use acyclic_fs::kernel::AsyncBlobSource;
+use acyclic_fs::s3_multipart::*;
+use acyclic_fs::{
+    AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, S3Error,
+    S3ListCursor, S3ListOptions, StreamAuthorityStore, Workspace,
 };
-use acyclic_fs_format::s3_limits::{FilesystemS3Limits, S3MultipartRetentionLimits};
+use acyclic_fs_format::s3_limits::FilesystemS3Limits;
+#[cfg(test)]
+use acyclic_fs_format::s3_limits::S3MultipartRetentionLimits;
 use acyclic_stream::StreamProviderExt as _;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -53,7 +56,9 @@ pub trait StreamBackedAuthority: AsyncAuthorityStore {
     fn stream_provider(&self) -> Arc<Self::Stream>;
 }
 
-impl<P: crate::distributed::AuthorityProvider> StreamBackedAuthority for StreamAuthorityStore<P> {
+impl<P: acyclic_fs::distributed::AuthorityProvider> StreamBackedAuthority
+    for StreamAuthorityStore<P>
+{
     type Stream = P;
 
     fn stream_provider(&self) -> Arc<Self::Stream> {
@@ -71,7 +76,7 @@ pub struct FilesystemS3Principal<A: 'static, O: 'static> {
     /// Canonical workspace selected by the capability.
     pub workspace: Workspace<A, O>,
     /// Optional immutable generation bound into a read-only capability.
-    pub generation: Option<acyclic_fs_format::object_reference::GenerationId>,
+    pub generation: Option<acyclic_fs::GenerationId>,
     /// Whether the capability admits S3 mutations.
     pub writable: bool,
 }
@@ -227,7 +232,7 @@ where
         {
             return Err(s3s::s3_error!(AccessDenied));
         }
-        use crate::access::Action;
+        use acyclic_fs::access::Action;
         let read = [Action::List, Action::Read, Action::ReadHistory];
         let write = [
             Action::List,

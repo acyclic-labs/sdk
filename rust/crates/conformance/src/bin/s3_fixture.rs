@@ -1,9 +1,12 @@
 //! Local signed S3 consumer over public filesystem APIs.
 
 use acyclic_fs::{
-    FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Limits, FilesystemS3Principal,
-    FilesystemS3Resolver, Fs, IdempotencyKey, LocalAuthorityBackend, LocalFs, LocalObjectBackend,
-    LocalOptions, S3ListOptions, Workspace, WorkspaceDelete,
+    Fs, IdempotencyKey, LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions,
+    S3ListOptions, Workspace, WorkspaceDelete,
+};
+use acyclic_fs_format::s3_limits::FilesystemS3Limits;
+use acyclic_fs_s3_http::s3_http::{
+    FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Principal, FilesystemS3Resolver,
 };
 use async_trait::async_trait;
 use axum::{error_handling::HandleError, http::StatusCode};

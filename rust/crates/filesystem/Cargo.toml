@@ -564,8 +564,6 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true
 serde_urlencoded = { workspace = true }
-s3s = { workspace = true }
-subtle = { workspace = true }
 sync_wrapper = { workspace = true }
 time = { workspace = true }
 urlencoding = { version = "2.1.3" }
