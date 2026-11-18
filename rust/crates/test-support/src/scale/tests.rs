@@ -2,7 +2,7 @@
 use super::*;
 use proptest::prelude::*;
 
-const RECOVERY: &str = "cargo test -p acyclic-test-support scale::tests";
+const RECOVERY: &str = "bazel test //rust/crates/test-support:acyclic_test_support_test --test_filter=scale::tests";
 const OPERATIONS: [Operation; 1] = [Operation::ObjectHead];
 
 proptest! {

@@ -822,7 +822,7 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
         if negative {
             command.env("ACYCLIC_OBSERVATION_NEGATIVE", "1");
         }
-        let result = command.output().map_err(|error| std::io::Error::new(error.kind(), format!("syscall trace failed to start: {error}; install strace and rerun cargo test -p acyclic-observability --test main operations::disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --exact")))?;
+        let result = command.output().map_err(|error| std::io::Error::new(error.kind(), format!("syscall trace failed to start: {error}; install strace and rerun bazel test //rust/crates/observability:main --test_env=PATH --test_filter=operations::disabled_operation_has_zero_syscalls_with_real_io_negative_control --test_arg=--exact")))?;
         assert!(
             result.status.success(),
             "syscall probe failed: {}",
