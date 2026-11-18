@@ -53,8 +53,6 @@ mod merge_drivers;
 
 mod composition;
 
-mod creation_race;
-
 mod populated_creation;
 
 mod operation_identity;
