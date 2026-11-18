@@ -172,11 +172,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
     let imported_lock = fixture.path().join(directory).join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
-    fixture_archive::pack(&fixture.path().join(directory), &archive);
-    release.checksum = crate::sha256_file(&archive)
-        .unwrap()
-        .trim_start_matches("sha256:")
-        .into();
+    release.checksum = pack_registry_archive(&fixture.path().join(directory), &archive);
     let mut identity = ArchiveSource {
         package: release.package.clone(),
         version: release.num.clone(),
@@ -287,13 +283,6 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
         fixture.path().join("src/lib.rs"),
     )
     .unwrap();
-    let (dirty, dirty_archive) = fixture.archive_with_dirty(&revision, "", true);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &dirty, &dirty_archive)
-            .unwrap_err()
-            .contains("dirty source")
-    );
-    let (release, archive) = fixture.archive(&revision, "");
     let mut wrong = release.clone();
     wrong.checksum = "b".repeat(64);
     assert!(
@@ -310,6 +299,12 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
     )
     .unwrap_err()
     .contains("revision differs"));
+    let (dirty, dirty_archive) = fixture.archive_with_dirty(&revision, "", true);
+    assert!(
+        verify_archive(&metadata, fixture.path(), &revision, &dirty, &dirty_archive)
+            .unwrap_err()
+            .contains("dirty source")
+    );
     let (escaping, archive) = fixture.archive(&revision, "../outside");
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &escaping, &archive)
@@ -343,23 +338,22 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
     let (mut release, archive) = fixture.archive(&revision, "");
-    fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
-    fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
-    release.checksum = crate::sha256_file(&archive)
-        .unwrap()
-        .trim_start_matches("sha256:")
-        .into();
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("missing Cargo Rust source")
-    );
-    let (release, archive) = fixture.archive(&revision, "");
-    fs::write(fixture.path().join("Cargo.toml"), "different manifest").unwrap();
+    let manifest = fixture.path().join("Cargo.toml");
+    let original_manifest = fs::read(&manifest).unwrap();
+    fs::write(&manifest, "different manifest").unwrap();
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
             .unwrap_err()
             .contains("source bytes differ")
+    );
+    fs::write(manifest, original_manifest).unwrap();
+    fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
+    release.checksum =
+        pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
+    assert!(
+        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
+            .unwrap_err()
+            .contains("missing Cargo Rust source")
     );
 }
 #[test]
@@ -461,44 +455,6 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     .contains("absent"));
 }
 #[test]
-fn absent_cargo_binary_is_rejected_before_compilation() {
-    compiler::with(|| {
-        use sdk_docs::rustdoc_profiles::{
-            execute_profile, CargoExecutionContext, ProfileSpec, RustdocTarget,
-        };
-        let fixture = Fixture::new();
-        fs::write(fixture.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-        let metadata = fixture.metadata();
-        let target = "fixture-host".to_owned();
-        let profile = ProfileSpec {
-            package: "historical-fixture".into(),
-            target: target.clone(),
-            default_features: true,
-            features: BTreeSet::new(),
-        };
-        let target_dir = fixture.path().join("native-rustdoc");
-        let absent = execute_profile(
-            fixture.path().join("Cargo.toml"),
-            &metadata,
-            &profile,
-            &BTreeSet::from([target]),
-            &target_dir,
-            &fixture.path().join("binary.json"),
-            CargoExecutionContext {
-                cargo_path: Some(&cargo()),
-                lock_selection: None,
-            },
-            &RustdocTarget::Binary("absent".into()),
-        );
-        assert!(absent
-            .unwrap_err()
-            .to_string()
-            .contains("absent from Cargo"));
-        assert!(!target_dir.exists());
-    });
-}
-
-#[test]
 fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
@@ -517,11 +473,8 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
         let archived = fixture.path().join("historical-fixture-0.1.0").join(name);
         fs::create_dir_all(archived.parent().unwrap()).unwrap();
         fs::copy(&path, &archived).unwrap();
-        fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
-        release.checksum = crate::sha256_file(&archive)
-            .unwrap()
-            .trim_start_matches("sha256:")
-            .into();
+        release.checksum =
+            pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
         let (_, files) =
             verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
         assert!(files.contains_key(name));
