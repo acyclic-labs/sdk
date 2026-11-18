@@ -9,7 +9,8 @@ use acyclic_harness::local::{
     Event,
     agent_conversation::{Conversation, Sent, Settlement, ended},
 };
-use acyclic_native_runtime::{InheritedOutput, lines::AsyncLines};
+use acyclic_native_lines::lines::AsyncLines;
+use acyclic_native_runtime::InheritedOutput;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
