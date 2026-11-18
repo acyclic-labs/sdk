@@ -375,6 +375,7 @@ dependencies = [
  "acyclic-fs-format",
  "acyclic-fs-merge",
  "acyclic-fs-native-contract",
+ "acyclic-fs-storage-probe",
  "acyclic-fs-wire",
  "acyclic-fs-work",
  "acyclic-grpc-observability",
@@ -600,6 +601,17 @@ dependencies = [
  "hex",
  "s3s",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-fs-storage-probe"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs-native-contract",
+ "libc",
+ "tempfile",
+ "thiserror 2.0.21",
+ "windows",
 ]
 
 [[package]]

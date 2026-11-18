@@ -35,6 +35,7 @@
   "acyclic-fs-format",
   "acyclic-fs-wire",
   "acyclic-fs-native-contract",
+  "acyclic-fs-storage-probe",
   "acyclic-fs-work",
   "acyclic-fs-merge",
   "acyclic-fs",

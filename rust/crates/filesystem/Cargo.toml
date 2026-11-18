@@ -546,6 +546,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-fs-storage-probe = { version = "=0.2.0", path = "../filesystem-storage-probe" }
 acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
 notify = { workspace = true }
 dirs = { workspace = true }

@@ -1,6 +1,8 @@
 //! Live native sparse-allocation and block-clone capability execution.
 
-use crate::{NativeStorageCapabilityError, probe_native_storage_capabilities};
+use acyclic_fs_storage_probe::native_mount::storage_capabilities::{
+    NativeStorageCapabilityError, probe_native_storage_capabilities,
+};
 use std::path::Path;
 use thiserror::Error;
 

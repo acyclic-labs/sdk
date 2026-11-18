@@ -137,7 +137,7 @@ mod tests {
         let evidence = match super::super::probe_native_storage_accelerations(directory.path()) {
             Ok(evidence) => evidence,
             Err(NativeStorageAccelerationError::Capability(
-                crate::NativeStorageCapabilityError::UnsupportedTarget,
+                acyclic_fs_storage_probe::native_mount::storage_capabilities::NativeStorageCapabilityError::UnsupportedTarget,
             )) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
