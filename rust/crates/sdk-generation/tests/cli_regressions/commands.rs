@@ -135,22 +135,14 @@ fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
     static FIXTURES: std::sync::OnceLock<std::io::Result<Vec<Value>>> = std::sync::OnceLock::new();
     FIXTURES
         .get_or_init(|| {
-            let directory = acyclic_test_support::source_path("rust/proofs/sdk-rustdoc-fixtures");
-            let Ok(entries) = fs::read_dir(directory) else {
-                return Ok(Vec::new());
-            };
-            let mut fixtures = Vec::new();
-            for entry in entries {
-                let entry = entry?;
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".fixture.json")
-                {
-                    fixtures.push(serde_json::from_slice(&fs::read(entry.path())?)?);
-                }
+            let index = acyclic_test_support::source_path(
+                "rust/proofs/sdk-rustdoc-fixtures/feature_profiles.index.json",
+            );
+            match fs::read(index) {
+                Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(error) => Err(error),
             }
-            Ok(fixtures)
         })
         .as_deref()
         .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))

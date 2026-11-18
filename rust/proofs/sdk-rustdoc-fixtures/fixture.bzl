@@ -4,6 +4,18 @@ load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain", "use_c
 load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
+RustdocFixtureInfo = provider(fields = ["metadata"])
+
+def _bundle_impl(ctx):
+    index = ctx.actions.declare_file(ctx.label.name + ".index.json")
+    ctx.actions.write(index, json.encode([fixture[RustdocFixtureInfo].metadata for fixture in ctx.attr.fixtures]))
+    return [DefaultInfo(files = depset([index], transitive = [fixture[DefaultInfo].files for fixture in ctx.attr.fixtures]))]
+
+rustdoc_fixture_bundle = rule(
+    implementation = _bundle_impl,
+    attrs = {"fixtures": attr.label_list(providers = [RustdocFixtureInfo])},
+)
+
 def _repository_path(path):
     return path.split("/", 2)[2] if path.startswith("../") else path
 
@@ -41,7 +53,7 @@ def _rustdoc_fixture_impl(ctx):
             fail("mapped fixture input must name exactly one file")
         sources = [(file, existing) for file, existing in sources if existing != relative]
         sources.append((files[0], relative))
-    ctx.actions.write(metadata, json.encode({
+    metadata_value = {
         "package": ctx.attr.package,
         "toolchain": toolchain,
         "manifest_path": ctx.attr.manifest_path,
@@ -55,7 +67,8 @@ def _rustdoc_fixture_impl(ctx):
         "sources": [{"file": _repository_path(file.short_path), "relative": relative} for file, relative in sources],
         "output": _repository_path(output.short_path),
         "artifacts": _repository_path(artifacts.short_path) if artifacts else "",
-    }))
+    }
+    ctx.actions.write(metadata, json.encode(metadata_value))
     args = ctx.actions.args()
     args.add(output)
     args.add(artifacts.path if artifacts else "")
@@ -94,7 +107,10 @@ def _rustdoc_fixture_impl(ctx):
         mnemonic = "FixtureRustdoc",
         progress_message = "Building Rustdoc fixture %{label}",
     )
-    return [DefaultInfo(files = depset([output, metadata] + ([artifacts] if artifacts else [])))]
+    return [
+        DefaultInfo(files = depset([output, metadata] + ([artifacts] if artifacts else []))),
+        RustdocFixtureInfo(metadata = metadata_value),
+    ]
 
 rustdoc_fixture = rule(
     implementation = _rustdoc_fixture_impl,

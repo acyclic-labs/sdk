@@ -1,4 +1,4 @@
-load(":fixture.bzl", "rustdoc_fixture_set")
+load(":fixture.bzl", "rustdoc_fixture_bundle", "rustdoc_fixture_set")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(default_visibility = ["//visibility:public"])
@@ -151,9 +151,9 @@ _BINARY_DATA = rustdoc_fixture_set(
     profiles = {"binary_default": []},
 )
 
-filegroup(
+rustdoc_fixture_bundle(
     name = "feature_profiles",
-    srcs = {label: True for label in _BINARY_DATA + _FEATURE_DATA + _LONG_DATA +
+    fixtures = {label: True for label in _BINARY_DATA + _FEATURE_DATA + _LONG_DATA +
                                     _RELOCATION_DATA + _RELOCATION_HELPER_DATA +
                                     _EXCLUDED_DEMO_DATA + _EXCLUDED_MACROS_DATA +
                                     _EXCLUDED_HELPER_DATA}.keys(),
