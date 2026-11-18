@@ -702,7 +702,7 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
         "# Cargo-produced standalone package lock fixture\n",
     )
     .unwrap();
-    fs::write(archive_source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":false},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
+    packaging::write_publisher_vcs(&fixture.root, &archive_source, false);
     let archive = archives.join("demo-1.0.0.crate");
     archives::pack(&archive_source, &archive);
     write_registry_transport(&support);
@@ -918,9 +918,8 @@ fn registry_archive_fixture_configured(
         setup(&package);
     }
     let source = packaging::materialize(&package, &support, package_name);
-    fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
-    if !publisher_vcs {
-        fs::remove_file(source.join(".cargo_vcs_info.json")).unwrap();
+    if publisher_vcs {
+        packaging::write_publisher_vcs(&fixture.root, &source, dirty);
     }
     if !published_lock {
         fs::remove_file(source.join("Cargo.lock")).unwrap();
