@@ -3,10 +3,9 @@ use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::local::{Error, State};
 use acyclic_harness_core::agent::{AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{CommitMutation, StreamCategory, StreamPath, StreamProvider};
+use acyclic_stream::{CommitMutation, ProviderOwner, StreamCategory, StreamPath, StreamProvider};
 use futures::TryFutureExt as _;
 use futures::future::Either;
-use std::sync::Arc;
 
 async fn output(
     host: &AgentHost<Observed>,
@@ -105,7 +104,7 @@ async fn saved_cursor(provider: &Observed, path: StreamPath, cut: u64) -> Result
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::capturing(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::capturing(storage.open().await?));
     let host = vectors::host(backend, provider.clone())?;
     let agent = host
         .create(&vectors::intent("discovery-root")?, fixtures::adopted())
@@ -126,7 +125,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     .await?;
     drop(host);
     drop(provider);
-    let reopened = Arc::new(Observed::capturing(storage.open().await?));
+    let reopened = ProviderOwner::new(Observed::capturing(storage.open().await?));
     let host = vectors::host(backend, reopened.clone())?;
     host.send(&agent, &fixtures::sender(), &fixtures::request("after")?)
         .await?;
@@ -151,7 +150,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
     use super::observe::Fault;
     for fault in [Fault::Before, Fault::After] {
         let storage = backend.fresh().await?;
-        let provider = Arc::new(Observed::capturing(storage.open().await?));
+        let provider = ProviderOwner::new(Observed::capturing(storage.open().await?));
         let host = vectors::host(backend, provider.clone())?;
         let agent = host
             .create(&vectors::intent("cursor-crash")?, fixtures::adopted())
@@ -178,7 +177,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             .ok_or("cursor crash did not retain its original dispatcher publication")?;
         drop(host);
         drop(provider);
-        let reopened = Arc::new(Observed::capturing(storage.open().await?));
+        let reopened = ProviderOwner::new(Observed::capturing(storage.open().await?));
         let host = vectors::host(backend, reopened.clone())?;
         until(&host, async {
             output(&host, &agent, 0, b"once").await?;

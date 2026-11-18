@@ -36,7 +36,7 @@ thread_local! {
 async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     agent: AgentId,
     filesystem: Fs<A, O>,
-    changes: Arc<dyn StreamProvider>,
+    changes: acyclic_stream::ProviderOwner<dyn StreamProvider>,
 ) -> Result<(Arc<FilesystemHost<A, O>>, VolumeRef)> {
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let shared_owner = filesystem.operation_claims().owner_identity()
@@ -120,7 +120,7 @@ pub struct MemoryHarnessStorage<
     write_capability: String,
     scope: Scope,
     issuer: AuthorityRoot,
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     conversation: Authority,
     maximum_file_bytes: Option<u64>,
 }
@@ -131,7 +131,7 @@ impl MemoryHarnessStorage {
         Self::with_stream(
             agent,
             maximum_file_bytes.into(),
-            Arc::new(MemoryStream::default()),
+            acyclic_stream::ProviderOwner::new(MemoryStream::default()),
         )
         .await
     }
@@ -142,7 +142,7 @@ impl<P: crate::store::JournalProvider> MemoryHarnessStorage<P> {
     pub async fn with_stream(
         agent: AgentId,
         maximum_file_bytes: impl Into<Option<u64>>,
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
     ) -> Result<Self> {
         Self::from_providers(agent, maximum_file_bytes.into(), Fs::memory(), stream).await
     }
@@ -160,7 +160,7 @@ impl<
         agent: AgentId,
         maximum_file_bytes: impl Into<Option<u64>>,
         filesystem: Fs<A, O>,
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
     ) -> BoxFuture<'a, Result<Self>>
     where
         P: 'a,
@@ -532,7 +532,7 @@ impl<
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &Arc<P> {
+    pub fn stream(&self) -> &acyclic_stream::ProviderOwner<P> {
         &self.stream
     }
 

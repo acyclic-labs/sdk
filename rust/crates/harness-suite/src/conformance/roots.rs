@@ -18,7 +18,7 @@ use acyclic_harness_core::{
     model::ModelContent,
     resources::ProviderRef,
 };
-use acyclic_stream::{BoxProviderFuture, UnixMillisClock, testing::Counted};
+use acyclic_stream::{BoxProviderFuture, ProviderOwner, UnixMillisClock, testing::Counted};
 use std::sync::Arc;
 
 /// Root preparation never runs a turn.
@@ -100,7 +100,7 @@ pub(crate) fn volume(role: WorkspaceRole, name: &str, agent: AgentId) -> Result<
 
 async fn run(backend: &dyn Backend, case: Case) -> Result {
     let storage = backend.fresh().await?;
-    let stream = Arc::new(Observed::new(storage.open().await?));
+    let stream = ProviderOwner::new(Observed::new(storage.open().await?));
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "workload".into(),

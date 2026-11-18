@@ -29,7 +29,7 @@ impl<'cut> Cut<'cut> {
         P: crate::store::JournalProvider + ?Sized,
     >(
         &'a self,
-        provider: &Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         (request, mut quota): (
             acyclic_stream::CommitRequest,
             crate::wire_codec::CodecQuota<'_, '_>,
@@ -39,12 +39,8 @@ impl<'cut> Cut<'cut> {
         NativeCut<'a, 'cut, P>,
         acyclic_stream::NativeProviderFuture<'static, ()>,
     )> {
-        let (commit, producer) = crate::distributed::NativeCommit::prepare(
-            request,
-            &mut quota,
-            Arc::clone(provider),
-            None,
-        )?;
+        let (commit, producer) =
+            crate::distributed::NativeCommit::prepare(request, &mut quota, provider.clone(), None)?;
         Ok((
             NativeCut {
                 cut: self,

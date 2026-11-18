@@ -2,6 +2,7 @@
 use crate::StreamProviderExt as _;
 use crate::completion::{Completion, Producer};
 use crate::{CommitOutcome, CommitRequest, StreamError, StreamProvider};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,7 +65,7 @@ impl Pending {
     /// Transfers one canonical commit to the supplied executor immediately.
     /// Losing every waiter cannot withdraw an already submitted publication.
     pub fn submit<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
+        provider: crate::ProviderOwner<P>,
         request: CommitRequest,
         executor: &dyn crate::runtime::Executor,
     ) -> Self {
@@ -89,7 +90,7 @@ pub type AppendPending =
 impl AppendPending {
     /// Transfers the original append to an independent producer exactly once.
     pub fn submit_append<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
+        provider: crate::ProviderOwner<P>,
         request: crate::AppendRequest,
         executor: &dyn crate::runtime::Executor,
     ) -> Self {

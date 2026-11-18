@@ -10,7 +10,7 @@ use std::sync::{
 };
 
 struct State<P: ?Sized> {
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     entries: Interests<StreamPath, Arc<Recorder<P>>>,
     leases: AtomicUsize,
 }
@@ -35,7 +35,7 @@ struct SourceMismatch;
 
 impl<P: StreamProvider + ?Sized> Registry<P> {
     /// One registry for the host's original provider, never one per agent.
-    pub fn new(provider: Arc<P>) -> Self {
+    pub fn new(provider: crate::ProviderOwner<P>) -> Self {
         Self(Arc::new(State {
             provider,
             entries: Interests::new(),

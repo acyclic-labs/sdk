@@ -1068,7 +1068,7 @@ pub struct TurnLimits {
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     traces: Option<acyclic_stream::trace::Registry<P>>,
     within: acyclic_actors::addressing::ActorReference,
     actor_root: Option<acyclic_stream::StreamPath>,
@@ -1160,7 +1160,7 @@ where
     /// account and namespace used to observe child settlement.
     #[must_use]
     pub fn new(
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         within: acyclic_actors::addressing::ActorReference,
         host: Arc<FilesystemHost<A, O>>,
         issuer: impl Into<RuntimeAuthority>,
@@ -1789,7 +1789,7 @@ where
             None,
         )?;
         let mut journal = FilesystemExecutionJournal::new(
-            Arc::clone(&self.stream),
+            self.stream.clone(),
             Arc::clone(&self.host),
             FilesystemJournalBinding {
                 volume: &storage.volume,
@@ -3003,7 +3003,7 @@ where
                 let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
                 let effects = Arc::new(FilesystemTurnEffects::new(
                     Arc::clone(&bindings.journal.files),
-                    Arc::clone(&self.stream),
+                    self.stream.clone(),
                     self.within.clone(),
                     agent.path.clone(),
                     (turn, segment),
@@ -3012,7 +3012,7 @@ where
                 let children = Arc::new(FilesystemTurnChildren {
                     clock: Arc::clone(&self.clock),
                     files: Arc::clone(&files),
-                    stream: Arc::clone(&self.stream),
+                    stream: self.stream.clone(),
                     within: self.within.clone(),
                     host: Arc::clone(&self.host),
                     issuer: self.issuer.clone(),
@@ -3045,7 +3045,7 @@ where
                 // later arrivals and exact replay retain their own boundaries.
                 let initial_through = self.stream.tail(agent.path.inbox()?).await?;
                 let boundary = super::agent_steering::FilesystemBoundary::new(
-                    Arc::clone(&self.stream),
+                    self.stream.clone(),
                     Arc::clone(&self.host),
                     self.issuer.clone(),
                     self.admission.clone(),
@@ -3160,7 +3160,7 @@ where
 // One host-only journal binding for queries; it grants no model-content scope,
 // opens no model executor and does not reread policy or history payloads.
 async fn query_journal<P, A, O>(
-    stream: &Arc<P>,
+    stream: &acyclic_stream::ProviderOwner<P>,
     host: &Arc<FilesystemHost<A, O>>,
     issuer: &RuntimeAuthority,
     admission: &TurnAdmission,
@@ -3174,7 +3174,7 @@ where
     let admitted = AdmittedAgent::verify(issuer, admission, &agent.path, &agent.volumes)?;
     let (volume, authority) = admitted.journal_authority(host, &[], &[]).await?;
     FilesystemExecutionJournal::new(
-        Arc::clone(stream),
+        stream.clone(),
         Arc::clone(host),
         FilesystemJournalBinding {
             volume: &volume,
@@ -3189,7 +3189,7 @@ where
 // Optional activity uses only the host's retained ceiling; it never rebinds the
 // parent's agent-scoped workload admission to a different identity.
 async fn query_activity_journal<P, A, O>(
-    stream: &Arc<P>,
+    stream: &acyclic_stream::ProviderOwner<P>,
     host: &Arc<FilesystemHost<A, O>>,
     issuer: &RuntimeAuthority,
     admission: &TurnAdmission,
@@ -3214,7 +3214,7 @@ where
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     clock: Arc<dyn acyclic_actors::local::Clock>,
     files: Arc<AgentInternalFiles<A, O>>,
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,

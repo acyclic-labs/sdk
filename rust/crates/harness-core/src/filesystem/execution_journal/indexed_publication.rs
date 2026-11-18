@@ -123,7 +123,7 @@ where
 }
 
 async fn condition<P: crate::store::JournalProvider + ?Sized>(
-    provider: &Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     path: &StreamPath,
     expected: u64,
     work: &mut Option<&mut dyn crate::store::HistoryIo>,

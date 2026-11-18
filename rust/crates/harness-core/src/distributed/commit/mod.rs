@@ -89,7 +89,7 @@ fn admit(
 
 pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
     (mut request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
-    client: &Arc<P>,
+    client: &acyclic_stream::ProviderOwner<P>,
     operation: Option<OperationId>,
     mut phase: Option<&mut CommitPhase>,
     deadline_unix_millis: Option<u64>,
@@ -157,7 +157,7 @@ impl Settlement {
         self,
         committed: std::result::Result<acyclic_stream::CommitOutcome, StreamError>,
         quota: &mut CodecQuota<'_, '_>,
-        client: &Arc<P>,
+        client: &acyclic_stream::ProviderOwner<P>,
         operation: Option<OperationId>,
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_stream::CommitOutcome, u64)> {

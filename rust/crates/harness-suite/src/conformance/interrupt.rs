@@ -6,6 +6,7 @@ use super::{
 };
 use acyclic_actors::guest::CancellationToken;
 use acyclic_harness_core::agent::*;
+use acyclic_stream::ProviderOwner;
 use futures::channel::oneshot;
 use std::sync::{Arc, Mutex};
 
@@ -73,7 +74,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 
 async fn interrupted(backend: &dyn Backend, fault: Option<Fault>) -> Result {
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = ProviderOwner::new(Observed::new(storage.open().await?));
     let (started, running) = oneshot::channel();
     let handler = backend.handler(Arc::new(AgentHandler::new(
         actor_store(&provider)?,

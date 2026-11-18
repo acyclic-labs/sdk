@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// The effects of one agent turn.
 pub(in crate::filesystem) struct FilesystemTurnEffects<P: ?Sized, A: 'static, O: 'static> {
     files: Arc<AgentInternalFiles<A, O>>,
-    stream: Arc<P>,
+    stream: acyclic_stream::ProviderOwner<P>,
     within: acyclic_actors::addressing::ActorReference,
     agent: AgentPath,
     directory: String,
@@ -39,7 +39,7 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
 
     pub(in crate::filesystem) fn new(
         files: Arc<AgentInternalFiles<A, O>>,
-        stream: Arc<P>,
+        stream: acyclic_stream::ProviderOwner<P>,
         within: acyclic_actors::addressing::ActorReference,
         agent: AgentPath,
         (turn, segment): (OperationId, u32),
