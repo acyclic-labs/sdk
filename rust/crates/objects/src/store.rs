@@ -466,7 +466,10 @@ impl<M: Medium> Pages<'_, M> {
     async fn keys(&mut self) -> Result<Vec<String>, Error> {
         let mut keys = Vec::new();
         while let Some(page) = self.next().await? {
-            keys.extend(page.into_iter().map(|(key, _)| key));
+            for (key, _) in page {
+                self.relative(&key)?;
+                keys.push(key);
+            }
         }
         Ok(keys)
     }
@@ -1939,7 +1942,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let mut batch_keys = Vec::new();
                 let mut batch_references = Vec::new();
                 for key in batches {
-                    pages.relative(&key)?;
                     let Some(references) = self.batch(&key).await? else {
                         continue;
                     };
