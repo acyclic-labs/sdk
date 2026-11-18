@@ -18,7 +18,13 @@ impl From<Digest> for wire::Digest {
 }
 
 pub(crate) fn digest(value: Option<&wire::Digest>) -> Result<Digest, Error> {
-    Digest::from_slice(&value.ok_or_else(invalid)?.blake3)
+    optional_digest(value)?.ok_or_else(invalid)
+}
+
+pub(crate) fn optional_digest(value: Option<&wire::Digest>) -> Result<Option<Digest>, Error> {
+    value
+        .map(|value| Digest::from_slice(&value.blake3))
+        .transpose()
 }
 
 pub(crate) fn digests(values: &[wire::Digest]) -> Result<Vec<Digest>, Error> {
@@ -278,11 +284,7 @@ pub(crate) fn page(
 ) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
-        next: value
-            .next
-            .as_ref()
-            .map(|next| digest(Some(next)))
-            .transpose()?,
+        next: optional_digest(value.next.as_ref())?,
         revision,
     };
     if page

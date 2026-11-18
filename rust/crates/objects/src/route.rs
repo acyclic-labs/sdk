@@ -315,11 +315,7 @@ pub async fn list_blobs(
     blobs: &dyn Blobs,
     request: wire::ListBlobsRequest,
 ) -> Result<Served<wire::ListBlobsResponse>, Error> {
-    let after = request
-        .after
-        .as_ref()
-        .map(|after| convert::digest(Some(after)))
-        .transpose()?;
+    let after = convert::optional_digest(request.after.as_ref())?;
     let page = blobs.list(after, request.limit).await?;
     Ok((convert::wire_page(&page), page.revision))
 }
@@ -523,11 +519,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         ObjectsMethod::DeleteBlob => convert::delete(&reply(output)?, None).map(drop),
         ObjectsMethod::ListBlobs => {
             let request: wire::ListBlobsRequest = decode(input)?;
-            let after = request
-                .after
-                .as_ref()
-                .map(|after| convert::digest(Some(after)))
-                .transpose()?;
+            let after = convert::optional_digest(request.after.as_ref())?;
             convert::listed(&reply(output)?, after, request.limit, None).map(drop)
         }
         ObjectsMethod::Retain | ObjectsMethod::RetainFenced => {
