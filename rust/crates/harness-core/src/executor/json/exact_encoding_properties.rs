@@ -119,15 +119,15 @@ fn encode_with_ledger(
 
 // Live bytes a fresh original native ledger holds before any work, under the
 // same budget `accounted` uses.
-fn original_ledger_bytes() -> u64 {
+fn original_ledger_bytes() -> std::result::Result<u64, TestCaseError> {
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs_work::performance::work_budget(1_000_000, 64_000_000),
         &cancellation,
     )
-    .map_err(|(cause, _)| cause.to_string())
-    .unwrap()
+    .map_err(|(cause, _)| TestCaseError::fail(cause.to_string()))?
     .live_allocation_bytes()
+    .map_err(|error| TestCaseError::fail(error.to_string()))
 }
 
 fn check_ledger(index: usize, canonical: bool, native: bool, repeat: bool) -> TestCaseResult {
@@ -156,7 +156,7 @@ fn check_ledger(index: usize, canonical: bool, native: bool, repeat: bool) -> Te
     // custody adds two allocations and the guard header beside the existing
     // output. Both sizes are layout- and feature-dependent, so they come from
     // the real types rather than one build's constants.
-    let ledger_bytes = if native { original_ledger_bytes() } else { 0 };
+    let ledger_bytes = if native { original_ledger_bytes()? } else { 0 };
     let header =
         acyclic_stream::OwnedBytes::vec_guard_header_bytes::<acyclic_fs::NativeAllocation>();
     let expected = WorkCounters {
