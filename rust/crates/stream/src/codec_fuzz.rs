@@ -1,5 +1,6 @@
 //! On-demand checks call the same codecs as transport and recovery.
 use crate::{StreamCategory, StreamError, persistence};
+use acyclic_stream_wire::token::{TokenOperation, UnknownTokenOperation};
 use futures::FutureExt as _;
 use prost::Message as _;
 
@@ -214,14 +215,13 @@ fn record(value: &acyclic_stream_wire::wire::Record) -> bool {
 pub fn check(bytes: &[u8]) -> bool {
     let value = crate::OwnedBytes::copy_from_slice(bytes);
     if let Ok(text) = core::str::from_utf8(bytes) {
-        let expected = crate::TokenOperation::ALL
+        let expected = TokenOperation::ALL
             .iter()
             .copied()
             .find(|operation| operation.as_str() == text);
-        match text.parse::<crate::TokenOperation>() {
+        match text.parse::<TokenOperation>() {
             Ok(operation) if Some(operation) == expected => {}
-            Err(error)
-                if error.category() == StreamCategory::InvalidArgument && expected.is_none() => {}
+            Err(UnknownTokenOperation) if expected.is_none() => {}
             _ => return false,
         }
     }
@@ -593,7 +593,7 @@ async fn publications(
 /// Capture actual journal and framing encoder output without filesystem IO.
 pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     let mut seeds = Vec::new();
-    for operation in crate::TokenOperation::ALL {
+    for operation in TokenOperation::ALL {
         seeds.push((
             format!("token-{}", operation.as_str()),
             operation.as_str().as_bytes().to_vec(),
@@ -756,7 +756,7 @@ fn projection_seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
 #[test]
 fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
     let seeds = futures::executor::block_on(seeds())?;
-    for operation in crate::TokenOperation::ALL {
+    for operation in TokenOperation::ALL {
         assert!(
             seeds.iter().any(|(name, bytes)| {
                 name == &format!("token-{}", operation.as_str())

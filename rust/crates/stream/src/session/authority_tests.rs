@@ -3,6 +3,7 @@ use crate::StreamCategory;
 use acyclic_auth::contract::*;
 use acyclic_auth::testing as signed;
 use acyclic_auth::verify;
+use acyclic_stream_wire::token::TokenOperation;
 use std::sync::{
     RwLock,
     atomic::{AtomicU64, Ordering},
@@ -288,7 +289,7 @@ fn declared_method_credentials_match_session_admission() {
     use acyclic_stream_wire::authorization::StreamMethod;
 
     #[cfg(feature = "test-support")]
-    for operation in crate::TokenOperation::ALL {
+    for operation in TokenOperation::ALL {
         for spelling in [
             operation.as_str().to_owned(),
             format!("{}?", operation.as_str()),
@@ -406,7 +407,7 @@ fn declared_method_credentials_match_session_admission() {
             );
         }
     }
-    let read_actions: Vec<_> = crate::TokenOperation::Read.actions().collect();
+    let read_actions: Vec<_> = TokenOperation::Read.actions().collect();
     assert_eq!(
         read_actions,
         [
@@ -426,7 +427,7 @@ fn declared_method_credentials_match_session_admission() {
     assert!(admit(&auth, &slots, StreamMethod::Tail, "allowed").is_ok());
 
     {
-        let operation = crate::TokenOperation::Follow;
+        let operation = TokenOperation::Follow;
         let actions: Vec<_> = operation.actions().collect();
         for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
             let credential = credential("streams:/allowed", &actions, removed);

@@ -1,7 +1,7 @@
 //! Emit the canonical Stream token operation vocabulary for SDK generation.
 
 fn main() {
-    let operations: Vec<_> = acyclic_stream::TokenOperation::ALL
+    let operations: Vec<_> = acyclic_stream_wire::token::TokenOperation::ALL
         .iter()
         .map(|operation| {
             serde_json::json!({

@@ -1,4 +1,4 @@
-export const rust = ["//rust/crates/stream:token-operations_example"];
+export const rust = ["//rust/crates/stream-wire:token-operations_example"];
 export const runtimeOutputs = ["typescript/packages/stream/src/token-operations.ts"];
 
 export function render([stdout]) {
