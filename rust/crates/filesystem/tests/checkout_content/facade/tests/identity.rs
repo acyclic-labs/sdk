@@ -55,8 +55,8 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
         if safe {
             assert!(matches!(decision, RebaseDecision::Safe { .. }));
             let bytes = read(&mut local, id, 0, 70, &cancel).await?;
-            assert_eq!(&bytes[..5], b"LOCAL");
-            assert_eq!(&bytes[64..70], b"REMOTE");
+            assert_eq!(bytes.get(..5), Some(b"LOCAL".as_slice()));
+            assert_eq!(bytes.get(64..70), Some(b"REMOTE".as_slice()));
             assert!(
                 local
                     .plan_file_extents(
@@ -98,9 +98,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             .await?;
     }
     let extended = read(&mut extending, id, 128, 16, &cancel).await?;
-    assert_eq!(&extended[..4], b"TAIL");
-    assert_eq!(&extended[4..12], &[0; 8]);
-    assert_eq!(&extended[12..], b"aaaa");
+    assert_eq!(extended.as_ref(), b"TAIL\0\0\0\0\0\0\0\0aaaa");
     Ok(())
 }
 
@@ -212,7 +210,7 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
                 .read_named_attribute(id, &attribute, B, &cancel)
                 .await?
                 .value
-                .unwrap()
+                .ok_or("missing named attribute")?
                 .bytes
                 .as_ref(),
             bytes

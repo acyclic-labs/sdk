@@ -60,8 +60,6 @@ mod rebase;
 
 mod restore;
 
-mod sibling_files;
-
 mod transactions;
 
 #[cfg(not(target_arch = "wasm32"))]

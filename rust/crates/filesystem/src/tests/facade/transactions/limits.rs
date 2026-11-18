@@ -13,10 +13,10 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
         (fs.create_volume_with_id(VolumeId::from_bytes([120; 16]), config(), B, &cancellation))
             .await?
             .value;
-    let first_head = open_checkout(&first, pinned(), &cancellation)
+    let first_head = open_checkout(&first, CheckoutMode::read_only_pinned(), &cancellation)
         .await?
         .generation_id();
-    let second_head = open_checkout(&second, pinned(), &cancellation)
+    let second_head = open_checkout(&second, CheckoutMode::read_only_pinned(), &cancellation)
         .await?
         .generation_id();
     assert!(
@@ -32,7 +32,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     assert!(
         (first.checkout(
             GenerationSelector::Exact(second_head),
-            pinned(),
+            CheckoutMode::read_only_pinned(),
             B,
             &cancellation,
         ))
@@ -45,7 +45,8 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             .is_err()
     );
 
-    let mut read_only = open_checkout(&first, pinned(), &cancellation).await?;
+    let mut read_only =
+        open_checkout(&first, CheckoutMode::read_only_pinned(), &cancellation).await?;
     assert!(
         (read_only.mutate(Vec::new(), B, &cancellation,))
             .await

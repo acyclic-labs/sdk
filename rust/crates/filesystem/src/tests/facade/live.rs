@@ -179,7 +179,7 @@ async fn direct_live_resume_preserves_original_identity_and_epoch_fence() -> Tes
     let mut first = open_checkout(&volume, writable_live(), &cancel).await?;
     let mut repeated = open_checkout(&volume, writable_live(), &cancel).await?;
     let metadata = first
-        .lookup_no_follow(&root_path()?, B, &cancel)
+        .lookup_no_follow(&path_parts(&[])?, B, &cancel)
         .await?
         .value
         .record

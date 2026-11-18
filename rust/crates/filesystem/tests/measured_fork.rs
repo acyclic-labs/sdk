@@ -132,7 +132,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let key = IdempotencyKey::new();
-    let cancelled = match parent
+    let Err(cancelled) = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "cancel-child",
             ForkOptions::from_generation(pinned.clone(), key),
@@ -147,16 +147,15 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
             },
         )
         .await
-    {
-        Err(failure) => failure,
-        Ok(_) => return Err("precancelled fork unexpectedly succeeded".into()),
+    else {
+        return Err("precancelled fork unexpectedly succeeded".into());
     };
     assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
     assert!(unbounded!(fs, open_workspace("cancel-child")).is_err());
     assert_eq!(unbounded!(parent, head())?.id(), pinned.id());
     let other = unbounded!(fs, create_workspace("foreign-source"))?;
-    let foreign = match parent
+    let Err(foreign) = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "foreign-child",
             ForkOptions::from_generation(unbounded!(other, head())?, IdempotencyKey::new()),
@@ -171,9 +170,8 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
             },
         )
         .await
-    {
-        Err(failure) => failure,
-        Ok(_) => return Err("foreign fork unexpectedly succeeded".into()),
+    else {
+        return Err("foreign fork unexpectedly succeeded".into());
     };
     assert!(matches!(foreign.error, WorkspaceError::ForeignGeneration));
     assert_eq!(foreign.work().unwrap().backend_read_operations, 0);

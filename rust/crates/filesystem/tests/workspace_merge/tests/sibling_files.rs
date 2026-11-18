@@ -1,8 +1,11 @@
-use acyclic_fs::{ApplyOptions, ForkOptions, Fs, IdempotencyKey, JoinOutcome, PublicationPermit};
+use acyclic_fs::{
+    ApplyOptions, ForkOptions, Fs, IdempotencyKey, JoinOutcome, PublicationPermit,
+    TransactionCommit,
+};
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 
-use crate::fixtures::fork_workspace;
+use crate::fixtures::{commit, fork_workspace};
 
 #[tokio::test]
 async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Box<dyn Error>> {
@@ -58,6 +61,110 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
     assert_eq!(
         unbounded!(main, read("/README.md", 16))?,
         OwnedBytes::from_static(b"base\n")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("file-fold-main"))?;
+    main.write_text("/README.md", "base\n").await?;
+    let base = unbounded!(main, head())?;
+    let mut forks = Vec::new();
+    let same = "same\n".repeat(71);
+    for (name, other) in [
+        ("file-fold-first", "first\n"),
+        ("file-fold-second", "second\n"),
+    ] {
+        let fork = fork_workspace(
+            &main,
+            name,
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+        fork.write_text("/same.rs", &same).await?;
+        fork.write_text("/other.rs", other).await?;
+        if !forks.is_empty() {
+            let mut rewrite = unbounded!(fork, begin_transaction(IdempotencyKey::new()))?;
+            unbounded!(
+                rewrite,
+                write_range("/same.rs", 1, OwnedBytes::from_static(b"a"))
+            )?;
+            assert!(matches!(
+                commit(&mut rewrite).await?,
+                TransactionCommit::Committed(_)
+            ));
+        }
+        forks.push(fork);
+    }
+    let mut outcomes = Vec::new();
+    for fork in &forks {
+        let plan = unbounded!(fork.join_into(&main), plan())?;
+        outcomes.push(
+            match plan
+                .apply(
+                    ApplyOptions {
+                        if_target: plan.target_head(),
+                        idempotency_key: IdempotencyKey::new(),
+                    },
+                    std::collections::BTreeMap::new(),
+                    PublicationPermit::Unrestricted,
+                )
+                .await?
+            {
+                JoinOutcome::Applied(_) => Vec::new(),
+                JoinOutcome::Conflicted { conflicts, .. } => plan
+                    .describe_conflicts(conflicts, false)
+                    .await?
+                    .conflicts
+                    .into_iter()
+                    .map(|conflict| conflict.path)
+                    .collect(),
+                _ => return Err("join did not apply".into()),
+            },
+        );
+    }
+    assert_eq!(outcomes, [Vec::new(), vec![Some("/other.rs".to_owned())]]);
+
+    let fork = fork_workspace(
+        &main,
+        "file-fold-third",
+        ForkOptions::from_generation(base, IdempotencyKey::new()),
+    )
+    .await?;
+    fork.write_text("/same.rs", &same).await?;
+    let plan = unbounded!(fork.join_into(&main), plan())?;
+    match plan
+        .apply(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            },
+            std::collections::BTreeMap::new(),
+            PublicationPermit::Unrestricted,
+        )
+        .await?
+    {
+        // Folded into the file main already holds: nothing left to publish.
+        JoinOutcome::NoChanges(_) => {}
+        JoinOutcome::Conflicted { conflicts, .. } => {
+            let described = plan.describe_conflicts(conflicts, false).await?;
+            return Err(format!(
+                "an identical independent creation must fold: {:?}",
+                described.conflicts
+            )
+            .into());
+        }
+        _ => return Err("an identical independent creation changes nothing".into()),
+    }
+    assert_eq!(
+        unbounded!(main, read("/same.rs", same.len() as u64))?.as_ref(),
+        same.as_bytes()
+    );
+    assert_eq!(
+        unbounded!(main, read("/other.rs", 16))?,
+        OwnedBytes::from_static(b"first\n")
     );
     Ok(())
 }

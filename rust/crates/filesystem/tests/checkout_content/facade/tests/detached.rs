@@ -90,7 +90,7 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
                 .read_named_attribute(&attribute, B, &cancel)
                 .await?
                 .value
-                .unwrap()
+                .ok_or("missing detached file attribute")?
                 .bytes
                 .as_ref(),
             bytes
@@ -185,8 +185,8 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
         )
         .await?
         .value;
-    assert_eq!(&read.bytes[..4], b"open");
-    assert_eq!(&read.bytes[64..80], &[0; 16]);
+    assert_eq!(read.bytes.get(..4), Some(b"open".as_slice()));
+    assert_eq!(read.bytes.get(64..80), Some([0; 16].as_slice()));
     detached
         .change_content(
             ContentChange::Resize { logical_bytes: 192 },

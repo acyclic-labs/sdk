@@ -196,7 +196,7 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
             retried.value
         );
     }
-    let mut final_tree = open_checkout(&volume, pinned(), &cancel).await?;
+    let mut final_tree = open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancel).await?;
     for name in ["a", "b", "c", "d"] {
         assert_eq!(
             final_tree
@@ -329,7 +329,7 @@ async fn verify_withdrawn_member(
             "withdrawal changed another proposal's durable operation"
         );
     }
-    let mut tree = open_checkout(volume, pinned(), cancel).await?;
+    let mut tree = open_checkout(volume, CheckoutMode::read_only_pinned(), cancel).await?;
     for (index, name) in ["a", "b"].into_iter().enumerate() {
         let read = tree
             .read_file_range(
@@ -487,7 +487,7 @@ mod property {
                         offset: 0, bytes: OwnedBytes::from(vec![u8::try_from(index + 1)?]),
                     }, ContentTimes::Preserve, B, &cancel).await?;
                 }
-                let actual = open_checkout(&volume, pinned(), &cancel).await?;
+                let actual = open_checkout(&volume, CheckoutMode::read_only_pinned(), &cancel).await?;
                 assert_eq!(actual.root.file_table, serial.root.file_table, "actual batch differs from its serial history");
                 Ok::<_, Box<dyn std::error::Error>>(())
             }).map_err(|error| TestCaseError::fail(error.to_string()))?;

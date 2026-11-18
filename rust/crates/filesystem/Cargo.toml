@@ -56,6 +56,8 @@ acyclic-fs-work = "observations"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
+mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
+checkout_cancellation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_content = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_live = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_merge = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
@@ -63,6 +65,7 @@ checkout_profiles = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyc
 checkout_tracking = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_publication = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "futures", "tokio"]
 checkout_read = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
+checkout_reconciliation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 local_facade = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_objects", "acyclic_stream", "tempfile", "tokio"]
 creation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tempfile", "tokio"]
 native_source = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tempfile", "tokio"]
@@ -80,7 +83,7 @@ wire_error_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_auth", "acyc
 wire_rpc = ["acyclic_fs", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio", "tokio_stream", "tonic"]
 source_lifecycle = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tempfile", "tokio"]
 s3_contracts = ["acyclic_fs", "acyclic_fs_work", "bytes", "tokio"]
-workspace_append = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "futures", "proptest", "tokio"]
+workspace_append = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "bytes", "futures", "proptest", "tempfile", "tokio"]
 workspace_context_contracts = ["acyclic_fs", "tokio"]
 workspace_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "sha2", "tokio", "unicode_normalization"]
 workspace_creation_race = ["acyclic_fs", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio"]
@@ -202,6 +205,18 @@ path = "tests/checkout_read.rs"
 [[test]]
 name = "checkout_profiles"
 path = "tests/checkout_profiles.rs"
+
+[[test]]
+name = "mount_routing"
+path = "tests/mount_routing.rs"
+
+[[test]]
+name = "checkout_cancellation"
+path = "tests/checkout_cancellation.rs"
+
+[[test]]
+name = "checkout_reconciliation"
+path = "tests/checkout_reconciliation.rs"
 
 [[test]]
 name = "checkout_content"

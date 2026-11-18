@@ -384,7 +384,3 @@ pub enum CheckoutModeError {
     #[error("direct mutation requires live consistency")]
     DirectRequiresLive,
 }
-
-#[cfg(test)]
-#[path = "tests/model.rs"]
-mod tests;
