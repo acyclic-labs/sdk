@@ -17,6 +17,13 @@ export function* manifestDependencies(manifest) {
         yield {target, kind, alias, value};
 }
 
+export function lockedReference(reference) {
+  const match = /^(\S+)(?: ([^\s()]+)(?: \(([^\s]+)\))?)?$/.exec(reference);
+  if (!match) throw Error(`invalid Cargo.lock dependency ${reference}`);
+  const [, name, version, source] = match;
+  return pkg => pkg.name === name && (!version || pkg.version === version) && (!source || pkg.source === source);
+}
+
 export function selectionWorker(name, flags, workers) {
   return createHash('sha256').update([name, ...flags].join('\0')).digest().readUInt32LE(0) % workers;
 }

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
-import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
+import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, lockedReference, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -101,10 +101,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
         if (!manifests.has(file)) {manifests.add(file); pending.push(file);}
       }
       return (item.dependencies ?? []).map(dependency => {
-        const match = /^(\S+)(?: (\S+))?(?: \((.+)\))?$/.exec(dependency);
-        if (!match) throw Error(`invalid Cargo.lock dependency ${dependency}`);
-        const candidates = (lock.package ?? []).filter(candidate => candidate.name === match[1] &&
-          (!match[2] || candidate.version === match[2]) && (!match[3] || candidate.source === match[3]));
+        const candidates = (lock.package ?? []).filter(lockedReference(dependency));
         if (candidates.length !== 1) throw Error(`ambiguous or missing Cargo.lock dependency ${dependency}`);
         return candidates[0];
       });
@@ -298,9 +295,9 @@ function lockedOwner(lock, {name, version}) {
 }
 
 function lockedCandidates(candidates, declaration, owner) {
+  const edges = (owner.dependencies ?? []).map(lockedReference);
   return candidates.filter(pkg => pkg.name === declaration.name && versionMatches(pkg.version, declaration.req) &&
-    (owner.dependencies ?? []).some(key =>
-      key === pkg.name || key === `${pkg.name} ${pkg.version}` || key === `${pkg.name} ${pkg.version} (${pkg.source})`));
+    edges.some(matches => matches(pkg)));
 }
 
 function uniqueDependency(owner, declaration, matches) {
