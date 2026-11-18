@@ -1,7 +1,7 @@
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
-use acyclic_fs::{
-    CancellationToken, Fs, Lifecycle, LocalOptions, ObjectId, ObjectKind, VolumeConfig, VolumeId,
-};
+use acyclic_fs::{CancellationToken, Fs, Lifecycle, LocalOptions, VolumeConfig};
+use acyclic_fs_format::identity::VolumeId;
+use acyclic_fs_format::object_reference::{ObjectId, ObjectKind};
 use acyclic_fs_work::performance::WorkBudget;
 
 use crate::checkout_modes::writable_pinned;

@@ -4,8 +4,9 @@ use acyclic_fs::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{
-    ForkOptions, NativeAuthorityGuard, NativeMaterializationWork, OperationId, VolumeInitialization,
+    ForkOptions, NativeAuthorityGuard, NativeMaterializationWork, VolumeInitialization,
 };
+use acyclic_fs_format::identity::OperationId;
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters};
 use std::error::Error;
 

@@ -1,8 +1,9 @@
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Digest, ForkOptions, Fs, FsError,
-    IdempotencyKey, OperationId, PublicationPermit, PublicationReservation, Transaction,
-    TransactionCommit, WorkspaceError,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, Fs, FsError,
+    IdempotencyKey, PublicationPermit, PublicationReservation, Transaction, TransactionCommit,
+    WorkspaceError,
 };
+use acyclic_fs_format::identity::{Digest, OperationId};
 use acyclic_fs_work::performance::{OperationFailure, WorkBudget};
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
