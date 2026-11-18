@@ -273,7 +273,8 @@ const claims = {
     "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
     "terminal_frames::terminal_drain_cancellation_does_not_require_slave_closure",
     "a retained PTY slave must not keep a cancelled drainer waiting", [],
-    { target: ["--test", "main"] },
+    { runner: ["bazel", "run", "//rust/crates/harness-tui:main_cases", "--",
+      "terminal_frames::terminal_drain_cancellation_does_not_require_slave_closure", "--exact", "--nocapture"] },
   ],
   "native-usage-counters": [
     "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
