@@ -8,7 +8,11 @@ pub(crate) use extent_objects::{put_extent_page, put_object};
 
 #[path = "../../../tests/support/generation_objects.rs"]
 mod generation_objects;
-pub(crate) use generation_objects::{put_file_metadata, put_file_table_page, put_generation_root};
+pub(crate) use generation_objects::{put_file_metadata, put_generation_root};
+
+#[path = "../../../tests/support/file_table_objects.rs"]
+mod file_table_objects;
+pub(crate) use file_table_objects::put_file_table_page;
 
 #[path = "../../../tests/support/tree_objects.rs"]
 mod tree_objects;

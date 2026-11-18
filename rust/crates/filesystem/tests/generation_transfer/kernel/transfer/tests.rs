@@ -20,9 +20,8 @@ use super::super::tree_objects::put_tree_page;
 mod transfer_manifest;
 use transfer_manifest::fixture;
 
-use super::super::generation_objects::{
-    put_file_metadata, put_file_table_page, put_generation_root,
-};
+use super::super::file_table_objects::put_file_table_page;
+use super::super::generation_objects::{put_file_metadata, put_generation_root};
 
 #[tokio::test]
 async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
