@@ -1,6 +1,6 @@
 use super::*;
-use acyclic_native_runtime::resources::descriptors_naming;
 use acyclic_native_runtime::testing::drive;
+use acyclic_process_resources::resources::descriptors_naming;
 
 fn append(path: &str, tail: u64) -> Result<AppendRequest, Box<dyn std::error::Error>> {
     Ok(AppendRequest {

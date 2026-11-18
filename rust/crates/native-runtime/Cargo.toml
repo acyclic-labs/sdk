@@ -110,6 +110,7 @@ tracing-core = { version = "0.1.36", default-features = false, features = ["std"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-process-resources = { version = "=0.2.0", path = "../process-resources" }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing-subscriber.workspace = true

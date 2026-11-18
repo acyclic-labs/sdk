@@ -33,7 +33,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
     std::fs::write(&path, b"actual")?;
     let file = fixture_file(&path)?;
     assert_eq!(
-        acyclic_native_runtime::resources::descriptors_naming(&path)?,
+        acyclic_process_resources::resources::descriptors_naming(&path)?,
         1
     );
     let cancellation = CancellationToken::new();
@@ -46,7 +46,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
         Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::Cancelled(_))
     ));
     assert_eq!(
-        acyclic_native_runtime::resources::descriptors_naming(&path)?,
+        acyclic_process_resources::resources::descriptors_naming(&path)?,
         0
     );
     scope.release()?;

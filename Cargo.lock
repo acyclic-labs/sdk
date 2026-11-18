@@ -368,6 +368,7 @@ dependencies = [
  "acyclic-objects",
  "acyclic-observability",
  "acyclic-process-identity",
+ "acyclic-process-resources",
  "acyclic-stream",
  "acyclic-stream-wire",
  "acyclic-test-support",
@@ -974,6 +975,7 @@ dependencies = [
  "acyclic-native-lines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-process-resources",
  "acyclic-stream",
  "acyclic-stream-wire",
  "acyclic-test-support",
@@ -1571,6 +1573,7 @@ dependencies = [
  "acyclic-host-platform",
  "acyclic-observability",
  "acyclic-process-identity",
+ "acyclic-process-resources",
  "acyclic-test-support",
  "base64 0.23.1",
  "blake3",
@@ -1755,6 +1758,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-process-resources"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "acyclic-proto-build"
 version = "0.2.0"
 dependencies = [
@@ -1828,6 +1840,7 @@ dependencies = [
  "acyclic-log-frame",
  "acyclic-native-runtime",
  "acyclic-observability",
+ "acyclic-process-resources",
  "acyclic-proto-build",
  "acyclic-stream-body",
  "acyclic-stream-wire",

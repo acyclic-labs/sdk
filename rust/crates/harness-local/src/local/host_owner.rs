@@ -356,7 +356,7 @@ impl HostWorkspaceOwner {
     }
 
     fn resources(&self) -> Result<Value> {
-        use acyclic_native_runtime::resources::{mounts_beneath, sample_process_resources};
+        use acyclic_process_resources::resources::{mounts_beneath, sample_process_resources};
         let process = sample_process_resources().map_err(storage)?;
         let workspace = self.local.workspace_path().ok_or_else(|| {
             Error::Invalid(
