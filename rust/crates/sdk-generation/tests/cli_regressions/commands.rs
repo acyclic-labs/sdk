@@ -254,6 +254,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 .iter()
                 .map(|flag| flag.as_str().unwrap()),
         );
+        let Some(root) = manifest_path
+            .ancestors()
+            .nth(declared_manifest.components().count())
+        else {
+            return Ok(None);
+        };
         let selected_lock = metadata["selected_lock"].as_str().unwrap();
         let config = if selected_lock.is_empty() {
             None
@@ -277,12 +283,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
-        let Some(root) = manifest_path
-            .ancestors()
-            .nth(declared_manifest.components().count())
-        else {
-            return Ok(None);
-        };
         for ancestor in root.ancestors() {
             if ancestor.join(".cargo").try_exists()? {
                 continue 'fixture;
