@@ -128,12 +128,18 @@ fn historical_docs_rs_policy_is_required_and_validated() {
         historical_profiles_for_package(&metadata, "feature-rich", "host", &targets)
     };
     let profiles =
-        plan(serde_json::json!({"all-features":true,"no-default-features":true})).unwrap();
+        plan(serde_json::json!({"all-features":true,"no-default-features":true,"features":["other/feature"]})).unwrap();
     assert!(profiles
         .iter()
         .any(|profile| profile.default_features && profile.features.is_empty()));
     assert!(profiles.iter().any(|profile| !profile.default_features
-        && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
+        && profile.features
+            == BTreeSet::from([
+                "codec".into(),
+                "json".into(),
+                "other/feature".into(),
+                "wasm".into()
+            ])));
     for policy in [
         serde_json::json!({"all-features":"true"}),
         serde_json::json!({"rustdoc-args":["--cfg","pretend"]}),
