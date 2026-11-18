@@ -1929,34 +1929,36 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let batches = self
                     .list_all(&self.retention_key('r', root_hash, ""))
                     .await?;
-                let mut removed = Vec::new();
-                for (key, _) in &batches {
-                    let Some(references) = self.batch(key).await? else {
+                let existed = !batches.is_empty();
+                let mut batch_keys = Vec::new();
+                let mut batch_references = Vec::new();
+                for (key, _) in batches {
+                    let Some(references) = self.batch(&key).await? else {
                         continue;
                     };
-                    self.medium.remove(key).await.map_err(moved)?;
-                    removed.push((key, references));
+                    self.medium.remove(&key).await.map_err(moved)?;
+                    batch_keys.push(key);
+                    batch_references.push(references);
                 }
                 // A batch back from a crash must find its index keys: its removal is
                 // durable before theirs.
-                let batch_keys: Vec<_> = removed.iter().map(|(key, _)| (*key).clone()).collect();
                 self.medium.flush(&batch_keys).await.map_err(medium)?;
                 let mut index_keys = Vec::new();
-                for (key, references) in &removed {
+                for (key, references) in batch_keys.into_iter().zip(batch_references) {
                     let name = key.rsplit('/').next().ok_or_else(corrupt)?;
                     let tag = Self::batch_tag("r", root_hash, name);
-                    self.unreference(references, &tag, Some(&mut index_keys))
+                    self.unreference(&references, &tag, Some(&mut index_keys))
                         .await?;
                 }
                 // An index key back from a crash would pin its child forever.
                 self.medium.flush(&index_keys).await.map_err(medium)?;
-                let revision = if batches.is_empty() {
-                    issued.applied.current()
-                } else {
+                let revision = if existed {
                     issued.commit()
+                } else {
+                    issued.applied.current()
                 };
                 Ok(Released {
-                    existed: !batches.is_empty(),
+                    existed,
                     revision: Some(revision),
                 })
             }
