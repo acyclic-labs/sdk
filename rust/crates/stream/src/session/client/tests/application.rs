@@ -184,17 +184,17 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
         (0, wire::SessionDelivery::All, Ok(())),
         (1, wire::SessionDelivery::All, Ok(())),
         (
-            crate::MAX_RECORD_KEY_BYTES,
+            acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES,
             wire::SessionDelivery::All,
             Ok(()),
         ),
         (
-            crate::MAX_RECORD_KEY_BYTES + 1,
+            acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES + 1,
             wire::SessionDelivery::All,
             Err(StreamCategory::LimitExceeded),
         ),
         (
-            crate::MAX_RECORD_KEY_BYTES + 1,
+            acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES + 1,
             wire::SessionDelivery::Latest,
             Err(StreamCategory::LimitExceeded),
         ),

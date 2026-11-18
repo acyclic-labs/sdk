@@ -107,7 +107,7 @@ fn validate(
     for range in keys {
         let key = bytes.get(range.clone()).ok_or(io::ErrorKind::InvalidData)?;
         validation
-            .key(key, MAX_RECORD_KEY_BYTES)
+            .key(key)
             .map_err(|_| io::ErrorKind::InvalidData)?;
     }
     for (name, value) in attributes {

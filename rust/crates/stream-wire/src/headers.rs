@@ -1,4 +1,7 @@
 //! The canonical header contract is shared by owned and page-backed ingress.
+/// Maximum encoded width of one indexed record key.
+pub const MAX_RECORD_KEY_BYTES: usize = 1024;
+
 /// Header grammar or size rejection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderError {
@@ -22,8 +25,8 @@ impl<'a> HeaderValidation<'a> {
     ///
     /// # Errors
     /// Returns a limit error for an oversized key.
-    pub fn key(&mut self, key: &'a [u8], maximum: usize) -> Result<(), HeaderError> {
-        if key.len() > maximum {
+    pub fn key(&mut self, key: &'a [u8]) -> Result<(), HeaderError> {
+        if key.len() > MAX_RECORD_KEY_BYTES {
             return Err(HeaderError::Limit);
         }
         self.invalid |= self.previous_key.is_some_and(|previous| previous >= key);

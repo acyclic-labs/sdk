@@ -56,7 +56,7 @@ pub fn filesystem_paths(path: &[u8]) -> Result<(), StreamError> {
             assert!(
                 filter.matches(&crate::RecordHeaders::new(
                     vec![
-                        key.get(..crate::MAX_RECORD_KEY_BYTES)
+                        key.get(..acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES)
                             .unwrap_or(key)
                             .to_vec()
                             .into()
@@ -467,7 +467,13 @@ fn commands(
     let headers = match &value {
         None => crate::RecordHeaders::default(),
         Some(value) => crate::RecordHeaders::new(
-            vec![value.slice(..value.len().min(crate::MAX_RECORD_KEY_BYTES))],
+            vec![
+                value.slice(
+                    ..value
+                        .len()
+                        .min(acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES),
+                ),
+            ],
             vec![crate::Attribute {
                 name: "topic".into(),
                 value: value.clone(),

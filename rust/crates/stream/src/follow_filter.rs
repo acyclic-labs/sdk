@@ -20,11 +20,11 @@ impl FollowFilter {
     /// Select one exact key, including empty and maximum-length keys. This
     /// shares the canonical range representation used by remote sessions.
     pub fn exact_key(key: bytes::Bytes) -> Result<Self, StreamError> {
-        if key.len() > crate::MAX_RECORD_KEY_BYTES {
+        if key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         let mut end = key.to_vec();
-        if end.len() < crate::MAX_RECORD_KEY_BYTES {
+        if end.len() < acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
             end.push(0);
         } else if let Some(index) = end.iter().rposition(|byte| *byte != u8::MAX) {
             if let Some(byte) = end.get_mut(index) {
@@ -74,7 +74,7 @@ impl FollowFilter {
     /// must project the indirect record and authorize its exact resulting keys
     /// before disclosure. It must never be used as an authority ceiling.
     pub fn including_projection_key(&self, key: &[u8]) -> Result<Self, StreamError> {
-        if key.len() >= crate::MAX_RECORD_KEY_BYTES {
+        if key.len() >= acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
             return Err(StreamError::InvalidArgument);
         }
         let mut clauses = self.clauses().to_vec();
@@ -393,7 +393,7 @@ impl Clause {
 }
 
 fn projection_range(key: &[u8]) -> Result<wire::KeyRange, StreamError> {
-    if key.len() >= crate::MAX_RECORD_KEY_BYTES {
+    if key.len() >= acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
         return Err(StreamError::InvalidArgument);
     }
     let mut end = key.to_vec();
@@ -552,8 +552,8 @@ mod tests {
         for size in [
             0,
             1,
-            crate::MAX_RECORD_KEY_BYTES - 1,
-            crate::MAX_RECORD_KEY_BYTES,
+            acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES - 1,
+            acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES,
         ] {
             for byte in 0..=u8::MAX {
                 let key = bytes::Bytes::from(vec![byte; size]);
@@ -561,7 +561,7 @@ mod tests {
                 let mut candidates = vec![key.to_vec(), vec![], vec![0], vec![u8::MAX]];
                 let mut extended = key.to_vec();
                 extended.push(0);
-                if extended.len() <= crate::MAX_RECORD_KEY_BYTES {
+                if extended.len() <= acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
                     candidates.push(extended);
                 }
                 if !key.is_empty() {

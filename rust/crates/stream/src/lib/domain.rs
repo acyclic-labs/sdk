@@ -358,8 +358,8 @@ impl ReadKeySeek {
         end: Option<&[u8]>,
         order: ReadOrder,
     ) -> Result<(), StreamError> {
-        if key.len() > crate::MAX_RECORD_KEY_BYTES
-            || end.is_some_and(|end| end.len() > crate::MAX_RECORD_KEY_BYTES)
+        if key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES
+            || end.is_some_and(|end| end.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES)
         {
             return Err(StreamError::LimitExceeded);
         }

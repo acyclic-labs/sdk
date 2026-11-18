@@ -28,7 +28,7 @@ impl Selection {
                 start: bytes::Bytes::new(),
                 end: bytes::Bytes::from_static(&[0]),
             }];
-            if key.len() == acyclic_stream::MAX_RECORD_KEY_BYTES {
+            if key.len() == acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
                 // The original producer truncates the index, not the facts.
                 // Select this whole candidate bucket and check the full path.
                 let mut end = key.to_vec();
