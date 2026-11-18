@@ -915,16 +915,21 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     /// when one is absent or marked by a deleter. Whether it created any key;
     /// an unknown index write keeps its original failure, so the holder must
     /// not commit.
-    async fn reference(&self, children: &[Digest], tag: &str) -> Result<bool, Error> {
+    async fn reference(
+        &self,
+        children: &[Digest],
+        tag: &str,
+        mut flush_keys: Option<&mut Vec<String>>,
+    ) -> Result<bool, Error> {
         let mut created = false;
         for child in children {
-            match self
-                .medium
-                .create(&self.index_key(child, tag), OwnedBytes::new())
-                .await
-            {
+            let key = self.index_key(child, tag);
+            match self.medium.create(&key, OwnedBytes::new()).await {
                 Ok(new) => created |= new,
                 Err(error) => return Err(moved(error)),
+            }
+            if let Some(keys) = flush_keys.as_deref_mut() {
+                keys.push(key);
             }
         }
         for child in children {
@@ -953,7 +958,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         key: &str,
         batch: Vec<u8>,
     ) -> Result<(), Commit> {
-        match self.reference(references, tag).await {
+        let mut keys = self
+            .medium
+            .volatile()
+            .then(|| Vec::with_capacity(references.len() + 1));
+        match self.reference(references, tag, keys.as_mut()).await {
             Ok(_) => {}
             Err(error) if error.code == ErrorCode::OutcomeUnknown => {
                 return Err(Commit::Unknown(error));
@@ -966,11 +975,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Err(error) => return Err(Commit::Failed(medium(error))),
         }
         self.flush_blobs(Some(references), || {
-            references
-                .iter()
-                .map(|child| self.index_key(child, tag))
-                .chain(std::iter::once(key.to_owned()))
-                .collect()
+            let mut keys = keys.unwrap_or_default();
+            keys.push(key.to_owned());
+            keys
         })
         .await
         .map_err(Commit::Unflushed)
@@ -1433,7 +1440,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // Any writer of the payload first holds every child; an index key
         // outlives a refusal, pinning its child until this version's removal.
         let tag = Self::envelope_tag(&digest, &envelope.version);
-        let indexed = match self.reference(&envelope.references, &tag).await {
+        let indexed = match self.reference(&envelope.references, &tag, None).await {
             Ok(indexed) => indexed,
             Err(error) if error.code == ErrorCode::OutcomeUnknown => return Ok(Put::Unknown),
             Err(error) => return Err(error),
