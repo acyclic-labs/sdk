@@ -515,7 +515,7 @@ mod tests {
                 0,
                 "no fiber SDK creation entered"
             );
-            assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
+            assert_eq!(work.live_allocation_bytes(), Ok(payload));
             assert_eq!(
                 (&work.state).lock().budget,
                 budget,
@@ -551,7 +551,7 @@ mod tests {
                 work.receipt().unwrap().peak_allocation_bytes,
                 payload + exchange
             );
-            assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
+            assert_eq!(work.live_allocation_bytes(), Ok(payload));
             assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: the actual conversion cleanup has returned this thread.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
@@ -585,8 +585,8 @@ mod tests {
                 "real create and mandatory delete, no conversion"
             );
             assert_eq!(
-                (&work.state).lock().live_allocation_bytes(),
-                crate::NativeMaterializationWork::accounting_state_bytes()
+                work.live_allocation_bytes(),
+                Ok(crate::NativeMaterializationWork::accounting_state_bytes())
             );
             assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: conversion was never entered.
@@ -616,8 +616,8 @@ mod tests {
                 "both actual cleanup calls survived cancellation"
             );
             assert_eq!(
-                (&work.state).lock().live_allocation_bytes(),
-                crate::NativeMaterializationWork::accounting_state_bytes()
+                work.live_allocation_bytes(),
+                Ok(crate::NativeMaterializationWork::accounting_state_bytes())
             );
             // SAFETY: conversion cleanup still ran.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
