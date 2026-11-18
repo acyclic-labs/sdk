@@ -1083,6 +1083,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-resources:acyclic_process_resources",
         "//rust/crates/stream-body:acyclic_stream_body",
+        "//rust/crates/stream-trust:acyclic_stream_trust",
         "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//axum-0.8.9",
