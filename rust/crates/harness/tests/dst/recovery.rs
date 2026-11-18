@@ -115,11 +115,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
         tokio::time::pause();
         // The controller retains the original world from before execution, so
         // failure/unwind cannot delete its journal through TempDir cleanup.
-        let directory = tempfile::Builder::new()
-            .prefix("sdk-dst-replay-")
-            .tempdir()
-            .map_err(seed_error)?
-            .keep();
+        let directory = temporary_directory().map_err(seed_error)?.keep();
         let seed_path = seed.retain(&directory)?;
         println!("DST_REPLAY_SEED={}", seed_path.display());
         let seed = ReplaySeed::read(&seed_path)?;

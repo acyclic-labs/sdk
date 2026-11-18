@@ -212,14 +212,14 @@ impl NativeDemandSource {
     }
     fn next_entry(
         &self,
+        logical: &NamespacePath,
         directory: &DemandPath,
         entry: &HostListedEntry,
         backing: &mut Owned<Vec<SourceDirectoryEntry>>,
         work: &mut CallbackWork,
     ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
-        let observed;
         let stat = if let Some(stat) = &entry.stat {
-            stat
+            stat.clone()
         } else {
             #[cfg(unix)]
             let result = self
@@ -236,14 +236,28 @@ impl NativeDemandSource {
                 .and_then(|parent| {
                     crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
                 });
-            observed = match result {
+            match result {
                 Ok(stat) => stat,
                 Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(None);
                 }
                 Err(error) => return Err(error),
+            }
+        };
+        #[cfg(feature = "test-support")]
+        let stat = {
+            #[cfg(unix)]
+            let child = directory.join(&entry.name);
+            #[cfg(windows)]
+            let child = {
+                let mut child = directory.clone();
+                if !child.is_empty() {
+                    child.push(u16::from(b'\\'));
+                }
+                child.extend_from_slice(&entry.name);
+                child
             };
-            &observed
+            with_fixture_content(self, &child, stat, work)?
         };
         let ((encoding, bytes), allocation) = source_name(&entry.name, self.inner.profile, work)?;
         backing.bytes += bytes.capacity() as u64;
@@ -254,10 +268,11 @@ impl NativeDemandSource {
                 .map_err(DemandError::from)?;
         }
         let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
-        Ok(Some(SourceDirectoryEntry {
-            name,
-            node: Self::node(stat),
-        }))
+        let node = Self::node(
+            child_fixture_path_key(logical, &name, &stat).as_deref(),
+            &stat,
+        );
+        Ok(Some(SourceDirectoryEntry { name, node }))
     }
     fn page_entries(
         &self,
@@ -288,7 +303,8 @@ impl NativeDemandSource {
                 let Some((entry, _, _)) = &state.pending else {
                     break;
                 };
-                let converted = self.next_entry(&relative, entry, backing, work)?;
+                let converted =
+                    self.next_entry(&state.directory, &relative, entry, backing, work)?;
                 let (entry, bytes, carried) =
                     state.pending.take().ok_or(DemandError::StaleCursor)?;
                 drop(entry);
@@ -349,7 +365,7 @@ impl NativeDemandSource {
         if !stat.is_dir() {
             return Err(DemandError::NotDirectory);
         }
-        let observed = version(&stat);
+        let observed = version(fixture_path_key(directory, &stat).as_deref(), &stat);
         let restore = cursor.is_some();
         let (cursor, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
@@ -455,7 +471,12 @@ impl NativeDemandSource {
             native: Some(lease.cursor.clone().erase()),
         });
         self.check(&source, work)?;
-        if self.metadata(directory, work)?.as_ref().map(version) != Some(observed) {
+        if self
+            .metadata(directory, work)?
+            .as_ref()
+            .map(|metadata| version(fixture_path_key(directory, metadata).as_deref(), metadata))
+            != Some(observed)
+        {
             *lease
                 .cursor
                 .position

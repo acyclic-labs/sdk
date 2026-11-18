@@ -515,7 +515,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 kind: AggregateKind::Task,
                 id: format!("grants-{custody}"),
             };
-            let directory = tempfile::tempdir().map_err(oracle::failed)?;
+            let directory = temporary_directory().map_err(oracle::failed)?;
             match custody {
                 "logical" => {
                     let host = FilesystemHost::new(
