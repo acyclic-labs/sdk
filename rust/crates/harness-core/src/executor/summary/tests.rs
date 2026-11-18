@@ -208,12 +208,12 @@ fn completed_summary_moves_original_text_and_retires_consumed_backing() -> Resul
                 ModelEvent::MessageCompleted { text: final_text },
                 Some(io),
             )?;
-            let copied = io.receipt().bytes_copied;
+            let copied = io.receipt()?.bytes_copied;
             let text = execution.collect_summary_text(events)?;
             assert_eq!(text, "summary!");
             assert_eq!(text.as_ptr(), original);
             assert_eq!(
-                io.receipt().bytes_copied,
+                io.receipt()?.bytes_copied,
                 copied,
                 "completed summary collection copied its already owned text"
             );
