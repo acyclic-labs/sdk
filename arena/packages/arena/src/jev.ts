@@ -1,5 +1,7 @@
 /** TypeSafe's Jev through OpenRouter's Decisions endpoint (or TypeSafe's own host). */
 
+import { retryDelayMs } from "./retry-spacing.mjs";
+
 export type Choice = { type: "choice"; instructions: string; criteria: Record<string, string> };
 export type Score = { type: "score"; instructions: string; criteria: string[] };
 export type Noul = { type: "noul"; instructions: string };
@@ -57,7 +59,6 @@ export class Jev {
 
   async decide(state: string, questions: Record<string, Question>): Promise<JevResponse> {
     const body = JSON.stringify({ model: this.model, state, questions });
-    let delay = 1000;
     for (let attempt = 0; ; attempt++) {
       const res = await this.fetchImpl(this.baseUrl, {
         method: "POST",
@@ -73,8 +74,8 @@ export class Jev {
       }
       const text = await res.text();
       if (attempt < this.retries && [429, 500, 502, 503].includes(res.status)) {
+        const delay = retryDelayMs(1000, Number.MAX_VALUE, Math.min(attempt, 52), 1);
         await new Promise((r) => setTimeout(r, delay));
-        delay *= 2;
         continue;
       }
       throw new Error(`jev: ${res.status} ${text.slice(0, 400)}`);
