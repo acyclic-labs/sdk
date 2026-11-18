@@ -73,6 +73,12 @@ struct Session {
     response: Response,
     initializing: bool,
     initialization_trace: Fd,
+    // Control receipts and statuses are queued while the owner is not
+    // reading. The shared event loop never blocks on one client's socket.
+    control_pending: [u8; 64],
+    control_filled: usize,
+    control_sent: usize,
+    control_registered: bool,
 }
 
 enum Response {
@@ -215,13 +221,73 @@ impl Session {
                 response: Response::Backend,
                 initializing: false,
                 initialization_trace: -1,
+                control_pending: [0; 64],
+                control_filled: 0,
+                control_sent: 0,
+                control_registered: true,
             })
         };
         Ok(base)
     }
 
+    fn control_events(&self) -> u32 {
+        sys::EPOLL_IN
+            | if self.control_filled > self.control_sent {
+                sys::EPOLL_OUT
+            } else {
+                0
+            }
+    }
+
+    fn flush_control(&mut self) -> Result<(), Errno> {
+        while self.control_sent < self.control_filled {
+            let bytes = self
+                .control_pending
+                .get(self.control_sent..self.control_filled)
+                .ok_or(Errno(sys::EINVAL))?;
+            match sys::write(self.control, bytes) {
+                Ok(0) => return Err(Errno(sys::EPIPE)),
+                Ok(written) => self.control_sent += written,
+                Err(Errno(sys::EINTR)) => {}
+                Err(Errno(sys::EAGAIN)) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+        self.control_filled = 0;
+        self.control_sent = 0;
+        Ok(())
+    }
+
+    fn control_write(&mut self, bytes: &[u8]) -> Result<(), Errno> {
+        let end = self
+            .control_filled
+            .checked_add(bytes.len())
+            .ok_or(Errno(sys::EINVAL))?;
+        let slot = self
+            .control_pending
+            .get_mut(self.control_filled..end)
+            .ok_or(Errno(sys::EPIPE))?;
+        slot.copy_from_slice(bytes);
+        self.control_filled = end;
+        self.flush_control()
+    }
+
+    fn send_receipt(&mut self, receipt: Receipt) -> Result<(), Errno> {
+        let bytes: [u8; Receipt::SIZE] = receipt.try_into().map_err(|()| Errno(sys::EINVAL))?;
+        self.control_write(&bytes)
+    }
+
     fn interest(&mut self, queue: Fd) -> Result<(), Errno> {
         let base = ptr::from_ref(self).addr() as u64;
+        if self.control_registered {
+            sys::interest(
+                queue,
+                self.control,
+                false,
+                self.control_events(),
+                base | CONTROL,
+            )?;
+        }
         if self.waiting_helper {
             sys::interest(
                 queue,
@@ -326,7 +392,7 @@ impl Session {
         )?;
         self.interest(queue)?;
         // Acceptance proves that this host owns all three original handles.
-        write_control(self.control, &sys::getpid().to_ne_bytes())
+        self.control_write(&sys::getpid().to_ne_bytes())
     }
 
     fn command(&mut self, queue: Fd) -> Result<(), Errno> {
@@ -404,7 +470,7 @@ impl Session {
             Ok(()) => 0,
             Err(Errno(error)) => -error,
         };
-        write_control(self.control, &status.to_ne_bytes())
+        self.control_write(&status.to_ne_bytes())
     }
     fn helper_ready(&mut self, queue: Fd) -> Result<(), Errno> {
         let mut body = [0; 5];
@@ -423,7 +489,7 @@ impl Session {
         self.mounted = true;
         sys::nonblocking(self.device)?;
         self.interest(queue)?;
-        write_control(self.control, &0_i32.to_ne_bytes())
+        self.control_write(&0_i32.to_ne_bytes())
     }
     fn progress(&mut self, notifications: &mut Notifications) -> Result<(), Errno> {
         if self.retiring {
@@ -593,7 +659,7 @@ impl Session {
                     *credit = 0;
                 }
                 if !self.retiring {
-                    send_receipt(self.control, Receipt::Rejected(notification, error.0))?;
+                    self.send_receipt(Receipt::Rejected(notification, error.0))?;
                 }
                 return Ok(());
             }
@@ -620,7 +686,7 @@ impl Session {
         let response = core::mem::replace(&mut self.response, Response::Backend);
         match response {
             Response::Backend => {
-                send_receipt(self.control, Receipt::Published(notification))?;
+                self.send_receipt(Receipt::Published(notification))?;
             }
             Response::Session {
                 transition,
@@ -659,7 +725,7 @@ impl Session {
                 response[4..].copy_from_slice(&flags.to_ne_bytes());
             }
         }
-        write_control(self.control, &response)
+        self.control_write(&response)
     }
     fn begin_retirement(&mut self, queue: Fd, notifications: &mut Notifications) -> bool {
         notifications.remove(self);
@@ -683,6 +749,7 @@ impl Session {
                 }
             }
             sys::unwatch(queue, self.control);
+            self.control_registered = false;
             if let Some(input) = self.input.as_mut() {
                 input.filled = 0;
                 input.sent = 0;
@@ -891,13 +958,10 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                     let result = if current.retiring || matches!(outcome, Err(Errno(sys::EPIPE))) {
                         Err(Errno(sys::EPIPE))
                     } else {
-                        send_receipt(
-                            current.control,
-                            match outcome {
-                                Ok(()) => Receipt::Published(true),
-                                Err(error) => Receipt::Rejected(true, error.0),
-                            },
-                        )
+                        current.send_receipt(match outcome {
+                            Ok(()) => Receipt::Published(true),
+                            Err(error) => Receipt::Rejected(true, error.0),
+                        })
                     };
                     if result.is_err() {
                         retire_session(queue, session, &mut first, &mut garbage);
@@ -924,11 +988,17 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 {
                     Err(Errno(sys::EPIPE))
                 } else if kind == CONTROL {
-                    if current.owner < 0 {
-                        current.admit(queue)
+                    current.flush_control()?;
+                    if event.events & sys::EPOLL_IN != 0 {
+                        if current.owner < 0 {
+                            current.admit(queue)
+                        } else {
+                            current.command(queue)
+                        }
                     } else {
-                        current.command(queue)
+                        Ok(())
                     }
+                    .and_then(|()| current.interest(queue))
                 } else if current.waiting_helper {
                     current.helper_ready(queue)
                 } else {

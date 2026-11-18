@@ -48,9 +48,7 @@ impl HostSession {
         );
         operation.set("acquire initialized FUSE abort control");
         if let Some(connection) = Connection::of(path)? {
-            io.connection
-                .set(connection)
-                .map_err(|_| NativeMountError::ControlPending)?;
+            io.set_connection(connection)?;
         }
         Ok(())
     }
@@ -240,14 +238,10 @@ impl super::packet_workers::PacketWorkers for HostSession {
 
 impl Drop for HostSession {
     fn drop(&mut self) {
+        // `stop` aborts the connection while its device is still open and
+        // releases the control; no abort may follow device closure.
         self.io.stop();
         self.protocol.close();
-        // Every reader has exited: `run` joins them before the session drops.
-        if let Some(connection) = self.io.as_ref().connection.get()
-            && let Err(error) = connection.abort()
-        {
-            tracing::error!(%error, "aborting an unserved FUSE connection failed");
-        }
     }
 }
 
@@ -288,31 +282,14 @@ impl<I: AsRef<HostIo>> PendingReply<I> {
         // interrupted). It completes this obligation without disconnecting
         // unrelated requests. Other failures do not certify request retirement.
         self.unique.set(None);
-        self.io
-            .as_ref()
-            .publish_packet(slices)
-            .and_then(|outcome| match outcome {
-                acyclic_native_runtime::PacketDevicePublication::Published
-                | acyclic_native_runtime::PacketDevicePublication::Rejected(libc::ENOENT) => {
-                    Ok(outcome)
-                }
-                acyclic_native_runtime::PacketDevicePublication::Rejected(errno) => {
-                    Err(std::io::Error::from_raw_os_error(errno))
-                }
-            })
-            .inspect_err(|_| self.abort())
+        // A rejected frame is a completed physical obligation, not a lost
+        // connection. The host keeps serving; aborting here would turn one
+        // request's rejection into a mounted-connection failure.
+        self.io.as_ref().publish_packet(slices)
     }
 
     pub(super) fn owes_reply(&self) -> bool {
         self.unique.get().is_some()
-    }
-
-    fn abort(&self) {
-        if let Some(connection) = self.io.as_ref().connection.get()
-            && let Err(error) = connection.abort()
-        {
-            tracing::error!(%error, "aborting a failed FUSE reply failed");
-        }
     }
 }
 

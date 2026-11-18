@@ -112,7 +112,7 @@ fn entry_invalidation_cannot_block_the_lookup_that_releases_its_inode_lock()
     let mut session = mount(source, volume, root.path())?;
     let io = transport(&session);
     assert!(
-        io.connection.get().is_some(),
+        io.has_connection(),
         "failed controls require original kernel abort custody"
     );
     let parent = session
@@ -133,9 +133,7 @@ fn entry_invalidation_cannot_block_the_lookup_that_releases_its_inode_lock()
             // happens before scoped joins, including a failing inline control.
             drop(self.release.take());
             if self.armed {
-                if let Some(connection) = self.io.connection.get() {
-                    let _ = connection.abort();
-                }
+                self.io.abort_connection();
             }
         }
     }
@@ -392,6 +390,95 @@ fn rejected_opens_reclaim_original_handles_and_credit() -> Result<(), Box<dyn st
                 b"mount remains live"
             );
             assert!(mounted.stop()?);
+        }
+    }
+    Ok(())
+}
+
+const SHARED_HOST_CASE: &str = "ACYCLIC_FUSE_SHARED_HOST_CASE";
+const SHARED_HOST_ROOT: &str = "ACYCLIC_FUSE_SHARED_HOST_ROOT";
+const SHARED_HOST_TEST: &str =
+    "native_mount::fuse::tests::owner::shared_host_survives_first_owner_tree_retirement";
+
+/// The shared packet-device host belongs to the last attached session, not to
+/// the first owner's process tree. Retiring that tree must not abort a second
+/// mount that is still serving.
+#[test]
+fn shared_host_survives_first_owner_tree_retirement() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    if std::env::var_os(SHARED_HOST_CASE).is_some() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os(SHARED_HOST_ROOT).ok_or("shared host root absent")?,
+        );
+        crate::initialize_native_mount_services()?;
+        let (source, _) = shared_sources(posix_config())?;
+        let volume_id = source.volume_id()?;
+        let mut session = mount(Arc::new(source), volume_id, &root)?;
+        std::fs::write(root.join("child"), b"child")?;
+        assert_eq!(std::fs::read(root.join("child"))?, b"child");
+        println!("SHARED_HOST_READY");
+        std::io::stdout().flush()?;
+        // The parent retires this whole tree; the shared host must outlive it.
+        std::thread::park();
+        drop(session);
+        return Ok(());
+    }
+    let custody_root = tempfile::tempdir()?;
+    let custody = acyclic_native_runtime::ProcessCustody::acquire(custody_root.path())?;
+    let child_root = tempfile::tempdir()?;
+    let (ready_read, ready_write) = std::io::pipe()?;
+    let mut command = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
+    command
+        .args([SHARED_HOST_TEST, "--exact", "--nocapture"])
+        .env(SHARED_HOST_CASE, "1")
+        .env(SHARED_HOST_ROOT, child_root.path())
+        .stdout(ready_write)
+        .stdin(acyclic_native_runtime::ProcessStdio::null());
+    let mut tree = acyclic_native_runtime::ProcessTree::spawn_in_custody(&mut command, &custody)?;
+    let mut reader = BufReader::new(ready_read);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err("first owner exited before its mount was ready".into());
+        }
+        if line.contains("SHARED_HOST_READY") {
+            break;
+        }
+    }
+    let (source, _) = shared_sources(posix_config())?;
+    let volume_id = source.volume_id()?;
+    let parent_root = tempfile::tempdir()?;
+    let mut session = mount(Arc::new(source), volume_id, parent_root.path())?;
+    std::fs::write(parent_root.path().join("parent"), b"before")?;
+    assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"before");
+    // Retire the first owner's whole process tree, including its descendants.
+    tree.terminate(None)?;
+    std::fs::write(parent_root.path().join("parent"), b"after")?;
+    assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"after");
+    // The host belongs to the last attached session. Dropping this one is the
+    // detach event that lets the host exit by itself.
+    let host = transport(&session)
+        .host_id()
+        .ok_or("shared host id absent")?;
+    let host_exit = process_event(host, false)?;
+    drop(session);
+    wait_exit(&host_exit)?;
+    // Both mounts outlive their sessions. Unmount the now-dead mounts through
+    // the canonical helper so the temporary directory is not a live mount when
+    // the test runner removes it.
+    for root in [child_root.path(), parent_root.path()] {
+        for helper in super::super::lifecycle::FUSE_HELPERS {
+            use std::os::unix::ffi::OsStrExt as _;
+            let program = std::ffi::OsStr::from_bytes(helper.to_bytes());
+            if std::process::Command::new(program)
+                .args(["-u", "-q", "-z", "--"])
+                .arg(root)
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                break;
+            }
         }
     }
     Ok(())
@@ -745,9 +832,7 @@ fn an_open_waits_for_its_cached_size_without_holding_a_callback_worker()
             fn drop(&mut self) {
                 drop(self.release.take());
                 if self.armed {
-                    if let Some(connection) = self.io.connection.get() {
-                        let _ = connection.abort();
-                    }
+                    self.io.abort_connection();
                 }
             }
         }

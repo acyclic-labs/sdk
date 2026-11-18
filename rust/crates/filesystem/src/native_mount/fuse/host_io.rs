@@ -6,7 +6,7 @@ use acyclic_native_runtime::{PacketDevicePublication, PacketDeviceRetirement, Pr
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 #[cfg(test)]
 thread_local! {
@@ -77,7 +77,10 @@ impl Connection {
 }
 
 pub(super) struct HostIo {
-    pub(super) connection: OnceLock<Connection>,
+    // The abort control is used only while the device is open, then released.
+    // Retaining it past device closure could name a later connection that
+    // reused the same device number.
+    connection: Mutex<Option<Connection>>,
     // The session is the sole descriptor owner. Retained notification sinks
     // retain this control, never a live device after its server has stopped.
     device: RwLock<Option<File>>,
@@ -151,7 +154,7 @@ impl HostIo {
         let wake = ProcessWake::new()?;
         let receiver = transport_io::PacketReader::new(&wake, device.as_fd())?;
         Ok(Self {
-            connection: OnceLock::new(),
+            connection: Mutex::new(None),
             device: RwLock::new(Some(device)),
             framed: custody.is_some(),
             custody: RwLock::new(custody),
@@ -167,7 +170,52 @@ impl HostIo {
         })
     }
 
+    pub(super) fn set_connection(
+        &self,
+        connection: Connection,
+    ) -> Result<(), super::NativeMountError> {
+        let mut slot = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if slot.is_some() {
+            return Err(super::NativeMountError::ControlPending);
+        }
+        *slot = Some(connection);
+        Ok(())
+    }
+
+    /// Aborts the connection while its device is still open, then releases the
+    /// control. A retained control could otherwise name a later connection
+    /// that reused the same device number. The lock stays held through the
+    /// abort, so a concurrent `stop` cannot close the device before this
+    /// abort has reached the kernel.
+    pub(super) fn abort_connection(&self) {
+        let mut connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(control) = connection.take() else {
+            return;
+        };
+        if let Err(error) = control.abort() {
+            tracing::error!(%error, "FUSE connection abort failed");
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_connection(&self) -> bool {
+        self.connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
     pub(super) fn stop(&self) {
+        // Abort before the device closes: pending requests must be released
+        // while the connection still exists, and the control must not outlive
+        // it.
+        self.abort_connection();
         let _ = self.wake.stop();
         // Wake the physical borrower before closing the device and its queue.
         // Other receivers observe closure through the same receive lock.

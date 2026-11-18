@@ -99,6 +99,7 @@ mod number {
     pub const PPOLL: usize = 271;
     pub const DUP3: usize = 292;
     pub const PIPE2: usize = 293;
+    pub const SOCKETPAIR: usize = 53;
     pub const PRLIMIT64: usize = 302;
     pub const UMASK: usize = 95;
     pub const PIDFD_OPEN: usize = 434;
@@ -117,6 +118,7 @@ mod number {
     pub const OPENAT: usize = 56;
     pub const CLOSE: usize = 57;
     pub const PIPE2: usize = 59;
+    pub const SOCKETPAIR: usize = 199;
     pub const READ: usize = 63;
     pub const FSTAT: usize = 80;
     pub const WRITE: usize = 64;
@@ -291,6 +293,26 @@ pub fn close(file: Fd) {
 }
 
 /// A pipe whose ends a forked child keeps.
+pub fn socketpair() -> Result<[Fd; 2], Errno> {
+    let mut ends = [0_i32; 2];
+    // SAFETY: writable storage for two descriptors; AF_UNIX and
+    // SOCK_SEQPACKET|SOCK_CLOEXEC are fixed integers.
+    unsafe {
+        call(
+            number::SOCKETPAIR,
+            [
+                1,
+                5 | 0o2_000_000,
+                0,
+                ends.as_mut_ptr().addr(),
+                0,
+                0,
+            ],
+        )
+    }?;
+    Ok(ends)
+}
+
 pub fn pipe() -> Result<[Fd; 2], Errno> {
     let mut ends = [0_i32; 2];
     // SAFETY: writable storage for two descriptors.
@@ -487,6 +509,11 @@ impl PollFd {
 
     pub const fn ready(&self) -> bool {
         self.revents != 0
+    }
+
+    pub fn disable(&mut self) {
+        self.fd = -1;
+        self.revents = 0;
     }
 }
 
@@ -851,11 +878,13 @@ pub fn peer_user(file: Fd) -> Result<u32, Errno> {
 }
 
 pub fn accept(listener: Fd) -> Result<Fd, Errno> {
-    // SAFETY: no peer address is requested. Both flags apply to the fresh fd.
+    // SAFETY: no peer address is requested. The accepted control stays
+    // blocking: a receipt that cannot be written must wait for its owner to
+    // drain it, never be dropped as EAGAIN and lose the retirement ack.
     unsafe {
         call(
             number::ACCEPT4,
-            [arg(listener), 0, 0, O_CLOEXEC as usize | 0o4000, 0, 0],
+            [arg(listener), 0, 0, O_CLOEXEC as usize, 0, 0],
         )
     }
     .map(fd)
