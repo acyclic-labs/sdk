@@ -51,7 +51,7 @@ function check({ verifyExactTests: verify, verifyExactTestListing: listing }) {
 
 test('one shared exact-case property detects actual verifier guard omissions', async () => {
   check({ verifyExactTests, verifyExactTestListing });
-  const entry = { package: 'acyclic-harness-core', target: 'lib', regression: originalName, controls: [originalName] };
+  const entry = { target: '//rust/crates/harness-core:acyclic_harness_core_test_cases', regression: originalName, controls: [originalName] };
   assert.deepEqual(verifySdk(entry, 0, original).tests, [originalName]);
   for (const seconds of [10, 30, 1e6]) {
     assert.equal(verifySdk(entry, 0, original.replace('0.00s', `${seconds.toFixed(2)}s`)).seconds, seconds);

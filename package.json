@@ -6,7 +6,6 @@
     "typescript/packages/*"
   ],
   "scripts": {
-    "bench:clients": "node scripts/bench-client-requests.mjs",
     "build:wasm": "bun scripts/build-wasm.mjs",
     "build": "node scripts/web-docs-build.mjs build",
     "check": "node scripts/web-docs-build.mjs check",

@@ -99,7 +99,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "STEP capture signed trust corpus failed: {error}; recovery from rust/crates/auth: cargo run --locked --example trust_corpus"
+            "STEP capture signed trust corpus failed: {error}; recovery: bazel build //rust/crates/auth:trust_corpus_example and run the binary from rust/crates/auth"
         );
         std::process::exit(1);
     }

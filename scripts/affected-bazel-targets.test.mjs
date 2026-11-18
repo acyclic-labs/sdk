@@ -23,7 +23,7 @@ test("build inputs every target reads select every test", () => {
     "cargo-bazel-lock.json", "cargo-bazel.Cargo.lock"]) {
     assert.equal(isGlobalInput(path), true, path);
   }
-  for (const path of ["rust/crates/a/src/lib.rs", "docs/readme.md", "scripts/check-crate-tests.mjs"]) {
+  for (const path of ["rust/crates/a/src/lib.rs", "docs/readme.md", "scripts/affected-bazel-targets.mjs"]) {
     assert.equal(isGlobalInput(path), false, path);
   }
 });

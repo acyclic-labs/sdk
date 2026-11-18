@@ -84,8 +84,7 @@ evidence is retrieved and the container is removed. Retain `docker.json`,
 SHA and executable digests. An earlier source's PASS does not qualify a new head.
 
 Maintainers build the shipped executable with
-`node scripts/build-product.mjs graphcoder`, using the shared `dist` build
-recipe. The existing release workflow verifies each target's native image,
+`bazel build -c opt --remote_download_toplevel //plugin:graphcoder`. The existing release workflow verifies each target's native image,
 exercises installation with real binaries on Linux, macOS and Windows, and
 includes all GraphCoder binaries and installers in the attested `SHA256SUMS`.
 The offline scenario is `node scripts/test-install-release-asset.mjs`, with
