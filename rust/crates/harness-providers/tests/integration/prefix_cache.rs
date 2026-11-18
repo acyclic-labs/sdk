@@ -16,7 +16,7 @@
 //! family's own projection and HTTP encoding. Only the transport is scripted.
 
 use super::TestResult;
-use acyclic_harness::{
+use acyclic_harness_core::{
     agent::{AgentId, AgentPath, InboxRecord, IntentId, Message, Sender},
     approvals::ApprovalPolicy,
     context::{CapacityCompaction, CompactionPolicy, ModelContextCapacity},
@@ -106,13 +106,13 @@ impl Scripted {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).0 = agent;
     }
 
-    fn reply(&self, request: HttpRequest) -> acyclic_harness::Result<Bytes> {
+    fn reply(&self, request: HttpRequest) -> acyclic_harness_core::Result<Bytes> {
         let tokens = request.body.len() as u64;
         if request.url.ends_with("/count") {
             return Ok(Bytes::from(format!(r#"{{"input_tokens":{tokens}}}"#)));
         }
         let value: Value = serde_json::from_slice(&request.body)
-            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+            .map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))?;
         let cached = self
             .cache
             .lock()
@@ -131,7 +131,9 @@ impl Scripted {
                     cached,
                 });
             let frames = harness_mock_model::events_with_cache(self.path, &step, tokens, cached)
-                .ok_or_else(|| acyclic_harness::Error::Invalid("unscripted context call".into()))?;
+                .ok_or_else(|| {
+                    acyclic_harness_core::Error::Invalid("unscripted context call".into())
+                })?;
             return Ok(Bytes::from(frames.concat()));
         }
         state.2.push(Sent {
@@ -142,13 +144,13 @@ impl Scripted {
         });
         let step = state.1.pop_front().unwrap_or_else(|| text("ok"));
         let frames = harness_mock_model::events_with_cache(self.path, &step, tokens, cached)
-            .ok_or_else(|| acyclic_harness::Error::Invalid("unscripted reply".into()))?;
+            .ok_or_else(|| acyclic_harness_core::Error::Invalid("unscripted reply".into()))?;
         Ok(Bytes::from(frames.concat()))
     }
 }
 
 impl HttpTransport for Scripted {
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, acyclic_harness::Result<()>> {
+    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
         Box::pin(async { Ok(()) })
     }
     fn now(&self) -> Duration {
@@ -158,7 +160,7 @@ impl HttpTransport for Scripted {
         &self,
         _: Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<
+    ) -> acyclic_harness_core::Result<
         acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
     > {
         acyclic_fs::NativeFutureBundle::new(work, || async { Ok(()) })
@@ -166,7 +168,7 @@ impl HttpTransport for Scripted {
     fn send(
         &self,
         request: HttpRequest,
-    ) -> BoxProviderFuture<'_, acyclic_harness::Result<HttpResponse>> {
+    ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
         Box::pin(async move {
             let bytes = self.reply(request)?;
             Ok(HttpResponse {
@@ -180,7 +182,7 @@ impl HttpTransport for Scripted {
     fn supports_native(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<bool> {
+    ) -> acyclic_harness_core::Result<bool> {
         work.remaining()?;
         Ok(true)
     }
@@ -188,7 +190,7 @@ impl HttpTransport for Scripted {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<
+    ) -> acyclic_harness_core::Result<
         acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>,
     > {
         acyclic_fs::NativeFutureBundle::new(work, || async move {
@@ -247,7 +249,7 @@ impl Changing {
 }
 
 impl TurnExecutors for Changing {
-    fn model_selection(&self) -> acyclic_harness::Result<Option<String>> {
+    fn model_selection(&self) -> acyclic_harness_core::Result<Option<String>> {
         self.current().model_selection()
     }
     fn content_limits(&self) -> Limits {
@@ -258,21 +260,21 @@ impl TurnExecutors for Changing {
     }
     fn executor<'a>(
         &'a self,
-        agent: &'a acyclic_harness::agent::AgentState,
-        turn: acyclic_harness::OperationId,
+        agent: &'a acyclic_harness_core::agent::AgentState,
+        turn: acyclic_harness_core::OperationId,
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, acyclic_harness::Result<Arc<dyn Executor>>> {
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
         Box::pin(async move {
             let mut agent = agent.clone();
             if agent.parent.is_none() {
                 // This host exercises code-mode prefixes, so select its worker
                 // fixture through the same template reader as the spawned forks.
                 let templates = authority.templates.as_ref().ok_or_else(|| {
-                    acyclic_harness::Error::Invalid("missing fixture templates".into())
+                    acyclic_harness_core::Error::Invalid("missing fixture templates".into())
                 })?;
                 let parent = agent.profile.as_ref().ok_or_else(|| {
-                    acyclic_harness::Error::Invalid("missing fixture creation".into())
+                    acyclic_harness_core::Error::Invalid("missing fixture creation".into())
                 })?;
                 agent.profile = Some(
                     templates
@@ -292,7 +294,7 @@ fn executors(
     extra: &[&str],
 ) -> TestResult<Arc<dyn TurnExecutors>> {
     let selected = ["code", "spawn"].map(String::from);
-    let tools = acyclic_harness::tools::registry(
+    let tools = acyclic_harness_core::tools::registry(
         &selected,
         |_| false,
         extra
@@ -302,7 +304,7 @@ fn executors(
     )?;
     let limits = Limits::default();
     let mut grants =
-        acyclic_harness::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
+        acyclic_harness_core::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
     grants.push(capability::MODEL_GENERATE.into());
     grants.push(capability::INTERACTION_ROUTE.into());
     let bindings = Bindings {
@@ -312,10 +314,10 @@ fn executors(
     .build()?;
     // Role policy wins at admission: the fixture catalog serves the shipped
     // role models with this one recorded binding.
-    let binding: acyclic_harness::model::ModelBinding = (model.model().clone(), model);
-    let models = acyclic_harness::test_support::role_models(binding.clone())?;
+    let binding: acyclic_harness_core::model::ModelBinding = (model.model().clone(), model);
+    let models = acyclic_harness_local::test_support::role_models(binding.clone())?;
     Ok(Arc::new(
-        acyclic_harness::filesystem::StockExecutors::new(
+        acyclic_harness_core::filesystem::StockExecutors::new(
             binding,
             tools,
             (limits, CompactionPolicy::Capacity(CapacityCompaction {})),
@@ -547,11 +549,11 @@ async fn run(
     });
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let issuer = acyclic_harness::core::AuthorityRoot::new(
+    let issuer = acyclic_harness_core::core::AuthorityRoot::new(
         "agents",
         [7; 32],
-        acyclic_harness::core::Authority {
-            kind: acyclic_harness::core::AggregateKind::Conversation,
+        acyclic_harness_core::core::Authority {
+            kind: acyclic_harness_core::core::AggregateKind::Conversation,
             id: "local".into(),
         },
     );
@@ -589,14 +591,16 @@ async fn run(
             RootRequest {
                 peer: true,
                 agent: id.clone(),
-                fresh: vec![acyclic_harness::agent::WorkspaceEntry::initial_volume(
+                fresh: vec![acyclic_harness_core::agent::WorkspaceEntry::initial_volume(
                     acyclic_harness_core::agent::WorkspaceRole::Private,
                     PRIVATE_VOLUME.into(),
                     VolumeRef::new(
                         provider.clone(),
                         "agent-private".into(),
                         VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes(id.to_bytes())),
+                        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                            id.to_bytes(),
+                        )),
                         &mut None,
                     )?,
                 )],
@@ -612,7 +616,8 @@ async fn run(
     let agents = bound.agents();
     // A fork with the same directive preserves the entire admitted prefix.
     // Use the same real template reader as production, with a home override.
-    let root_template = acyclic_harness::seed::file("templates/orchestrator/AGENT.md").unwrap();
+    let root_template =
+        acyclic_harness_core::seed::file("templates/orchestrator/AGENT.md").unwrap();
     // Rewrite the context by its key: a shipped template change must fail
     // here, not silently leave the child without a fork.
     let mut forked = false;
@@ -639,7 +644,7 @@ async fn run(
         let child_template = &child_template;
         async move {
             let state = bound.agents().state(&agent).await?;
-            let authority = acyclic_harness::filesystem::agent_authority(
+            let authority = acyclic_harness_core::filesystem::agent_authority(
                 bound.issuer(),
                 bound.admission(),
                 &agent,
@@ -648,24 +653,24 @@ async fn run(
             )
             .await?;
             let host =
-                acyclic_harness::filesystem::FilesystemHost::new(filesystem, provider, None)?;
-            let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                acyclic_harness_core::filesystem::FilesystemHost::new(filesystem, provider, None)?;
+            let writer = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
                 host,
                 authority.private.volume()?,
                 &authority.verifier,
                 &authority.scope,
-                acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
+                acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
                 None,
             )?;
-            use acyclic_harness::conversation::ContentPublisher;
+            use acyclic_harness_core::conversation::ContentPublisher;
             writer
                 .stage(
-                    acyclic_harness::OperationId::new(),
+                    acyclic_harness_core::OperationId::new(),
                     "templates/worker/AGENT.md",
                     child_template.as_bytes(),
                     "text/markdown",
                     "AGENT.md",
-                    acyclic_harness::conversation::ContentAccess::default(),
+                    acyclic_harness_core::conversation::ContentAccess::default(),
                 )?
                 .await?;
             TestResult::Ok(())
@@ -677,7 +682,7 @@ async fn run(
         let body = bound
             .stage_text(to, "message", &user(), &intent(name), (prompt, prompt))
             .await?;
-        Ok::<_, acyclic_harness::agent::Error>(InboxRecord::Message(Message {
+        Ok::<_, acyclic_harness_core::agent::Error>(InboxRecord::Message(Message {
             from: user(),
             id: intent(name),
             body: Box::new(body),
@@ -768,7 +773,7 @@ async fn run(
                 .extend([program(name, "3 + 3"), text("filled"), retrospective()]);
             state.2.len()
         };
-        let acyclic_harness::agent::Delivered::Committed { inbox } = agents
+        let acyclic_harness_core::agent::Delivered::Committed { inbox } = agents
             .send(&root, &user(), &message(&root, name, &pressure).await?)
             .await?
         else {

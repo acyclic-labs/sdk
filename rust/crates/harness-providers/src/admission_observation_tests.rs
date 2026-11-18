@@ -153,8 +153,8 @@ async fn generation_and_count_publish_original_admission_on_both_provider_paths(
 #[tokio::test]
 async fn agent_journals_admission_start_before_generation_or_token_count_is_admitted() -> Result<()>
 {
-    use acyclic_harness::{LocalHarness, local::agent_conversation::Conversation};
     use acyclic_harness_core::context::CompactionPolicy;
+    use acyclic_harness_local::{LocalHarness, local::agent_conversation::Conversation};
     for maximum in [None, std::num::NonZeroUsize::new(1)] {
         for count in [false, true] {
             let transport = Arc::<Transport>::default();
@@ -209,7 +209,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             } else {
                 CompactionPolicy::Disabled
             };
-            let config = acyclic_harness::test_support::local_harness_config(
+            let config = acyclic_harness_local::test_support::local_harness_config(
                 directory.path(),
                 (provider.model().clone(), provider),
             )?
@@ -222,7 +222,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             let conversation = Arc::new(Conversation::open(harness.connect().await?));
             let mut usage = conversation.usage_query();
             let input = "dense input ".repeat(1_000);
-            let mut turn = Box::pin(acyclic_harness::test_support::prompt_settled(
+            let mut turn = Box::pin(acyclic_harness_local::test_support::prompt_settled(
                 &harness,
                 "admission",
                 &input,
@@ -245,7 +245,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
                 let outcome = turn.await?;
                 assert!(
                     matches!(&outcome,
-                        acyclic_harness::test_support::PromptOutcome::Failed(message)
+                        acyclic_harness_local::test_support::PromptOutcome::Failed(message)
                         if message.contains("model event limit exceeded")
                     ),
                     "wrong refusal cause: {outcome:?}"
@@ -275,7 +275,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             extending.waited();
             assert!(matches!(
                 turn.await?,
-                acyclic_harness::test_support::PromptOutcome::Settled(_, _)
+                acyclic_harness_local::test_support::PromptOutcome::Settled(_, _)
             ));
             while usage.waits().completed == 0 {
                 usage.advance().await?;

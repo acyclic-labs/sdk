@@ -2,12 +2,12 @@
 //! cross the real local host, durable journal, events and usage queries.
 use super::*;
 use acyclic_fs::NativeFutureBundle;
-use acyclic_harness::{LocalHarness, local::agent_conversation::Conversation};
 use acyclic_harness_core::{
     agent::{IntentId, Phase, Sender},
     context::CompactionPolicy,
     executor::{ModelPriceRecord, ModelUsageProjection, TokenPrice},
 };
+use acyclic_harness_local::{LocalHarness, local::agent_conversation::Conversation};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -135,7 +135,7 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
     assert!(registry.register("misrouted".into(), spec).is_err());
     let provider = Arc::new(registry.resolve("catalog/gpt-6-luna")?);
     let directory = tempfile::tempdir().map_err(|error| invalid(error.to_string()))?;
-    let config = acyclic_harness::test_support::local_harness_config(
+    let config = acyclic_harness_local::test_support::local_harness_config(
         directory.path(),
         (provider.model().clone(), provider.clone()),
     )?
@@ -146,11 +146,12 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
     harness.agents().await?;
     let connection = harness.connect().await?;
     let conversation = Conversation::open(connection);
-    let prompt =
-        |id: &'static str| acyclic_harness::test_support::prompt_settled(&harness, id, "continue");
+    let prompt = |id: &'static str| {
+        acyclic_harness_local::test_support::prompt_settled(&harness, id, "continue")
+    };
     assert!(matches!(
         prompt("first").await?,
-        acyclic_harness::test_support::PromptOutcome::Settled(_, _)
+        acyclic_harness_local::test_support::PromptOutcome::Settled(_, _)
     ));
     let second = prompt("delayed");
     let mut second = core::pin::pin!(second);
@@ -169,12 +170,12 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
     release.send(()).unwrap();
     assert!(matches!(
         second.await?,
-        acyclic_harness::test_support::PromptOutcome::Settled(_, _)
+        acyclic_harness_local::test_support::PromptOutcome::Settled(_, _)
     ));
     proxy.denied.store(true, Ordering::SeqCst);
     let failed = prompt("denied").await?;
     assert!(
-        matches!(failed, acyclic_harness::test_support::PromptOutcome::Failed(ref message)
+        matches!(failed, acyclic_harness_local::test_support::PromptOutcome::Failed(ref message)
         if message.contains("401") && !message.contains("storage failure")),
         "{failed:?}"
     );
@@ -190,7 +191,7 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
     proxy.denied.store(false, Ordering::SeqCst);
     assert!(matches!(
         prompt("after-denied").await?,
-        acyclic_harness::test_support::PromptOutcome::Settled(_, _)
+        acyclic_harness_local::test_support::PromptOutcome::Settled(_, _)
     ));
     let mut exported = Vec::new();
     conversation.write_usage_jsonl(&mut exported).await?;
@@ -249,7 +250,7 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
         "unreported failed-call usage stays unknown"
     );
     assert_eq!(proxy.waits.lock().unwrap().len(), 1);
-    let mut position = acyclic_harness::client::ExecutionPosition::default();
+    let mut position = acyclic_harness_client::ExecutionPosition::default();
     loop {
         let page = conversation
             .execution_page(position.input, position.after, false)
