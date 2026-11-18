@@ -126,6 +126,26 @@ test("only a package that declares test-env-inherit gives its tests those host v
   }
 });
 
+test("an uncacheable test tag or host test environment is refused", () => {
+  const { root, run } = fixture();
+  try {
+    writeFileSync(join(root, ".bazelrc"), "test --test_env=PATH\n");
+    const environment = run("write");
+    assert.notEqual(environment.status, 0);
+    assert.match(environment.stderr, /STEP_FAILED bazel-build-files: \.bazelrc sets test --test_env=PATH/);
+    writeFileSync(join(root, ".bazelrc"), "# test --test_env=PATH\n");
+    assert.equal(run("write").status, 0, "a commented-out setting is not a setting");
+    rmSync(join(root, ".bazelrc"));
+    const script = join(root, "scripts/bazel-build-files.mjs");
+    writeFileSync(script, readFileSync(script, "utf8").replace('["tags", q(["manual"])]', '["tags", q(["manual", "external"])]'));
+    const tag = run("write");
+    assert.notEqual(tag.status, 0);
+    assert.match(tag.stderr, /STEP_FAILED bazel-build-files: member\/BUILD\.bazel tags a test external/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("every toolchain builds the dev profile's opt-level, and a profile Bazel cannot render refuses", () => {
   const { root, run } = fixture();
   try {

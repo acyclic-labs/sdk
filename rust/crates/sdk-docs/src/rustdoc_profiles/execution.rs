@@ -464,6 +464,7 @@ pub fn execute_profile(
     Ok(observation)
 }
 
+#[cfg(unix)]
 #[test]
 fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
     crate::with_fixture_compiler(prepared_rustdoc_producer_world);
@@ -473,10 +474,13 @@ fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
 fn prepared_rustdoc_producer_world() {
     // Isolate the counters from other tests that select different fixture compilers.
     if std::env::var_os("SDK_DOCS_PREPARED_CHILD").is_none() {
+        let fixture = acyclic_test_support::crate_path!("tests/fixtures/rustup");
         let thread = std::thread::current();
         let output = crate::command(std::env::current_exe().unwrap())
             .args(["--exact", thread.name().unwrap(), "--nocapture"])
             .env("SDK_DOCS_PREPARED_CHILD", "1")
+            .env("PATH", &fixture)
+            .env("RUSTUP_HOME", fixture.join("a"))
             .run_output()
             .unwrap();
         assert!(

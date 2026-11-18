@@ -72,6 +72,26 @@ function requiredEntry(map, key) {
   return value;
 }
 
+// A test is cached by its action key, which includes every --test_env value and every tag that
+// marks external state. These tags and flags make a target uncacheable or non-hermetic, so the
+// generator refuses them: a test declares its inputs instead.
+const UNCACHEABLE_TAGS = new Set(["external", "local", "no-cache", "nocache"]);
+const UNCACHEABLE_FLAGS = /--(?:test_env|nocache_test_results|cache_test_results=no)\b/;
+function assertCacheable(file, text) {
+  for (const [, tags] of text.matchAll(/tags = (\[[^\]]*\])/g)) {
+    for (const tag of JSON.parse(tags)) {
+      if (UNCACHEABLE_TAGS.has(tag)) throw new Error(`STEP_FAILED bazel-build-files: ${file} tags a test ${tag}, which makes it uncacheable; recovery: declare the input or remove the tag`);
+    }
+  }
+}
+const bazelrc = path.join(root, ".bazelrc");
+if (fs.existsSync(bazelrc)) {
+  for (const line of fs.readFileSync(bazelrc, "utf8").split("\n")) {
+    if (line.trimStart().startsWith("#") || !UNCACHEABLE_FLAGS.test(line)) continue;
+    throw new Error(`STEP_FAILED bazel-build-files: .bazelrc sets ${line.trim()}, which makes every test uncacheable; recovery: declare the input in the test target`);
+  }
+}
+
 // Cargo's [lints.rust] check-cfg entries. rules_rust's extract_cargo_lints carries the lint
 // levels into its lint files but not these, so they are emitted as rustc flags on every target
 // of the package. A member that inherits its lints reads the workspace table.
@@ -1245,6 +1265,7 @@ if (wasm) {
 for (const [owner, body] of bodies) files.set(`${owner}/BUILD.bazel`, body + exportsRule(owner));
 // Every file ends in exactly one newline, cut once here; check then fails on any other ending.
 for (const [file, text] of files) if (text !== null) files.set(file, text.replace(/\n*$/, "\n"));
+for (const [file, text] of files) if (text !== null) assertCacheable(file, text);
 // A generated file whose package left the workspace is stale.
 for (const file of trackedFiles(root, ["*BUILD.bazel"])) {
   if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
