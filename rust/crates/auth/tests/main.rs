@@ -22,9 +22,6 @@ mod contract;
 #[path = "credentials.rs"]
 mod credentials;
 
-#[path = "backoff.rs"]
-mod backoff;
-
 #[path = "minting.rs"]
 mod minting;
 

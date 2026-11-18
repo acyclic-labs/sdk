@@ -1,4 +1,7 @@
-use acyclic_auth::operation::Backoff;
+#[path = "../src/operation/backoff.rs"]
+mod backoff;
+
+use backoff::Backoff;
 use proptest::prelude::*;
 
 proptest! {
