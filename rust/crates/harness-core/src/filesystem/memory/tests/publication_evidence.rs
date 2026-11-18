@@ -155,14 +155,14 @@ async fn native_publication_witness_retires_independently_of_host_metadata() -> 
     let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let host = FilesystemHost::new(
         storage.host.filesystem.clone(),
         file.volume().provider(),
         Some(&io),
     )?;
     let reference = host.seal_publication(file, Some(&io))?;
-    let with_host = work.live_allocation_bytes();
+    let with_host = work.live_allocation_bytes()?;
     assert!(with_host > baseline);
     assert_eq!(
         io.owned_bytes()?,
@@ -170,9 +170,9 @@ async fn native_publication_witness_retires_independently_of_host_metadata() -> 
         "each output owns its transferred storage"
     );
     drop(io);
-    assert_eq!(work.live_allocation_bytes(), with_host);
+    assert_eq!(work.live_allocation_bytes()?, with_host);
     drop(host);
-    let with_witness = work.live_allocation_bytes();
+    let with_witness = work.live_allocation_bytes()?;
     assert!(
         with_witness > baseline,
         "the witness keeps its domain funded"
@@ -182,11 +182,11 @@ async fn native_publication_witness_retires_independently_of_host_metadata() -> 
         "host metadata retires independently"
     );
     let copy = reference.clone();
-    assert_eq!(work.live_allocation_bytes(), with_witness);
+    assert_eq!(work.live_allocation_bytes()?, with_witness);
     drop(reference);
-    assert_eq!(work.live_allocation_bytes(), with_witness);
+    assert_eq!(work.live_allocation_bytes()?, with_witness);
     drop(copy);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
