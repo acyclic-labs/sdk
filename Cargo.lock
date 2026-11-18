@@ -1556,7 +1556,6 @@ dependencies = [
  "acyclic-collections",
  "acyclic-executable-search",
  "acyclic-host-platform",
- "acyclic-native-lines",
  "acyclic-observability",
  "acyclic-process-identity",
  "acyclic-test-support",
@@ -1591,6 +1590,16 @@ dependencies = [
  "tracing-subscriber",
  "windows",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "acyclic-native-stdin"
+version = "0.2.0"
+dependencies = [
+ "acyclic-native-lines",
+ "acyclic-native-runtime",
+ "tokio",
  "zeroize",
 ]
 
@@ -1681,6 +1690,7 @@ dependencies = [
  "acyclic-harness-providers",
  "acyclic-native-lines",
  "acyclic-native-runtime",
+ "acyclic-native-stdin",
  "acyclic-observability",
  "acyclic-plugin-identity",
  "acyclic-stream",
@@ -1706,6 +1716,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-mcp",
  "acyclic-native-runtime",
+ "acyclic-native-stdin",
  "axum",
  "base64 0.23.1",
  "futures",
