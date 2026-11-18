@@ -1,35 +1,13 @@
 use super::*;
 use crate::conversation::{
-    Attachment, ConversationMessage, FileDescriptor, FileRef, ReferencedAttachments, VolumeClass,
-    VolumeOwner, VolumeRef,
+    BoundedContentFuture, ConversationMessage, Custody, FileDescriptor, FileRef,
+    ReferencedAttachments, VolumeClass, VolumeOwner, VolumeRef,
 };
-use crate::{AgentId, resources::ProviderRef};
+use crate::{AgentId, Capabilities, resources::ProviderRef};
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "../../tests/projection/fixture.rs"]
 mod fixture;
-use fixture::{file, message};
-
-#[derive(Default)]
-struct Resolver {
-    bytes: Vec<u8>,
-    calls: AtomicUsize,
-}
-impl ContentResidencyVerifier for Resolver {
-    fn read<'a>(
-        &'a self,
-        _: &'a FileRef,
-        _: u64,
-        _ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(crate::conversation::Custody::Unmetered(
-                self.bytes.clone().into(),
-            ))
-        })
-    }
-}
+use fixture::{Resolver, file, message};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
@@ -81,103 +59,6 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
         drop(custody);
     }
     assert_eq!(work.live_allocation_bytes(), before);
-    Ok(())
-}
-
-#[tokio::test]
-async fn manifest_projection_checks_limit_before_resolution_and_exact_count_after() -> Result<()> {
-    let agent = AgentId::new();
-    let attachment = Attachment {
-        file: file(agent, "image.png", "image/png", b"data")?,
-        label: None,
-    };
-    let bytes = crate::conversation::encode_attachment_manifest(std::slice::from_ref(&attachment))?;
-    let mut message = message(
-        1,
-        MessageKind::User,
-        file(agent, "message.txt", "text/plain", b"data")?,
-        None,
-    );
-    message.attachments = ReferencedAttachments::Manifest {
-        manifest: file(
-            agent,
-            "manifest.json",
-            "application/vnd.acyclic.harness.attachments+json",
-            &bytes,
-        )?,
-        item_count: 2,
-    };
-    let mut conversation = ConversationState::default();
-    conversation.bind(agent)?;
-    conversation.append(message.clone(), &mut None)?;
-    let selection = ModelContextSelection {
-        checkpoint: None,
-        conversation_revision: 1,
-        message_ids: vec![message.id],
-    };
-    let resolver = Resolver {
-        bytes,
-        ..Resolver::default()
-    };
-    let limits = Limits {
-        context_messages: std::num::NonZeroUsize::new(256),
-        attachments: std::num::NonZeroUsize::new(1),
-        render_bytes: Some(128 * 1024),
-        ..Limits::default()
-    };
-    assert!(
-        select_model_context(
-            &conversation,
-            1,
-            selection.clone(),
-            &resolver,
-            limits,
-            1,
-            None
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
-    let limits = Limits {
-        attachments: std::num::NonZeroUsize::new(2),
-        ..limits
-    };
-    assert!(
-        select_model_context(
-            &conversation,
-            1,
-            selection.clone(),
-            &resolver,
-            limits,
-            2,
-            None
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
-    let bytes = crate::conversation::encode_attachment_manifest(&[attachment.clone(), attachment])?;
-    message.attachments = ReferencedAttachments::Manifest {
-        manifest: file(
-            agent,
-            "manifest.json",
-            "application/vnd.acyclic.harness.attachments+json",
-            &bytes,
-        )?,
-        item_count: 2,
-    };
-    let mut conversation = ConversationState::default();
-    conversation.bind(agent)?;
-    conversation.append(message, &mut None)?;
-    let resolver = Resolver {
-        bytes,
-        ..Resolver::default()
-    };
-    let projected =
-        select_model_context(&conversation, 1, selection, &resolver, limits, 2, None).await?;
-    assert_eq!(projected.messages.len(), 1);
-    assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
 

@@ -48,7 +48,7 @@ path = "tests/projection_selection.rs"
 
 [package.metadata.bazel.test-dependencies]
 contract_error_cases = ["acyclic_fs", "acyclic_fs_work", "acyclic_harness_core", "acyclic_stream", "acyclic_test_support", "proptest", "prost", "serde_json", "tempfile", "tracing", "tracing_subscriber"]
-projection_selection = ["acyclic_harness_core", "uuid"]
+projection_selection = ["acyclic_harness_core", "tokio", "uuid"]
 
 [features]
 research = ["acyclic-observability/research"]

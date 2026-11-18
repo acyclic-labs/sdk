@@ -1,8 +1,12 @@
 use super::{
-    AgentId, ConversationMessage, FileDescriptor, FileRef, MessageKind, ProviderRef,
+    AgentId, BoundedContentFuture, Capabilities, ContentResidencyVerifier, ConversationMessage,
+    Custody, FileDescriptor, FileRef, MessageKind, PreparationIo, ProviderRef,
     ReferencedAttachments, Result, VolumeClass, VolumeOwner, VolumeRef,
 };
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use uuid::Uuid;
 
 pub(super) fn file(agent: AgentId, path: &str, media_type: &str, bytes: &[u8]) -> Result<FileRef> {
@@ -37,5 +41,25 @@ pub(super) fn message(
         reply_to,
         tool_call_id: None,
         extensions: BTreeMap::new(),
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Resolver {
+    pub(super) bytes: Vec<u8>,
+    pub(super) calls: AtomicUsize,
+}
+impl ContentResidencyVerifier for Resolver {
+    fn read<'a>(
+        &'a self,
+        _: &'a FileRef,
+        _: u64,
+        _ceiling: Option<&'a Capabilities>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, Custody>> {
+        BoundedContentFuture::new(io, || async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Custody::Unmetered(self.bytes.clone().into()))
+        })
     }
 }
