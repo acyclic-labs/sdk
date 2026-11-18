@@ -15,6 +15,7 @@ async-trait.workspace = true
 base64 = "0.23.1"
 blake3.workspace = true
 bytes.workspace = true
+crc-fast = "1.10.0"
 futures.workspace = true
 hex.workspace = true
 s3s.workspace = true
