@@ -225,3 +225,86 @@ async fn batch_cancellation_precedes_backend_work() -> Result<(), Box<dyn std::e
 
     Ok(())
 }
+
+#[tokio::test]
+async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let left = put_tree_page(
+        &store,
+        &TreePage::Leaf(vec![
+            TreeEntry {
+                name: name("a")?,
+                file_id: FileId::from_bytes([1; 16]),
+                kind: FileKind::Regular,
+            },
+            TreeEntry {
+                name: name("b")?,
+                file_id: FileId::from_bytes([2; 16]),
+                kind: FileKind::Regular,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    let right = put_tree_page(
+        &store,
+        &TreePage::Leaf(vec![
+            TreeEntry {
+                name: name("m")?,
+                file_id: FileId::from_bytes([3; 16]),
+                kind: FileKind::Regular,
+            },
+            TreeEntry {
+                name: name("n")?,
+                file_id: FileId::from_bytes([4; 16]),
+                kind: FileKind::Regular,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    let root = put_tree_page(
+        &store,
+        &TreePage::Internal(vec![
+            Child {
+                first: name("a")?,
+                page: left,
+            },
+            Child {
+                first: name("m")?,
+                page: right,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    let queries = vec![name("n")?, name("a")?, name("n")?, name("z")?];
+    let result = lookup_tree_entries(
+        &store,
+        root,
+        &queries,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(
+        result
+            .value
+            .iter()
+            .map(|entry| entry.as_ref().map(|entry| entry.file_id))
+            .collect::<Vec<_>>(),
+        vec![
+            Some(FileId::from_bytes([4; 16])),
+            Some(FileId::from_bytes([1; 16])),
+            Some(FileId::from_bytes([4; 16])),
+            None,
+        ]
+    );
+    assert_eq!(result.work.page_reads, 3);
+    assert_eq!(result.work.backend_read_operations, 2);
+    assert_eq!(result.value.len(), 4);
+
+    Ok(())
+}
