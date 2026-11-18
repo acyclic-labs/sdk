@@ -36,8 +36,10 @@ fn parse_at(
         step: 0,
         request_digest: [0; 32],
     };
-    futures::executor::block_on(stream::events(adapter, body, 4096, dispatch).try_collect())
-        .map_err(|error| error.to_string())
+    futures::executor::block_on(
+        crate::event_driver::events(adapter, body, 4096, dispatch).try_collect(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {

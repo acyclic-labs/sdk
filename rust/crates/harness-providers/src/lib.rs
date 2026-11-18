@@ -36,6 +36,7 @@ mod credentials;
 mod deadline;
 mod diagnostic;
 mod dispatch;
+mod event_driver;
 mod files;
 #[cfg(test)]
 mod fixtures;

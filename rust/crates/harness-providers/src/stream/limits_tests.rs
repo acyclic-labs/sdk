@@ -132,7 +132,8 @@ fn recorded_parallel_calls_use_byte_capacity_without_a_hidden_item_ceiling() -> 
         for maximum in [2048, 4 * 1024 * 1024] {
             let body = Box::pin(futures::stream::iter(frames.iter().cloned().map(Ok)));
             let output = futures::executor::block_on(
-                events(Adapter::Chat, body, maximum, dispatch).try_collect::<Vec<_>>(),
+                crate::event_driver::events(Adapter::Chat, body, maximum, dispatch)
+                    .try_collect::<Vec<_>>(),
             );
             if maximum == 2048 {
                 assert!(output.is_err(), "retained bytes still require capacity");

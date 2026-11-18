@@ -51,7 +51,7 @@ proptest! {
                 // A later unsupported item must also stop the original stream
                 // before an earlier complete call can reach the executor.
                 let input = format!("data: {ordinary}\n\ndata: {frame}\n\ndata: {terminal}\n\n");
-                let observed = futures::executor::block_on(super::super::events(
+                let observed = futures::executor::block_on(crate::event_driver::events(
                     crate::Adapter::Responses, crate::tests::chunks(&input, chunk),
                     16384, dispatch,
                 ).collect::<Vec<_>>());
@@ -77,7 +77,7 @@ proptest! {
         }
 
         let input = format!("data: {ordinary}\n\ndata: {terminal}\n\n");
-        let observed = futures::executor::block_on(super::super::events(
+        let observed = futures::executor::block_on(crate::event_driver::events(
             crate::Adapter::Responses, crate::tests::chunks(&input, chunk),
             16384, dispatch,
         ).collect::<Vec<_>>());
@@ -122,7 +122,7 @@ proptest! {
             json!({"type":"response.completed","response":{"status":"completed"}}),
         ];
         let wire: String = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect();
-        let events = futures::executor::block_on(super::super::events(
+        let events = futures::executor::block_on(crate::event_driver::events(
             crate::Adapter::Responses, crate::tests::chunks(&wire, width), 32768, dispatch,
         ).collect::<Vec<_>>());
         let mut calls = Vec::new();
@@ -190,7 +190,7 @@ proptest! {
         // Dropping the terminal producer ends with the transport's typed
         // interruption, and no tool in the incomplete batch becomes executable.
         let unfinished: String = frames[..4].iter().map(|frame| format!("data: {frame}\n\n")).collect();
-        let observed = futures::executor::block_on(super::super::events(
+        let observed = futures::executor::block_on(crate::event_driver::events(
             crate::Adapter::Responses, crate::tests::chunks(&unfinished, width), 32768, dispatch,
         ).collect::<Vec<_>>());
         prop_assert_eq!(observed.len(), 1);
@@ -349,7 +349,7 @@ fn responses_call_identity_and_completed_input_are_immutable() {
                     "data: {added}\n\ndata: {completion}\n\ndata: {mutation}\n\ndata: {terminal}\n\n"
                 );
                 let events = futures::executor::block_on(
-                    super::super::events(
+                    crate::event_driver::events(
                         crate::Adapter::Responses,
                         crate::tests::chunks(&wire, 1),
                         16384,
@@ -443,7 +443,7 @@ fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
             json!({"type":"response.completed","response":{"status":"completed","output":output}});
         let wire = format!("data: {added}\n\ndata: {terminal}\n\n");
         let events = futures::executor::block_on(
-            super::super::events(
+            crate::event_driver::events(
                 crate::Adapter::Responses,
                 crate::tests::chunks(&wire, 1),
                 16384,
@@ -466,7 +466,7 @@ fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
         let terminal = json!({"type":"response.completed","response":{"status":"completed"}});
         let wire = format!("data: {added}\n\ndata: {terminal}\n\n");
         let events = futures::executor::block_on(
-            super::super::events(
+            crate::event_driver::events(
                 crate::Adapter::Responses,
                 crate::tests::chunks(&wire, 1),
                 16384,

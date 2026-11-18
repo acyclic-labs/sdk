@@ -104,7 +104,7 @@ async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
                 "status":status,"incomplete_details":{"reason":reason}
             }});
             let fixture = format!("data: {event}\n\n");
-            let error = stream::events(
+            let error = crate::event_driver::events(
                 Adapter::Responses,
                 chunks(&fixture, 1),
                 4096,
@@ -358,10 +358,11 @@ async fn http_status_classes_are_distinct_and_refusals_never_disclose_remote_tex
 async fn interrupted_bodies_are_transient_and_protocol_violations_are_invalid() -> Result<()> {
     for (adapter, _) in fixtures() {
         for input in ["data: {}\n\n", "data: {", ""] {
-            let error = stream::events(adapter, chunks(input, 1), 4096, parser_dispatch())
-                .try_collect::<Vec<_>>()
-                .await
-                .expect_err("unfinished body");
+            let error =
+                crate::event_driver::events(adapter, chunks(input, 1), 4096, parser_dispatch())
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .expect_err("unfinished body");
             assert!(
                 matches!(
                     error,
@@ -373,7 +374,7 @@ async fn interrupted_bodies_are_transient_and_protocol_violations_are_invalid() 
                 "{adapter:?}: {error}"
             );
         }
-        let error = stream::events(
+        let error = crate::event_driver::events(
             adapter,
             chunks("data: invalid\n\n", 1),
             4096,
@@ -385,10 +386,11 @@ async fn interrupted_bodies_are_transient_and_protocol_violations_are_invalid() 
         assert!(matches!(error, Error::Invalid(_)));
         let interrupted =
             futures::stream::once(async { Err(Error::Storage("body interrupted".into())) });
-        let error = stream::events(adapter, Box::pin(interrupted), 4096, parser_dispatch())
-            .try_collect::<Vec<_>>()
-            .await
-            .expect_err("transport failure");
+        let error =
+            crate::event_driver::events(adapter, Box::pin(interrupted), 4096, parser_dispatch())
+                .try_collect::<Vec<_>>()
+                .await
+                .expect_err("transport failure");
         assert!(matches!(error, Error::Storage(_)));
     }
     Ok(())
@@ -417,9 +419,10 @@ async fn token_limits_complete_uniformly_without_publishing_partial_tool_batches
         let context_stop = (adapter == Adapter::Anthropic)
             .then(|| truncated.replace("max_tokens", "model_context_window_exceeded"));
         for page in std::iter::once(truncated).chain(context_stop) {
-            let events = stream::events(adapter, chunks(&page, 1), 4096, parser_dispatch())
-                .try_collect::<Vec<_>>()
-                .await?;
+            let events =
+                crate::event_driver::events(adapter, chunks(&page, 1), 4096, parser_dispatch())
+                    .try_collect::<Vec<_>>()
+                    .await?;
             assert!(
                 !events
                     .iter()
@@ -436,7 +439,7 @@ async fn token_limits_complete_uniformly_without_publishing_partial_tool_batches
         "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"partial\",\"name\":\"echo\",\"arguments\":\"{\"}}\n\n",
         "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
     );
-    let events = stream::events(
+    let events = crate::event_driver::events(
         Adapter::Responses,
         chunks(incomplete, 1),
         4096,

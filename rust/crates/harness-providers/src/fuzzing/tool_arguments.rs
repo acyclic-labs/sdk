@@ -90,7 +90,7 @@ pub(super) fn check(input: &[u8], maximum: usize) {
         request_digest: [0; 32],
     };
     let events: Result<Vec<_>, _> = futures::executor::block_on(
-        stream::events(Adapter::Chat, body, maximum, dispatch).try_collect(),
+        crate::event_driver::events(Adapter::Chat, body, maximum, dispatch).try_collect(),
     );
     // Framing precedes parsing and finalization's retained-state admission.
     let limited = |reason: &str| matches!(&events, Err(acyclic_harness_core::Error::Invalid(actual)) if actual == reason);

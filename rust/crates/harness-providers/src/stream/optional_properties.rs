@@ -137,7 +137,7 @@ proptest! {
 
             let frames = format!("data: {initial}\n\ndata: {frame}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
             let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
-            let result = futures::executor::block_on(events(
+            let result = futures::executor::block_on(crate::event_driver::events(
                 Adapter::Anthropic, Box::pin(body), 16384, dispatch,
             ).try_collect::<Vec<_>>());
             prop_assert!(result.is_err(), "malformed input released the original pending tool batch");
@@ -156,7 +156,7 @@ proptest! {
 
         let frames = format!("data: {initial}\n\ndata: {second}\n\ndata: {empty}\n\ndata: {delta}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
         let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
-        let accepted = futures::executor::block_on(events(
+        let accepted = futures::executor::block_on(crate::event_driver::events(
             Adapter::Anthropic, Box::pin(body), 16384, dispatch,
         ).try_collect::<Vec<_>>()).unwrap();
         let calls: Vec<_> = accepted.iter().filter_map(|event| match event {

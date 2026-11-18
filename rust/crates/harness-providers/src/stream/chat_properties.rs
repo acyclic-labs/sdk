@@ -90,7 +90,7 @@ proptest! {
             prop_assert!(!state.terminal, "malformed candidate committed a terminal state");
             let frames = format!("data: {initial}\n\ndata: {malformed}\n\ndata: [DONE]\n\n");
             let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
-            let result = futures::executor::block_on(super::super::events(
+            let result = futures::executor::block_on(crate::event_driver::events(
                 crate::Adapter::Chat, Box::pin(body), 16384, dispatch,
             ).try_collect::<Vec<_>>());
             prop_assert!(result.is_err(), "malformed candidate escaped the original SSE admission");
@@ -111,7 +111,7 @@ proptest! {
 
         let frames = format!("data: {initial}\n\ndata: {complete}\n\ndata: {initial}\n\ndata: [DONE]\n\n");
         let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
-        prop_assert!(futures::executor::block_on(super::super::events(
+        prop_assert!(futures::executor::block_on(crate::event_driver::events(
             crate::Adapter::Chat, Box::pin(body), 16384, dispatch,
         ).try_collect::<Vec<_>>()).is_err(), "late mutation exposed the retained tool batch");
 
