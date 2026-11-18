@@ -1,5 +1,5 @@
 //! A fixed-size projection through the original JSON parser, with funded escape scratch.
-use acyclic_harness_core::Result;
+use acyclic_harness_core::{Error, Result};
 use acyclic_harness_provider_protocol::refusal::is_context_overflow;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
@@ -193,7 +193,7 @@ impl acyclic_harness_core::filesystem::UploadRecord for Refusal {
 pub fn context_overflow_bytes(bytes: &[u8], work: acyclic_fs::NativeWork<'_>) -> Result<bool> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        use acyclic_harness_core::{Error, filesystem::PreparationIo};
+        use acyclic_harness_core::filesystem::PreparationIo;
         return match PreparationIo::from_native_work(work)?.decode_json::<Refusal>(bytes) {
             Ok(value) => Ok(value.0),
             Err(Error::NativeJson { .. } | Error::NativeJsonAdmission { .. }) => Ok(false),
@@ -223,4 +223,37 @@ pub fn decode_json(bytes: &[u8]) -> serde_json::Result<Value> {
     let value = acyclic_harness_core::deserialize_json_value(&mut decoder)?;
     decoder.end()?;
     Ok(value)
+}
+
+/// The one status classification for dispatch, counting, refresh and stream error events.
+/// 408, 429 and 5xx are a typed refusal before generation that redelivery may clear.
+pub fn http_error(status: u16) -> Error {
+    unavailable(status).unwrap_or_else(|| {
+        let message = format!("model HTTP status {status}");
+        match status {
+            401 | 403 => Error::Unauthorized(message),
+            _ => Error::Invalid(message),
+        }
+    })
+}
+
+/// Classifies a transient status before a model starts generating.
+pub fn unavailable(status: u16) -> Option<Error> {
+    matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
+        failure: acyclic_harness_core::ModelTransportFailure::Status(status),
+        excerpt: String::new(),
+    })
+}
+
+/// Keep the transport class without formatting an untrusted cause. Transport errors
+/// may include request URLs, headers or response text containing credentials.
+pub fn transport_failure(
+    _native: bool,
+    failure: acyclic_harness_core::ModelTransportFailure,
+    _cause: impl std::fmt::Display,
+) -> Error {
+    Error::ModelUnavailable {
+        failure,
+        excerpt: String::new(),
+    }
 }

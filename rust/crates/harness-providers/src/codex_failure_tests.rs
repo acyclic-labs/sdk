@@ -49,7 +49,11 @@ impl HttpTransport for FailingTransport {
                 Ok(()) => self.failure,
                 Err(_) => ModelTransportFailure::Interrupted,
             };
-            Err(crate::transport_failure(true, failure, "endpoint failure"))
+            Err(acyclic_harness_provider_response::transport_failure(
+                true,
+                failure,
+                "endpoint failure",
+            ))
         })
     }
 }
@@ -146,7 +150,7 @@ proptest! {
         let mut errors = vec![Error::Invalid(text.clone()), Error::Unauthorized(text.clone()), Error::Storage(text.clone())];
         for failure in [ModelTransportFailure::Connect, ModelTransportFailure::Timeout,
             ModelTransportFailure::Interrupted, ModelTransportFailure::Tls, ModelTransportFailure::Status(status)] {
-            errors.push(crate::transport_failure(true, failure, &text));
+            errors.push(acyclic_harness_provider_response::transport_failure(true, failure, &text));
             errors.push(Error::ModelUnavailable { failure, excerpt: text.clone() });
         }
         for error in errors {

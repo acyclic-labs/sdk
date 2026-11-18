@@ -153,14 +153,14 @@ async fn rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<
                         acyclic_harness_core::ModelTransportFailure::Status(_)
                     )
                 {
-                    return Err(crate::transport_failure(
+                    return Err(acyclic_harness_provider_response::transport_failure(
                         false,
                         self.failure,
                         "recorded transport failure",
                     ));
                 }
                 if self.mixed && index == 301 {
-                    return Err(crate::transport_failure(
+                    return Err(acyclic_harness_provider_response::transport_failure(
                         false,
                         acyclic_harness_core::ModelTransportFailure::Connect,
                         "fixture",
@@ -171,11 +171,13 @@ async fn rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<
                         status: 200,
                         request_id: None,
                         retry_after: None,
-                        body: Box::pin(futures::stream::iter([Err(crate::transport_failure(
-                            false,
-                            acyclic_harness_core::ModelTransportFailure::Interrupted,
-                            "fixture",
-                        ))])),
+                        body: Box::pin(futures::stream::iter([Err(
+                            acyclic_harness_provider_response::transport_failure(
+                                false,
+                                acyclic_harness_core::ModelTransportFailure::Interrupted,
+                                "fixture",
+                            ),
+                        )])),
                     });
                 }
                 Ok(HttpResponse {

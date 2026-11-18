@@ -333,7 +333,7 @@ impl CodexLogin {
                             response.status
                         ))
                     } else {
-                        crate::http_error(response.status)
+                        acyclic_harness_provider_response::http_error(response.status)
                     }),
                     failure,
                 );

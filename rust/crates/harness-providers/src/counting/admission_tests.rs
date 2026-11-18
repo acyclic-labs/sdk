@@ -181,7 +181,7 @@ proptest::proptest! {
                 Box::pin(async move {
                     let body: acyclic_stream::BoxProviderStream<'static, Result<Bytes>> = if attempt < self.failures {
                         let failure = if self.definitive { invalid("malformed count") } else {
-                            crate::transport_failure(false, if self.timeout {
+                            acyclic_harness_provider_response::transport_failure(false, if self.timeout {
                                 acyclic_harness_core::ModelTransportFailure::Timeout
                             } else { acyclic_harness_core::ModelTransportFailure::Interrupted }, "count body failed")
                         };

@@ -36,7 +36,7 @@ impl Server {
                 .map_err(|_| invalid("fixture poisoned"))?
                 .take()
         {
-            return Err(crate::transport_failure(
+            return Err(acyclic_harness_provider_response::transport_failure(
                 true,
                 failure,
                 "refresh endpoint failure",

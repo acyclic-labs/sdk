@@ -32,7 +32,9 @@ mod tests {
         for native in [false, true] {
             for failure in [Connect, Timeout, Interrupted, Tls, Status(503)] {
                 let allocated = acyclic_test_support::measure(|| {
-                    let error = crate::transport_failure(native, failure, Cause);
+                    let error = acyclic_harness_provider_response::transport_failure(
+                        native, failure, Cause,
+                    );
                     assert!(matches!(error,
                         Error::ModelUnavailable { failure: actual, excerpt }
                         if actual == failure && excerpt.is_empty()

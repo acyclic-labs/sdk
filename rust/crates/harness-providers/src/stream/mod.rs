@@ -66,7 +66,7 @@ pub(crate) fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<V
     let value =
         acyclic_harness_provider_response::decode_json(data.as_bytes()).map_err(|error| {
             if adapter == Adapter::Responses && error.is_eof() {
-                crate::transport_failure(
+                acyclic_harness_provider_response::transport_failure(
                     state.budget.is_native(),
                     acyclic_harness_core::ModelTransportFailure::Interrupted,
                     "truncated Responses JSON",
@@ -98,7 +98,7 @@ pub(crate) fn finish(
 ) -> Result<Vec<ModelEvent>> {
     if !state.terminal {
         // The body ended early: the connection was cut off, not the protocol violated.
-        return Err(crate::transport_failure(
+        return Err(acyclic_harness_provider_response::transport_failure(
             state.budget.is_native(),
             acyclic_harness_core::ModelTransportFailure::Interrupted,
             "model stream ended without a terminal marker",

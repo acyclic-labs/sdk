@@ -50,7 +50,7 @@ impl HttpTransport for Script {
                 .ok_or_else(|| crate::invalid("response was already consumed"))?
                 .await
                 .map_err(|_| {
-                    crate::transport_failure(
+                    acyclic_harness_provider_response::transport_failure(
                         false,
                         ModelTransportFailure::Interrupted,
                         "response producer disappeared",

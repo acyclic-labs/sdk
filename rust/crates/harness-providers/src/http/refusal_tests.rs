@@ -61,7 +61,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
         };
         assert_eq!(
             crate::http_failure(response, 2048, None).await.code(),
-            crate::http_error(status).code(),
+            acyclic_harness_provider_response::http_error(status).code(),
         );
     }
 }

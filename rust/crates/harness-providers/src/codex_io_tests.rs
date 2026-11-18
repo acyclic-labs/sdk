@@ -47,7 +47,7 @@ async fn refresh_body_control(
                     code: acyclic_harness_core::wire::ErrorCode::Storage,
                     reason: "original refresh body error",
                 }),
-                Err(_) => Err(crate::transport_failure(
+                Err(_) => Err(acyclic_harness_provider_response::transport_failure(
                     true,
                     acyclic_harness_core::ModelTransportFailure::Interrupted,
                     "original refresh body producer lost",
