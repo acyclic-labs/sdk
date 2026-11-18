@@ -80,6 +80,7 @@ getrandom = { workspace = true }
 loom = { version = "=0.7.3", optional = true }
 same-file = { version = "1.0.6", optional = true }
 acyclic-native-lines = { version = "=0.2.0", path = "../native-lines" }
+acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true }
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"] }

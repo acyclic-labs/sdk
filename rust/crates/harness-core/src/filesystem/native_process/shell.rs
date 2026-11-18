@@ -123,14 +123,16 @@ pub fn prepare<T>(
     let shell = &crate::tools::shell::PLATFORM;
     let (program, arguments, standard_input) = input.command.prepare(shell)?;
     if let Some(program) = program {
-        let search =
-            acyclic_native_runtime::ExecutableSearch::from_environment(&invocation.cwd, |name| {
+        let search = acyclic_executable_search::ExecutableSearch::from_environment(
+            &invocation.cwd,
+            |name| {
                 invocation
                     .environment
                     .iter()
                     .find(|(key, _)| super::invocation::environment_key_matches(key, name))
                     .map(|(_, value)| value.into())
-            });
+            },
+        );
         invocation.executable = search.resolve(program).map_err(Error::process_io)?;
     }
     invocation.argv = arguments;

@@ -14,7 +14,9 @@ fn closed_spawn_arguments_preserve_original_credit_and_unwind() -> io::Result<()
         return Ok(());
     }
     let cwd = std::env::current_dir()?;
-    let search = crate::ExecutableSearch::from_environment(&cwd, |key| std::env::var_os(key));
+    let search = acyclic_executable_search::ExecutableSearch::from_environment(&cwd, |key| {
+        std::env::var_os(key)
+    });
     let executable = search.resolve_native("true")?;
     let program = CString::new(executable.as_os_str().as_bytes()).map_err(io::Error::other)?;
     for cut in 0..3 {

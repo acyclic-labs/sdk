@@ -129,6 +129,7 @@ tempfile = { version = "3.27.0" }
 getrandom = { workspace = true }
 loom = { version = "=0.7.3", optional = true }
 same-file = { version = "1.0.6", optional = true }
+acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true }
 rustls = { workspace = true }

@@ -333,6 +333,15 @@ name = "acyclic-differential"
 version = "0.2.0"
 
 [[package]]
+name = "acyclic-executable-search"
+version = "0.2.0"
+dependencies = [
+ "acyclic-test-support",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
@@ -747,6 +756,7 @@ dependencies = [
  "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-differential",
+ "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-fs-base",
  "acyclic-fs-native-contract",
@@ -834,6 +844,7 @@ dependencies = [
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-client",
@@ -927,6 +938,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-executable-search",
  "acyclic-fs",
  "acyclic-fs-native-contract",
  "acyclic-fs-work",
@@ -1530,6 +1542,7 @@ name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
  "acyclic-collections",
+ "acyclic-executable-search",
  "acyclic-host-platform",
  "acyclic-native-lines",
  "acyclic-observability",
