@@ -1094,6 +1094,7 @@ dependencies = [
  "acyclic-fs-work",
  "acyclic-harness",
  "acyclic-harness-core",
+ "acyclic-harness-local",
  "acyclic-harness-provider-protocol",
  "acyclic-harness-provider-response",
  "acyclic-model-render",
