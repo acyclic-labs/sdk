@@ -50,8 +50,9 @@ const claims = {
   "settings-admission-producer": [
     "rust/crates/harness-local/src/local/agent_settings.rs", "acyclic-harness-local",
     "local::agent_settings::tests::imported_settings_keep_the_original_directory_read_refusal",
-    "settings admission lost its original read producer", ["--features", "test-support"],
-    { nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
+    "settings admission lost its original read producer", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-local:acyclic_harness_local_test_cases", "--",
+      "local::agent_settings::tests::imported_settings_keep_the_original_directory_read_refusal", "--exact", "--nocapture"] },
   ],
   "plugin-input-cut": [
     "rust/crates/harness-core/src/plugins.rs", "acyclic-harness-core",
