@@ -269,7 +269,9 @@ fn current_package_profiles<'a>(
     }
     let mut declared = BTreeSet::new();
     for feature in declared_features(package_metadata) {
-        add(false, feature_closure(&package_metadata.features, feature));
+        let mut closure = BTreeSet::new();
+        extend_feature_closure(&package_metadata.features, feature, &mut closure);
+        add(false, closure);
         declared.insert(feature.clone());
     }
     if !declared.is_empty() {
@@ -315,7 +317,7 @@ pub fn browser_profile_for_package(
                         feature: feature.into(),
                     });
                 }
-                features.extend(feature_closure(&package.features, feature));
+                extend_feature_closure(&package.features, feature, &mut features);
             }
         }
         default_features = !match napi.get("wasm-no-default-features") {
@@ -325,7 +327,7 @@ pub fn browser_profile_for_package(
             None => false,
         };
     } else if package.features.contains_key("wasm") {
-        features = feature_closure(&package.features, "wasm");
+        extend_feature_closure(&package.features, "wasm", &mut features);
     } else if !has_browser_target_dependencies {
         return Ok(None);
     }
@@ -343,8 +345,12 @@ pub fn browser_profile_for_package(
     }))
 }
 
-fn feature_closure(features: &BTreeMap<String, Vec<String>>, root: &str) -> BTreeSet<String> {
-    let mut result = BTreeSet::new();
+/// Extend a set whose existing local features already include their dependencies.
+fn extend_feature_closure(
+    features: &BTreeMap<String, Vec<String>>,
+    root: &str,
+    result: &mut BTreeSet<String>,
+) {
     let mut pending = vec![root];
     while let Some(feature) = pending.pop() {
         if !result.insert(feature.to_owned()) {
@@ -362,7 +368,6 @@ fn feature_closure(features: &BTreeMap<String, Vec<String>>, root: &str) -> BTre
             }
         }
     }
-    result
 }
 
 /// Historical documentation keeps the original Cargo defaults while covering
@@ -407,7 +412,7 @@ pub fn historical_profiles_for_package(
                     feature: feature.to_owned(),
                 });
             }
-            features.extend(feature_closure(&owner.features, feature));
+            extend_feature_closure(&owner.features, feature, &mut features);
         }
         if policy.all_features {
             features.extend(declared_features(owner).cloned());
