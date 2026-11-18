@@ -670,14 +670,6 @@ fn complete_registry_cohort_rejects_missing_retired_owner_before_import() {
 
 use std::fs;
 use std::path::PathBuf;
-fn pack_registry_archive(entry: &Path, archive: &Path) -> String {
-    fixture_archive::pack(entry, archive);
-    crate::sha256_file(archive)
-        .unwrap()
-        .trim_start_matches("sha256:")
-        .to_owned()
-}
-
 struct Fixture(tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
@@ -752,7 +744,11 @@ impl Fixture {
     }
     fn pack_archive(&self, entry: &Path) -> (RegistryVersion, PathBuf) {
         let archive = self.path().join("release.crate");
-        let checksum = pack_registry_archive(entry, &archive);
+        fixture_archive::pack(entry, &archive);
+        let checksum = crate::sha256_file(&archive)
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .to_owned();
         (
             RegistryVersion {
                 package: "historical-fixture".into(),

@@ -337,7 +337,7 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
-    let (mut release, archive) = fixture.archive(&revision, "");
+    let (release, archive) = fixture.archive(&revision, "");
     let manifest = fixture.path().join("Cargo.toml");
     let original_manifest = fs::read(&manifest).unwrap();
     fs::write(&manifest, "different manifest").unwrap();
@@ -347,9 +347,9 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
             .contains("source bytes differ")
     );
     fs::write(manifest, original_manifest).unwrap();
-    fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
-    release.checksum =
-        pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
+    let entry = fixture.path().join("historical-fixture-0.1.0");
+    fs::remove_file(entry.join("src/lib.rs")).unwrap();
+    let (release, archive) = fixture.pack_archive(&entry);
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
             .unwrap_err()
