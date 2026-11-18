@@ -333,21 +333,19 @@ fn stale_source_attestation_is_rejected_before_generate() {
 
 #[test]
 fn release_generation_requires_executed_profiles() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    git(&fixture.root, &["add", "rustdoc"]);
-    git(
-        &fixture.root,
-        &["commit", "--quiet", "-m", "rustdoc receipt"],
-    );
-    let result = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "release-scenario-bypass",
+    let directory = fixture_directory();
+    let root = directory.path();
+    let output = root.join("output");
+    let result = generate_command(
+        root,
+        &root.join("rustdoc"),
+        &output,
+        "1.0.0",
         "release",
         true,
-    );
+    )
+    .output()
+    .unwrap();
     assert!(!result.status.success());
     let message = output_message(&result);
     assert!(
@@ -356,7 +354,7 @@ fn release_generation_requires_executed_profiles() {
         ),
         "{message}"
     );
-    assert!(!fixture.output.join("generation-manifest.v1.json").exists());
+    assert!(!output.exists());
 }
 
 fn assert_publishers_succeeded(results: &[std::process::Output; 2]) {
