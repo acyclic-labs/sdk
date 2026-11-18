@@ -2769,6 +2769,57 @@ isolated_test(
 )
 
 rust_test(
+    name = "extent_codec_cases",
+    crate_root = "tests/extent_codec.rs",
+    srcs = [
+        "tests/extent_codec.rs",
+        "tests/extent_codec/kernel/extent/mod.rs",
+        "tests/extent_codec/kernel/extent/tests.rs",
+        "tests/extent_codec/kernel/mod.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "extent_codec",
+    binary = ":extent_codec_cases",
+    id = "acyclic-fs::extent_codec",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "extent_codec_full-cloud",
+    binary = ":extent_codec_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::extent_codec",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
     name = "checkout_cancellation_cases",
     crate_root = "tests/checkout_cancellation.rs",
     srcs = [
