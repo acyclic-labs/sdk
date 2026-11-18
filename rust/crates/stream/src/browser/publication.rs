@@ -175,21 +175,6 @@ impl BrowserStream {
         self.refresh_observation(&mut cache, &mut dispatch).await?;
         Ok(())
     }
-    pub(super) async fn with_cached_provider<T>(
-        &self,
-        operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
-    ) -> Result<T, StreamError> {
-        let mut dispatch = Dispatch::new(self);
-        let mut cache = self.inner.cache.lock().await;
-        if !cache.valid {
-            self.refresh_observation(&mut cache, &mut dispatch).await?;
-        }
-        #[cfg(test)]
-        self.inner
-            .follow_reads
-            .set(self.inner.follow_reads.get() + 1);
-        operation(&cache.provider).await
-    }
 }
 
 pub(super) struct Observer<'a> {

@@ -12,7 +12,7 @@ impl BrowserStream {
     ) -> Result<crate::FollowStream, StreamError> {
         let changed = self.inner.publications.interests.subscribe(path.clone())?;
         let (snapshot, selection, _, cursor) = self
-            .with_provider(async |memory| {
+            .with_provider(true, async |memory| {
                 memory
                     .prepare_progress(&path, from, anchor, when_absent, window)
                     .await
@@ -31,7 +31,7 @@ impl BrowserStream {
                                 return Ok(Some(None));
                             }
                             let update = provider
-                                .with_cached_provider(async |memory| {
+                                .with_provider(false, async |memory| {
                                     memory
                                         .next_follow_update(
                                             &path,
@@ -73,7 +73,7 @@ impl BrowserStream {
         // The publication index survives replay-cache replacement. Registration
         // and the initial cursor are captured under the same cache lock as writes.
         let (snapshot, selection, changed, cursor, registration) = self
-            .with_provider(async |memory| {
+            .with_provider(true, async |memory| {
                 let (snapshot, selection, _, cursor) = memory
                     .prepare_progress(&path, from, anchor, when_absent, window)
                     .await?;
@@ -113,7 +113,7 @@ impl BrowserStream {
                                 return Ok(None);
                             }
                             if let Some(record) = provider
-                                .with_cached_provider(async |memory| {
+                                .with_provider(false, async |memory| {
                                     memory
                                         .next_checked_record(
                                             &path,
