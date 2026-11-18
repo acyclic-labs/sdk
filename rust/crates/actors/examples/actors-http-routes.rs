@@ -3,64 +3,55 @@ use std::{env, fs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = env::args().skip(1);
-    let output = arguments.next();
+    let output = arguments.next().ok_or("expected a service output path")?;
     if let Some(argument) = arguments.next() {
         return Err(format!("unknown argument {argument}").into());
     }
-    if let Some(output) = output {
-        if let Some(parent) = std::path::Path::new(&output).parent() {
-            std::fs::create_dir_all(parent)?;
-            std::fs::write(parent.join("nominal.ts"), render_nominal())?;
-            std::fs::write(
-                parent.join("guest.ts"),
-                acyclic_actors_guest_wire::typescript(),
-            )?;
-            std::fs::write(
-                parent.join("live-update.ts"),
-                acyclic_actors_guest_wire::compatibility::typescript(),
-            )?;
-            <acyclic_actors_diagnostics::ErrorMetadata as ts_rs::TS>::export_all(
-                &ts_rs::Config::default()
-                    .with_out_dir(parent)
-                    .with_import_extension(Some("js")),
-            )?;
-            let semantic_root = parent.join("semantic");
-            if semantic_root.exists() {
-                fs::remove_dir_all(&semantic_root)?;
-            }
-            let public_semantic = semantic_root.join("actors");
-            fs::create_dir_all(&public_semantic)?;
-            acyclic_actors_guest_wire::domain::export::export_typescript(&semantic_root)?;
-            fs::write(
-                public_semantic.join("index.ts"),
-                render_semantic_index(&ts_rs::Config::default()),
-            )?;
-            std::fs::write(
-                public_semantic.join("readonly.ts"),
-                render_readonly_semantic(&ts_rs::Config::default()),
-            )?;
-        }
-        let parent = std::path::Path::new(&output)
-            .parent()
-            .ok_or("service output requires a parent")?;
-        fs::write(
-            parent.join("Actors.service.bin"),
-            include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin")),
-        )?;
-        fs::write(
-            parent.join("Actors.semantic-names.json"),
-            serde_json::to_vec(
-                &acyclic_actors_guest_wire::domain::export::typescript_export_metadata(
-                    &ts_rs::Config::default(),
-                ),
-            )?,
-        )?;
-    } else {
-        println!(
-            "{}",
-            serde_json::to_string(acyclic_actors_inventory::HTTP_ROUTES)?
-        );
+    let parent = std::path::Path::new(&output)
+        .parent()
+        .ok_or("service output requires a parent")?;
+    std::fs::create_dir_all(parent)?;
+    std::fs::write(parent.join("nominal.ts"), render_nominal())?;
+    std::fs::write(
+        parent.join("guest.ts"),
+        acyclic_actors_guest_wire::typescript(),
+    )?;
+    std::fs::write(
+        parent.join("live-update.ts"),
+        acyclic_actors_guest_wire::compatibility::typescript(),
+    )?;
+    <acyclic_actors_diagnostics::ErrorMetadata as ts_rs::TS>::export_all(
+        &ts_rs::Config::default()
+            .with_out_dir(parent)
+            .with_import_extension(Some("js")),
+    )?;
+    let semantic_root = parent.join("semantic");
+    if semantic_root.exists() {
+        fs::remove_dir_all(&semantic_root)?;
     }
+    let public_semantic = semantic_root.join("actors");
+    fs::create_dir_all(&public_semantic)?;
+    acyclic_actors_guest_wire::domain::export::export_typescript(&semantic_root)?;
+    fs::write(
+        public_semantic.join("index.ts"),
+        render_semantic_index(&ts_rs::Config::default()),
+    )?;
+    std::fs::write(
+        public_semantic.join("readonly.ts"),
+        render_readonly_semantic(&ts_rs::Config::default()),
+    )?;
+    fs::write(
+        parent.join("Actors.service.bin"),
+        include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin")),
+    )?;
+    fs::write(
+        parent.join("Actors.semantic-names.json"),
+        serde_json::to_vec(
+            &acyclic_actors_guest_wire::domain::export::typescript_export_metadata(
+                &ts_rs::Config::default(),
+            ),
+        )?,
+    )?;
     Ok(())
 }
 
