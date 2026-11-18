@@ -413,7 +413,7 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
     );
     for receipt in long_profiles {
         assert!(receipt["profile"].as_str().unwrap().len() > 255);
-        let path = receipt_path(&fixture.rustdoc, receipt);
+        let path = assert_retained_receipt(&fixture.rustdoc, receipt);
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
             format!(
@@ -423,8 +423,6 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
                 ))
             )
         );
-        assert!(path.is_file(), "the executed receipt must be retained");
-        assert!(path.with_extension("source.sha256").is_file());
     }
     let drift = run_drift_execute_profiles(&fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));

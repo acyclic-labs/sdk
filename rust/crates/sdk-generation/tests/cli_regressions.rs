@@ -608,6 +608,16 @@ fn read_profile_rows(output: &Path) -> Vec<Value> {
     serde_json::from_slice(&fs::read(output.join(PROFILE_TABLE)).unwrap()).unwrap()
 }
 
+fn assert_retained_receipt(rustdoc: &Path, row: &Value) -> PathBuf {
+    let receipt = receipt_path(rustdoc, row);
+    assert!(
+        receipt.is_file(),
+        "every execution must retain its Rustdoc output"
+    );
+    assert!(receipt.with_extension("source.sha256").is_file());
+    receipt
+}
+
 fn assert_executed_profiles(
     output: &Path,
     rustdoc: &Path,
@@ -624,12 +634,7 @@ fn assert_executed_profiles(
             identities.insert(row["profile"].as_str().unwrap()),
             "duplicate execution receipt"
         );
-        let receipt = receipt_path(rustdoc, row);
-        assert!(
-            receipt.is_file(),
-            "every execution must retain its Rustdoc output"
-        );
-        assert!(receipt.with_extension("source.sha256").is_file());
+        assert_retained_receipt(rustdoc, row);
     }
     let expected_counts = expected.iter().copied().collect::<BTreeMap<_, _>>();
     assert_eq!(
