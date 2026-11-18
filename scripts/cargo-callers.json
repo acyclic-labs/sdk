@@ -49,7 +49,6 @@
   "scripts/qualify-mcp-loom.mjs",
   "scripts/qualify-rustfmt.mjs",
   "scripts/qualify-rustfmt.test.mjs",
-  "scripts/qualify-wave1-coverage.py",
   "scripts/release-evidence.mjs",
   "scripts/run-browser-tests.sh",
   "scripts/test-build-stream-native.mjs",

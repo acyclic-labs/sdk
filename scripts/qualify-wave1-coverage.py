@@ -41,9 +41,11 @@ def write_json(name, data):
 
 
 def snapshot():
-    paths = {ROOT / 'Cargo.toml', ROOT / 'Cargo.lock', Path(__file__).resolve()}
+    paths = {ROOT / name for name in ('Cargo.toml', 'Cargo.lock', 'MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc')}
+    paths.add(Path(__file__).resolve())
     paths.update((ROOT / 'rust').rglob('*.rs'))
     paths.update((ROOT / 'rust').rglob('Cargo.toml'))
+    paths.add(ROOT / 'rust/crates/stream/BUILD.bazel')
     return {path.relative_to(ROOT).as_posix(): sha(path) for path in sorted(paths)}
 
 
@@ -60,14 +62,14 @@ def run(args, label, expected=0, env=None, fast=False):
     return result
 
 
-def build(kind, label, target):
-    command = ['cargo', kind, '--locked', '-p', 'acyclic-stream', '--features', 'conformance', '--message-format=json']
-    command += ['--test', target, '--no-run'] if kind == 'test' else ['--example', target]
-    result = run(command, label)
-    events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith(b'{')]
-    artifacts = [event for event in events if event.get('reason') == 'compiler-artifact' and event['target']['name'] == target and event.get('executable')]
-    need(len(artifacts) == 1 and any(event.get('reason') == 'build-finished' and event.get('success') for event in events), label + ': expected exactly one built executable')
-    path = Path(artifacts[0]['executable'])
+def build(label, target):
+    download = '--remote_download_toplevel'
+    run(['bazel', 'build', download, target], label)
+    result = run(['bazel', 'cquery', download, '--output=files', target], label + '-query')
+    artifacts = result.stdout.decode().splitlines()
+    need(len(artifacts) == 1, label + ': expected exactly one built executable')
+    root = run(['bazel', 'info', 'execution_root'], label + '-execution-root')
+    path = Path(root.stdout.decode().strip()) / artifacts[0]
     need(path.is_file(), label + ': executable missing')
     write_json(label + '-executable.json', dict(path=str(path), sha256=sha(path), oracle_sha256=sha(TEST), production_sha256=sha(SOURCE)))
     return path
@@ -75,7 +77,7 @@ def build(kind, label, target):
 
 try:
     need(not OUT.exists() and not ARCHIVE.exists(), 'existing coverage output must be admitted/reused, never overwritten or identically rerun')
-    need(shutil.which('cargo') and shutil.which('rustc'), 'cargo/rustc missing from admitted environment')
+    need(shutil.which('bazel'), 'Bazel missing from admitted environment')
     package = tomllib.loads((ROOT / 'rust/crates/stream/Cargo.toml').read_text())
     need(package['package']['name'] == 'acyclic-stream' and {'conformance'} <= package['features'].keys(), 'affected crate/features differ')
     for path in (SOURCE, TEST, ROOT / 'rust/crates/stream/examples/wave1-conformance.rs', ROOT / 'Cargo.lock'):
@@ -94,11 +96,12 @@ try:
     (OUT / 'oracle.rs').write_bytes(TEST.read_bytes())
     step = 'positive_compile_and_test'
     write_json('positive-compiled-source.json', snapshot())
-    executable = build('test', 'positive-compile', 'provider-contracts')
+    target = '//rust/crates/stream:provider-contracts_cases'
+    executable = build('positive-compile', target)
     result = run([str(executable), 'wave1_coverage::', '--nocapture', '--test-threads=1'], 'positive', fast=True)
     need(b'3 passed; 0 failed; 0 ignored;' in result.stdout, 'positive: exactly three selected tests required')
     step = 'endpoint_compile_and_refusal'
-    runner = build('build', 'runner-compile', 'wave1-conformance')
+    runner = build('runner-compile', '//rust/crates/stream:wave1-conformance_example')
     environment = os.environ.copy()
     for name in ('ACYCLIC_CONFORMANCE_ENDPOINT', 'ACYCLIC_CONFORMANCE_TOKEN', 'ACYCLIC_CONFORMANCE_NAMESPACE', 'ACYCLIC_CONFORMANCE_CASE'):
         environment.pop(name, None)
@@ -117,7 +120,7 @@ try:
     changes = [name for name in inputs if inputs[name] != mutated_inputs[name]]
     need(changes == [SOURCE.relative_to(ROOT).as_posix()], 'mutation changed other production/test inputs')
     write_json('mutant-compiled-source.json', mutated_inputs)
-    mutant = build('test', 'mutant-compile', 'provider-contracts')
+    mutant = build('mutant-compile', target)
     result = run([str(mutant), 'wave1_coverage::', '--nocapture', '--test-threads=1'], 'mutant', expected=101, fast=True)
     need(b'2 passed; 1 failed; 0 ignored;' in result.stdout and b'qualification_request_refuses_all_unexported_histories ... FAILED' in result.stdout and b'complete HST qualification must refuse unexported histories' in result.stdout + result.stderr, 'mutant must fail the unchanged HST refusal assertion, not setup')
     SOURCE.write_bytes(original)
