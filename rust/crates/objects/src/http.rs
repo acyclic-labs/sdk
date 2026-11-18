@@ -218,23 +218,13 @@ impl HttpObjects {
                 return Err(self.failure(response).await);
             }
             let bytes = self.bytes(response).await?;
-            if let Some(lease) = &lease {
-                lease
-                    .check()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            }
+            crate::operation::validate_lease(lease.as_ref()).await?;
             if let Some(context) = &self.context {
                 context.check()?;
             }
             let decoded =
                 json::decode_binary(output_name, &bytes, None).map_err(|_| unavailable())?;
-            if let Some(lease) = &lease {
-                lease
-                    .check()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            }
+            crate::operation::validate_lease(lease.as_ref()).await?;
             Ok(decoded.into())
         })
         .await

@@ -71,9 +71,7 @@ impl Credential {
         let lease = &self.lease;
         let delivery = async {
             let next = source.next().await.ok_or_else(unavailable)??;
-            if let Some(lease) = lease {
-                lease.check().await.map_err(|_| denied())?;
-            }
+            crate::operation::validate_lease(lease.as_ref()).await?;
             Ok(next)
         };
         match future::select(self.stop.as_mut(), std::pin::pin!(delivery)).await {

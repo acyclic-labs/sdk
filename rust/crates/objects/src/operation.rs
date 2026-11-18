@@ -1,5 +1,6 @@
 //! The original Auth operation budget, shared by both native transports.
 use crate::Error;
+use acyclic_auth::credential::{CredentialProvider, ResolvedCredential};
 use acyclic_auth::operation::Context;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -64,20 +65,28 @@ pub(crate) fn deadline(
 }
 
 pub(crate) async fn checked_lease(
-    provider: &acyclic_auth::credential::CredentialProvider,
-) -> Result<acyclic_auth::credential::ResolvedCredential, Error> {
+    provider: &CredentialProvider,
+) -> Result<ResolvedCredential, Error> {
     let denied = || Error::from(crate::wire::ErrorCode::AccessDenied);
     let lease = provider.resolve().await.map_err(|_| denied())?;
-    lease.check().await.map_err(|_| denied())?;
+    validate_lease(Some(&lease)).await?;
     Ok(lease)
 }
 
-pub(crate) async fn reject_lease(
-    lease: Option<&acyclic_auth::credential::ResolvedCredential>,
-) -> Result<(), Error> {
+pub(crate) async fn reject_lease(lease: Option<&ResolvedCredential>) -> Result<(), Error> {
     if let Some(lease) = lease {
         lease
             .reject()
+            .await
+            .map_err(|_| Error::from(crate::wire::ErrorCode::AccessDenied))?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn validate_lease(lease: Option<&ResolvedCredential>) -> Result<(), Error> {
+    if let Some(lease) = lease {
+        lease
+            .check()
             .await
             .map_err(|_| Error::from(crate::wire::ErrorCode::AccessDenied))?;
     }
