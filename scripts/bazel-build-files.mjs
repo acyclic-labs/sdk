@@ -712,20 +712,24 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const opt = packageOpt(p.name);
   const repoRelative = target => path.relative(root, target.src_path).replaceAll("\\", "/");
   const libUnitTests = lib !== undefined && workspace.has(p.id) && hasUnitTests(dir(p), repoRelative(lib));
+  const preciseBins = bazel?.["precise-bin-inputs"] === true;
+  const binRoots = preciseBins ? p.targets.filter(target => target.kind.includes("bin"))
+    .map(target => within(dir(p), repoRelative(target))) : [];
   // Library and binary globs: the package's files outside its test, bench and example trees.
-  const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs";
+  const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs" && !binRoots.includes(file);
   const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
   const libInputs = (target, unitTest = false) => {
-    const extra = extras(target, libCovered);
+    const preciseData = bazel?.["precise-library-compile-data"] === true;
+    const extra = extras(target, file => libCovered(file) && (!preciseData || file.endsWith(".rs")));
     const testOnly = file => !unitTest && testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
     return [
       ["srcs", plus(
-        glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
+        glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...binRoots, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
         list(extra.srcs.filter(file => !platformSourcePatterns.includes(file) && !testOnly(file))),
         configuredSources,
       )],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
+      ["compile_data", plus(preciseData ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
     ];
   };
   const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
@@ -899,25 +903,34 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       test(`${crateName(lib)}_test`, attrs, runtimeData(lib), {}, p.name);
     }
   }
+  const exactInputs = target => {
+    const extra = extras(target, () => false);
+    return [["srcs", list(extra.srcs)], ["compile_data", list(extra.data)]];
+  };
+  const binInputs = preciseBins ? exactInputs : libInputs;
   const executables = !graph && workspace.has(p.id) ? p.targets : [];
   for (const bin of executables.filter(t => t.kind.includes("bin"))) {
     covered.add(`build bin ${bin.name}`);
+    const direct = bazel?.["bin-dependencies"]?.[bin.name];
+    const inputs = direct ? exactInputs : binInputs;
+    const binDeps = kinds => direct
+      ? deps(kinds, [], [], {}, direct)
+      : deps(kinds, [...ownLib, ...ownDeps], ownMacro);
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
-      ...libInputs(bin),
+      ...inputs(bin),
       ...common(bin),
-      ...deps([null], [...ownLib, ...ownDeps], ownMacro),
+      ...binDeps([null]),
       ["visibility", q(["//visibility:public"])],
     ]]);
     // A binary's own #[cfg(test)] cases, as `cargo test` runs them.
     const binCrate = bin.name.replaceAll("-", "_");
     if (bin.test) covered.add(`test bin ${bin.name}`), test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
-      ...libInputs(bin),
+      ...inputs(bin),
       ...common(bin),
-      ...deps([null, "dev"],
-        [...ownLib, ...ownDeps], ownMacro),
+      ...binDeps([null, "dev"]),
     ], runtimeData(bin), {}, `${p.name}::bin/${bin.name}`);
   }
   // Integration tests, examples and benches compile from their own directory and the package's
@@ -936,11 +949,9 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       || (includeOwn && !bazel?.["test-without-build-script"]?.includes(target.name));
     const extraDeps = [...(includeOwn ? ownLib : []), ...(needsBuildScript ? ownDeps : [])];
     const crateRoot = local(target.src_path);
-    const extra = extras(target, () => false);
     return [
       ["crate_root", q(crateRoot)],
-      ["srcs", list(extra.srcs)],
-      ["compile_data", list(extra.data)],
+      ...exactInputs(target),
       ...common(target),
       ...(names ? deps([null, "dev"], extraDeps,
         includeOwn ? ownMacro : [], {}, names)

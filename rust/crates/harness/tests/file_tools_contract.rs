@@ -2,7 +2,7 @@
 //! The `file-tools-contract` example prints it for the TypeScript mirror, and
 //! the integration test holds the committed fixture to the same value.
 
-use acyclic_harness::{
+use acyclic_harness_core::{
     AgentId, OperationId, Result,
     conversation::{
         FileDescriptor, FilePathSelection, FileRef, VolumeClass, VolumeOwner, VolumeRef,
@@ -30,7 +30,8 @@ const SEARCH: SearchOptions = SearchOptions {
 const MAXIMUM_RESULT_BYTES: u64 = 4096;
 
 fn value<T: Serialize>(input: T) -> Result<Value> {
-    serde_json::to_value(input).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))
+    serde_json::to_value(input)
+        .map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))
 }
 
 fn definition(variant: &str, tool: Tool) -> Result<Value> {
