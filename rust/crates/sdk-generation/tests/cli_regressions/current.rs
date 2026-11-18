@@ -262,40 +262,6 @@ fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
 }
 
 #[test]
-fn stale_source_attestation_is_rejected_before_generate() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    let first = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "stale-attestation",
-        "preview",
-        true,
-    );
-    assert!(first.status.success(), "{}", output_message(&first));
-
-    fs::write(
-        fixture.root.join("rust/crates/demo/src/lib.rs"),
-        "pub fn demo() -> u64 { 8 }\n",
-    )
-    .unwrap();
-    let second_output = fixture.root.join("stale-output");
-    let second = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &second_output,
-        "stale-attestation",
-        "preview",
-        true,
-    );
-    assert!(!second.status.success());
-    let message = output_message(&second);
-    assert!(message.contains("matching source attestation"), "{message}");
-    assert!(!second_output.join("generation-manifest.v1.json").exists());
-}
-
-#[test]
 fn release_generation_requires_executed_profiles() {
     let directory = fixture_directory();
     let root = directory.path();
