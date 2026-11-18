@@ -8,3 +8,10 @@ export function validateByteLimit(value: number | undefined, option: string): nu
   }
   return value;
 }
+
+/** Checks the endpoint shape shared by the SDK transports. */
+export function isTransportEndpoint(url: URL, allowLoopbackHttp = false): boolean {
+  if (url.username || url.password || url.search || url.hash) return false;
+  return url.protocol === "https:" || (allowLoopbackHttp && url.protocol === "http:"
+    && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname));
+}
