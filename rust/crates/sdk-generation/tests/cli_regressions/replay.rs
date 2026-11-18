@@ -125,7 +125,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     rebased_bytes.clear();
     serde_json::to_writer_pretty(&mut rebased_bytes, &release).unwrap();
     let rebased_digest = hash_bytes(&rebased_bytes);
-    fs::write(relocated.output.join(&release_path), rebased_bytes).unwrap();
+    fs::write(relocated.output.join(&release_path), &rebased_bytes).unwrap();
     fs::write(
         relocated.output.join(&digest_path),
         rebased_digest.as_bytes(),
@@ -145,7 +145,9 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         assert_eq!(manifest["artifacts"][&path].as_str().unwrap(), old);
         manifest["artifacts"][&path] = json!(new);
     }
-    write_manifest(&relocated.output, &manifest);
+    rebased_bytes.clear();
+    serde_json::to_writer_pretty(&mut rebased_bytes, &manifest).unwrap();
+    write_manifest_bytes(&relocated.output, &rebased_bytes);
 }
 // Replay the production projection from every real Cargo-produced receipt.
 // Compilation is performed once; copies retain the full matrix and source bytes.

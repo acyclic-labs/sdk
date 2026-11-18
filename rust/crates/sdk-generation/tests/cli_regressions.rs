@@ -325,12 +325,15 @@ fn git_revision(root: &Path) -> String {
 }
 
 fn write_manifest(output: &Path, value: &Value) {
+    write_manifest_bytes(output, &serde_json::to_vec_pretty(value).unwrap());
+}
+
+fn write_manifest_bytes(output: &Path, bytes: &[u8]) {
     fs::create_dir_all(output).unwrap();
-    let bytes = serde_json::to_vec_pretty(value).unwrap();
-    fs::write(output.join("generation-manifest.v1.json"), &bytes).unwrap();
+    fs::write(output.join("generation-manifest.v1.json"), bytes).unwrap();
     fs::write(
         output.join("generation-manifest.v1.sha256"),
-        format!("{}\n", hash_bytes(&bytes)),
+        format!("{}\n", hash_bytes(bytes)),
     )
     .unwrap();
 }
