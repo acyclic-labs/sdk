@@ -80,10 +80,10 @@ services. Native policy tests exercise ordinary
 inspection commands and force a socket probe independently of the host's NSS
 configuration.
 
-To use the system C linker instead, override the workspace linker for the command:
+Build the plugin with the workspace Bazel toolchain.
 
 ```sh
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc cargo build --locked -p acyclic-plugin
+bazel build //plugin:acyclic_plugin
 ```
 
 For isolated identity or filesystem protocol changes, validate the owning crate:
@@ -100,7 +100,6 @@ the protocol descriptor and message tests. Qualification also covers consumers.
 bun install --frozen-lockfile
 bun run check   # tsc -b --force, project-wide type-check (also emits build output)
 bun run test    # type-check, then TypeScript and filesystem package tests
-cargo test --all-features --locked
 ```
 
 `node scripts/node-tests.mjs --all` discovers Node and Bun tests, runs the
