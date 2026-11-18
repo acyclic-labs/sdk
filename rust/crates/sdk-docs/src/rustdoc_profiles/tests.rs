@@ -62,12 +62,12 @@ fn browser_profiles_follow_cargo_features_and_binding_policy() {
         })
     );
     package.metadata = serde_json::json!({"napi":{
-        "wasm-package":"feature-rich", "wasm-features":["wasm"], "wasm-no-default-features":true}});
+        "wasm-package":"feature-rich", "wasm-features":["codec"], "wasm-no-default-features":true}});
     let profile = browser_profile_for_package(&package, true, &targets)
         .unwrap()
         .unwrap();
     assert!(!profile.default_features);
-    assert!(!profile.features.contains("json"));
+    assert_eq!(profile.features, BTreeSet::from(["codec".into()]));
     package.metadata["napi"]["wasm-features"] = serde_json::json!("wasm");
     assert!(browser_profile_for_package(&package, true, &targets).is_err());
 
