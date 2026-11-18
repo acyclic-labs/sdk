@@ -4,9 +4,9 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
     use acyclic_fs::{
         CheckoutMountSource, NativeMountRequest, SharedCheckout, mount_native, probe_native_mount,
     };
-    #[cfg(windows)]
-    use acyclic_fs::{MountFilesystem, MountPath};
     use std::sync::Arc;
+    #[cfg(windows)]
+    use {acyclic_fs::MountFilesystem, acyclic_fs_native_contract::MountPath};
 
     let source = PathBuf::from(args.first().ok_or("mount-smoke: missing <src>")?).canonicalize()?;
     let work = PathBuf::from(args.get(1).ok_or("mount-smoke: missing <work>")?);
@@ -242,8 +242,11 @@ pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
 // ---------------------------------------------------------------------------
 
 pub(super) fn source_probe(args: &[String]) -> Result<(), Failure> {
-    use acyclic_fs::{CheckoutMountSource, MountFilesystem, MountPath, SharedCheckout};
     use std::sync::Arc;
+    use {
+        acyclic_fs::{CheckoutMountSource, MountFilesystem, SharedCheckout},
+        acyclic_fs_native_contract::MountPath,
+    };
 
     let source =
         PathBuf::from(args.first().ok_or("source-probe: missing <src>")?).canonicalize()?;

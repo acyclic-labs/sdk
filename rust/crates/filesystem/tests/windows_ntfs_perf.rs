@@ -23,9 +23,10 @@ use serde_json::json;
 use {
     acyclic_fs::{
         CancellationToken, CaptureOptions, Fs, IdempotencyKey, LazyWorkspace, LocalOptions,
-        MaterializeOptions, MemoryLazyWorkspaceStore, MountPath, PublicationPermit,
-        TransactionCommit, capture_paths, capture_root_identity, host_path_to_namespace,
+        MaterializeOptions, MemoryLazyWorkspaceStore, PublicationPermit, TransactionCommit,
+        capture_paths, capture_root_identity, host_path_to_namespace,
     },
+    acyclic_fs_native_contract::MountPath,
     acyclic_fs_work::performance::WorkBudget,
 };
 

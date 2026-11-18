@@ -1,13 +1,16 @@
 //! Bound native checkout publication, including original allocation custody.
 use crate::{Error, Result};
-use acyclic_fs::{
-    Generation, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend,
-    MaterializationJournal, MaterializeOptions, NativeAllocation, NativeMaterializationWork,
-    NativeRootIdentity, NativeWorkspacePublication, OperationId,
-};
 use std::{
     future::Future,
     path::{Path, PathBuf},
+};
+use {
+    acyclic_fs::{
+        Generation, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend,
+        MaterializationJournal, MaterializeOptions, NativeAllocation, NativeMaterializationWork,
+        NativeWorkspacePublication, OperationId,
+    },
+    acyclic_fs_native_contract::NativeRootIdentity,
 };
 
 type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;

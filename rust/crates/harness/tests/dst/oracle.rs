@@ -300,7 +300,7 @@ impl WorldDirectory {
     /// The checkout identity is a function of the world's case and seed, not
     /// of the scheduler incarnation, so every incarnation reopens the same
     /// state.
-    fn identity(&self) -> ([u8; 16], acyclic_fs::NativeRootGeneration) {
+    fn identity(&self) -> ([u8; 16], acyclic_fs_native_contract::NativeRootGeneration) {
         let mut object = [0; 16];
         object.copy_from_slice(
             &blake3::hash(format!("dst-object:{}:{}", self.key.0, self.key.1).as_bytes())
@@ -308,7 +308,10 @@ impl WorldDirectory {
         );
         let handle = *blake3::hash(format!("dst-handle:{}:{}", self.key.0, self.key.1).as_bytes())
             .as_bytes();
-        (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
+        (
+            object,
+            acyclic_fs_native_contract::NativeRootGeneration::FileHandle(handle),
+        )
     }
 }
 

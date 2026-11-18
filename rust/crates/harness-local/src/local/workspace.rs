@@ -86,7 +86,7 @@ pub struct LocalWorkspace {
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) mount_authority: Option<crate::filesystem::NativeMountAuthority>,
-    pub(super) identity: acyclic_fs::NativeRootIdentity,
+    pub(super) identity: acyclic_fs_native_contract::NativeRootIdentity,
     // Lock order: view state -> volume projection -> coordinator -> command-local
     // cache or native completion, then task-file index -> provider visibility -> provider state.
     // Callbacks never reacquire view state. All executor bindings share this

@@ -129,8 +129,6 @@ mod native_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_host;
-#[cfg(not(target_arch = "wasm32"))]
-mod native_identity;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(
@@ -271,6 +269,10 @@ pub use git_compat::{
 };
 pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs_native_contract::{
+    MountPath, NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation,
+};
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
     GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,
@@ -339,19 +341,17 @@ pub use native_capture::{
     hold_root, hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
-#[cfg(not(target_arch = "wasm32"))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
     MountContentPin, MountDirectoryCursor, MountDirectoryEntry, MountDirectoryPage,
     MountFilesystem, MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountOptions, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountSourceRetirement, MountSparseRange, MountSparseSpan,
-    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountCleanupState,
-    NativeMountControlPaths, NativeMountDrainProof, NativeMountError, NativeMountKind,
-    NativeMountProbe, NativeMountRecoveryCleanupState, NativeMountRecoveryOwner,
-    NativeMountRequest, NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
+    MountOptions, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountSourceRetirement, MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
+    NativeMountCapabilities, NativeMountCleanupState, NativeMountControlPaths,
+    NativeMountDrainProof, NativeMountError, NativeMountKind, NativeMountProbe,
+    NativeMountRecoveryCleanupState, NativeMountRecoveryOwner, NativeMountRequest,
+    NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState, SharedViewInstance,

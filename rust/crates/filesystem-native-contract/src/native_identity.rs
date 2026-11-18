@@ -3,8 +3,10 @@
 /// Stable native identity of one held filesystem root.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct NativeRootIdentity {
-    pub(crate) device: u64,
-    pub(crate) object: u64,
+    /// Platform device or volume identifier.
+    pub device: u64,
+    /// Platform object identifier within the device.
+    pub object: u64,
 }
 
 /// How stably a held root's object id names it. None of these tells one

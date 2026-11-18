@@ -276,9 +276,8 @@ where
 mod source;
 pub use source::*;
 mod directory_cursor;
+use acyclic_fs_native_contract::MountPath;
 pub use directory_cursor::MountDirectoryCursor;
-mod path;
-pub use path::MountPath;
 mod callbacks;
 pub use callbacks::*;
 mod filesystem;

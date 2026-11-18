@@ -19,9 +19,9 @@ pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {
             length = length.checked_add(1)?;
         }
         let wide = std::slice::from_raw_parts(pointer.0, length);
-        Some(MountPath {
-            components: super::callback_path::components(wide)?,
-        })
+        Some(MountPath::from_components(
+            super::callback_path::components(wide)?,
+        ))
     }
 }
 

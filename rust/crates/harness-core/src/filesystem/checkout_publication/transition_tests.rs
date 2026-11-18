@@ -46,7 +46,7 @@ proptest! {
         root in any::<[u8; 16]>(), from in any::<[u8; 32]>(), to in any::<[u8; 32]>(),
         phase in 0usize..6, change in 0usize..4, from_case in 0usize..5, to_case in 0usize..5,
     ) {
-        use acyclic_fs::{Digest, GenerationId, MaterializationIntent, MaterializationJournal, MaterializationPhase, MaterializationPlan, NativeRootIdentity};
+        use {acyclic_fs::{Digest, GenerationId, MaterializationIntent, MaterializationJournal, MaterializationPhase, MaterializationPlan}, acyclic_fs_native_contract::{NativeRootIdentity}};
         let from_variants = generation_associations(from, root);
         let to_variants = generation_associations(to, root);
         let from = from_variants[from_case];

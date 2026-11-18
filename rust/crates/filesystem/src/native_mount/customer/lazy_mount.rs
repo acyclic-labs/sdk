@@ -76,7 +76,7 @@ where
         if path.0.is_empty() {
             return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
         }
-        let path = (MountPath { components: path.0 }, path.1);
+        let path = (MountPath::from_components(path.0), path.1);
         with_live_session(&self.session, |session| {
             session.capture_host_paths(std::slice::from_ref(&path.0), &work)
         })?;

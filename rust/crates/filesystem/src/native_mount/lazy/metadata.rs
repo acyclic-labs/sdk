@@ -25,7 +25,7 @@ pub(super) fn copy_path(
         components.push(bytes);
     }
     Ok((
-        MountPath { components },
+        MountPath::from_components(components),
         scratch
             .retain()
             .ok_or(MountSourceError::NativeUnsupported)?,

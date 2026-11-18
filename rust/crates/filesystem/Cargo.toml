@@ -17,6 +17,16 @@ categories = ["filesystem", "data-structures"]
 [package.metadata.bazel]
 mounts-fuse = true
 
+[package.metadata.bazel.platform-sources]
+"@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]
+"@platforms//os:macos" = ["src/fsevents/**/*.rs", "src/native_mount/darwin_mount/**/*.rs"]
+"@platforms//os:windows" = [
+    "src/native_mount/projfs/**/*.rs",
+    "src/windows_usn.rs",
+    "tests/cases/projfs_metadata/metadata/client.rs",
+    "tests/projfs_metadata_support.rs",
+]
+
 [package.metadata.bazel.unit-test-dependency-variants]
 acyclic-fs-work = "observations"
 
@@ -148,6 +158,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
 notify = { workspace = true }
 dirs = { workspace = true }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }

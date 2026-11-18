@@ -666,6 +666,12 @@ function buildFile(p, graph) {
   const inheritedLints = toml(root, manifest).lints?.workspace === true;
   const checkCfg = checkCfgFlags(manifest, Object.keys(p.features).sort());
   const bazel = p.metadata?.bazel;
+  const platformSources = Object.entries(bazel?.["platform-sources"] ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const platformSourcePatterns = platformSources.flatMap(([, sources]) => sources);
+  const configuredSources = graph || !platformSources.length ? undefined : `select({
+${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(sources, [])},`).join("\n")}
+        "//conditions:default": [],
+    })`;
   const testOnlySources = bazel?.["unit-test-only-sources"] ?? [];
   const libraryTestFeatures = bazel?.["library-test-features"] ?? [];
   const libraryTestVariant = bazel?.["library-test-variant"];
@@ -689,7 +695,11 @@ function buildFile(p, graph) {
   const libInputs = (target, unitTest = false) => {
     const extra = extras(target, libCovered);
     return [
-      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...(unitTest ? [] : testOnlySources)]), list(extra.srcs))],
+      ["srcs", plus(
+        glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
+        list(extra.srcs.filter(file => !platformSourcePatterns.includes(file))),
+        configuredSources,
+      )],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
     ];
   };

@@ -9,7 +9,7 @@ pub(crate) struct RootMaterializingGitExecutor<'a, 'w> {
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
-    pub source_root_identity: acyclic_fs::NativeRootIdentity,
+    pub source_root_identity: acyclic_fs_native_contract::NativeRootIdentity,
 }
 
 impl RootMaterializingGitExecutor<'_, '_> {
@@ -54,7 +54,7 @@ pub(super) use super::helpers::prepared;
 #[doc(hidden)]
 pub async fn publish_checkout_transition<F, Fut>(
     root: &Path,
-    source_root_identity: acyclic_fs::NativeRootIdentity,
+    source_root_identity: acyclic_fs_native_contract::NativeRootIdentity,
     store: &LocalCoreStateStore,
     operation_id: OperationId,
     from: LocalGeneration,

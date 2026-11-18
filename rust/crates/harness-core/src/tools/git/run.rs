@@ -23,7 +23,7 @@ pub struct Workspace<
     pub lease: Option<OperationWindowLease>,
     /// Pin for an ordinary checkout that must receive published changes.
     #[cfg(not(target_arch = "wasm32"))]
-    pub checkout: Option<acyclic_fs::NativeRootIdentity>,
+    pub checkout: Option<acyclic_fs_native_contract::NativeRootIdentity>,
     /// Commit author.
     pub author: &'a str,
     /// Commit timestamp in seconds since the Unix epoch.

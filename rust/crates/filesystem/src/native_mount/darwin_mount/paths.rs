@@ -12,9 +12,7 @@ fn build_path<'a>(
     })?;
     let components = vector::<Vec<u8>>(work, count)?;
     let mut path = DarwinOwned {
-        value: MountPath {
-            components: components.value,
-        },
+        value: MountPath::from_components(components.value),
         allocation: components.allocation,
     };
     for part in parts {
@@ -29,7 +27,7 @@ fn build_path<'a>(
                     .as_mut()
                     .ok_or(NativeMountError::ControlPending)?,
             )?;
-        path.components.push(std::mem::take(&mut name.value));
+        path.push_component(std::mem::take(&mut name.value));
     }
     Ok(path)
 }

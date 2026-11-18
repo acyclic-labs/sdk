@@ -7,9 +7,9 @@ use bytes::Bytes;
 use std::sync::Arc;
 use {
     acyclic_fs::{
-        CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountPath,
-        SharedCheckout,
+        CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, SharedCheckout,
     },
+    acyclic_fs_native_contract::MountPath,
     acyclic_fs_work::performance::WorkBudget,
 };
 

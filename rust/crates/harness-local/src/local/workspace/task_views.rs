@@ -310,7 +310,7 @@ impl LocalWorkspace {
             view,
             mounted: None,
             mounting: self.mounting,
-            identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
+            identity: acyclic_fs_native_contract::NativeRootIdentity::from_bytes([0; 16]),
             filesystem: self.filesystem.clone(),
             store: self.store.clone(),
             mount_authority: Some(authority.clone()),
@@ -488,7 +488,7 @@ impl LocalWorkspace {
 /// A served view's root identity, from the mount that serves it. Its owner
 /// never asks the kernel: the kernel would forward that request to callbacks
 /// that can wait on the owner, so a coordination thread that asks deadlocks.
-fn served_identity(mounted: &TaskMount) -> Result<acyclic_fs::NativeRootIdentity> {
+fn served_identity(mounted: &TaskMount) -> Result<acyclic_fs_native_contract::NativeRootIdentity> {
     mounted
         .native_root_identity()
         .ok_or_else(|| Error::Unauthorized("task view is no longer mounted".into()))
@@ -497,7 +497,9 @@ fn served_identity(mounted: &TaskMount) -> Result<acyclic_fs::NativeRootIdentity
 impl LocalWorkspace {
     /// The root's current identity: a served view's from its mount, any
     /// other root's from the directory itself.
-    pub(in crate::local) fn root_identity(&self) -> Result<acyclic_fs::NativeRootIdentity> {
+    pub(in crate::local) fn root_identity(
+        &self,
+    ) -> Result<acyclic_fs_native_contract::NativeRootIdentity> {
         match &self.mounted {
             Some(mounted) => served_identity(mounted),
             None => acyclic_fs::capture_root_identity(&self.path).map_err(storage),
