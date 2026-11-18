@@ -5,6 +5,8 @@ use crate::is_exclusive_lock_contention;
 use std::fs::File;
 use std::io;
 #[cfg(unix)]
+use std::os::fd::AsFd as _;
+#[cfg(unix)]
 use std::path::Path;
 
 #[cfg(unix)]
@@ -87,7 +89,7 @@ fn a_dropped_lock_is_free_while_a_spawned_process_shares_its_description() -> io
 
     // Control: a raw lock released by close stays held by the child's copy.
     let raw = open(&path)?;
-    raw.try_lock().map_err(io::Error::from)?;
+    FileLock::try_lock_description(raw.as_fd(), FileLockMode::Exclusive)?;
     let sharing = share(&raw)?;
     let other_sharing = share(&raw)?;
     drop(raw);
