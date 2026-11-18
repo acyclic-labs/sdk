@@ -431,10 +431,7 @@ pub(super) fn follow(
 }
 
 pub(super) fn title(snapshot: &acyclic_harness::client_files::FilePreviews) -> String {
-    snapshot
-        .files
-        .get(acyclic_harness::ui::TITLE_FILE)
-        .and_then(Option::as_ref)
+    acyclic_harness::ui::authored_title(snapshot)
         .map(|text| text.chars().filter(|ch| !ch.is_control()).collect())
         .unwrap_or_default()
 }

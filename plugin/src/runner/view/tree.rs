@@ -233,14 +233,9 @@ impl Sidebar {
                 let files = self.files.snapshot(path)?.ok()?;
                 let title = UiPath::new("title")
                     .ok()?
-                    .resolve(
-                        files
-                            .files
-                            .get(acyclic_harness::ui::TITLE_FILE)
-                            .and_then(Option::as_ref)
-                            .map(String::as_str),
-                        || Ok(path.id().to_string()),
-                    )
+                    .resolve(acyclic_harness::ui::authored_title(&files), || {
+                        Ok(path.id().to_string())
+                    })
                     .ok()?;
                 title_matches(&first_line(&title), &search.text).then_some(index)
             })

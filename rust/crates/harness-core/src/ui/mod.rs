@@ -11,6 +11,12 @@ pub use project::{Affected, AgentRow, Children, Cut, Node, NodeRef, Page, TurnTe
 /// Authored agent title, relative to the agent's private volume.
 pub const TITLE_FILE: &str = "ui/title";
 
+/// Resolve the authored title from an authenticated preview, preserving empty titles.
+#[must_use]
+pub fn authored_title(snapshot: &crate::client_files::FilePreviews) -> Option<&str> {
+    snapshot.files.get(TITLE_FILE).and_then(Option::as_deref)
+}
+
 /// Case-insensitive subsequence matching over an already selected title.
 #[must_use]
 pub fn title_matches(title: &str, query: &str) -> bool {
