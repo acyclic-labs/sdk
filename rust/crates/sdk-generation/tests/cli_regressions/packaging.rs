@@ -9,11 +9,6 @@ fn shared_package() -> cache::Arc<Package> {
         let (fixture, support) = historical_source_fixture(None);
         let source = fixture.root.join("rust/crates/demo");
         include_sources(&source);
-        fs::write(
-            fixture.root.join("release/cargo-crates.json"),
-            b"[\"demo\"]",
-        )
-        .unwrap();
         init_git(&fixture.root, "original registry owner authority");
         let result = Command::new(&*cargo)
             .env("CARGO_HOME", fixture_cargo_home(&fixture))
