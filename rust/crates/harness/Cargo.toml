@@ -91,7 +91,6 @@ futures.workspace = true
 hex = { workspace = true }
 http.workspace = true
 jsonschema.workspace = true
-rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 regex-lite = { version = "0.1.9" }
 js-sys = { workspace = true }
 prost.workspace = true
@@ -114,7 +113,6 @@ wasm-bindgen-futures = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ratatui = { version = "=0.30.2", default-features = false }
-rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 dirs = { workspace = true }
 tempfile = { version = "3.27.0" }
@@ -152,6 +150,7 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-async-rw", "auth", "reqwest-tls-no-provider"] }
 acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
 which = "8.0.6"
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
