@@ -2929,8 +2929,6 @@ rust_test(
     crate_root = "tests/extent_clone.rs",
     srcs = [
         "tests/extent_clone.rs",
-        "tests/extent_clone/kernel/blob/mod.rs",
-        "tests/extent_clone/kernel/blob/tests.rs",
         "tests/extent_clone/kernel/extent_clone/mod.rs",
         "tests/extent_clone/kernel/extent_clone/tests.rs",
         "tests/extent_clone/kernel/file_read/mod.rs",
@@ -2938,7 +2936,6 @@ rust_test(
         "tests/extent_clone/kernel/mod.rs",
         "tests/extent_clone/kernel/range/mod.rs",
         "tests/extent_clone/kernel/range/tests.rs",
-        "tests/support/blob_objects.rs",
         "tests/support/extent_objects.rs",
         "tests/support/put_object.rs",
     ],
@@ -2980,6 +2977,62 @@ isolated_test(
     binary = ":extent_clone_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::extent_clone",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "blob_io_cases",
+    crate_root = "tests/blob_io.rs",
+    srcs = [
+        "tests/blob_io.rs",
+        "tests/blob_io/kernel/blob/mod.rs",
+        "tests/blob_io/kernel/blob/tests.rs",
+        "tests/blob_io/kernel/mod.rs",
+        "tests/support/blob_objects.rs",
+        "tests/support/put_object.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "blob_io",
+    binary = ":blob_io_cases",
+    id = "acyclic-fs::blob_io",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "blob_io_full-cloud",
+    binary = ":blob_io_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::blob_io",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],

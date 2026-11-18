@@ -83,6 +83,7 @@ test-build-script = ["operation_claim_model"]
 test-without-build-script = [
     "export_codec",
     "extent_clone",
+    "blob_io",
     "extent_codec",
     "metadata_codec",
     "tree_codec",
@@ -113,6 +114,7 @@ test-without-build-script = [
 test-narrow-runfiles = [
     "export_codec",
     "extent_clone",
+    "blob_io",
     "extent_codec",
     "metadata_codec",
     "tree_codec",
@@ -159,6 +161,7 @@ rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
 export_codec = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "hex", "tokio"]
+blob_io = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 extent_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
 metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
@@ -341,6 +344,11 @@ required-features = ["test-support"]
 [[test]]
 name = "extent_clone"
 path = "tests/extent_clone.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "blob_io"
+path = "tests/blob_io.rs"
 required-features = ["test-support"]
 
 [[test]]
