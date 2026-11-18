@@ -16,6 +16,7 @@ proptest! {
             for name in &names {
                 storage.stage(OperationId::new(), &format!("notes/{name}"), b"old", "text/plain", name).await?;
             }
+            storage.stage(OperationId::new(), "other/entry", b"other", "text/plain", "entry").await?;
             let task = Arc::new(Bindings {
                 scope: RuntimeScope::new(Capabilities::new([
                     "tool:call:read".into(),
@@ -23,12 +24,12 @@ proptest! {
                 ]), crate::conversation::Limits::default())?,
                 ..Bindings::local()
             }.build()?.agent_context(&Capabilities::default(), storage.content_bindings())?);
-            let read_page = |after: Option<String>, limit: u32| {
+            let read_page = |path: &'static str, after: Option<String>, limit: u32| {
                 let task = Arc::clone(&task);
                 async move {
                     let invocation = ToolInvocation {
                         operation_id: OperationId::new(), call_id: "page".into(), name: "read".into(),
-                        arguments: json!({"path":"notes", "selection":{"kind":"directory", "after":after, "limit":limit}}),
+                        arguments: json!({"path":path, "selection":{"kind":"directory", "after":after, "limit":limit}}),
                     };
                     let context = ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
                     let result = crate::tool::files::read()?.executor.execute(invocation, Some(context)).await?;
@@ -36,8 +37,13 @@ proptest! {
                         .map_err(|error| Error::Invalid(error.to_string()))
                 }
             };
-            let original = read_page(None, original_limit).await?;
+            let original = read_page("notes", None, original_limit).await?;
             let delivered = &original.entries[position % original.entries.len()];
+            let foreign = read_page("other", Some(delivered.cursor.clone()), original_limit).await;
+            assert!(
+                matches!(foreign, Err(Error::Invalid(reason)) if reason == "directory cursor belongs to another selection"),
+                "a cursor from another directory must be refused before reading"
+            );
             let mut next = Some(delivered.cursor.clone());
             storage.stage(OperationId::new(), "notes/a00a", b"new", "text/plain", "later").await?;
             let mut actual = Vec::new();
@@ -45,7 +51,7 @@ proptest! {
             while let Some(after) = next {
                 assert!(pages <= names.len(), "continuation did not advance");
                 let limit = credits[pages % credits.len()];
-                let page = read_page(Some(after), limit).await?;
+                let page = read_page("notes", Some(after), limit).await?;
                 assert!(page.entries.len() <= limit as usize, "new row credit was exceeded");
                 actual.extend(page.entries.into_iter().map(|entry| entry.name));
                 next = page.next;
