@@ -170,6 +170,18 @@ fn validate_completed_parts(
     Ok(())
 }
 
+impl From<MultipartDecodeError> for s3s::S3Error {
+    fn from(error: MultipartDecodeError) -> Self {
+        match error {
+            MultipartDecodeError::NoSuchUpload => s3s::s3_error!(NoSuchUpload),
+            MultipartDecodeError::Malformed => s3s::s3_error!(InvalidRequest),
+            MultipartDecodeError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),
+            MultipartDecodeError::Stream(error) => stream_read_error(&error),
+            MultipartDecodeError::InconsistentStream => s3s::s3_error!(InternalError),
+        }
+    }
+}
+
 fn stream_read_error(error: &acyclic_stream::StreamError) -> s3s::S3Error {
     match error.category() {
         acyclic_stream::StreamCategory::NotFound => s3s::s3_error!(NoSuchUpload),

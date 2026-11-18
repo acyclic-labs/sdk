@@ -97,7 +97,9 @@ where
     ) -> S3Result<MultipartSnapshot> {
         let path = Self::multipart_path(workspace, upload_id)?;
         let provider = workspace.volume.fs.authority().stream_provider();
-        read_multipart_snapshot(provider.as_ref(), path, self.limits).await
+        read_multipart_snapshot(provider.as_ref(), path, self.limits)
+            .await
+            .map_err(s3s::S3Error::from)
     }
 
     async fn multipart_append(

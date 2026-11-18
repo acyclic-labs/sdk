@@ -66,7 +66,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     provider: &P,
     path: acyclic_stream::StreamPath,
     limits: FilesystemS3Limits,
-) -> S3Result<MultipartSnapshot> {
+) -> MultipartDecodeResult<MultipartSnapshot> {
     let mut work = crate::WorkCounters {
         backend_read_operations: 1,
         ..crate::WorkCounters::default()
@@ -74,16 +74,16 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     let tail = provider
         .tail(path.clone())
         .await
-        .map_err(|error| stream_read_error(&error))?;
+        .map_err(MultipartDecodeError::Stream)?;
     if tail == 0 {
-        return Err(s3s::s3_error!(InvalidRequest));
+        return Err(MultipartDecodeError::Malformed);
     }
     let mut replay: Option<MultipartReplay> = None;
     let mut from = 0_u64;
     while from < tail {
         let remaining = tail - from;
         let limit = u32::try_from(remaining.min(acyclic_stream::MAX_ITEMS as u64))
-            .map_err(|_| s3s::s3_error!(InternalError))?;
+            .map_err(|_| MultipartDecodeError::InconsistentStream)?;
         let mut page = provider
             .read(acyclic_stream::ReadRequest {
                 key: None,
@@ -93,29 +93,29 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
                 at_least: Default::default(),
             })
             .await
-            .map_err(|error| stream_read_error(&error))?;
+            .map_err(MultipartDecodeError::Stream)?;
         work.backend_read_operations = work
             .backend_read_operations
             .checked_add(1)
-            .ok_or_else(|| s3s::s3_error!(InternalError))?;
+            .ok_or(MultipartDecodeError::InconsistentStream)?;
         let mut received = 0_u64;
         while let Some(record) = page.next().await {
-            let record = record.map_err(|error| stream_read_error(&error))?;
+            let record = record.map_err(MultipartDecodeError::Stream)?;
             if received >= u64::from(limit) || record.sequence != from + received {
-                return Err(s3s::s3_error!(InternalError));
+                return Err(MultipartDecodeError::InconsistentStream);
             }
             work.authority_records_read = work
                 .authority_records_read
                 .checked_add(1)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+                .ok_or(MultipartDecodeError::InconsistentStream)?;
             work.authority_bytes_read = work
                 .authority_bytes_read
                 .checked_add(record.value.len() as u64)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+                .ok_or(MultipartDecodeError::InconsistentStream)?;
             work.items_examined = work
                 .items_examined
                 .checked_add(1)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+                .ok_or(MultipartDecodeError::InconsistentStream)?;
             if let Some(replay) = &mut replay {
                 replay.push(&record.value)?;
             } else {
@@ -124,13 +124,13 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
             received += 1;
         }
         if received == 0 {
-            return Err(s3s::s3_error!(InternalError));
+            return Err(MultipartDecodeError::InconsistentStream);
         }
         from = from
             .checked_add(received)
-            .ok_or_else(|| s3s::s3_error!(InternalError))?;
+            .ok_or(MultipartDecodeError::InconsistentStream)?;
     }
-    let mut snapshot = replay.ok_or_else(|| s3s::s3_error!(NoSuchUpload))?.snapshot;
+    let mut snapshot = replay.ok_or(MultipartDecodeError::NoSuchUpload)?.snapshot;
     snapshot.work = work;
     Ok(snapshot)
 }
@@ -138,27 +138,19 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
 /// Persisted multipart refusal, projected only at the S3 service boundary.
 #[derive(Debug, thiserror::Error)]
 enum MultipartDecodeError {
-    #[cfg(any(test, feature = "test-support"))]
     #[error("multipart upload does not exist")]
     NoSuchUpload,
     #[error("multipart record is malformed")]
     Malformed,
     #[error("multipart record version {0} is unsupported")]
     UnsupportedVersion(u8),
+    #[error("multipart stream read failed")]
+    Stream(#[source] acyclic_stream::StreamError),
+    #[error("multipart stream returned inconsistent records or accounting")]
+    InconsistentStream,
 }
 
 type MultipartDecodeResult<T = ()> = Result<T, MultipartDecodeError>;
-
-impl From<MultipartDecodeError> for s3s::S3Error {
-    fn from(error: MultipartDecodeError) -> Self {
-        match error {
-            #[cfg(any(test, feature = "test-support"))]
-            MultipartDecodeError::NoSuchUpload => s3s::s3_error!(NoSuchUpload),
-            MultipartDecodeError::Malformed => s3s::s3_error!(InvalidRequest),
-            MultipartDecodeError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),
-        }
-    }
-}
 
 /// Decodes and validates the leading `created` record of a multipart record stream, returning the upload's key and its negotiated part bounds.
 fn decode_multipart_header(
