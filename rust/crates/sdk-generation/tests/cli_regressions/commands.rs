@@ -81,6 +81,13 @@ fn command_env<'a>(command: &'a Command, name: &str) -> Option<&'a OsStr> {
         .and_then(|(_, value)| value)
 }
 
+fn rustdoc_directory(target_dir: &Path, target: Option<&OsStr>) -> PathBuf {
+    target.map_or_else(
+        || target_dir.join("doc"),
+        |target| target_dir.join(target).join("doc"),
+    )
+}
+
 // Replay exactly the JSON that this real Cargo invocation produced. Different
 // feature/target/owner arguments have different keys. Build scripts and examples
 // in mutation controls never enter this scope.
@@ -92,8 +99,8 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
     let directory = Path::new(command_env(command, "CARGO_TARGET_DIR").unwrap());
     let target = argument_value(args, "--target").unwrap();
     let mut artifacts = Vec::new();
-    for directory in [directory.join("doc"), directory.join(target).join("doc")] {
-        let entries = match fs::read_dir(directory) {
+    for target in [None, Some(target)] {
+        let entries = match fs::read_dir(rustdoc_directory(directory, target)) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -358,11 +365,8 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 }
             }
         }
-        let output_dir = if metadata["proc_macro"].as_bool() == Some(true) {
-            target_dir.join("doc")
-        } else {
-            target_dir.join(target).join("doc")
-        };
+        let target = (metadata["proc_macro"].as_bool() != Some(true)).then_some(OsStr::new(target));
+        let output_dir = rustdoc_directory(target_dir, target);
         let output = output_dir.join(format!(
             "{}.json",
             metadata["receipt_name"].as_str().unwrap()
