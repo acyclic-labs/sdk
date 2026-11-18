@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-stream-body"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Transport body fragments retaining their original custody"
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+bytes.workspace = true
+
+[lints]
+workspace = true

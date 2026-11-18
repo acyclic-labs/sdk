@@ -28,6 +28,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "acyclic-stream-body",
  "acyclic-stream-wire",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
@@ -1804,6 +1805,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
+ "acyclic-stream-body",
  "acyclic-stream-wire",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
@@ -1855,6 +1857,14 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "web-time",
+]
+
+[[package]]
+name = "acyclic-stream-body"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "bytes",
 ]
 
 [[package]]

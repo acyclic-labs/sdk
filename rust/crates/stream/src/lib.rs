@@ -6,7 +6,6 @@ pub const SESSION_PROTOCOL_VERSION: u32 = 3;
 pub use acyclic_auth::addressing;
 pub mod authorization;
 pub use authorization::{AUTHORIZATION, StreamMethod};
-pub mod body;
 pub mod completion;
 pub mod demand;
 #[cfg(feature = "serde")]

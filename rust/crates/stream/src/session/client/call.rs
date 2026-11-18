@@ -95,7 +95,7 @@ impl Client {
         maximum_reply_bytes: Option<usize>,
     ) -> Result<
         impl futures::Stream<
-            Item = Result<(usize, crate::body::BodyChunk<impl Sized + use<>>), StreamError>,
+            Item = Result<(usize, acyclic_stream_body::BodyChunk<impl Sized + use<>>), StreamError>,
         >
         + 'static
         + use<>,
@@ -126,7 +126,10 @@ impl Client {
         (
             CallInputSender,
             impl futures::Stream<
-                Item = Result<(usize, crate::body::BodyChunk<impl Sized + use<>>), StreamError>,
+                Item = Result<
+                    (usize, acyclic_stream_body::BodyChunk<impl Sized + use<>>),
+                    StreamError,
+                >,
             >
             + 'static
             + use<>,
@@ -269,7 +272,9 @@ impl Client {
         credential: u32,
         maximum_reply_bytes: Option<usize>,
     ) -> Result<
-        impl futures::Stream<Item = Result<(usize, crate::body::BodyChunk<Credit>), StreamError>>
+        impl futures::Stream<
+            Item = Result<(usize, acyclic_stream_body::BodyChunk<Credit>), StreamError>,
+        >
         + 'static
         + use<>,
         StreamError,
@@ -285,7 +290,9 @@ impl Client {
     fn reply_cursor(
         cursor: Cursor,
         maximum_reply_bytes: Option<usize>,
-    ) -> impl futures::Stream<Item = Result<(usize, crate::body::BodyChunk<Credit>), StreamError>>
+    ) -> impl futures::Stream<
+        Item = Result<(usize, acyclic_stream_body::BodyChunk<Credit>), StreamError>,
+    >
     + 'static
     + use<> {
         let operation = cursor.observation.operation.clone();
@@ -341,7 +348,7 @@ impl Client {
                             fragment: bytes.len(),
                         })
                     })?;
-                let chunk = crate::body::BodyChunk::new(bytes, credit);
+                let chunk = acyclic_stream_body::BodyChunk::new(bytes, credit);
                 if received == length && cursor.input.is_some() {
                     // A complete reply retires only its half. The same input
                     // owner retains the admitted call until EOF or cancellation.

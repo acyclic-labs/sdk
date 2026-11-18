@@ -114,11 +114,11 @@ impl ActorSocket {
     /// prevent observing the original terminal or dropping this socket.
     pub async fn next_chunk(
         &mut self,
-    ) -> Result<Option<crate::body::BodyChunk<impl Sized + use<>>>, StreamError> {
+    ) -> Result<Option<acyclic_stream_body::BodyChunk<impl Sized + use<>>>, StreamError> {
         Ok(self
             .receive()
             .await?
-            .map(|(bytes, credit)| crate::body::BodyChunk::new(bytes, credit)))
+            .map(|(bytes, credit)| acyclic_stream_body::BodyChunk::new(bytes, credit)))
     }
 
     async fn receive(&mut self) -> Result<Option<(Bytes, Credit)>, StreamError> {
