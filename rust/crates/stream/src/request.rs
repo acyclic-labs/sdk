@@ -92,12 +92,16 @@ fn hash_canonical_exclusions(hash: &mut Sha256, paths: &[crate::RelativePath]) {
     }
 }
 
-/// Validates a fork and returns its canonical retry digest.
-pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
+pub(crate) fn validate_fork(request: &ForkRequest) -> Result<(), StreamError> {
     if request.source == request.destination {
         return Err(StreamError::InvalidArgument);
     }
-    validate_fork_size(request)?;
+    validate_fork_size(request)
+}
+
+/// Validates a fork and returns its canonical retry digest.
+pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
+    validate_fork(request)?;
     let mut hash = request_hasher(b"fork");
     hash_path(&mut hash, &request.source);
     hash_path(&mut hash, &request.destination);

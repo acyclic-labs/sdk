@@ -81,10 +81,7 @@ fn append_record_json(record: &crate::AppendRecord) -> Value {
 fn request_json_fork(input: &[u8]) -> Result<Value> {
     let request = wire::ForkRequest::decode(input).map_err(|_| "invalid_argument")?;
     let request = wire_codec::fork_from_wire(request).map_err(|error| error.code())?;
-    if request.source == request.destination {
-        return Err("invalid_argument");
-    }
-    crate::request::validate_fork_size(&request).map_err(|error| error.code())?;
+    crate::request::validate_fork(&request).map_err(|error| error.code())?;
     let mut value = serde_json::Map::from_iter([
         ("source".into(), json!(request.source.to_string())),
         ("destination".into(), json!(request.destination.to_string())),
