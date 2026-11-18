@@ -4,8 +4,8 @@
          let _ = (self.0, items);
          #[cfg(not(target_arch = "wasm32"))]
          if let Some(original) = self.0 {
--            original.charge(acyclic_fs::WorkCounters {
-+            original.admit(acyclic_fs::WorkCounters {
+-            original.charge(acyclic_fs_work::performance::WorkCounters {
++            original.admit(acyclic_fs_work::performance::WorkCounters {
                  items_examined: items,
                  ..Default::default()
              })?;
