@@ -740,7 +740,7 @@ fn run_historical_generate_mode(
     support: &Path,
     mode: Option<&str>,
 ) -> std::process::Output {
-    run_historical_generation(fixture, support, mode, None, &[])
+    run_historical_generation(fixture, support, mode, None, &[]).0
 }
 
 enum HistoricalAuthority<'a> {
@@ -765,7 +765,7 @@ fn run_historical_generation(
     mode: Option<&str>,
     authority: Option<HistoricalAuthority<'_>>,
     expected_owners: &[&str],
-) -> std::process::Output {
+) -> (std::process::Output, Vec<Value>) {
     let mut command = generate_command(
         &fixture.root,
         None,
@@ -798,7 +798,7 @@ fn run_historical_generation(
     }
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");
-    if result.status.success() || version.join(PROFILE_TABLE).is_file() {
+    let profiles = if result.status.success() || version.join(PROFILE_TABLE).is_file() {
         let releases: Value = serde_json::from_slice(
             &fs::read(version.join("sdk-docs-registry-releases.v1.json")).unwrap(),
         )
@@ -818,9 +818,11 @@ fn run_historical_generation(
                 expected_owners.iter().copied().collect::<BTreeSet<_>>(),
             );
         }
-        let _ = assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
-    }
-    result
+        assert_executed_profiles(&version, &version.join(".rustdoc"), &expected)
+    } else {
+        Vec::new()
+    };
+    (result, profiles)
 }
 
 fn registry_archive_fixture(

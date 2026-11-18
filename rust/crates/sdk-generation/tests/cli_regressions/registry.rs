@@ -72,6 +72,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                             Some(authority),
                             &[],
                         )
+                        .0
                     });
                     assert!(result.status.success(), "{}", output_message(&result));
                     assert_eq!(fs::read(&foreign).unwrap(), foreign_bytes);
@@ -244,8 +245,13 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     None,
                 );
                 write_registry_transport(&support);
-                let result =
-                    run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+                let (result, profiles) = run_historical_generation(
+                    &fixture,
+                    &support,
+                    Some("registry-archives"),
+                    None,
+                    &[],
+                );
                 if required_failure {
                     assert!(!result.status.success());
                     assert!(output_message(&result).contains("Cargo profile"));
@@ -256,7 +262,6 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                 } else {
                     assert!(result.status.success(), "{}", output_message(&result));
                     let output = fixture.output.join("releases/1.0.0");
-                    let profiles = read_profile_rows(&output);
                     assert!(profiles
                         .iter()
                         .all(|profile| profile["defaultFeatures"] == true));
@@ -382,6 +387,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
             None,
             &["demo-a", "demo-b", "demo-c"],
         )
+        .0
     });
     runtime::phase("generated");
     assert!(generated.status.success(), "{}", output_message(&generated));
@@ -682,7 +688,7 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
     runtime::time_control();
     let (fixture, support) = historical_fixture(None);
     commands::expect_declared_profiles(2, || {
-        let result = run_historical_generation(&fixture, &support, None, None, &["demo"]);
+        let (result, _) = run_historical_generation(&fixture, &support, None, None, &["demo"]);
         assert!(result.status.success(), "{}", output_message(&result));
     });
     let version = fixture.output.join("releases/1.0.0");
