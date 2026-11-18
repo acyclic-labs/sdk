@@ -743,7 +743,7 @@ fn run_historical_generate_mode(
     support: &Path,
     mode: Option<&str>,
 ) -> std::process::Output {
-    run_historical_generate_mode_with_authority(fixture, support, mode, None)
+    run_historical_generation(fixture, support, mode, None, &[])
 }
 
 enum HistoricalAuthority<'a> {
@@ -752,11 +752,12 @@ enum HistoricalAuthority<'a> {
     WorkingDirectory(&'a Path),
 }
 
-fn run_historical_generate_mode_with_authority(
+fn run_historical_generation(
     fixture: &Fixture,
     support: &Path,
     mode: Option<&str>,
     authority: Option<HistoricalAuthority<'_>>,
+    expected_owners: &[&str],
 ) -> std::process::Output {
     let path = fixture_path(support);
     let mut command = Command::new(runtime::binary("sdk-generation"));
@@ -817,6 +818,15 @@ fn run_historical_generate_mode_with_authority(
             .iter()
             .map(|release| (release["crate"].as_str().unwrap(), 4))
             .collect::<Vec<_>>();
+        if !expected_owners.is_empty() {
+            assert_eq!(
+                expected
+                    .iter()
+                    .map(|&(owner, _)| owner)
+                    .collect::<BTreeSet<_>>(),
+                expected_owners.iter().copied().collect::<BTreeSet<_>>(),
+            );
+        }
         assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
     }
     result

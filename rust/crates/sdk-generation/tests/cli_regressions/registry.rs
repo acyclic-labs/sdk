@@ -12,11 +12,12 @@ fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
                 fs::write(&foreign, "invalid foreign lock must never be selected\n").unwrap();
                 let archive = support.join("registry/demo-1.0.0.crate");
                 let original_archive = fs::read(&archive).unwrap();
-                let result = run_historical_generate_mode_with_authority(
+                let result = run_historical_generation(
                     &fixture,
                     &support,
                     Some("registry-archives"),
                     Some(HistoricalAuthority::Lock(&foreign)),
+                    &[],
                 );
                 assert!(result.status.success(), "{}", output_message(&result));
                 assert_eq!(
@@ -103,7 +104,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                         output_message(&rejected)
                     );
                     let result = queries.run(|| {
-                        run_historical_generate_mode_with_authority(
+                        run_historical_generation(
                             &fixture,
                             &support,
                             Some("registry-archives"),
@@ -112,6 +113,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                             } else {
                                 HistoricalAuthority::WorkingDirectory(&directory)
                             }),
+                            &[],
                         )
                     });
                     assert!(result.status.success(), "{}", output_message(&result));
@@ -417,16 +419,18 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     write_registry_transport(support);
     runtime::phase("anchors");
     let queries = commands::Queries::default();
-    let generated =
-        queries.run(|| run_historical_generate_mode(fixture, support, Some("registry-archives")));
+    let generated = queries.run(|| {
+        run_historical_generation(
+            fixture,
+            support,
+            Some("registry-archives"),
+            None,
+            &["demo-a", "demo-b", "demo-c"],
+        )
+    });
     runtime::phase("generated");
     assert!(generated.status.success(), "{}", output_message(&generated));
     let output = fixture.output.join("releases/1.0.0");
-    assert_executed_profiles(
-        &output,
-        &output.join(".rustdoc"),
-        &[("demo-a", 4), ("demo-b", 4), ("demo-c", 4)],
-    );
     let executions: Value = serde_json::from_slice(
         &fs::read(output.join("sdk-docs-scenario-executions.v1.json")).unwrap(),
     )
@@ -722,10 +726,9 @@ fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
 fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() {
     runtime::time_control();
     let (fixture, support) = historical_fixture(None);
-    let result = run_historical_generate(&fixture, &support);
+    let result = run_historical_generation(&fixture, &support, None, None, &["demo"]);
     assert!(result.status.success(), "{}", output_message(&result));
     let version = fixture.output.join("releases/1.0.0");
-    assert_executed_profiles(&version, &version.join(".rustdoc"), &[("demo", 4)]);
     let data: Value =
         serde_json::from_slice(&fs::read(version.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
     assert_eq!(data["source"]["publicationStatus"], "registryReleased");
