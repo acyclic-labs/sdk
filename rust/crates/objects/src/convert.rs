@@ -49,6 +49,18 @@ pub(crate) fn get_request(
     }
 }
 
+pub(crate) fn head_request(digest: Digest) -> wire::HeadBlobRequest {
+    wire::HeadBlobRequest {
+        digest: Some(digest.into()),
+    }
+}
+
+pub(crate) fn delete_request(digest: Digest) -> wire::DeleteBlobRequest {
+    wire::DeleteBlobRequest {
+        digest: Some(digest.into()),
+    }
+}
+
 /// Builds the same page request for every transport.
 pub(crate) fn list_request(after: Option<Digest>, limit: u32) -> wire::ListBlobsRequest {
     wire::ListBlobsRequest {

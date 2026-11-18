@@ -139,24 +139,14 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         let (reply, revision) = self
-            .call(
-                ObjectsMethod::HeadBlob,
-                wire::HeadBlobRequest {
-                    digest: Some(digest.into()),
-                },
-            )
+            .call(ObjectsMethod::HeadBlob, convert::head_request(digest))
             .await?;
         convert::headed(&reply, digest, revision)
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
         let (reply, revision) = self
-            .call(
-                ObjectsMethod::DeleteBlob,
-                wire::DeleteBlobRequest {
-                    digest: Some(digest.into()),
-                },
-            )
+            .call(ObjectsMethod::DeleteBlob, convert::delete_request(digest))
             .await?;
         convert::delete(&reply, revision)
     }
