@@ -542,26 +542,16 @@ rust_test(
     crate_name = "acyclic_fs",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
-        "tests/support/allow_publication.rs",
         "tests/support/append.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/checkout_live_fixture.rs",
-        "tests/support/checkout_manual.rs",
-        "tests/support/checkout_serialized.rs",
-        "tests/support/checkout_tracking.rs",
         "tests/support/creation_budget.rs",
         "tests/support/git_history.rs",
         "tests/support/join_plan.rs",
-        "tests/support/mount_checkout.rs",
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
         "tests/support/selected_budget.rs",
         "tests/support/simulation_image.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-        "tests/support/volume_read.rs",
         "tests/support/wire_errors.rs",
         "tests/support/wire_requests.rs",
         "tests/support/workspace.rs",
@@ -940,7 +930,6 @@ rust_test(
         "tests/recovery_concurrency/window.rs",
         "tests/session_fs_model.rs",
         "tests/shared_storage_contract.rs",
-        "tests/support/allow_publication.rs",
         "tests/support/cloud_contract.rs",
         "tests/support/native_access.rs",
         "tests/support/portable_source.rs",
@@ -1645,7 +1634,6 @@ rust_test(
     name = "workspace_append_cases",
     crate_root = "tests/workspace_append.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/append.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -1671,13 +1659,11 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1712,7 +1698,6 @@ rust_test(
     name = "workspace_contracts_cases",
     crate_root = "tests/workspace_contracts.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -1722,7 +1707,6 @@ rust_test(
         "tests/workspace_contracts/tests/generation.rs",
         "tests/workspace_contracts/tests/identity.rs",
         "tests/workspace_contracts/tests/mod.rs",
-        "tests/workspace_contracts/tests/reads.rs",
         "tests/workspace_contracts/workspace.rs",
     ],
     edition = "2024",
@@ -1781,7 +1765,6 @@ rust_test(
     name = "workspace_creation_race_cases",
     crate_root = "tests/workspace_creation_race.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -1848,7 +1831,6 @@ rust_test(
     name = "workspace_join_history_cases",
     crate_root = "tests/workspace_join_history.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/join_plan.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -1876,7 +1858,6 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1911,7 +1892,6 @@ rust_test(
     name = "workspace_fork_selection_cases",
     crate_root = "tests/workspace_fork_selection.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -1975,7 +1955,6 @@ rust_test(
     name = "workspace_rebase_cases",
     crate_root = "tests/workspace_rebase.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -2038,7 +2017,6 @@ rust_test(
     name = "workspace_restore_cases",
     crate_root = "tests/workspace_restore.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/selected_budget.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -2066,7 +2044,6 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
@@ -2103,7 +2080,6 @@ rust_test(
     name = "workspace_transactions_cases",
     crate_root = "tests/workspace_transactions.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/selected_budget.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -2170,7 +2146,6 @@ rust_test(
     name = "workspace_merge_cases",
     crate_root = "tests/workspace_merge.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -2199,7 +2174,6 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
@@ -2236,8 +2210,6 @@ rust_test(
     name = "workspace_materialization_cases",
     crate_root = "tests/workspace_materialization.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
-        "tests/support/selected_budget.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/workspace_materialization.rs",
@@ -2262,7 +2234,6 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
@@ -2299,7 +2270,6 @@ rust_test(
     name = "workspace_simulation_cases",
     crate_root = "tests/workspace_simulation.rs",
     srcs = [
-        "tests/support/allow_publication.rs",
         "tests/support/simulation_image.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
@@ -2327,7 +2297,6 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//tempfile-3.27.0",
@@ -2354,725 +2323,6 @@ isolated_test(
     binary = ":workspace_simulation_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::workspace_simulation",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "local_facade_cases",
-    crate_root = "tests/local_facade.rs",
-    srcs = [
-        "tests/local_facade.rs",
-        "tests/local_facade/facade/mod.rs",
-        "tests/local_facade/facade/tests/local.rs",
-        "tests/local_facade/facade/tests/mod.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/objects:acyclic_objects",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "local_facade",
-    binary = ":local_facade_cases",
-    id = "acyclic-fs::local_facade",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "local_facade_full-cloud",
-    binary = ":local_facade_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::local_facade",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_merge_cases",
-    crate_root = "tests/checkout_merge.rs",
-    srcs = [
-        "tests/checkout_merge.rs",
-        "tests/checkout_merge/facade/mod.rs",
-        "tests/checkout_merge/facade/tests/merge.rs",
-        "tests/checkout_merge/facade/tests/mod.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-        "tests/support/volume_read.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_merge",
-    binary = ":checkout_merge_cases",
-    id = "acyclic-fs::checkout_merge",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_merge_full-cloud",
-    binary = ":checkout_merge_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_merge",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_read_cases",
-    crate_root = "tests/checkout_read.rs",
-    srcs = [
-        "tests/checkout_read.rs",
-        "tests/checkout_read/facade/mod.rs",
-        "tests/checkout_read/facade/tests/attributes.rs",
-        "tests/checkout_read/facade/tests/generation_position.rs",
-        "tests/checkout_read/facade/tests/mod.rs",
-        "tests/checkout_read/facade/tests/paths.rs",
-        "tests/checkout_read/facade/tests/read.rs",
-        "tests/checkout_read/facade/tests/transfer.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/checkout_tracking.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-        "tests/support/volume_read.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_read",
-    binary = ":checkout_read_cases",
-    id = "acyclic-fs::checkout_read",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_read_full-cloud",
-    binary = ":checkout_read_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_read",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_profiles_cases",
-    crate_root = "tests/checkout_profiles.rs",
-    srcs = [
-        "tests/checkout_profiles.rs",
-        "tests/checkout_profiles/facade/mod.rs",
-        "tests/checkout_profiles/facade/tests/mod.rs",
-        "tests/checkout_profiles/facade/tests/profiles.rs",
-        "tests/checkout_profiles/facade/tests/special.rs",
-        "tests/checkout_profiles/model/mod.rs",
-        "tests/checkout_profiles/model/tests.rs",
-        "tests/checkout_profiles/path/mod.rs",
-        "tests/checkout_profiles/path/tests.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/checkout_tracking.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_profiles",
-    binary = ":checkout_profiles_cases",
-    id = "acyclic-fs::checkout_profiles",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_profiles_full-cloud",
-    binary = ":checkout_profiles_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_profiles",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "mount_routing_cases",
-    crate_root = "tests/mount_routing.rs",
-    srcs = [
-        "tests/mount_routing.rs",
-        "tests/mount_routing/mount/mod.rs",
-        "tests/mount_routing/mount/tests.rs",
-        "tests/support/mount_checkout.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "mount_routing",
-    binary = ":mount_routing_cases",
-    id = "acyclic-fs::mount_routing",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "mount_routing_full-cloud",
-    binary = ":mount_routing_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::mount_routing",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_cancellation_cases",
-    crate_root = "tests/checkout_cancellation.rs",
-    srcs = [
-        "tests/checkout_cancellation.rs",
-        "tests/checkout_cancellation/facade/mod.rs",
-        "tests/checkout_cancellation/facade/tests/creation.rs",
-        "tests/checkout_cancellation/facade/tests/mod.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/volume_fixture.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_cancellation",
-    binary = ":checkout_cancellation_cases",
-    id = "acyclic-fs::checkout_cancellation",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_cancellation_full-cloud",
-    binary = ":checkout_cancellation_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_cancellation",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_reconciliation_cases",
-    crate_root = "tests/checkout_reconciliation.rs",
-    srcs = [
-        "tests/checkout_reconciliation.rs",
-        "tests/checkout_reconciliation/facade/mod.rs",
-        "tests/checkout_reconciliation/facade/tests/merge.rs",
-        "tests/checkout_reconciliation/facade/tests/mod.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_reconciliation",
-    binary = ":checkout_reconciliation_cases",
-    id = "acyclic-fs::checkout_reconciliation",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_reconciliation_full-cloud",
-    binary = ":checkout_reconciliation_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_reconciliation",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_content_cases",
-    crate_root = "tests/checkout_content.rs",
-    srcs = [
-        "tests/checkout_content.rs",
-        "tests/checkout_content/facade/mod.rs",
-        "tests/checkout_content/facade/tests/content.rs",
-        "tests/checkout_content/facade/tests/detached.rs",
-        "tests/checkout_content/facade/tests/identity.rs",
-        "tests/checkout_content/facade/tests/mod.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-        "tests/support/volume_read.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_content",
-    binary = ":checkout_content_cases",
-    id = "acyclic-fs::checkout_content",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_content_full-cloud",
-    binary = ":checkout_content_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_content",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_tracking_cases",
-    crate_root = "tests/checkout_tracking.rs",
-    srcs = [
-        "tests/checkout_tracking.rs",
-        "tests/checkout_tracking/facade/mod.rs",
-        "tests/checkout_tracking/facade/tests/mod.rs",
-        "tests/checkout_tracking/facade/tests/tracking.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/checkout_tracking.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_tracking",
-    binary = ":checkout_tracking_cases",
-    id = "acyclic-fs::checkout_tracking",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_tracking_full-cloud",
-    binary = ":checkout_tracking_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_tracking",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_live_cases",
-    crate_root = "tests/checkout_live.rs",
-    srcs = [
-        "tests/checkout_live.rs",
-        "tests/checkout_live/facade/mod.rs",
-        "tests/checkout_live/facade/tests/live.rs",
-        "tests/checkout_live/facade/tests/mod.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/checkout_live_fixture.rs",
-        "tests/support/checkout_serialized.rs",
-        "tests/support/volume_commit.rs",
-        "tests/support/volume_fixture.rs",
-        "tests/support/volume_read.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_live",
-    binary = ":checkout_live_cases",
-    id = "acyclic-fs::checkout_live",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_live_full-cloud",
-    binary = ":checkout_live_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_live",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "checkout_publication_cases",
-    crate_root = "tests/checkout_publication.rs",
-    srcs = [
-        "tests/checkout_publication.rs",
-        "tests/checkout_publication/facade/mod.rs",
-        "tests/checkout_publication/facade/tests/mod.rs",
-        "tests/checkout_publication/facade/tests/publication.rs",
-        "tests/support/allow_publication.rs",
-        "tests/support/checkout_fixture.rs",
-        "tests/support/checkout_manual.rs",
-        "tests/support/checkout_serialized.rs",
-        "tests/support/checkout_tracking.rs",
-        "tests/support/volume_fixture.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_fs",
-        ":build_script",
-    ] + [
-        "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//futures-0.3.34",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "src/lib.rs",
-    ],
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "checkout_publication",
-    binary = ":checkout_publication_cases",
-    id = "acyclic-fs::checkout_publication",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "checkout_publication_full-cloud",
-    binary = ":checkout_publication_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::checkout_publication",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
@@ -3405,52 +2655,6 @@ isolated_test(
     binary = ":native_view_table_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::native_view_table",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual","no-sandbox"],
-)
-
-rust_test(
-    name = "local_commit_model_cases",
-    crate_root = "tests/local_commit_model.rs",
-    srcs = [
-        "tests/local_commit_model.rs",
-        "tests/local_commit_model/facade/mod.rs",
-        "tests/local_commit_model/facade/tests/local.rs",
-        "tests/local_commit_model/facade/tests/mod.rs",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "local_commit_model",
-    binary = ":local_commit_model_cases",
-    id = "acyclic-fs::local_commit_model",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-isolated_test(
-    name = "local_commit_model_full-cloud",
-    binary = ":local_commit_model_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-fs::local_commit_model",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],

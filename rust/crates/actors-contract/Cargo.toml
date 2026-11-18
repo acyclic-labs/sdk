@@ -19,6 +19,8 @@ acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 bytes = { workspace = true, features = ["serde"] }
 http.workspace = true
 http-body = "1.1.0"

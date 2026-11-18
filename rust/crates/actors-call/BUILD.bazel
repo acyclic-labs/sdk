@@ -36,6 +36,7 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",

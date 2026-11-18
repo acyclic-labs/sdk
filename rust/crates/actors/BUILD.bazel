@@ -99,7 +99,6 @@ rust_test(
         "//compatibility:acyclic_proto_build",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
-        "//rust/crates/stream-body:acyclic_stream_body",
         "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",

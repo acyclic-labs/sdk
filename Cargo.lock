@@ -70,6 +70,7 @@ name = "acyclic-actors-call"
 version = "0.2.0"
 dependencies = [
  "acyclic-stream",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "bytes",
  "futures",
@@ -90,6 +91,8 @@ dependencies = [
  "acyclic-objects",
  "acyclic-proto-build",
  "acyclic-stream",
+ "acyclic-stream-body",
+ "acyclic-stream-wire",
  "acyclic-test-support",
  "bytes",
  "futures",

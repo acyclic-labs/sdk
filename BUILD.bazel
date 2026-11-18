@@ -199,6 +199,8 @@ filegroup(
         "//rust/crates/source-policies:Cargo.toml",
         "//rust/crates/stream-body:Cargo.toml",
         "//rust/crates/stream-napi:Cargo.toml",
+        "//rust/crates/stream-rpc-inventory:Cargo.toml",
+        "//rust/crates/stream-trust:Cargo.toml",
         "//rust/crates/stream-wire:Cargo.toml",
         "//rust/crates/stream:Cargo.toml",
         "//rust/crates/stream/contract-fuzz:Cargo.toml",
@@ -387,6 +389,8 @@ typescript_packages(
         "//rust/crates/inference:inference-typescript-defaults_example": "//rust/crates/inference:inference-typescript-defaults_example",
         "//rust/crates/machines:machines-authorization_example": "//rust/crates/machines:machines-authorization_example",
         "//rust/crates/machines:machines-managed-oci-contract": "//rust/crates/machines:machines-managed-oci-contract",
+        "//rust/crates/objects:objects-authorization_example": "//rust/crates/objects:objects-authorization_example",
+        "//rust/crates/objects:objects-rpc-inventory": "//rust/crates/objects:objects-rpc-inventory",
         "//rust/crates/proto-codegen:sdk-proto-codegen": "//rust/crates/proto-codegen:sdk-proto-codegen",
     },
 )
