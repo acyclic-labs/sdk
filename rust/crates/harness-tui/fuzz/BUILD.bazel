@@ -275,7 +275,9 @@ rust_binary(
 rust_binary(
     name = "transcript_anchor",
     crate_root = "fuzz_targets/transcript_anchor.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/crates/harness-tui-core:src/transcript_anchor/oracle.rs",
+    ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",

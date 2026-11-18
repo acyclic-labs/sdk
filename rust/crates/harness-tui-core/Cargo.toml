@@ -1,0 +1,29 @@
+[package]
+name = "acyclic-harness-tui-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Prompt editor, completion, and configuration models for the harness TUI"
+
+[build-dependencies]
+serde_json.workspace = true
+
+[dependencies]
+arrayvec = "0.7"
+caseless = "0.2.2"
+serde.workspace = true
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+crossterm = "0.29"
+serde_json.workspace = true
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
-#[path = "../../fuzz/transcript_anchor.rs"]
+#[path = "oracle.rs"]
 mod oracle;
 
 proptest! {

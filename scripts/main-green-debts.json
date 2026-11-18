@@ -1,6 +1,6 @@
 [
   {
-    "target": "//rust/crates/harness-tui:acyclic_harness_tui_test_cases",
+    "target": "//rust/crates/harness-tui-core:acyclic_harness_tui_core_test_cases",
     "class": "incremental token cache resumes inside an earlier open token",
     "fixed_by": "28d03ab1b",
     "regression": "completion::incremental_tests::delta_requests_agree_with_full_parsing",

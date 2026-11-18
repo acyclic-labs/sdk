@@ -3,7 +3,7 @@
 #![cfg(test)]
 use acyclic_harness_tui::{
     BlockKind, Editor, Hyperlinks, PromptInput, RowLink, Screen, TranscriptRows, Viewport,
-    config::ConfigView,
+    config::{ConfigView, ThemeStyles},
     ratatui::{layout::Size, style::Modifier, text::Line},
     term::{Capabilities, ColourDepth, FrameEffects, FrameTerminal, Present, RestoreGuard},
 };
@@ -115,8 +115,7 @@ fn frame_config(
     profile: &Capabilities,
     config: &ConfigView,
 ) -> io::Result<Vec<u8>> {
-    let theme = config
-        .theme(profile)
+    let theme = ThemeStyles::from_config(config, profile)
         .map_err(|errors| io::Error::other(format!("{errors:?}")))?;
     let mut transcript = TranscriptRows::default();
     transcript.set_theme(theme);

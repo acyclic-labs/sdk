@@ -91,7 +91,8 @@ impl InputKeymap {
             .map_or(KeyBinding::Unbound, KeyBinding::Action)
     }
 
-    pub(crate) fn has_prefix(&self, prefix: &str) -> bool {
+    /// Whether the canonical chord starts any configured key sequence.
+    pub fn has_prefix(&self, prefix: &str) -> bool {
         KEYMAP
             .iter()
             .map(|binding| binding.chord)

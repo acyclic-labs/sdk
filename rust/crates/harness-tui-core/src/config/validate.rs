@@ -167,7 +167,8 @@ fn check(
             "unknown enum value".into(),
         );
     }
-    if schema["format"] == "ui-color" && !value.as_str().is_some_and(super::theme::valid_color) {
+    if schema["format"] == "ui-color" && value.as_str().and_then(super::ThemeColor::parse).is_none()
+    {
         emit(
             path.into(),
             DiagnosticKind::InvalidValue,

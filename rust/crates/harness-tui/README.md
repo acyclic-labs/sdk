@@ -1,5 +1,8 @@
 # Terminal presentation
 
+The terminal renderer and input adapter use `harness-tui-core` for the prompt
+editor, layout, completion, configuration files, and transcript anchors.
+
 The shared `Screen` draws followed data; it does not read files. Theme overrides
 are partial `config/theme.json` files, folded over the shipped semantic tokens.
 `mode` is `auto`, `light` or `dark`. Auto follows OSC 11 background luminance;

@@ -59,8 +59,10 @@ fn settings_only_negative_control() {
 
 #[test]
 fn theme_writes_a_mode_the_theme_schema_accepts_and_keeps_overrides() {
-    let schema: Value =
-        serde_json::from_str(include_str!("../../../harness-tui/data/theme.schema.json")).unwrap();
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../harness-tui-core/data/theme.schema.json"
+    ))
+    .unwrap();
     let modes = [ThemeMode::Auto, ThemeMode::Dark, ThemeMode::Light].map(|mode| json!(mode));
     assert_eq!(schema["properties"]["mode"]["enum"], json!(modes));
     let overrides = json!({"mode":"dark","dark":{"accent":"#ff0000"}});

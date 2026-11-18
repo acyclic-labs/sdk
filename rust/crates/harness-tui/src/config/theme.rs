@@ -1,12 +1,12 @@
 //! The theme is a handful of semantic colour tokens in a dark and a light
 //! set. Widgets name roles, each a token plus text attributes, so a theme
 //! file never restates the UI's structure: overriding a colour is one key.
+use super::{ConfigFile, ConfigView, Diagnostic, Token};
 use crate::term::{Capabilities, ColourDepth};
+use acyclic_harness_tui_core::config::ThemeColor;
 use ratatui::style::{Color, Modifier, Style};
 use serde_json::Value;
 use std::sync::LazyLock;
-
-include!(concat!(env!("OUT_DIR"), "/theme.rs"));
 
 /// What a widget draws: a token and the attributes it adds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub struct ThemeStyles([Style; Token::ALL.len()], Style);
 /// The shipped dark set at full colour, before a terminal is probed.
 static SHIPPED: LazyLock<ThemeStyles> = LazyLock::new(|| {
     resolve(
-        &serde_json::from_str(super::ConfigFile::Theme.defaults()).unwrap_or_default(),
+        &serde_json::from_str(ConfigFile::Theme.defaults()).unwrap_or_default(),
         &Capabilities {
             colour: ColourDepth::TrueColour,
             ..Capabilities::default()
@@ -67,6 +67,11 @@ impl Default for ThemeStyles {
 }
 
 impl ThemeStyles {
+    /// Resolve effective theme colours for the terminal's background and colour depth.
+    pub fn from_config(view: &ConfigView, profile: &Capabilities) -> Result<Self, Vec<Diagnostic>> {
+        Ok(resolve(&view.effective(ConfigFile::Theme)?, profile))
+    }
+
     /// Code's background band, derived from the terminal background and muted
     /// token. It follows the same file overrides and colour-depth fallback.
     pub fn code(&self) -> Style {
@@ -91,24 +96,6 @@ pub fn default_style(role: ThemeRole) -> Style {
     SHIPPED.style(role)
 }
 
-const NAMES: [&str; 16] = [
-    "black",
-    "red",
-    "green",
-    "yellow",
-    "blue",
-    "magenta",
-    "cyan",
-    "gray",
-    "dark-gray",
-    "light-red",
-    "light-green",
-    "light-yellow",
-    "light-blue",
-    "light-magenta",
-    "light-cyan",
-    "white",
-];
 const ANSI: [[u8; 3]; 16] = [
     [0, 0, 0],
     [128, 0, 0],
@@ -155,17 +142,6 @@ const HUES: [[Color; 2]; 6] = [
     [Color::Magenta, Color::LightMagenta],
 ];
 
-pub(super) fn valid_color(text: &str) -> bool {
-    text == "default" || NAMES.contains(&text) || rgb(text).is_some()
-}
-fn rgb(text: &str) -> Option<[u8; 3]> {
-    let hex = text.strip_prefix('#')?;
-    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let [_, red, green, blue] = u32::from_str_radix(hex, 16).ok()?.to_be_bytes();
-    Some([red, green, blue])
-}
 /// The xterm 256-colour palette entry for `index`.
 fn palette(index: u8) -> [u8; 3] {
     if let Some(ansi) = ANSI.get(usize::from(index)) {
@@ -214,15 +190,14 @@ fn ansi16([red, green, blue]: [u8; 3], light: bool) -> Color {
         },
     )
 }
-fn color(text: &str, depth: ColourDepth, light: bool) -> Color {
-    if depth == ColourDepth::Monochrome || text == "default" {
+fn color(color: ThemeColor, depth: ColourDepth, light: bool) -> Color {
+    if depth == ColourDepth::Monochrome {
         return Color::Reset;
     }
-    if let Some((_, named)) = NAMES.iter().zip(COLORS).find(|(name, _)| **name == text) {
-        return named;
-    }
-    let Some(rgb) = rgb(text) else {
-        return Color::Reset;
+    let rgb = match color {
+        ThemeColor::Default => return Color::Reset,
+        ThemeColor::Ansi(index) => return COLORS.get(index).copied().unwrap_or(Color::Reset),
+        ThemeColor::Rgb(rgb) => rgb,
     };
     match depth {
         ColourDepth::TrueColour => {
@@ -252,34 +227,35 @@ fn is_light(value: &Value, background: Option<[u8; 3]>) -> bool {
 }
 
 /// Resolve every token of the effective theme for gc-terminal's profile.
-pub(super) fn resolve(value: &Value, profile: &Capabilities) -> ThemeStyles {
+fn resolve(value: &Value, profile: &Capabilities) -> ThemeStyles {
     let light = is_light(value, profile.background);
     let tokens = &value[if light { "light" } else { "dark" }];
     let background = profile
         .background
         .unwrap_or(if light { [255; 3] } else { [0; 3] });
-    let muted = tokens["muted"].as_str().and_then(rgb).unwrap_or(background);
+    let muted = match tokens["muted"].as_str().and_then(ThemeColor::parse) {
+        Some(ThemeColor::Rgb(rgb)) => rgb,
+        _ => background,
+    };
     let mut band = [0u8; 3];
     for ((slot, background), muted) in band.iter_mut().zip(background).zip(muted) {
         *slot =
             u8::try_from((7 * u16::from(background) + u16::from(muted)) / 8).unwrap_or(background);
     }
-    let [red, green, blue] = band;
     let code = match profile.colour {
         ColourDepth::Monochrome => Style::new().add_modifier(Modifier::REVERSED),
         ColourDepth::Ansi16 => Style::new()
             .fg(if light { Color::Black } else { Color::White })
             .bg(if light { Color::White } else { Color::Black }),
-        depth => Style::new().bg(color(
-            &format!("#{red:02x}{green:02x}{blue:02x}"),
-            depth,
-            light,
-        )),
+        depth => Style::new().bg(color(ThemeColor::Rgb(band), depth, light)),
     };
     ThemeStyles(
         Token::ALL.map(|token| {
-            let text = tokens[token.name()].as_str().unwrap_or("default");
-            let style = Style::new().fg(color(text, profile.colour, light));
+            let color_value = tokens[token.name()]
+                .as_str()
+                .and_then(ThemeColor::parse)
+                .unwrap_or(ThemeColor::Default);
+            let style = Style::new().fg(color(color_value, profile.colour, light));
             if profile.colour == ColourDepth::Monochrome && token == Token::Muted {
                 style.add_modifier(Modifier::DIM)
             } else {

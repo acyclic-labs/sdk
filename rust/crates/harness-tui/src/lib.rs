@@ -1,10 +1,7 @@
-//! Grapheme-safe prompt editing without a terminal or application dependency.
+//! Native terminal input and rendering for the harness TUI.
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
-mod buffer;
-#[cfg(not(target_arch = "wasm32"))]
-mod completion;
 #[cfg(not(target_arch = "wasm32"))]
 mod completion_popup;
 #[cfg(not(target_arch = "wasm32"))]
@@ -12,41 +9,25 @@ pub mod config;
 #[cfg(not(target_arch = "wasm32"))]
 mod diff;
 #[cfg(not(target_arch = "wasm32"))]
-mod display_text;
-#[cfg(not(target_arch = "wasm32"))]
 pub use diff::DiffPage;
 #[cfg(not(target_arch = "wasm32"))]
 mod feedback;
 #[cfg(not(target_arch = "wasm32"))]
 pub use feedback::Feedback;
-mod editor;
-#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
-pub mod onboarding;
-#[cfg(not(target_arch = "wasm32"))]
-pub use display_text::{display_text, display_text_prefix};
 #[cfg(not(target_arch = "wasm32"))]
 mod editor_args;
 #[cfg(not(target_arch = "wasm32"))]
 mod editor_io;
-mod history;
 #[cfg(not(target_arch = "wasm32"))]
 mod input_events;
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
+pub mod onboarding;
 #[cfg(not(target_arch = "wasm32"))]
 pub use input_events::WHEEL_ROWS;
-#[cfg(not(target_arch = "wasm32"))]
-mod input_keymap;
-#[cfg(not(target_arch = "wasm32"))]
-mod key_decode;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod key_event;
-mod keymap;
-mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 mod markdown;
 #[cfg(not(target_arch = "wasm32"))]
 pub use markdown::CodeRow;
-mod settings;
-pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
 #[cfg(not(target_arch = "wasm32"))]
 mod prompt_box;
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,26 +61,25 @@ pub use transcript::{BlockKind, TranscriptRows};
 #[cfg(not(target_arch = "wasm32"))]
 mod widget;
 
+pub use acyclic_harness_tui_core::{
+    ACTIONS, Action, AppAction, Binding, Cell, DEFAULT_SETTINGS, Editor, KEYMAP, Layout, Motion,
+    NotificationPolicy, Row, UiSettings, keymap_help, named_action,
+};
 #[cfg(not(target_arch = "wasm32"))]
-pub use completion::{
-    Completion, CompletionKind, CompletionMenu, CompletionRequest, CompletionWork,
-    completion_request, fuzzy_score,
+pub use acyclic_harness_tui_core::{
+    Completion, CompletionKind, CompletionMenu, CompletionRequest, CompletionWork, DecodedKey,
+    InputKeymap, RowPosition, TranscriptAnchor, TranscriptOrigin, TranscriptPart,
+    completion_request, decode_key, display_text, display_text_prefix, fuzzy_score, key_chord,
+    key_event,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use completion_popup::CompletionPopup;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crossterm;
-pub use editor::{Editor, Motion};
 #[cfg(not(target_arch = "wasm32"))]
 pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};
 #[cfg(not(target_arch = "wasm32"))]
 pub use editor_io::{ClipboardContent, edit_external, prepare_image, prepare_image_with_settings};
-#[cfg(not(target_arch = "wasm32"))]
-pub use input_keymap::InputKeymap;
-#[cfg(not(target_arch = "wasm32"))]
-pub use key_decode::{DecodedKey, decode_key, key_chord};
-pub use keymap::{ACTIONS, Action, AppAction, Binding, KEYMAP, keymap_help, named_action};
-pub use layout::{Cell, Layout, Row};
 #[cfg(not(target_arch = "wasm32"))]
 pub use prompt_box::PromptBox;
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,11 +88,6 @@ pub use prompt_input::{InputEffect, PromptInput};
 pub use ratatui;
 #[cfg(not(target_arch = "wasm32"))]
 pub use widget::{PromptWidget, Viewport};
-
-#[cfg(not(target_arch = "wasm32"))]
-mod transcript_anchor;
-#[cfg(not(target_arch = "wasm32"))]
-pub use transcript_anchor::{RowPosition, TranscriptAnchor, TranscriptOrigin, TranscriptPart};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use screen::{Screen, ScreenAreas};

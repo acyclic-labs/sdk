@@ -159,6 +159,7 @@ rust_test(
         "//rust/crates/harness-search:tree",
         "//rust/crates/harness-sse:tree",
         "//rust/crates/harness-suite:tree",
+        "//rust/crates/harness-tui-core:tree",
         "//rust/crates/harness-tui/fuzz:tree",
         "//rust/crates/harness-tui:tree",
         "//rust/crates/harness/fuzz-context:tree",
