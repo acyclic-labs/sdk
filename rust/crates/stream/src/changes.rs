@@ -16,7 +16,10 @@
 //! indexed headers. Reading never rewrites either format or its retry identity.
 use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamCategory, StreamError};
 use acyclic_stream_wire::{
-    changes::{ChangeDecodeError, visit_v1, visit_v2},
+    changes::{
+        ChangeDecodeError, READER_FORMATS, RECORD_FORMAT_ATTRIBUTE as ATTRIBUTE,
+        WRITER_FORMAT as FORMAT, visit_v1, visit_v2,
+    },
     wire,
 };
 
@@ -52,20 +55,6 @@ pub struct ChangeEntryRef<'a> {
     /// Metadata belonging only to this key; never file contents.
     pub metadata: &'a [u8],
 }
-
-const ATTRIBUTE: &str = "acyclic.record";
-/// Marker emitted by the current change producer. Publication must be fenced
-/// until every applied voter advertises this marker in `READER_FORMATS`.
-/// A reader upgrade alone does not authorize a writer upgrade.
-pub const WRITER_FORMAT: &[u8] = b"changes/v2";
-
-/// Exact reserved markers this canonical reader validates and projects.
-/// Persist these capabilities with the applied voter selection; intersect the
-/// voters' supported markers before admitting `WRITER_FORMAT` publication.
-pub const READER_FORMATS: &[&[u8]] = &[V1, WRITER_FORMAT];
-
-const FORMAT: &[u8] = WRITER_FORMAT;
-const V1: &[u8] = b"changes/v1";
 
 fn marker(headers: &RecordHeaders) -> Option<&OwnedBytes> {
     headers
@@ -238,7 +227,7 @@ fn parse_record<'a>(
     if format == Some(FORMAT) {
         visit_v2(bytes, expected, remaining_keys, visit)
     } else {
-        visit_v1(bytes, visit)
+        visit_v1(bytes, expected, visit)
     }
     .map_err(|error| match error {
         ChangeDecodeError::Invalid => StreamError::InvalidArgument,
@@ -328,25 +317,13 @@ impl<'a> AdmittedRecord<'a> {
             if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
                 return Err(StreamError::LimitExceeded);
             }
-            let mut expected = headers.keys().iter();
             context = Some(parse_record(
                 bytes,
                 format,
                 Some(headers.keys()),
                 None,
-                |key, _, _| {
-                    if expected
-                        .next()
-                        .is_none_or(|expected| expected.as_ref() != key)
-                    {
-                        return Err(ChangeDecodeError::Invalid);
-                    }
-                    Ok(())
-                },
+                |_, _, _| Ok(()),
             )?);
-            if expected.next().is_some() {
-                return Err(StreamError::InvalidArgument);
-            }
         }
         Ok(Self {
             bytes,
