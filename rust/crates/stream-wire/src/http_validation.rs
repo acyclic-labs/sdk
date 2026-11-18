@@ -341,13 +341,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        changes::{
-            ChangeDecodeError, RECORD_FORMAT_ATTRIBUTE, V1, WRITER_FORMAT, visit_v1, visit_v2,
-        },
-        headers::HeaderValidation,
-        wire::StreamLimit,
-    };
+    use super::{RECORD_FORMAT_ATTRIBUTE, StreamLimit, V1, WRITER_FORMAT, validate_record_payload};
     use serde_json::Value;
 
     fn json_fixture(value: &str) -> serde_json::Result<Value> {
@@ -396,7 +390,39 @@ mod tests {
         let missing_time =
             format!(r#"{{"records":[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]}}"#);
         assert!(super::validate("read", &json_fixture(&missing_time)?).is_err());
+        check_typed_record_payloads();
         Ok(())
+    }
+
+    fn check_typed_record_payloads() {
+        // V1 protobuf: one entry with key "a" and operation "x".
+        let v1 = b"\x12\x06\x0a\x01a\x12\x01x";
+        let retained = [(RECORD_FORMAT_ATTRIBUTE, V1.to_vec())];
+        assert!(validate_record_payload(v1, &[b"a".to_vec()], &retained).is_ok());
+        assert!(validate_record_payload(v1, &[b"b".to_vec()], &retained).is_err());
+        assert!(
+            validate_record_payload(
+                v1,
+                &[b"a".to_vec()],
+                &[(RECORD_FORMAT_ATTRIBUTE, b"changes/unknown".to_vec())],
+            )
+            .is_err()
+        );
+
+        // V2: empty context, one entry, no shared prefix, key "a", operation "x".
+        let v2 = b"\x00\x01\x00\x01a\x01x\x00";
+        let mut current = [
+            (RECORD_FORMAT_ATTRIBUTE, WRITER_FORMAT.to_vec()),
+            ("padding", Vec::new()),
+        ];
+        assert!(validate_record_payload(v2, &[], &current).is_ok());
+        assert!(validate_record_payload(v2, &[b"a".to_vec()], &current).is_err());
+        let header_bytes = RECORD_FORMAT_ATTRIBUTE.len() + WRITER_FORMAT.len() + "padding".len();
+        let padding = StreamLimit::MaxRecordBytes as usize - v2.len() - header_bytes - 1;
+        current[1].1.resize(padding, 0);
+        assert!(validate_record_payload(v2, &[], &current).is_ok());
+        current[1].1.push(0);
+        assert!(validate_record_payload(v2, &[], &current).is_err());
     }
 
     #[test]
