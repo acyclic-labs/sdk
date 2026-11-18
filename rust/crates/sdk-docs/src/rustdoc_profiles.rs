@@ -214,6 +214,13 @@ impl ProfileSpec {
     }
 }
 
+fn declared_features(package: &Package) -> impl Iterator<Item = &String> {
+    package
+        .features
+        .keys()
+        .filter(|name| name.as_str() != "default")
+}
+
 fn insert_profile(ordered: &mut BTreeMap<ProfileId, ProfileSpec>, profile: ProfileSpec) {
     ordered.entry(profile.id()).or_insert(profile);
 }
@@ -260,10 +267,7 @@ fn current_package_profiles<'a>(
     if !package_metadata.features.is_empty() {
         add(false, BTreeSet::new());
     }
-    let declared = package_metadata
-        .features
-        .keys()
-        .filter(|feature| feature.as_str() != "default")
+    let declared = declared_features(package_metadata)
         .cloned()
         .collect::<BTreeSet<_>>();
     for feature in &declared {
@@ -407,13 +411,7 @@ pub fn historical_profiles_for_package(
             features.extend(feature_closure(&owner.features, feature));
         }
         if policy.all_features {
-            features.extend(
-                owner
-                    .features
-                    .keys()
-                    .filter(|name| name.as_str() != "default")
-                    .cloned(),
-            );
+            features.extend(declared_features(owner).cloned());
         }
         insert_profile(
             &mut profiles,
