@@ -12,6 +12,10 @@ readme = "README.md"
 
 [package.metadata.bazel]
 build-script-inputs = []
+test-without-build-script = ["actors-http-routes"]
+
+[package.metadata.bazel.test-dependencies]
+actors-http-routes = ["acyclic_actors", "serde_json", "ts_rs"]
 
 [package.metadata.bazel.unit-test-dependency-variants]
 acyclic-actors-contract = "socket_test_support"

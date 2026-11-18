@@ -1,5 +1,29 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
+/// The one fixture catalog: `binding` serves its own selection and every
+/// model a shipped role selects. Role policy wins at admission, so a fixture
+/// with one provider supplies the role models through this resolver, and each
+/// request keeps the binding's own model identity, which its provider serves.
+///
+/// # Errors
+/// When a shipped role template does not parse.
+pub fn role_models(
+    binding: crate::model::ModelBinding,
+) -> crate::Result<crate::model::ModelResolver> {
+    let own = format!("{}/{}", binding.0.provider, binding.0.name);
+    let roles = crate::templates::role_models()?;
+    Ok(crate::model::ModelResolver::new(
+        own.clone(),
+        move |selection: &str| {
+            if selection == own || roles.contains(selection) {
+                Ok(binding.clone())
+            } else {
+                Err(crate::Error::NotFound(format!("fixture model {selection}")))
+            }
+        },
+    ))
+}
+
 /// Classifies pinned workspace bytes with the production media boundary.
 pub fn workspace_media_type(bytes: &[u8]) -> &'static str {
     crate::filesystem::host::reads::media_type::classify(bytes)

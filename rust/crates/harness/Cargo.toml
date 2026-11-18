@@ -69,7 +69,6 @@ acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
-acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", default-features = false }
 acyclic-harness-suite = { version = "=0.2.0", path = "../harness-suite", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
@@ -110,6 +109,7 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", default-features = false }
 ratatui = { version = "=0.30.2", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 dirs = { workspace = true }
