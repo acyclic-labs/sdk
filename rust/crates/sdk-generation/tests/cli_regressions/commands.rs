@@ -19,8 +19,6 @@ type Replay = (Output, Vec<(PathBuf, Vec<u8>)>);
 #[derive(Default)]
 struct State {
     outputs: RefCell<BTreeMap<Key, Replay>>,
-    executed: Cell<usize>,
-    replayed: Cell<usize>,
     replayed_compilers: Cell<usize>,
 }
 
@@ -403,7 +401,6 @@ impl Queries {
                     for (path, bytes) in artifacts {
                         fs::write(path, bytes)?;
                     }
-                    state.replayed.set(state.replayed.get() + 1);
                     if !artifacts.is_empty() {
                         state
                             .replayed_compilers
@@ -412,7 +409,6 @@ impl Queries {
                     return Ok(output.clone());
                 }
                 let output = execute_command(command)?;
-                state.executed.set(state.executed.get() + 1);
                 let artifacts = if output.status.success() {
                     compiler_outputs(command)?
                 } else {
@@ -438,16 +434,6 @@ impl Queries {
                 .count(),
             self.0.replayed_compilers.get(),
         )
-    }
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        eprintln!(
-            "POLICY_COMMANDS executed={} replayed={}",
-            self.executed.get(),
-            self.replayed.get()
-        );
     }
 }
 
