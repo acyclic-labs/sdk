@@ -89,10 +89,8 @@ fn public_parent(path: &str) -> &str {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Page<'a> {
-    entries: Vec<Entry<'a>>,
-    next: Option<String>,
-    #[serde(skip)]
-    _next_hold: acyclic_fs::NativeCustody,
+    entries: &'a [Entry<'a>],
+    next: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -181,7 +179,6 @@ pub(super) async fn read(
         .entries
         .iter()
         .filter(|entry| delivered.is_none_or(|name| entry.name.as_bytes() > name.as_bytes()));
-    let mut last_delivered = delivered;
     for entry in remaining.by_ref().take(limit as usize) {
         let (relative, _relative_hold) = child_path(&path, &entry.name, work)?;
         let (version, version_hold) =
@@ -190,7 +187,6 @@ pub(super) async fn read(
         // Re-read at most one page at the original cut, then skip delivered names.
         // Provider cookies remain opaque, and current disclosure is checked again.
         let (cursor, cursor_hold) = encode_cursor(page_start, Some(&entry.name))?;
-        last_delivered = Some(&entry.name);
         entries.push(Entry {
             name: &entry.name,
             path: public,
@@ -200,23 +196,21 @@ pub(super) async fn read(
             _holds: [public_hold, version_hold, cursor_hold],
         });
     }
-    let (next, next_hold) = if remaining.next().is_some() {
-        let (text, hold) = encode_cursor(page_start, last_delivered)?;
-        (Some(text), hold)
+    let boundary;
+    let next = if remaining.next().is_some() {
+        entries.last().map(|entry| entry.cursor.as_str())
     } else {
-        match &page.next {
-            Some(after) => {
-                let (text, hold) = encode_cursor(Some(after), None)?;
-                (Some(text), hold)
-            }
-            None => (None, None),
-        }
+        boundary = page
+            .next
+            .as_deref()
+            .map(|after| encode_cursor(Some(after), None))
+            .transpose()?;
+        boundary.as_ref().map(|(cursor, _)| cursor.as_str())
     };
     let encoded = value(
         &Page {
-            entries,
+            entries: &entries,
             next,
-            _next_hold: next_hold,
         },
         context.effective_scope().limits().file_bytes,
         work,
