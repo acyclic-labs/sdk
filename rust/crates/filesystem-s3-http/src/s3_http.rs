@@ -4,8 +4,6 @@
 //! `s3s`. This module contains no namespace or storage implementation: every
 //! accepted operation resolves one scoped workspace and invokes [`acyclic_fs::S3Workspace`].
 
-#[cfg(test)]
-use acyclic_fs::ObjectId;
 use acyclic_fs::WorkBudget;
 use acyclic_fs::kernel::AsyncBlobSource;
 #[cfg(test)]
@@ -21,6 +19,8 @@ use acyclic_fs::{
     AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, S3Error, S3ListCursor,
     S3ListOptions, Workspace,
 };
+#[cfg(test)]
+use acyclic_fs_format::object_reference::ObjectId;
 use acyclic_fs_format::s3_limits::FilesystemS3Limits;
 #[cfg(test)]
 use acyclic_fs_format::s3_limits::S3MultipartRetentionLimits;

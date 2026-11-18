@@ -1,5 +1,6 @@
 use super::*;
-use acyclic_fs::{Digest, ObjectKind};
+use acyclic_fs_format::identity::Digest;
+use acyclic_fs_format::object_reference::ObjectKind;
 include!("access_tests.rs");
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -136,7 +137,7 @@ async fn adapter_with_limits(
                 config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,
@@ -869,18 +870,18 @@ fn multipart_records_preserve_sealed_parts_and_completed_generations() -> Multip
     }
     let malformed = multipart_storage_error(MultipartStorageError::Malformed);
     assert_eq!(malformed.code(), &s3s::S3ErrorCode::InvalidRequest);
-    let storage = acyclic_fs::ObjectStorage {
-        locator: acyclic_fs::Digest::from_bytes([1; 32]),
-        root_file_id: acyclic_fs::FileId::from_bytes([2; 16]),
-        origin_generation: acyclic_fs::Digest::from_bytes([3; 32]),
+    let storage = acyclic_fs_format::object_reference::ObjectStorage {
+        locator: acyclic_fs_format::identity::Digest::from_bytes([1; 32]),
+        root_file_id: acyclic_fs_format::identity::FileId::from_bytes([2; 16]),
+        origin_generation: acyclic_fs_format::identity::Digest::from_bytes([3; 32]),
     };
     let part = ObjectId {
-        kind: acyclic_fs::ObjectKind::Blob,
-        digest: acyclic_fs::Digest::from_bytes([4; 32]),
+        kind: acyclic_fs_format::object_reference::ObjectKind::Blob,
+        digest: acyclic_fs_format::identity::Digest::from_bytes([4; 32]),
         storage: Some(storage),
     };
     let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
-        kind: acyclic_fs::ObjectKind::GenerationRoot,
+        kind: acyclic_fs_format::object_reference::ObjectKind::GenerationRoot,
         ..part
     });
     let etag = format!("\"{}\"", hex::encode([5; 32]));
