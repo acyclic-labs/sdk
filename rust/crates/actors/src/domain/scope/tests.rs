@@ -34,12 +34,9 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
 
                 #[cfg(not(target_arch = "wasm32"))]
                 let bound = {
-                    let mut bound = None;
-                    let allocations = acyclic_test_support::measure(|| {
-                        bound = Some(request.with_reference(&address));
-                    });
+                    let allocations = acyclic_test_support::measure(|| request.with_reference(&address));
                     assert_eq!(allocations.count_total, 3);
-                    bound.ok_or("binding did not complete")?
+                    allocations.output
                 };
                 #[cfg(target_arch = "wasm32")]
                 let bound = request.with_reference(&address);
@@ -100,12 +97,9 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
         {
             let name = address.namespace().as_str().to_owned();
             let original = name.as_ptr();
-            let mut admitted = None;
-            let allocations = acyclic_test_support::measure(|| {
-                admitted = Some(ActorNamespace::new(name));
-            });
+            let allocations = acyclic_test_support::measure(|| ActorNamespace::new(name));
             assert_eq!(allocations.count_total, 0);
-            let namespace = admitted.unwrap()?;
+            let namespace = allocations.output?;
             assert_eq!(namespace.as_str().as_ptr(), original);
         }
     }
