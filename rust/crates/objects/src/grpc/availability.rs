@@ -30,12 +30,8 @@ impl GrpcObjects {
             if response.as_ref().is_err_and(|status| {
                 status.code() == tonic::Code::Unauthenticated
                     && std::error::Error::source(status).is_none()
-            }) && let Some(lease) = &credential.lease
-            {
-                lease
-                    .reject()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            }) {
+                crate::operation::reject_lease(credential.lease.as_ref()).await?;
             }
             let response = response.map_err(|status| error_from_status(&status))?;
             observe(

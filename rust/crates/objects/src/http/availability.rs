@@ -39,13 +39,8 @@ impl HttpObjects {
                 .send()
                 .await
                 .map_err(|_| unavailable())?;
-            if response.status().as_u16() == 401
-                && let Some(lease) = &credential.lease
-            {
-                lease
-                    .reject()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            if response.status().as_u16() == 401 {
+                crate::operation::reject_lease(credential.lease.as_ref()).await?;
             }
             if response.status().as_u16() != 200 {
                 return Err(self.failure(response).await);

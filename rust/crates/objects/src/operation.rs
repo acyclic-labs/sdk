@@ -71,3 +71,15 @@ pub(crate) async fn checked_lease(
     lease.check().await.map_err(|_| denied())?;
     Ok(lease)
 }
+
+pub(crate) async fn reject_lease(
+    lease: Option<&acyclic_auth::credential::ResolvedCredential>,
+) -> Result<(), Error> {
+    if let Some(lease) = lease {
+        lease
+            .reject()
+            .await
+            .map_err(|_| Error::from(crate::wire::ErrorCode::AccessDenied))?;
+    }
+    Ok(())
+}

@@ -211,13 +211,8 @@ impl HttpObjects {
                 context.check()?;
             }
             let response = request.send().await.map_err(|_| unavailable())?;
-            if response.status().as_u16() == 401
-                && let Some(lease) = &lease
-            {
-                lease
-                    .reject()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            if response.status().as_u16() == 401 {
+                crate::operation::reject_lease(lease.as_ref()).await?;
             }
             if response.status().as_u16() != 200 {
                 return Err(self.failure(response).await);
