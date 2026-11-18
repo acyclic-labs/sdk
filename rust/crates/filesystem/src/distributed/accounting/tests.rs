@@ -80,7 +80,7 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         let encoded_before = actual.spent().unwrap().bytes_encoded;
         let live = |work: &AuthorityWork<'_>| {
             if native {
-                work.original.unwrap().live_allocation_bytes().unwrap()
+                work.original.unwrap().live_allocation_bytes()
             } else {
                 Ok(work.allocations.live_bytes())
             }

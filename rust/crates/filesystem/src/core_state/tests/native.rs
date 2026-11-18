@@ -100,7 +100,8 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart()
         .unwrap()
         .unwrap();
     assert_eq!(loaded.0, value);
-    work.receipt().unwrap().verify(finite_budget()).unwrap();
+    work.receipt()?.verify(finite_budget()).unwrap();
+    Ok(())
 }
 
 async fn native_lineage_cancellation_owns_physical_completion()
@@ -323,7 +324,8 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
     assert_eq!(loaded.0.revision, 2);
     assert_eq!(loaded.0.state, WorkspaceContextState::Frozen);
     assert_eq!(loaded.0.roots, value.roots);
-    work.receipt().unwrap().verify(finite_budget()).unwrap();
+    work.receipt()?.verify(finite_budget()).unwrap();
+    Ok(())
 }
 
 fn assert_bucket_values(

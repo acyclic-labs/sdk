@@ -237,7 +237,7 @@ fn original_live(work: &mut crate::AuthorityWork<'_>) -> Result<u64, crate::Work
     let mut accounting = work.accounting();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return original.live_allocation_bytes().unwrap();
+        return original.live_allocation_bytes();
     }
     Ok(accounting.standalone_parts().unwrap().0.live_bytes())
 }

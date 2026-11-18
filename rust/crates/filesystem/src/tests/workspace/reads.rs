@@ -237,9 +237,7 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
                 KernelAccounting::BorrowedStandalone { allocations, .. } => {
                     Ok(allocations.live_bytes())
                 }
-                KernelAccounting::NativeOriginal { work, .. } => {
-                    work.live_allocation_bytes().unwrap()
-                }
+                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
             };
             let baseline = live(&accounting)?;
             assert!(sorted_changed_file_ids(input, &mut accounting).is_err());

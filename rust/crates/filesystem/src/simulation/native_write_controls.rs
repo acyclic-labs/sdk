@@ -81,7 +81,8 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
     assert!(work.live_allocation_bytes().unwrap() + 3 <= held);
     drop(store);
     drop(simulation);
-    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 #[tokio::test]
@@ -114,7 +115,8 @@ async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody
     drop(batch);
     drop(store);
     drop(simulation);
-    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 #[tokio::test]
@@ -176,7 +178,8 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody()
     drop(simulation);
     assert_eq!(work.live_allocation_bytes().unwrap(), payload_live);
     drop(alias);
-    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 #[tokio::test]
