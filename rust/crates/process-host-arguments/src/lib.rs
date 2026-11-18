@@ -27,8 +27,12 @@ pub struct Invocation {
 
 impl Invocation {
     /// Parses options followed by a literal executable and its arguments.
+    #[inline]
     pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Self> {
-        let mut arguments = arguments.into_iter();
+        Self::parse_arguments(&mut arguments.into_iter())
+    }
+
+    fn parse_arguments(arguments: &mut dyn Iterator<Item = OsString>) -> io::Result<Self> {
         let mut inherit_input = false;
         let mut control = None;
         let mut custody = None;
