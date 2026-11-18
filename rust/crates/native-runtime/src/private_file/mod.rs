@@ -269,7 +269,12 @@ impl StagedFile {
         self.publish_observed(path, mode, &mut |_| Ok(()))
     }
 
-    fn publish_observed(
+    /// Durably publishes while retaining the original descriptor and reporting
+    /// the sync, installation, and publication boundaries to the observer.
+    /// This staged file already exists, so the observer receives no creation event.
+    ///
+    /// A failure after installation can leave the destination installed.
+    pub fn publish_observed(
         mut self,
         path: &Path,
         mode: crate::RenameMode,
