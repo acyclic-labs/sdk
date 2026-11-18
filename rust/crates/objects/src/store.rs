@@ -885,24 +885,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         format!("{namespace}{root_hash}.{batch}")
     }
 
-    fn retention_batch(
-        &self,
-        references: &[Digest],
-        prefix: impl std::fmt::Display,
-    ) -> Result<(Vec<u8>, String), Error> {
-        self.medium
-            .allocate(references.len() as u64 * 32)
-            .map_err(medium)?;
-        let batch = encode_batch(references);
-        // A unique version keeps concurrent retains of equal batches distinct.
-        let name = format!(
-            "{prefix}{}.{:032x}",
-            Digest::of(&batch),
-            u128::from_be_bytes(version()?)
-        );
-        Ok((batch, name))
-    }
-
     /// Marks `tag` as holding each of `children`, then admits them: refused
     /// when one is absent or marked by a deleter. Whether it created any key;
     /// an unknown index write keeps its original failure, so the holder must
@@ -971,23 +953,34 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     async fn commit_retention(
         &self,
         references: &[Digest],
-        tag: &str,
-        key: &str,
-        batch: Vec<u8>,
-        extra_writes: u64,
-    ) -> Result<(), Error> {
+        root_hash: &str,
+        fence: Option<u64>,
+    ) -> Result<(String, String), Error> {
+        self.medium
+            .allocate(references.len() as u64 * 32)
+            .map_err(medium)?;
+        let batch = encode_batch(references);
+        let digest = Digest::of(&batch);
+        // A unique version keeps concurrent retains of equal batches distinct.
+        let version = u128::from_be_bytes(version()?);
+        let (namespace, kind, name, extra_writes) = match fence {
+            Some(fence) => ("f", 'f', format!("{fence:016x}.{digest}.{version:032x}"), 2),
+            None => ("r", 'r', format!("{digest}.{version:032x}"), 0),
+        };
+        let tag = Self::batch_tag(namespace, root_hash, &name);
+        let key = self.retention_key(kind, root_hash, &name);
         let first = references.first().ok_or_else(invalid)?;
-        let held = (std::mem::size_of::<String>() + self.index_key(first, tag).len()) as u64
+        let held = (std::mem::size_of::<String>() + self.index_key(first, &tag).len()) as u64
             * references.len() as u64;
         self.medium.allocate(held).map_err(medium)?;
         self.medium
             .reserve_writes(2 * references.len() as u64 + 2 + extra_writes)
             .map_err(medium)?;
-        match self.commit_batch(references, tag, key, batch).await {
-            Ok(()) => Ok(()),
+        match self.commit_batch(references, &tag, &key, batch).await {
+            Ok(()) => Ok((key, name)),
             Err(Commit::Unknown(error) | Commit::Unflushed(error)) => Err(error),
             Err(Commit::Failed(error)) => {
-                self.unreference(references, tag, None).await?;
+                self.unreference(references, &tag, None).await?;
                 Err(error)
             }
         }
@@ -1640,12 +1633,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 }
                 let issued = self.issued().await?;
                 let _gate = self.state.gate.read().await;
-                let (batch, name) = self.retention_batch(&references, "")?;
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
-                let root_hash = encoded.as_ref();
-                let tag = Self::batch_tag("r", root_hash, &name);
-                let key = self.retention_key('r', root_hash, &name);
-                self.commit_retention(&references, &tag, &key, batch, 0)
+                self.commit_retention(&references, encoded.as_ref(), None)
                     .await?;
                 Ok(Retained {
                     references: references.len() as u64,

@@ -168,10 +168,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let terminal_key = self.terminal_key(root_hash);
         let (state, observed) = self.terminal_observed(&terminal_key).await?;
         state.require_open(fence)?;
-        let (batch, name) = self.retention_batch(&references, format_args!("{fence:016x}."))?;
-        let tag = Self::batch_tag("f", root_hash, &name);
-        let key = self.retention_key('f', root_hash, &name);
-        self.commit_retention(&references, &tag, &key, batch, 2)
+        let (key, name) = self
+            .commit_retention(&references, root_hash, Some(fence))
             .await?;
         if !self.terminal_replace(observed, state.terminal).await? {
             self.remove_fenced_batch(&key, root_hash, &name, &references)
