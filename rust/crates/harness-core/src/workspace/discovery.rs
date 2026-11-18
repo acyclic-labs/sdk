@@ -16,6 +16,10 @@ impl<T> MountTable<T> {
                     .or_else(|| relative.strip_prefix("volume://"))
                     .ok_or_else(|| Error::Invalid("invalid volume address".into()))?
             };
+            // Discovery is the host-facing spelling, the same one the shell
+            // receives as its cwd. A Windows verbatim prefix is never part of
+            // it, so a host that reports either form resolves to one path.
+            let path = acyclic_host_platform::paths::strip_verbatim(path);
             let path = path
                 .to_str()
                 .ok_or_else(|| Error::Invalid("task mount path is not UTF-8".into()))?;

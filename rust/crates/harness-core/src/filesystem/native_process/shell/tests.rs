@@ -373,6 +373,25 @@ fn scratch_home(mounts: &MountTable<Arc<tempfile::TempDir>>) -> PathBuf {
         .join(blake3::hash(agent.as_bytes()).to_hex().as_str())
 }
 
+// Discovery is the host-facing spelling: a Windows verbatim prefix is never
+// part of it, so a host that reports either form resolves to one path.
+#[test]
+fn discovery_drops_windows_verbatim_prefixes() -> Result<()> {
+    let project = tempfile::tempdir().map_err(Error::process_io)?;
+    let mut mounts = table_with_roots(project.path().to_path_buf(), "", "", false)?;
+    for (relative, mount) in mounts.mounts_mut() {
+        if relative.is_empty() {
+            mount.native_root =
+                crate::workspace::NativeRoot::Path(PathBuf::from(r"\\?\D:\project"));
+        }
+    }
+    assert_eq!(
+        workspace_hints(&mounts.environment()?)["project"],
+        r"D:\project"
+    );
+    Ok(())
+}
+
 // Agents sharing one host scratch root get distinct homes, though the host
 // gives every local principal the same label; a table holding no writable
 // volume of its own agent has no home and is refused.
