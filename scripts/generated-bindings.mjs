@@ -93,7 +93,7 @@ export const compatibilityArtifacts = {
   machines: {
     schemaDigest: "rust/crates/machines/proto/machines/v1/machines.proto",
     descriptorDigest: "compatibility/descriptors/machines-v1.bin",
-    conformanceDigest: "rust/crates/machines/conformance/machines.json",
+    conformanceDigest: "rust/crates/machines-conformance/conformance/machines.json",
   },
   inference: {
     schemaDigest: "rust/crates/inference/proto/inference/v1/inference.proto",

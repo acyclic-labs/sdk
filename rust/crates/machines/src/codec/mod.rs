@@ -1,16 +1,29 @@
+//! Canonical conversions between the Machines contract and protobuf wire types.
+
 use super::*;
 
 #[cfg(feature = "test-support")]
 /// On-demand semantic checks against the production gRPC conversions.
 pub mod codec_fuzz;
 mod error;
+mod files;
+mod guest;
 mod image;
+mod input;
 mod observation;
+mod recovery;
 mod results;
 
 pub(super) use error::*;
+pub(super) use files::*;
+pub(super) use guest::*;
 pub(super) use image::*;
+pub(super) use input::encode_exec_input;
 pub(super) use observation::*;
+pub use recovery::{
+    ForkAdmitted, decode_fork_admissions, decode_recovered, settled_change, settled_checkpoint,
+    settled_fork, settled_machine, validate_recovered_admission,
+};
 pub(super) use results::*;
 
 pub(super) fn protocol() -> wire::ProtocolVersion {

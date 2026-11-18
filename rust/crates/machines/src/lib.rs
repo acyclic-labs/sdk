@@ -102,14 +102,15 @@ pub use simulation::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
 
+/// Canonical conversions shared by Machines transports.
+#[doc(hidden)]
+pub mod codec;
+include!(concat!(env!("OUT_DIR"), "/machines-client.rs"));
+
 pub mod grpc;
 mod obs;
 #[cfg(not(target_arch = "wasm32"))]
 pub use grpc::Tls;
-
-/// Shared provider qualification, checked benchmarks and request accounting.
-#[cfg(feature = "conformance")]
-pub mod conformance;
 
 #[cfg(test)]
 mod admission_tests {

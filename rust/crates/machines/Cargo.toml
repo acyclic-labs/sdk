@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "fixtures/**", "fuzz/corpus/**"]
 name = "acyclic-machines"
 autotests = false
 version = "0.2.0"
@@ -27,7 +27,6 @@ machines-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
 consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]
 
 [features]
-conformance = ["acyclic-stream/conformance", "tokio/time"]
 test-support = [
     "acyclic-actors/test-support",
     "acyclic-auth/test-support",

@@ -1,12 +1,13 @@
 //! Public, backend-independent Machines qualification and request budgets.
 
-use crate::{
+use acyclic_machines::{
     Capability, CompatibilityPolicy, CreateMachine, ExecCommand, IdempotencyKey, Image,
     LifecycleClass, MachineId, MachineObservation, MachineState, MachinesProvider, MutationOutcome,
     OperatingSystem, OperationPhase, Platform, Precondition, ProviderCapability, ProviderError,
-    Shell, Support, SuspensionPolicy,
+    Shell, Support, SuspensionPolicy, results,
 };
-use acyclic_stream::testing::{Counted, RequestLedger, Requests};
+use acyclic_stream::testing::{RequestLedger, Requests};
+use counted::CountedProvider;
 use futures::StreamExt as _;
 use std::num::NonZeroU32;
 
@@ -32,7 +33,7 @@ pub trait Backend: acyclic_stream::ProviderPlatform {
 
 /// Wraps a concrete provider before type erasure, preserving all provider errors.
 pub struct Fixture<P> {
-    provider: Counted<P>,
+    provider: CountedProvider<P>,
     image: Image,
     network_policy: [u8; 32],
 }
@@ -40,7 +41,7 @@ impl<P> Fixture<P> {
     /// Starts independent accounting with the provider's enrolled test resources.
     pub fn new(provider: P, image: Image, network_policy: [u8; 32]) -> Self {
         Self {
-            provider: Counted::new(provider),
+            provider: CountedProvider::new(provider),
             image,
             network_policy,
         }
@@ -63,32 +64,13 @@ impl<P: MachinesProvider> Backend for Fixture<P> {
 
 /// A Backend whose provider also reaches attached devices. The fixture owns the
 /// device side: it enrolls one device and opens or closes its connection.
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait AttachedBackend: Backend {
     /// Enrolls one fresh attached device and returns its Running observation.
     async fn attach(&self) -> Result<MachineObservation, String>;
     /// Opens (`true`) or closes (`false`) that device's connection.
     async fn set_online(&self, machine: MachineId, online: bool) -> Result<(), String>;
-}
-
-#[async_trait::async_trait]
-impl AttachedBackend for Fixture<crate::SimulatedMachines> {
-    async fn attach(&self) -> Result<MachineObservation, String> {
-        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000a01")
-            .map_err(|error| error.to_string())?;
-        self.provider
-            .inner()
-            .attach(key, crate::SIMULATED_PLATFORM)
-            .await
-            .map_err(|error| error.to_string())
-    }
-    async fn set_online(&self, machine: MachineId, online: bool) -> Result<(), String> {
-        self.provider
-            .inner()
-            .set_online(machine, online)
-            .await
-            .map_err(|error| error.to_string())
-    }
 }
 
 /// Runs the attached profile: an attached device offers exec and observation
@@ -218,7 +200,7 @@ async fn exec_admitted(
         .exec(machine.id, probe(machine.contract.platform)?)
         .await
         .map_err(|error| error.to_string())?;
-    let output = crate::capture_exec(output, u64::MAX)
+    let output = acyclic_machines::capture_exec(output, u64::MAX)
         .await
         .map_err(|error| error.to_string())?;
     if output.exit_code != Some(0) || output.stop.is_some() {
@@ -408,18 +390,19 @@ async fn workload(
 }
 
 /// Runs this same public suite with an async factory returning a fresh Backend.
-pub use crate::machines_conformance_suite as suite;
-/// Implementation of [`suite!`].
+///
+/// The calling crate needs a Tokio dev-dependency with the `macros` and `rt`
+/// features to compile the generated `#[tokio::test]`.
 #[macro_export]
-macro_rules! machines_conformance_suite {
+macro_rules! suite {
     ($factory:path) => {
-        $crate::machines_conformance_suite!(machines_conformance, $factory);
+        $crate::suite!(machines_conformance, $factory);
     };
     ($name:ident, $factory:path) => {
         #[tokio::test]
         async fn $name() -> std::result::Result<(), String> {
             let backend = $factory().await.map_err(|error| error.to_string())?;
-            $crate::conformance::verify(&backend).await
+            $crate::verify(&backend).await
         }
     };
 }
@@ -545,8 +528,9 @@ async fn verify_provider(
         }
     } else {
         require_unsupported(provider.recover_operation(create_key).await)?;
-        let operation = crate::OperationId::parse("00000000-0000-0000-0000-000000000001")
-            .map_err(|e| e.to_string())?;
+        let operation =
+            acyclic_machines::OperationId::parse("00000000-0000-0000-0000-000000000001")
+                .map_err(|e| e.to_string())?;
         require_unsupported(provider.inspect_operation(operation).await)?;
         require_unsupported(provider.cancel(operation).await)?;
         require_unsupported(provider.watch_operation(operation).await)?;
@@ -576,7 +560,7 @@ async fn verify_provider(
         };
         let children = provider
             .read_results(
-                crate::results::ResultCursor {
+                results::ResultCursor {
                     cut: results,
                     from: 0,
                 },
@@ -586,9 +570,9 @@ async fn verify_provider(
             .map_err(|error| error.to_string())?
             .machines;
         if provenance
-            != (crate::Provenance {
-                source: crate::ForkSource::Checkpoint(checkpoint.id),
-                inherited: crate::ForkFidelity::MemoryAndDisk,
+            != (acyclic_machines::Provenance {
+                source: acyclic_machines::ForkSource::Checkpoint(checkpoint.id),
+                inherited: acyclic_machines::ForkFidelity::MemoryAndDisk,
             })
         {
             return Err("fork substituted its checkpoint provenance".into());
@@ -626,8 +610,9 @@ async fn verify_provider(
         }
     } else {
         require_unsupported(provider.checkpoint(machine.id, key(2)?).await)?;
-        let checkpoint = crate::CheckpointId::parse("00000000-0000-0000-0000-000000000001")
-            .map_err(|e| e.to_string())?;
+        let checkpoint =
+            acyclic_machines::CheckpointId::parse("00000000-0000-0000-0000-000000000001")
+                .map_err(|e| e.to_string())?;
         require_unsupported(provider.inspect_checkpoint(checkpoint).await)?;
         require_unsupported(provider.fork(checkpoint, NonZeroU32::MIN, key(3)?).await)?;
         require_unsupported(provider.destroy_checkpoint(checkpoint, key(6)?).await)?;
@@ -668,7 +653,7 @@ async fn verify_provider(
             .events
             .iter()
             .filter_map(|event| match event.fact {
-                crate::EventFact::State(state) => Some(state),
+                acyclic_machines::EventFact::State(state) => Some(state),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -699,7 +684,7 @@ async fn verify_provider(
             .await
             .map_err(|error| error.to_string())?;
         if usage.machine != machine.id
-            || (assurance == crate::ProviderAssurance::ProcessLocalSimulation)
+            || (assurance == acyclic_machines::ProviderAssurance::ProcessLocalSimulation)
                 != usage.receipt.is_empty()
         {
             return Err("simulation usage receipt is malformed".into());
@@ -762,7 +747,7 @@ async fn live_fork(
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            results::ResultCursor {
                 cut: *results,
                 from: 0,
             },
@@ -771,7 +756,7 @@ async fn live_fork(
         .await
         .map_err(|error| error.to_string())?
         .machines;
-    if provenance.source != crate::ForkSource::Machine(machine.id)
+    if provenance.source != acyclic_machines::ForkSource::Machine(machine.id)
         || provenance.inherited != expected
     {
         return Err("live fork substituted its source or declared fidelity".into());
@@ -826,7 +811,7 @@ async fn live_fork(
     {
         return Err("a fork source with live forks was not refused as LiveForks".into());
     }
-    crate::results::cleanup(provider, *results, NonZeroU32::MIN)
+    results::cleanup(provider, *results, NonZeroU32::MIN)
         .await
         .map_err(|error| error.to_string())?;
     if !machine
@@ -853,7 +838,7 @@ async fn live_fork(
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            results::ResultCursor {
                 cut: *results,
                 from: 0,
             },
@@ -862,7 +847,7 @@ async fn live_fork(
         .await
         .map_err(|error| error.to_string())?
         .machines;
-    if provenance.source != crate::ForkSource::Machine(machine.id)
+    if provenance.source != acyclic_machines::ForkSource::Machine(machine.id)
         || provenance.inherited != expected
     {
         return Err("suspended fork substituted its source or declared fidelity".into());
@@ -888,61 +873,4 @@ async fn live_fork(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::SimulatedMachines;
-    use acyclic_stream::testing::RequestClass;
-    async fn simulated() -> Result<Fixture<SimulatedMachines>, String> {
-        Ok(Fixture::new(
-            SimulatedMachines::default(),
-            Image::custom([17; 32]).map_err(|error| error.to_string())?,
-            [19; 32],
-        ))
-    }
-    suite!(public_simulated_suite, simulated);
-
-    #[tokio::test]
-    async fn attached_profile() -> Result<(), String> {
-        verify_attached(&simulated().await?).await
-    }
-
-    #[tokio::test]
-    async fn live_fork_fidelities() -> Result<(), String> {
-        for capabilities in [
-            std::collections::BTreeSet::from([Capability::DiskFork, Capability::SuspendResume]),
-            std::collections::BTreeSet::from([Capability::SuspendResume]),
-        ] {
-            verify(&Fixture::new(
-                SimulatedMachines::with_capabilities(capabilities),
-                Image::custom([17; 32]).map_err(|error| error.to_string())?,
-                [19; 32],
-            ))
-            .await?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn benchmark_and_failure_counts() -> Result<(), String> {
-        let fixture = simulated().await?;
-        let measured = bench(&fixture).await?;
-        assert_eq!(measured.reads, 256);
-        assert_eq!(measured.requests.data(), 256);
-        assert_eq!(measured.requests.control(), 0);
-        let before = fixture.requests().requests();
-        let missing = crate::MachineId::from_digest([0x55; 32]);
-        assert!(matches!(
-            fixture
-                .provider()
-                .inspect_machine(missing)
-                .await
-                .as_ref()
-                .map_err(ProviderError::classification),
-            Err(ProviderError::NotFound(_))
-        ));
-        let failed = fixture.requests().requests().since(before);
-        assert_eq!(failed.class(RequestClass::Metadata), 1);
-        assert_eq!(failed.data(), 0);
-        Ok(())
-    }
-}
+mod tests;

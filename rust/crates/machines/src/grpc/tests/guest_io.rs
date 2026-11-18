@@ -267,7 +267,7 @@ fn command_bounds_are_checked_before_dispatch() {
         assert_eq!(command(timeout).timeout_ms(), Some(timeout));
         let Some(wire::ExecInput {
             input: Some(wire::exec_input::Input::Start(start)),
-        }) = super::super::input::encode(MachineId::new(), command(timeout)).next()
+        }) = encode_exec_input(MachineId::new(), command(timeout)).next()
         else {
             panic!("exec input must start with its admission frame");
         };

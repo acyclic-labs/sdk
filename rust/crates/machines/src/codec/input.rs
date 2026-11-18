@@ -2,7 +2,7 @@ use super::*;
 
 // Only the current frame is copied. Tonic pulls this iterator under its original
 // HTTP/2 flow control; there is no background sender or whole-command frame queue.
-pub(super) fn encode(
+pub(in super::super) fn encode_exec_input(
     machine: MachineId,
     command: ExecCommand,
 ) -> impl Iterator<Item = wire::ExecInput> + Send + 'static {

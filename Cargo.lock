@@ -297,6 +297,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-providers",
  "acyclic-machines",
+ "acyclic-machines-conformance",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
@@ -867,6 +868,7 @@ dependencies = [
  "acyclic-harness-sse",
  "acyclic-host-platform",
  "acyclic-machines",
+ "acyclic-machines-conformance",
  "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
@@ -1501,6 +1503,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-machines-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-machines",
+ "acyclic-stream",
+ "async-trait",
+ "futures",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "acyclic-machines-daytona"
 version = "0.2.0"
 dependencies = [
@@ -1508,6 +1522,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-providers",
  "acyclic-machines",
+ "acyclic-machines-conformance",
  "acyclic-stream",
  "async-trait",
  "bytes",

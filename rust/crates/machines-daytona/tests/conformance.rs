@@ -1,7 +1,8 @@
 //! Real-HTTP conformance and protected-origin negative controls.
 use acyclic_harness_core::{Error, Result, http::*};
 use acyclic_harness_providers::ReqwestTransport;
-use acyclic_machines::{conformance, *};
+use acyclic_machines::*;
+use acyclic_machines_conformance as conformance;
 use acyclic_machines_daytona::{DaytonaConfig, DaytonaProvider};
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;

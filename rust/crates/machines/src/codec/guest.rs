@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn command_stream_error(
+pub(in super::super) fn command_stream_error(
     machine: MachineId,
     exited: bool,
     value: tonic::Status,
@@ -13,7 +13,7 @@ pub(super) fn command_stream_error(
     classification.with_cause(value)
 }
 
-pub(super) fn decode_exec_output(
+pub(in super::super) fn decode_exec_output(
     value: wire::ExecOutput,
     machine: MachineId,
     exited: &mut bool,
@@ -61,7 +61,7 @@ pub(super) fn decode_exec_output(
     }
 }
 
-pub(super) fn decode_machine_output(
+pub(in super::super) fn decode_machine_output(
     value: wire::MachineOutput,
     machine: MachineId,
     offset: u64,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::codec::*;
 pub use acyclic_auth::credential::CredentialProvider;
 use tonic::{Request, Status};
 use transport::{Deadline as _, Endpoint as RpcEndpoint, Messages as _, RpcClient as _};
@@ -70,24 +71,11 @@ use tonic::{
     transport::{Certificate, Endpoint as TonicEndpoint, Identity},
 };
 
-mod guest;
-use guest::*;
-mod codec;
-#[cfg(feature = "test-support")]
-pub use codec::codec_fuzz;
 mod duplex;
 mod files;
-mod input;
 mod provider;
 mod recovery;
-use codec::*;
 use recovery::*;
-
-// All transports reuse the same original admission and settlement validation.
-pub use recovery::{
-    ForkAdmitted, decode_fork_admissions, decode_recovered, settled_change, settled_checkpoint,
-    settled_fork, settled_machine, validate_recovered_admission,
-};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod credential_tests;

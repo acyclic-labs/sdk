@@ -71,13 +71,14 @@ for (const [path, locked] of Object.entries(lock.workspaces)) {
 const fields = [
   ["Cargo.toml", ["workspace", "package", "version"], compatibility.families.harness.version],
   ["rust/crates/harness/Cargo.toml", ["package", "version", "workspace"], true],
+  ["rust/crates/conformance/Cargo.toml", ["dependencies", "acyclic-machines-conformance", "version"], `=${compatibility.families.machines.version}`],
   ["typescript/packages/sdk/package.json", ["version"], compatibility.umbrellaVersion],
 ];
 /** @type {[string, string[], string[], string[]][]} */
 const families = [
   ["harness", [], ["sdk"], []],
   ["stream", ["stream"], ["sdk"], ["conformance", "filesystem", "filesystem-wasm", "harness"]],
-  ["machines", ["machines"], ["sdk"], ["conformance", "harness"]],
+  ["machines", ["machines"], ["sdk"], ["machines-conformance", "harness"]],
   ["inference", ["inference", "inference-wasm"], ["sdk"], ["inference-wasm"]],
   ["objects", ["objects"], ["sdk", "harness"], ["conformance", "filesystem", "filesystem-wasm", "harness"]],
   ["filesystem", ["filesystem", "filesystem-napi", "filesystem-wasm"], [], []],

@@ -319,8 +319,11 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
     {
         use prost::Message as _;
         assert!(
-            crate::grpc::codec_fuzz::check("acyclic.machines.v1.ResultPage", &page.encode_to_vec())
-                .is_ok()
+            crate::codec::codec_fuzz::check(
+                "acyclic.machines.v1.ResultPage",
+                &page.encode_to_vec()
+            )
+            .is_ok()
         );
     }
     assert!(

@@ -261,7 +261,7 @@ fn status(error: JsValue) -> Status {
         == Some(true)
     {
         let cause = Reflect::get(&error, &JsValue::from_str("cause")).ok();
-        return super::codec::request_credential_status(
+        return crate::codec::request_credential_status(
             message,
             cause
                 .as_ref()
