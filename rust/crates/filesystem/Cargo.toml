@@ -116,14 +116,19 @@ test-narrow-runfiles = [
     "checkout_reconciliation",
     "checkout_tracking",
     "checkout_transactions",
+    "git_history",
     "memory_authority",
     "memory_objects",
     "mount_routing",
+    "workspace_append",
     "workspace_context_contracts",
     "workspace_contracts",
     "workspace_fork_selection",
     "workspace_join_history",
     "workspace_merge",
+    "workspace_rebase",
+    "workspace_restore",
+    "workspace_transactions",
 ]
 
 [package.metadata.bazel.platform-sources]
