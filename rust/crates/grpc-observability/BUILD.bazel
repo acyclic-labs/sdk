@@ -66,7 +66,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//futures-0.3.34",

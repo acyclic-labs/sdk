@@ -29,7 +29,7 @@ cargo_build_script(
         "--check-cfg=cfg(loom)",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
 )
 
 filegroup(

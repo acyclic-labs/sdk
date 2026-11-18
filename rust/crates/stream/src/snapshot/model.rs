@@ -135,7 +135,11 @@ pub(crate) fn depart<H>(
             );
             assert!(worker.as_mut().poll(&mut cx).is_ready());
             woken.take();
-            assert_eq!(super::park(Box::pin(follow.next())), Some(Ok(())));
+            assert_eq!(
+                super::park(Box::pin(follow.next()))
+                    .map(|result| result.map_err(|error| error.category())),
+                Some(Ok(()))
+            );
             drop(follow);
             assert!(!woken.take(), "a completed job was woken for cancellation");
             assert!(available());

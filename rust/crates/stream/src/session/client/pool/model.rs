@@ -518,11 +518,11 @@ pub fn verify_registration_cancellation(broken: bool) {
                     future::pending::<()>().await;
                 }
                 assert_eq!(
-                    result,
+                    result.map_err(|error| error.category()),
                     if complete {
                         Ok(1)
                     } else {
-                        Err(StreamError::Unavailable)
+                        Err(StreamCategory::Unavailable)
                     }
                 );
                 drop(cursor); // Existing guard owns cancellation and removal.

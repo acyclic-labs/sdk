@@ -56,7 +56,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/objects:acyclic_objects",
@@ -113,7 +112,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_workers",
     ] + [

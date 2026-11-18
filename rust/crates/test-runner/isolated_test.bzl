@@ -125,3 +125,68 @@ def isolated_test(name, cpus = 2, tags = [], **kwargs):
     if [tag for tag in tags if tag.startswith("cpu:")]:
         fail("isolated_test %s: the reservation is `cpus`, not a cpu: tag" % name)
     _isolated_test(name = name, cpus = cpus, tags = tags + ["cpu:%d" % cpus], **kwargs)
+
+# The loom configuration: a build setting every generated build script selects its
+# ACYCLIC_LOOM=1 environment on, so one transition on the test binary reaches the whole
+# dependency graph and every crate's build script emits cfg(loom).
+def _loom_flag_impl(ctx):
+    return []
+
+loom_flag = rule(
+    implementation = _loom_flag_impl,
+    build_setting = config.bool(flag = True),
+)
+
+def _loom_transition_impl(settings, attr):
+    return {"//:loom_flag": True}
+
+_loom_transition = transition(
+    implementation = _loom_transition_impl,
+    inputs = [],
+    outputs = ["//:loom_flag"],
+)
+
+def _loom_test_impl(ctx):
+    runner = ctx.executable._runner
+    # The attribute is behind the loom transition, so it is a single-element list.
+    binary = ctx.attr.binary[0]
+    target = binary[DefaultInfo].files_to_run.executable
+    extension = "." + runner.extension if runner.extension else ""
+    executable = ctx.actions.declare_file(ctx.label.name + extension)
+    ctx.actions.symlink(output = executable, target_file = runner, is_executable = True)
+    runfiles = ctx.runfiles(files = [runner, target])
+    runfiles = runfiles.merge(binary[DefaultInfo].default_runfiles)
+    environment = {
+        "ACYCLIC_TEST_BINARY": target.short_path,
+        "ACYCLIC_TEST_CPUS": "1",
+        "ACYCLIC_TEST_ID": ctx.attr.id,
+        "ACYCLIC_TEST_LIMIT_SECONDS": str(ctx.attr.limit_seconds),
+        "ACYCLIC_TEST_PACKAGE": ctx.label.package,
+        "ACYCLIC_TEST_TEMP_ROOT": "memory",
+        # This SDK's repository in the runfiles, which source_path resolves SDK files against.
+        "ACYCLIC_TEST_SOURCE": "../" + _SDK.repo_name if _SDK.repo_name else ".",
+        # The runner reads Bazel's test filter; this target names its own model suite.
+        "TESTBRIDGE_TEST_ONLY": ctx.attr.filter,
+    }
+    return [
+        DefaultInfo(executable = executable, runfiles = runfiles),
+        RunEnvironmentInfo(environment = environment),
+    ]
+
+loom_test = rule(
+    implementation = _loom_test_impl,
+    test = True,
+    attrs = {
+        # The ordinary test binary, configured in the loom configuration.
+        "binary": attr.label(executable = True, cfg = _loom_transition, mandatory = True),
+        "filter": attr.string(mandatory = True),
+        # The executable's nextest binary id, as `isolated_test` carries.
+        "id": attr.string(mandatory = True),
+        "limit_seconds": attr.int(mandatory = True),
+        "_runner": attr.label(
+            default = "//rust/crates/test-runner:acyclic-test-runner",
+            executable = True,
+            cfg = "target",
+        ),
+    },
+)

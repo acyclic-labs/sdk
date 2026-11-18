@@ -46,7 +46,7 @@ cargo_build_script(
         "--check-cfg=cfg(feature, values(\"anyhow\", \"async\", \"async-runtime\", \"chrono\", \"chrono_date\", \"compat-mode\", \"default\", \"deferred_trace\", \"dyn-symbols\", \"encoding_rs\", \"error_anyhow\", \"experimental\", \"full\", \"futures-core\", \"indexmap\", \"latin1\", \"napi1\", \"napi10\", \"napi2\", \"napi3\", \"napi4\", \"napi5\", \"napi6\", \"napi7\", \"napi8\", \"napi9\", \"node_version_detect\", \"noop\", \"object_indexmap\", \"serde\", \"serde-json\", \"serde-json-ordered\", \"serde_json\", \"tokio\", \"tokio-stream\", \"tokio_fs\", \"tokio_full\", \"tokio_io_std\", \"tokio_io_util\", \"tokio_macros\", \"tokio_net\", \"tokio_process\", \"tokio_rt\", \"tokio_signal\", \"tokio_sync\", \"tokio_test_util\", \"tokio_time\", \"tracing\", \"web_stream\"))",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
     deps = [
         "@sdk_crates//napi-build-2.6.0",
     ],

@@ -514,6 +514,7 @@ fn index_put(
     .map(Some)
 }
 impl Namespace {
+    #[inline(never)]
     fn node<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> Option<&Arc<NamespaceNode>> {
         let mut parts = path.borrow().split('/');
         let mut node = lookup(&self.roots, parts.next()?)?;
@@ -522,6 +523,7 @@ impl Namespace {
         }
         Some(node)
     }
+    #[inline(never)]
     fn get<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> Option<&PathState> {
         Some(&self.node(path)?.data)
     }

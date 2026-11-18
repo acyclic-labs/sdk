@@ -1,7 +1,7 @@
 //! Synchronization used by stream publication and observation.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "query_sync/parity.rs"]
-pub(crate) mod parity;
+pub mod parity;
 
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 pub use acyclic_native_runtime::InlineMutex as SyncMutex;

@@ -42,7 +42,7 @@ pub use sockets::{
     PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
 };
 mod client;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 pub(crate) mod fixture {
     use crate as acyclic_stream;
     include!(concat!(

@@ -160,6 +160,7 @@ use native::*;
 pub(crate) mod actor;
 mod append;
 pub use crate::AppendGroupOutcome;
+pub use append::PermitGate;
 mod authority;
 mod bindings;
 mod changes;

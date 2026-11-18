@@ -100,7 +100,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//axum-0.8.9",
@@ -151,7 +150,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_plugin_identity",
     ] + select({

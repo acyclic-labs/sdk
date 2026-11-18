@@ -289,7 +289,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
         block_on(provider.commit(request))?;
         recovery.join().map_err(|_| "recovery panicked")??;
         assert_eq!(
-            block_on(provider.tail(path)),
+            block_on(provider.tail(path)).map_err(|error| error.category()),
             Ok(1),
             "obsolete generation published"
         );
@@ -591,8 +591,9 @@ pub fn subtree_exclusions(ignore: bool) {
             idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         assert_eq!(
-            block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?)),
-            Err(StreamError::NotFound),
+            block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?))
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound),
             "excluded sibling must not leak into the fork"
         );
         assert_eq!(

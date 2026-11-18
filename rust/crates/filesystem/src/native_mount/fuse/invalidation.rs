@@ -2,6 +2,8 @@ use super::*;
 use crate::native_mount::run_native_mount_handler_on_meter;
 use crate::{NativeMaterializationWork as Work, WorkCounters};
 
+#[cfg(all(test, loom))]
+mod gate_tests;
 #[cfg(test)]
 #[cfg(loom)]
 pub(super) mod model_checking;

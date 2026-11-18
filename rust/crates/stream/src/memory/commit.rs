@@ -27,6 +27,21 @@ enum PublicationRetention<'a> {
 type CommitResult = (crate::WriteOutcome, Allocation);
 type CommitDecision<F> = Decision<CommitResult, F>;
 
+/// The commit facts that outlive capacity reservation and are planned in their own frame.
+struct CommitTail<'a> {
+    request: &'a CommitRequest,
+    digest: [u8; 32],
+    accepted: bool,
+    scope: Scope,
+    durable: bool,
+    applied: Vec<&'a CommitMutation>,
+    applied_claim: Allocation,
+    time: u64,
+    skipped: Vec<u32>,
+    skipped_claim: Allocation,
+    deadline: Option<u64>,
+}
+
 impl CommitPlan {
     fn bind(
         &mut self,
@@ -244,6 +259,7 @@ impl MemoryStream {
         )?;
         Ok((facts, allocation))
     }
+    #[inline(never)]
     fn histories(
         &self,
         state: &State,
@@ -405,12 +421,16 @@ impl MemoryStream {
         destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
         explicit: impl Fn(&str) -> bool + Copy + 'a,
     ) -> Result<(Vec<(StreamPath, PathState)>, Allocation), StreamError> {
-        let count = missing_paths(state, destinations.clone(), explicit).count();
+        let mut count = 0usize;
+        for_each_missing_path(state, destinations.clone(), explicit, |_, _| {
+            count += 1;
+            Ok(())
+        })?;
         let (mut paths, allocation) = self.vector(count)?;
         if count == 0 {
             return Ok((paths, allocation));
         }
-        for (destination, end) in missing_paths(state, destinations, explicit) {
+        for_each_missing_path(state, destinations, explicit, |destination, end| {
             paths.push((
                 destination
                     .as_str()
@@ -426,7 +446,8 @@ impl MemoryStream {
                     tail: 0,
                 },
             ));
-        }
+            Ok(())
+        })?;
         Ok((paths, allocation))
     }
 
@@ -498,6 +519,7 @@ impl MemoryStream {
     }
 
     /// Plans the `applied` mutations of a settled commit, in canonical order.
+    #[inline(never)]
     fn plan_commit(
         &self,
         state: &mut State,
@@ -546,7 +568,7 @@ impl MemoryStream {
         digest: [u8; 32],
         deadline: Option<u64>,
         accepted: bool,
-    ) -> Result<CommitDecision<impl Install<'a, CommitResult>>, StreamError> {
+    ) -> Result<Box<CommitDecision<impl Install<'a, CommitResult>>>, StreamError> {
         if let Some((replayed, result, index, ephemeral)) =
             self.replay_in(state, request.idempotency_key.as_bytes())?
         {
@@ -560,13 +582,13 @@ impl MemoryStream {
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
             // A saved success owns its selection and durability. Conditions
             // and lease ownership may have changed since that publication.
-            return Ok(Decision::Returned {
+            return Ok(Box::new(Decision::Returned {
                 result: (
                     commit_projection(CommitOutcome::Committed(receipt), envelope)?,
                     claim,
                 ),
                 ephemeral,
-            });
+            }));
         }
         let deadline = deadline
             .into_iter()
@@ -624,19 +646,14 @@ impl MemoryStream {
             } else {
                 crate::WriteOutcome::Commit(result)
             };
-            return Ok(Decision::Returned {
+            return Ok(Box::new(Decision::Returned {
                 result: (result, output_claim),
                 ephemeral: false,
-            });
+            }));
         }
         drop((conflicts, output_claim));
         let scope = self.commit_scope(state, request, &skipped)?;
         let durable = matches!(scope, Scope::Durable);
-        let mut probes = if durable {
-            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
-        } else {
-            ReplayProbes::default()
-        };
         // Planning views the applied mutations in canonical order through one
         // admitted vector of references; no request vector is copied.
         let (applied, applied_claim) =
@@ -657,6 +674,67 @@ impl MemoryStream {
             admit_replay(state, self.limits)?;
         }
         reserve_coordinated(state, &applied, self.limits)?;
+        self.complete_commit_locked(
+            state,
+            CommitTail {
+                request,
+                digest,
+                accepted,
+                scope,
+                durable,
+                applied,
+                applied_claim,
+                time,
+                skipped,
+                skipped_claim,
+                deadline,
+            },
+        )
+    }
+
+    /// Everything after capacity is reserved, in its own frame: the plan, envelope and staged
+    /// publication are large locals and must not enlarge the frame that takes the capacity lock.
+    fn complete_commit_locked<'a>(
+        &'a self,
+        state: &mut State,
+        tail: CommitTail<'a>,
+    ) -> Result<Box<CommitDecision<impl Install<'a, CommitResult>>>, StreamError> {
+        let CommitTail {
+            request,
+            digest,
+            accepted,
+            scope,
+            durable,
+            applied,
+            applied_claim,
+            time,
+            skipped,
+            skipped_claim,
+            deadline,
+        } = tail;
+        // Every heap block below is charged before it is allocated and keeps its claim until the
+        // block is dropped with the decision.
+        let mut charges = Vec::new();
+        charges.push(self.allocate(std::mem::size_of::<Vec<u32>>())?);
+        let skipped = Box::new(skipped);
+        charges.push(self.allocate(std::mem::size_of::<Vec<&CommitMutation>>())?);
+        let applied = Box::new(applied);
+        let check_deadline = move || {
+            if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
+                Err(StreamError::DeadlineElapsed)
+            } else {
+                Ok(())
+            }
+        };
+        // The replay probes are large; create them after the capacity reservation so they are
+        // not live in this frame while the reservation takes the loom lock.
+        let probes_value = if durable {
+            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
+        } else {
+            ReplayProbes::default()
+        };
+        charges.push(self.allocate(std::mem::size_of_val(&probes_value))?);
+        let mut probes = Box::new(probes_value);
         if durable {
             self.reserve_commit_index(&mut probes)?;
         }
@@ -669,44 +747,57 @@ impl MemoryStream {
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
-        let ephemeral = self.reserve_ephemeral(&scope, &request.idempotency_key)?;
-        let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
+        let retained_value = durable.then(|| self.reserve_retained(state)).transpose()?;
+        charges.push(self.allocate(std::mem::size_of_val(&retained_value))?);
+        let retained = Box::new(retained_value);
+        let ephemeral_value = self.reserve_ephemeral(&scope, &request.idempotency_key)?;
+        charges.push(self.allocate(std::mem::size_of_val(&ephemeral_value))?);
+        let ephemeral = Box::new(ephemeral_value);
+        // The plan, envelope and staged publication are large locals; keep them on the heap so
+        // this frame stays small enough for the loom coroutine that takes the capacity lock.
+        let plan_value = self.plan_commit(state, &applied[..], commit_id, time)?;
+        charges.push(self.allocate(std::mem::size_of_val(&plan_value))?);
+        let mut plan = Box::new(plan_value);
         drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;
         if let CommitOutcome::Committed(receipt) = &mut plan.result {
-            receipt.skipped = skipped;
+            receipt.skipped = *skipped;
         }
         plan.bind(commit_id, time, &self.revisions.at(decision))?;
         // Fund and copy only the requested result before the durable decision.
         // Acceptance subsequently binds both views to that same decision.
-        let mut envelope =
+        let envelope_value =
             self.selected_envelope(&plan.envelope, accepted, &mut plan.output_claim)?;
+        charges.push(self.allocate(std::mem::size_of_val(&envelope_value))?);
+        let mut envelope = Box::new(envelope_value);
         let bytes = envelope_payload_bytes(&plan.envelope);
-        let mut publication = plan.stage(
+        let publication_value = plan.stage(
             state,
             durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
-        Ok(Decision::Accepted {
+        charges.push(self.allocate(std::mem::size_of_val(&publication_value))?);
+        let mut publication = Box::new(publication_value);
+        Ok(Box::new(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
             install: move |state: &mut State, durable: bool, at_millis| {
+                let _charges = &charges;
                 if !durable {
                     check_deadline()?;
                 }
                 let time = publication.bind_acceptance(state, at_millis, &scope)?;
-                if let Some(envelope) = &mut envelope {
+                if let Some(envelope) = envelope.as_mut() {
                     bind_envelope(envelope, commit_id, time);
                 }
                 let retained =
-                    match retained {
+                    match *retained {
                         Some(retained) => {
                             PublicationRetention::Durable(self.install_retained(state, retained)?)
                         }
                         None => PublicationRetention::Ephemeral(
                             self,
-                            Box::new(ephemeral.unwrap_or_else(|| {
+                            Box::new((*ephemeral).unwrap_or_else(|| {
                                 unreachable!("leased write reserves its indexes")
                             })),
                         ),
@@ -719,9 +810,9 @@ impl MemoryStream {
                     &scope,
                     retained,
                 )?;
-                Ok((commit_projection(outcome, envelope)?, allocation))
+                Ok((commit_projection(outcome, *envelope)?, allocation))
             },
-        })
+        }))
     }
 
     /// Scope follows the selected effects, never a skipped mutation. Durable

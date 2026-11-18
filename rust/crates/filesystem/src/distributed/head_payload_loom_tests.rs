@@ -1,10 +1,8 @@
 use super::*;
 use crate::sync::atomic::{AtomicBool, Ordering};
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
-    StreamProvider,
+    CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest,
+    RecordStream, StreamError, StreamProvider,
 };
 use std::cell::Cell;
 use std::future::Future;

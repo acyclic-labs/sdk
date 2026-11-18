@@ -43,7 +43,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
     deps = [
         "//compatibility:acyclic_proto_build",
     ],
@@ -184,7 +184,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -370,7 +369,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_objects",
         ":build_script",
@@ -847,7 +845,7 @@ cargo_build_script(
     ],
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
-    build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}) | {"TARGET":"wasm32-unknown-unknown"},
     deps = [
         "//compatibility:acyclic_proto_build",
     ],

@@ -93,6 +93,7 @@ impl Decoder {
         Ok(())
     }
 
+    #[cfg(not(loom))]
     pub(crate) fn input_deadline(
         &self,
         deadline: Option<std::time::Instant>,

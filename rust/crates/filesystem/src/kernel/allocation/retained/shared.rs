@@ -85,7 +85,7 @@ impl<T> RetainedArc<T> {
         Ok(admitted.into_value(retained.value))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pub(crate) fn standalone_live_bytes(&self) -> Option<u64> {
         self.allocation.0.as_deref()?.standalone_live_bytes()
     }

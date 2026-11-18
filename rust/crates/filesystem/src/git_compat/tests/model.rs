@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     MemoryOperationWindowStore, OperationLeaseId, OperationWindowCoordinator, OperationWindowError,
-    OperationWindowPhase, OperationWindowStore,
+    OperationWindowPhase,
 };
 use std::{
     future::Future,

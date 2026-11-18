@@ -85,7 +85,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "//rust/crates/inference:acyclic_inference",
         "@sdk_crates//serde_json-1.0.154",

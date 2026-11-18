@@ -85,7 +85,7 @@ fn compare_observed<const ORDER: bool>(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 pub(super) fn compare<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits) -> Result<(), String> {
     let (complete, tape) = observed::<false, true>(bytes, limits, usize::MAX);
     for denied in 0..=tape.len() {

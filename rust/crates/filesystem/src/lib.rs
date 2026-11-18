@@ -38,16 +38,19 @@ pub(crate) fn descriptor_digest() -> String {
         .to_string()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "test-support", windows)))]
 #[cfg(not(target_arch = "wasm32"))]
-mod test_native_io {
-    pub(crate) fn initialize() {
-        acyclic_native_runtime::initialize_native_io_services().expect("native I/O test services");
+pub(crate) fn initialize_test_native_io() {
+    // A loom model checks synchronization, not the native I/O pool.
+    #[cfg(not(loom))]
+    {
+        static INITIALIZED: std::sync::Once = std::sync::Once::new();
+        INITIALIZED.call_once(|| {
+            acyclic_native_runtime::initialize_native_io_services()
+                .expect("native I/O test services");
+        });
     }
 }
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use test_native_io::initialize as initialize_test_native_io;
 
 #[cfg(all(any(test, feature = "test-support"), windows))]
 mod windows_test_filesystems;
@@ -223,7 +226,7 @@ pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
-    FilesystemCommitResult, PreparedFilesystemAppend, PreparedFilesystemCommit,
+    FilesystemCommitResult, PermitGate, PreparedFilesystemAppend, PreparedFilesystemCommit,
     StreamAuthorityStore,
 };
 pub use distributed::{StreamStateStoreCause, StreamStateStoreError, UnresolvedCommit};

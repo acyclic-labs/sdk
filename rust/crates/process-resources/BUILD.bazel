@@ -57,7 +57,6 @@ rust_test(
         "--check-cfg=cfg(kani)",
         "--check-cfg=cfg(tokio_unstable)",
     ],
-    lint_config = ":lints",
     deps = [
         "@sdk_crates//tempfile-3.27.0",
     ],

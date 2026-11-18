@@ -193,7 +193,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             ),
             None => self.reservation_gate(authority_id, work).await?,
         };
-        let admitted = permits_append(permit, authority_id, expected, gate_tail, active);
+        let admitted =
+            super::PermitGate::new(active).permits(permit, authority_id, expected, gate_tail);
         if !admitted {
             return Ok(Preparation::Outcome(FsAppendOutcome::Fenced {
                 actual_epoch: head.epoch,

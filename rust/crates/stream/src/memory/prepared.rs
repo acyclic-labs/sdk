@@ -241,8 +241,9 @@ impl MemoryStream {
             }
         }
         admit_replay(state, self.limits)?;
-        reserve_commit(state, self.limits)?;
-        reserve_records(state, 1, maximum, self.limits)?;
+        let reserved = super::reserved(state);
+        reserve_commit(state, self.limits, reserved)?;
+        reserve_records(state, 1, maximum, self.limits, reserved)?;
         let counters = Arc::clone(&state.reserved);
         {
             let mut held = counters

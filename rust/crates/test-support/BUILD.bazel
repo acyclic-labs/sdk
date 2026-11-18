@@ -31,7 +31,7 @@ cargo_build_script(
         "--check-cfg=cfg(feature, values())",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
 )
 
 rust_library(
@@ -69,7 +69,6 @@ rust_test(
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature, values())",
     ],
-    lint_config = ":lints",
     deps = [
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//tempfile-3.27.0",
@@ -113,7 +112,6 @@ rust_test(
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature, values())",
     ],
-    lint_config = ":lints",
     deps = [
         ":acyclic_test_support",
         ":build_script",

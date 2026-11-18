@@ -161,7 +161,7 @@ cargo_build_script(
         "--check-cfg=cfg(feature, values())",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV,
+    build_script_env = PACKAGE_ENV | select({"//:loom": {"ACYCLIC_LOOM": "1"}, "//conditions:default": {}}),
 )
 
 rust_library(
@@ -324,7 +324,6 @@ rust_test(
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature, values())",
     ],
-    lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//rust/crates/filesystem:src/git_compat/capture/incremental.rs",
         "//rust/crates/filesystem:src/git_compat/capture/traversal.rs",

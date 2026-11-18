@@ -28,6 +28,7 @@ use crate::guest::{
 };
 use crate::sockets::{SocketFrame, SocketInput, SocketOpen, input_record, open_invocation};
 use acyclic_stream::StreamProviderExt as _;
+use acyclic_stream::heap_future::in_heap;
 use acyclic_stream::runtime::Executor;
 use acyclic_stream::session::{
     PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
@@ -273,23 +274,25 @@ impl Undecided {
     /// outcome unknown, as [`Store::submit`] classifies it; any other error
     /// is a decided failure and is returned.
     async fn retry(&mut self, executor: &dyn Executor, error: Error) -> Result<(), Error> {
-        if !matches!(
-            &error,
-            Error::Stream(source) | Error::Unknown { source, .. } if matches!(
-                source.category(), StreamCategory::Unavailable | StreamCategory::InvalidResponse
-            )
-        ) {
-            return Err(error);
+        {
+            if !matches!(
+                &error,
+                Error::Stream(source) | Error::Unknown { source, .. } if matches!(
+                    source.category(), StreamCategory::Unavailable | StreamCategory::InvalidResponse
+                )
+            ) {
+                return Err(error);
+            }
+            let backoff = self.backoff.get_or_insert_with(|| {
+                acyclic_auth::operation::Backoff::new(
+                    1,
+                    BACKOFF_CEILING_MS,
+                    uuid::Uuid::new_v4().as_fields().0,
+                )
+            });
+            executor.sleep(backoff.delay_ms()).await;
+            Ok(())
         }
-        let backoff = self.backoff.get_or_insert_with(|| {
-            acyclic_auth::operation::Backoff::new(
-                1,
-                BACKOFF_CEILING_MS,
-                uuid::Uuid::new_v4().as_fields().0,
-            )
-        });
-        executor.sleep(backoff.delay_ms()).await;
-        Ok(())
     }
 }
 
@@ -330,82 +333,86 @@ async fn commit<P: StreamProvider + ?Sized>(
 /// inbox event and the actor's wake, all under `Tail{socket, 1}`. `false`
 /// means a condition refused it. `segment` fences the close to its original
 /// ledger cut; recovery omits it because it retires that segment.
-async fn commit_close<P: StreamProvider + ?Sized>(
-    store: &Store<P>,
-    executor: &dyn Executor,
-    layout: &Layout,
-    connection: &str,
-    target: &Target,
+fn commit_close<'a, P: StreamProvider + ?Sized>(
+    store: &'a Store<P>,
+    executor: &'a dyn Executor,
+    layout: &'a Layout,
+    connection: &'a str,
+    target: &'a Target,
     segment: Option<Ledger>,
-    close: &Close,
-) -> Result<bool, Error> {
-    let socket = layout.socket(connection)?;
-    let input = close.input.clone().map(Ok).unwrap_or_else(|| {
-        input_record(
-            connection,
-            SocketInput::Close {
-                code: close.code,
-                reason: close.reason.clone(),
-                initiator: close.initiator.clone(),
-            },
-        )
-    })?;
-    let key = layout.key(&[connection.as_bytes(), b"close", &input.value])?;
-    let mut conditions = Vec::with_capacity(1 + usize::from(segment.is_some()));
-    conditions.push(CommitCondition::Tail {
-        path: socket.clone(),
-        expected: 1,
-    });
-    if let Some(segment) = segment {
+    close: &'a Close,
+) -> impl std::future::Future<Output = Result<bool, Error>> + 'a {
+    in_heap(move || async move {
+        let socket = layout.socket(connection)?;
+        let input = close.input.clone().map(Ok).unwrap_or_else(|| {
+            input_record(
+                connection,
+                SocketInput::Close {
+                    code: close.code,
+                    reason: close.reason.clone(),
+                    initiator: close.initiator.clone(),
+                },
+            )
+        })?;
+        let key = layout.key(&[connection.as_bytes(), b"close", &input.value])?;
+        let mut conditions = Vec::with_capacity(1 + usize::from(segment.is_some()));
         conditions.push(CommitCondition::Tail {
-            path: layout.epochs.clone(),
-            expected: segment.epochs,
+            path: socket.clone(),
+            expected: 1,
         });
-    }
-    let mut effects = vec![
-        append(socket, vec![input.value.clone().into()], conditions),
-        append(target.inbox.clone(), vec![input], Vec::new()),
-        store.activation(&target.actor)?,
-    ];
-    if let Some(segment) = segment {
-        effects.push(append(
-            layout.segment(segment.segment)?,
-            vec![ledger_record(LedgerKind::Closed(connection.into()))],
-            Vec::new(),
-        ));
-    }
-    commit(store, executor, key, effects).await
+        if let Some(segment) = segment {
+            conditions.push(CommitCondition::Tail {
+                path: layout.epochs.clone(),
+                expected: segment.epochs,
+            });
+        }
+        let mut effects = vec![
+            append(socket, vec![input.value.clone().into()], conditions),
+            append(target.inbox.clone(), vec![input], Vec::new()),
+            store.activation(&target.actor)?,
+        ];
+        if let Some(segment) = segment {
+            effects.push(append(
+                layout.segment(segment.segment)?,
+                vec![ledger_record(LedgerKind::Closed(connection.into()))],
+                Vec::new(),
+            ));
+        }
+        commit(store, executor, key, effects).await
+    })
 }
 
 /// Commit one peer message, the `ordinal`th of `connection`. A message racing
 /// the close loses on `Tail{socket, 1}`, so no event reaches the actor after
 /// its Close; `false` reports that loss.
-pub(crate) async fn commit_message<P: StreamProvider + ?Sized>(
-    store: &Store<P>,
-    executor: &dyn Executor,
-    layout: &Layout,
-    connection: &str,
-    target: &Target,
+pub(crate) fn commit_message<'a, P: StreamProvider + ?Sized>(
+    store: &'a Store<P>,
+    executor: &'a dyn Executor,
+    layout: &'a Layout,
+    connection: &'a str,
+    target: &'a Target,
     ordinal: u64,
     record: AppendRecord,
-) -> Result<bool, Error> {
-    commit(
-        store,
-        executor,
-        layout.key(&[connection.as_bytes(), b"message", &ordinal.to_be_bytes()])?,
-        vec![
-            append(
-                target.inbox.clone(),
-                vec![record],
-                vec![CommitCondition::Tail {
-                    path: layout.socket(connection)?,
-                    expected: 1,
-                }],
-            ),
-            store.activation(&target.actor)?,
-        ],
-    )
-    .await
+) -> impl std::future::Future<Output = Result<bool, Error>> + 'a {
+    in_heap(move || async move {
+        commit(
+            store,
+            executor,
+            layout.key(&[connection.as_bytes(), b"message", &ordinal.to_be_bytes()])?,
+            vec![
+                append(
+                    target.inbox.clone(),
+                    vec![record],
+                    vec![CommitCondition::Tail {
+                        path: layout.socket(connection)?,
+                        expected: 1,
+                    }],
+                ),
+                store.activation(&target.actor)?,
+            ],
+        )
+        .await
+    })
 }
 
 /// Possibly open sockets recorded in `segment`: Opened minus Closed. Closed is
@@ -494,10 +501,124 @@ enum Phase {
     Closing,
 }
 
+/// The socket's synchronisation state machine: admission, the open verdict, the one Close, and
+/// the peer's terminal close. Production calls it under the table lock; the loom model guards it
+/// with a loom mutex and drives the same transitions with plain threads.
+pub(crate) struct SocketLifecycle {
+    phase: Phase,
+    peer_closed: bool,
+}
+
+/// Who owns the one Close after a claim.
+pub(crate) enum CloseClaim {
+    /// The socket was never admitted; the entry is removed.
+    Unborn,
+    /// The open has not committed; the close waits for it.
+    Pending,
+    /// A close is already in flight.
+    Closing,
+    /// This caller owns the close.
+    Owned,
+}
+
+impl SocketLifecycle {
+    pub(crate) fn new() -> Self {
+        Self {
+            phase: Phase::Unborn,
+            peer_closed: false,
+        }
+    }
+
+    /// Admits the socket for its open commit. False when it was already admitted.
+    pub(crate) fn admit(&mut self) -> bool {
+        if matches!(self.phase, Phase::Unborn) {
+            self.phase = Phase::Opening {
+                committed: false,
+                pending: None,
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Marks the open committed and returns a close that arrived while it was in flight.
+    pub(crate) fn commit_open(&mut self) -> Option<Close> {
+        if let Phase::Opening { committed, pending } = &mut self.phase {
+            *committed = true;
+            pending.take()
+        } else {
+            None
+        }
+    }
+
+    /// The actor accepted the open. False when the socket is no longer opening.
+    pub(crate) fn settle_open(&mut self) -> bool {
+        if matches!(self.phase, Phase::Opening { .. }) {
+            self.phase = Phase::Open;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Claims the one Close. A close before the open commits waits in `pending`.
+    pub(crate) fn claim_close(&mut self, close: &Close) -> CloseClaim {
+        match &mut self.phase {
+            Phase::Unborn => CloseClaim::Unborn,
+            Phase::Opening {
+                committed: false,
+                pending,
+            } => {
+                pending.get_or_insert_with(|| close.clone());
+                CloseClaim::Pending
+            }
+            Phase::Closing => CloseClaim::Closing,
+            phase @ (Phase::Opening {
+                committed: true, ..
+            }
+            | Phase::Open) => {
+                *phase = Phase::Closing;
+                CloseClaim::Owned
+            }
+        }
+    }
+
+    /// A peer Close is terminal even while earlier messages are committing.
+    pub(crate) fn peer_close(&mut self) {
+        self.peer_closed = true;
+    }
+
+    pub(crate) fn peer_closed(&self) -> bool {
+        self.peer_closed
+    }
+
+    pub(crate) fn is_opening(&self) -> bool {
+        matches!(self.phase, Phase::Opening { .. })
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        matches!(self.phase, Phase::Open)
+    }
+
+    pub(crate) fn is_closing(&self) -> bool {
+        matches!(self.phase, Phase::Closing)
+    }
+
+    pub(crate) fn is_unborn(&self) -> bool {
+        matches!(self.phase, Phase::Unborn)
+    }
+
+    /// A message is admitted only while the socket is open and the peer has not closed it.
+    pub(crate) fn message_allowed(&self) -> bool {
+        self.is_open() && !self.peer_closed
+    }
+}
+
 struct Entry {
     actor: ActorReference,
     inbox: Option<StreamPath>,
-    phase: Phase,
+    lifecycle: SocketLifecycle,
     tags: Vec<String>,
     attachment: Option<Bytes>,
     answered_at: Option<u64>,
@@ -508,8 +629,6 @@ struct Entry {
     /// task that exists only while this queue is non-empty.
     inbound: VecDeque<PeerEvent>,
     draining: bool,
-    /// A peer Close is terminal even while earlier messages are committing.
-    peer_closed: bool,
     /// Observers share the original close producer; they never own its work.
     completion: Option<CloseCompletion>,
     completed: Option<oneshot::Sender<Result<(), Arc<Error>>>>,
@@ -698,116 +817,118 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     /// proportional to those sockets, and that incarnation can open no more.
     /// Of hosts opening concurrently, at most one succeeds; the others fail
     /// with [`Error::Conflict`].
-    pub async fn open(
+    pub fn open(
         store: Store<P>,
         root: StreamPath,
         executor: Arc<dyn Executor>,
         clock: Arc<dyn Clock>,
-    ) -> Result<Self, Error> {
-        let layout = Layout::new(root)?;
-        let epochs = layout.epochs.clone();
-        let (tail, last) = match store.provider().head(epochs.clone()).await {
-            Ok(head) => (head.tail, head.last),
-            Err(error) if error.category() == StreamCategory::NotFound => (0, None),
-            Err(error) => return Err(error.into()),
-        };
-        let (segment, from, incarnation) = match (tail, last) {
-            (0, _) => (0, 1, 1),
-            (_, Some(record)) if record.sequence.checked_add(1) == Some(tail) => {
-                recover_epoch(&record.value)?
+    ) -> impl std::future::Future<Output = Result<Self, Error>> {
+        in_heap(move || async move {
+            let layout = Layout::new(root)?;
+            let epochs = layout.epochs.clone();
+            let (tail, last) = match store.provider().head(epochs.clone()).await {
+                Ok(head) => (head.tail, head.last),
+                Err(error) if error.category() == StreamCategory::NotFound => (0, None),
+                Err(error) => return Err(error.into()),
+            };
+            let (segment, from, incarnation) = match (tail, last) {
+                (0, _) => (0, 1, 1),
+                (_, Some(record)) if record.sequence.checked_add(1) == Some(tail) => {
+                    recover_epoch(&record.value)?
+                }
+                _ => return Err(invalid("socket epochs history is incomplete")),
+            };
+            // Reserve both epoch positions before fencing the previous host.
+            let settled_tail = advance(tail, 2)?;
+            let fenced_tail = settled_tail - 1;
+            // Each ownership attempt has its own keys: a concurrent host fencing
+            // the same tail conflicts instead of replaying this attempt's result.
+            let attempt = crate::identity::fresh_uuid();
+            let epoch = |from| epoch_record(incarnation, from);
+            // Fence first: an open of an earlier incarnation commits under
+            // `Tail{epochs}` and now fails, so the survivors below are final.
+            let fenced = commit(
+                &store,
+                &*executor,
+                layout.key(&[b"fence", &incarnation.to_be_bytes(), attempt.as_bytes()])?,
+                vec![append(
+                    epochs.clone(),
+                    vec![epoch(from)],
+                    vec![CommitCondition::Tail {
+                        path: epochs.clone(),
+                        expected: tail,
+                    }],
+                )],
+            )
+            .await?;
+            if !fenced {
+                return Err(Error::Conflict);
             }
-            _ => return Err(invalid("socket epochs history is incomplete")),
-        };
-        // Reserve both epoch positions before fencing the previous host.
-        let settled_tail = advance(tail, 2)?;
-        let fenced_tail = settled_tail - 1;
-        // Each ownership attempt has its own keys: a concurrent host fencing
-        // the same tail conflicts instead of replaying this attempt's result.
-        let attempt = crate::identity::fresh_uuid();
-        let epoch = |from| epoch_record(incarnation, from);
-        // Fence first: an open of an earlier incarnation commits under
-        // `Tail{epochs}` and now fails, so the survivors below are final.
-        let fenced = commit(
-            &store,
-            &*executor,
-            layout.key(&[b"fence", &incarnation.to_be_bytes(), attempt.as_bytes()])?,
-            vec![append(
-                epochs.clone(),
-                vec![epoch(from)],
-                vec![CommitCondition::Tail {
-                    path: epochs.clone(),
-                    expected: tail,
-                }],
-            )],
-        )
-        .await?;
-        if !fenced {
-            return Err(Error::Conflict);
-        }
-        let mut live = BTreeMap::new();
-        let mut closed = BTreeSet::new();
-        for index in from..=segment {
-            fold(&store, &layout, index, &mut live, &mut closed).await?;
-        }
-        let recovered = Close::new(1012, "runtime recovered", SocketCloseInitiator::Runtime);
-        let (store_ref, executor_ref, layout_ref, recovered_ref) =
-            (&store, &*executor, &layout, &recovered);
-        let mut closing =
-            futures::stream::iter(live.into_iter().map(|(connection, target)| async move {
-                commit_close(
-                    store_ref,
-                    executor_ref,
-                    layout_ref,
-                    &connection,
-                    &target,
-                    None,
-                    recovered_ref,
-                )
-                .await
-            }))
-            .buffer_unordered(PAGE as usize);
-        while let Some(closed) = closing.next().await {
-            closed?;
-        }
-        drop(closing);
-        let settled = commit(
-            &store,
-            &*executor,
-            layout.key(&[b"recovered", &incarnation.to_be_bytes(), attempt.as_bytes()])?,
-            vec![append(
-                epochs.clone(),
-                vec![epoch(incarnation)],
-                vec![CommitCondition::Tail {
-                    path: epochs,
-                    expected: fenced_tail,
-                }],
-            )],
-        )
-        .await?;
-        if !settled {
-            return Err(Error::Conflict);
-        }
-        Ok(Self {
-            shared: Arc::new(Shared {
-                store,
-                owner: acyclic_auth::encode_component(
-                    layout.key(&[b"connection-owner"])?.as_bytes(),
-                ),
-                layout,
-                executor,
-                clock,
-                incarnation,
-                next: AtomicU64::new(0),
-                table: Tables::default(),
-                ledger: RwLock::new(Ledger {
-                    segment: incarnation,
-                    allocated: incarnation,
-                    epochs: settled_tail,
+            let mut live = BTreeMap::new();
+            let mut closed = BTreeSet::new();
+            for index in from..=segment {
+                fold(&store, &layout, index, &mut live, &mut closed).await?;
+            }
+            let recovered = Close::new(1012, "runtime recovered", SocketCloseInitiator::Runtime);
+            let (store_ref, executor_ref, layout_ref, recovered_ref) =
+                (&store, &*executor, &layout, &recovered);
+            let mut closing =
+                futures::stream::iter(live.into_iter().map(|(connection, target)| async move {
+                    commit_close(
+                        store_ref,
+                        executor_ref,
+                        layout_ref,
+                        &connection,
+                        &target,
+                        None,
+                        recovered_ref,
+                    )
+                    .await
+                }))
+                .buffer_unordered(PAGE as usize);
+            while let Some(closed) = closing.next().await {
+                closed?;
+            }
+            drop(closing);
+            let settled = commit(
+                &store,
+                &*executor,
+                layout.key(&[b"recovered", &incarnation.to_be_bytes(), attempt.as_bytes()])?,
+                vec![append(
+                    epochs.clone(),
+                    vec![epoch(incarnation)],
+                    vec![CommitCondition::Tail {
+                        path: epochs,
+                        expected: fenced_tail,
+                    }],
+                )],
+            )
+            .await?;
+            if !settled {
+                return Err(Error::Conflict);
+            }
+            Ok(Self {
+                shared: Arc::new(Shared {
+                    store,
+                    owner: acyclic_auth::encode_component(
+                        layout.key(&[b"connection-owner"])?.as_bytes(),
+                    ),
+                    layout,
+                    executor,
+                    clock,
+                    incarnation,
+                    next: AtomicU64::new(0),
+                    table: Tables::default(),
+                    ledger: RwLock::new(Ledger {
+                        segment: incarnation,
+                        allocated: incarnation,
+                        epochs: settled_tail,
+                    }),
+                    live: AtomicUsize::new(0),
+                    written: AtomicUsize::new(0),
+                    compacting: AtomicBool::new(false),
                 }),
-                live: AtomicUsize::new(0),
-                written: AtomicUsize::new(0),
-                compacting: AtomicBool::new(false),
-            }),
+            })
         })
     }
 
@@ -886,24 +1007,13 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         let Some(entry) = table.sockets.get_mut(connection) else {
             return None;
         };
-        match &mut entry.phase {
-            Phase::Unborn => {
+        match entry.lifecycle.claim_close(close) {
+            CloseClaim::Unborn => {
                 table.remove(connection);
                 None
             }
-            Phase::Opening {
-                committed: false,
-                pending,
-            } => {
-                pending.get_or_insert_with(|| close.clone());
-                Some((None, entry.close_completion()))
-            }
-            Phase::Closing => Some((None, entry.close_completion())),
-            phase @ (Phase::Opening {
-                committed: true, ..
-            }
-            | Phase::Open) => {
-                *phase = Phase::Closing;
+            CloseClaim::Pending | CloseClaim::Closing => Some((None, entry.close_completion())),
+            CloseClaim::Owned => {
                 let completion = entry.close_completion();
                 Some((
                     Some(CloseOwner {
@@ -1129,14 +1239,12 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     ) {
         {
             let mut table = self.lock(&connection);
-            match table.sockets.get_mut(&connection) {
-                Some(entry) if matches!(entry.phase, Phase::Unborn) => {
-                    entry.phase = Phase::Opening {
-                        committed: false,
-                        pending: None,
-                    };
-                }
-                _ => return,
+            let admitted = table
+                .sockets
+                .get_mut(&connection)
+                .is_some_and(|entry| entry.lifecycle.admit());
+            if !admitted {
+                return;
             }
         }
         let (ticket, unsettled) = match self.commit_open(&connection, &open).await {
@@ -1166,11 +1274,10 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             let Some(entry) = table.sockets.get_mut(&connection) else {
                 return;
             };
-            let Phase::Opening { committed, pending } = &mut entry.phase else {
+            if !entry.lifecycle.is_opening() {
                 return;
-            };
-            *committed = true;
-            let pending = pending.take().or_else(|| {
+            }
+            let pending = entry.lifecycle.commit_open().or_else(|| {
                 unsettled.then(|| {
                     Close::new(
                         1011,
@@ -1214,9 +1321,8 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             }) => {
                 let mut table = self.lock(&connection);
                 if let Some(entry) = table.sockets.get_mut(&connection)
-                    && let Phase::Opening { .. } = entry.phase
+                    && entry.lifecycle.settle_open()
                 {
-                    entry.phase = Phase::Open;
                     entry.tags = tags;
                     entry.attachment = (!attachment.is_empty()).then_some(attachment);
                 }
@@ -1337,14 +1443,15 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         let Some(entry) = sockets.get_mut(connection) else {
             return Ok(());
         };
-        if entry.peer_closed {
+        if entry.lifecycle.peer_closed() {
             return Ok(());
         }
-        match entry.phase {
-            Phase::Open => {}
-            Phase::Closing => return Ok(()),
+        if entry.lifecycle.is_closing() {
+            return Ok(());
+        }
+        if !entry.lifecycle.is_open() {
             // A peer sends only after Accepted.
-            Phase::Unborn | Phase::Opening { .. } => return Err(StreamError::InvalidArgument),
+            return Err(StreamError::InvalidArgument);
         }
         if let SocketPayload::Text { text } = &payload
             && let Some(pair) = auto.get(&entry.actor)
@@ -1391,13 +1498,13 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         {
             let mut table = self.lock(connection);
             if let Some(entry) = table.sockets.get_mut(connection) {
-                if entry.peer_closed {
+                if entry.lifecycle.peer_closed() {
                     return Ok(());
                 }
                 close
                     .prepare(connection)
                     .map_err(|_| StreamError::InvalidArgument)?;
-                entry.peer_closed = true;
+                entry.lifecycle.peer_close();
                 if entry.draining {
                     entry.inbound.push_back(PeerEvent::Close(close));
                     return Ok(());
@@ -1455,7 +1562,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     fn next_peer_event(&self, connection: &str) -> Option<Step> {
         let mut table = self.lock(connection);
         let entry = table.sockets.get_mut(connection)?;
-        let event = if matches!(entry.phase, Phase::Open) {
+        let event = if entry.lifecycle.is_open() {
             entry.inbound.pop_front()
         } else {
             // Closing drops what is left: it would lose on the socket's
@@ -1654,7 +1761,7 @@ impl<P: StreamProvider + ?Sized + 'static> PreparedSocketOpen for PreparedOpen<P
                 Entry {
                     actor: open.actor.clone(),
                     inbox: None,
-                    phase: Phase::Unborn,
+                    lifecycle: SocketLifecycle::new(),
                     tags: Vec::new(),
                     attachment: None,
                     answered_at: None,
@@ -1663,7 +1770,6 @@ impl<P: StreamProvider + ?Sized + 'static> PreparedSocketOpen for PreparedOpen<P
                     messages: 0,
                     inbound: VecDeque::new(),
                     draining: false,
-                    peer_closed: false,
                     completion: None,
                     completed: None,
                     _abandon: abandon,
@@ -1722,7 +1828,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
             .flatten()
             .filter(|connection| {
                 table.sockets.get(*connection).is_some_and(|entry| {
-                    matches!(entry.phase, Phase::Open)
+                    entry.lifecycle.is_open()
                         && tag.is_none_or(|tag| entry.tags.iter().any(|own| own == tag))
                 })
             })
@@ -1743,7 +1849,7 @@ impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
             ));
         }
         let full = self.shared.with_entry(actor, socket, |entry| {
-            if !matches!(entry.phase, Phase::Open) {
+            if !entry.lifecycle.is_open() {
                 return Err(host_error("WebSocket is not open"));
             }
             match entry.outbound.try_send(frame) {

@@ -1443,7 +1443,7 @@ async fn close_fixture<P: StreamProvider + ?Sized + 'static>(
         Entry {
             actor: actor.clone(),
             inbox: None,
-            phase: Phase::Unborn,
+            lifecycle: SocketLifecycle::new(),
             tags: Vec::new(),
             attachment: None,
             answered_at: None,
@@ -1452,7 +1452,6 @@ async fn close_fixture<P: StreamProvider + ?Sized + 'static>(
             messages: 0,
             inbound: VecDeque::new(),
             draining: false,
-            peer_closed: false,
             completion: None,
             completed: None,
             _abandon: abandon,
@@ -1495,6 +1494,7 @@ async fn admitted_close_fixture<P: StreamProvider + ?Sized + 'static>(
         .sockets
         .get_mut(&connection)
         .ok_or("fixture lost its original open")?
+        .lifecycle
         .phase = Phase::Open;
     Ok((connection, inbox, last, frames))
 }
@@ -1563,7 +1563,8 @@ async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound(
                 .sockets
                 .get(&connection)
                 .unwrap()
-                .peer_closed
+                .lifecycle
+                .peer_closed()
         );
     }
     // Empty text still carries the present oneof field; it is a valid reply.
@@ -1976,8 +1977,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
             .get(&connection)
             .ok_or("lost open after refused frame")?;
         assert!(entry.inbound.is_empty());
-        assert!(!entry.peer_closed);
-        assert!(matches!(entry.phase, Phase::Open));
+        assert!(!entry.lifecycle.peer_closed());
+        assert!(entry.lifecycle.is_open());
     }
     assert!(executor.tasks.lock().unwrap().is_empty());
     assert_eq!(records(&shared.store, &inbox).await?.len(), 1);
@@ -2055,8 +2056,8 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
             .sockets
             .get(&connection)
             .ok_or("refused output retired its socket")?;
-        assert!(matches!(entry.phase, Phase::Open));
-        assert!(!entry.peer_closed);
+        assert!(entry.lifecycle.is_open());
+        assert!(!entry.lifecycle.peer_closed());
     }
     assert!(
         executor.tasks.lock().unwrap().is_empty(),

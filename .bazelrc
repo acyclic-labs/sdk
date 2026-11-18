@@ -27,6 +27,9 @@ test --test_output=errors
 # Clippy reads the workspace thresholds. Every command carries the same value, so a build, a test and a
 # clippy run on one server share its analysis cache instead of discarding it when the flag differs.
 common --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+# Loom proofs are runnable targets, but a plain `bazel test //...` keeps real synchronization.
+# Run them with `bazel test --test_tag_filters=loom //...` or an explicit loom suite.
+test --test_tag_filters=-loom
 # `--config=check` is `cargo check`: each requested crate is type-checked to its metadata, with no code
 # generation or link for it. Its dependencies are their ordinary outputs, shared with every other build.
 build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_groups=rust_check

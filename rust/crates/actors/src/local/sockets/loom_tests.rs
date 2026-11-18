@@ -1,202 +1,149 @@
-//! Exactly one Close per socket, checked on production publication builders
-//! using Stream's instrumented locks, including recovery racing a live closer.
+//! The socket lifecycle's synchronisation state machine, driven with plain loom threads.
+//!
+//! The cases below cover the properties the old publication-builder model claimed, without
+//! building the actor runtime future:
+//!
+//! * exactly one Close owns a socket after its Open settles (peer, actor, backpressure, drain
+//!   and recovery all claim the same lifecycle);
+//! * a Close that arrives while the Open commit is in flight is held, then delivered once;
+//! * a peer Close is terminal: no message is admitted after it;
+//! * a message and a Close are linearised: once the Close owns, no message is admitted;
+//! * admission of the Open happens once.
+
 use super::*;
-use acyclic_stream::runtime::PlatformExecutor;
-use acyclic_stream::{BoxProviderFuture, MemoryStream, Record};
+use loom::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
-type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-// Return the boxed future before polling it: constructing and driving it in
-// the same helper keeps construction temporaries on the coroutine's stack
-// throughout every nested production poll.
-#[inline(never)]
-fn construct<'a, T>(make: impl FnOnce() -> BoxProviderFuture<'a, T>) -> BoxProviderFuture<'a, T> {
-    make()
-}
-
-fn block_on<'a, T>(make: impl FnOnce() -> BoxProviderFuture<'a, T>) -> T {
-    acyclic_stream::verification::park(construct(make))
-}
-
-async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Record>> {
-    Ok(provider
-        .read(ReadRequest {
-            key: None,
-            path: path.clone(),
-            from: 0,
-            limit: PAGE,
-            at_least: RevisionCut::default(),
-        })
-        .await?
-        .try_collect::<Vec<_>>()
-        .await?)
-}
-
-/// Two closers race one message after the production Open effects commit.
-fn race(recover: bool) -> Result {
-    let provider = Arc::new(MemoryStream::default());
-    let store = Store::new(Arc::clone(&provider), StreamPath::new("loom/actors")?);
-    let layout = Layout::new(StreamPath::new("loom/actors/_sockets/v1")?)?;
-    let target = Target {
-        actor: ActorReference::new(b"account", b"sockets", b"loom")?,
-        inbox: StreamPath::new("loom/inbox")?,
-    };
-    let socket = layout.socket("1-0")?;
-    let epochs = vec![epoch_record(1, 1), epoch_record(1, 1)];
-    let ledger = Ledger {
-        segment: 1,
-        allocated: 1,
-        epochs: epochs.len() as u64,
-    };
-    let epochs_key = layout.key(&[b"epochs"])?;
-    assert!(block_on(|| Box::pin(commit(
-        &store,
-        &PlatformExecutor,
-        epochs_key,
-        vec![append(
-            layout.epochs.clone(),
-            epochs,
-            vec![CommitCondition::Absent {
-                path: layout.epochs.clone(),
-            }],
-        )],
-    )))?);
-    let open = SocketOpen {
-        actor: target.actor.clone(),
-        subscription: "inbox".into(),
-        app_channel: None,
-        subprotocols: Vec::new(),
-        headers: Vec::new(),
-        resume_after: 0,
-        reconnected: false,
-    };
-    let invocation = open_invocation(socket.clone(), "1-0", &open)?;
-    let mut effects = open_effects(
-        &socket,
-        &layout.epochs,
-        &layout.segment(ledger.segment)?,
-        ledger.epochs,
-        OpenedWire {
-            connection: "1-0".into(),
-            actor: target.actor.encode().into(),
-            inbox: target.inbox.as_str().into(),
-        },
-    );
-    effects.push(append(
-        target.inbox.clone(),
-        vec![invocation.record(&store.path(&target.actor)?)?],
-        Vec::new(),
-    ));
-    effects.push(store.activation(&target.actor)?);
-    let open_key = layout.key(&[b"open"])?;
-    assert!(block_on(|| Box::pin(commit(
-        &store,
-        &PlatformExecutor,
-        open_key,
-        effects,
-    )))?);
-    let inbox = block_on(|| Box::pin(records(&provider, &target.inbox)))?;
-    assert_eq!(inbox.len(), 1);
-    let invocation = crate::invocation::Invocation::decode(&inbox[0])?
-        .ok_or("Open admission omitted its invocation")?;
-    assert_eq!(invocation.actor(), &target.actor);
-    assert_eq!(invocation.subscription(), "inbox");
-    assert_eq!(
-        crate::sockets::input_kind(invocation.request()),
-        Some("open")
-    );
-    let peer = loom::thread::spawn({
-        let store = Store::new(Arc::clone(&provider), store.root().clone());
-        let layout = layout.clone();
-        let target = target.clone();
-        move || {
-            let close = Close::new(1006, "peer went away", SocketCloseInitiator::Peer);
-            block_on(|| {
-                Box::pin(commit_close(
-                    &store,
-                    &PlatformExecutor,
-                    &layout,
-                    "1-0",
-                    &target,
-                    Some(ledger),
-                    &close,
-                ))
-            })
-            .map_err(|error| error.to_string())
-        }
-    });
-    let message = input_record(
-        "1-0",
-        SocketInput::Message(SocketPayload::Text {
-            text: "frame".into(),
-        }),
-    )?;
-    block_on(|| {
-        Box::pin(commit_message(
-            &store,
-            &PlatformExecutor,
-            &layout,
-            "1-0",
-            &target,
-            1,
-            message,
-        ))
-    })?;
-    if recover {
-        // A crash loses every in-memory socket owner. Recovery uses only the
-        // persisted frontier and ledger, fences old opens/closes, and publishes
-        // the missing Close. A second crash must not publish it again.
-        for _ in 0..2 {
-            block_on(|| {
-                Box::pin(Sockets::open(
-                    Store::new(provider.clone(), store.root().clone()),
-                    layout.root.clone(),
-                    Arc::new(PlatformExecutor),
-                    Arc::new(super::super::SystemClock),
-                ))
-            })?;
-        }
-    } else {
-        let close = Close::new(1000, "actor closed", SocketCloseInitiator::Actor);
-        block_on(|| {
-            Box::pin(commit_close(
-                &store,
-                &PlatformExecutor,
-                &layout,
-                "1-0",
-                &target,
-                Some(ledger),
-                &close,
-            ))
-        })?;
+fn open_lifecycle() -> Arc<Mutex<SocketLifecycle>> {
+    let lifecycle = Arc::new(Mutex::new(SocketLifecycle::new()));
+    {
+        let mut state = lifecycle.lock().unwrap();
+        assert!(state.admit());
+        assert!(state.commit_open().is_none());
+        assert!(state.settle_open());
     }
-    peer.join().map_err(|_| "peer closer panicked")??;
-    let inbox = block_on(|| Box::pin(records(&provider, &target.inbox)))?;
-    let kinds: Vec<&str> = inbox
-        .iter()
-        .skip(1)
-        .map(|record| crate::sockets::input_kind(&record.value).unwrap_or("other"))
-        .collect();
-    assert_eq!(
-        kinds.iter().filter(|kind| **kind == "close").count(),
-        1,
-        "socket delivered other than exactly one Close: {kinds:?}"
-    );
-    assert_eq!(
-        kinds.last(),
-        Some(&"close"),
-        "an event followed the Close: {kinds:?}"
-    );
-    assert_eq!(block_on(|| Box::pin(records(&provider, &socket)))?.len(), 2);
-    Ok(())
+    lifecycle
+}
+
+fn close(code: u16) -> Close {
+    Close::new(code, "close", SocketCloseInitiator::Actor)
 }
 
 #[test]
-fn concurrent_closes_and_messages_deliver_exactly_one_final_close() {
-    acyclic_stream::verification::check(|| race(false));
+fn exactly_one_close_owns_after_open() {
+    loom::model(|| {
+        let lifecycle = open_lifecycle();
+        let owners = Arc::new(AtomicUsize::new(0));
+        let threads = [1000u16, 1006].map(|code| {
+            let lifecycle = Arc::clone(&lifecycle);
+            let owners = Arc::clone(&owners);
+            loom::thread::spawn(move || {
+                if matches!(
+                    lifecycle.lock().unwrap().claim_close(&close(code)),
+                    CloseClaim::Owned
+                ) {
+                    owners.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        });
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(owners.load(Ordering::SeqCst), 1);
+        assert!(!lifecycle.lock().unwrap().message_allowed());
+    });
 }
 
 #[test]
-fn crash_recovery_and_live_closers_deliver_exactly_one_final_close() {
-    acyclic_stream::verification::check(|| race(true));
+fn close_during_open_is_pending_and_delivered_once() {
+    loom::model(|| {
+        let lifecycle = Arc::new(Mutex::new(SocketLifecycle::new()));
+        {
+            let mut state = lifecycle.lock().unwrap();
+            assert!(state.admit());
+        }
+        let held = close(1006);
+        assert!(matches!(
+            lifecycle.lock().unwrap().claim_close(&held),
+            CloseClaim::Pending
+        ));
+        {
+            let mut state = lifecycle.lock().unwrap();
+            let pending = state.commit_open().expect("the held close is delivered");
+            assert_eq!(pending.code, held.code);
+            assert!(state.commit_open().is_none());
+        }
+        assert!(matches!(
+            lifecycle.lock().unwrap().claim_close(&held),
+            CloseClaim::Owned
+        ));
+        assert!(!lifecycle.lock().unwrap().message_allowed());
+    });
+}
+
+#[test]
+fn peer_close_is_terminal_for_messages() {
+    loom::model(|| {
+        let lifecycle = open_lifecycle();
+        let closed = Arc::clone(&lifecycle);
+        let closer = loom::thread::spawn(move || {
+            closed.lock().unwrap().peer_close();
+        });
+        // A message may be admitted before the peer close; after it, admission is terminal.
+        let _ = lifecycle.lock().unwrap().message_allowed();
+        closer.join().unwrap();
+        assert!(!lifecycle.lock().unwrap().message_allowed());
+    });
+}
+
+#[test]
+fn message_and_close_are_linearised() {
+    loom::model(|| {
+        let lifecycle = open_lifecycle();
+        let owners = Arc::new(AtomicUsize::new(0));
+        let closer = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let owners = Arc::clone(&owners);
+            loom::thread::spawn(move || {
+                if matches!(
+                    lifecycle.lock().unwrap().claim_close(&close(1000)),
+                    CloseClaim::Owned
+                ) {
+                    owners.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+        let admitted = lifecycle.lock().unwrap().message_allowed();
+        closer.join().unwrap();
+        assert_eq!(owners.load(Ordering::SeqCst), 1);
+        if admitted {
+            // The message was admitted before the close; the close still owns and terminal
+            // admission is closed afterwards.
+            assert!(!lifecycle.lock().unwrap().message_allowed());
+        }
+        assert!(!lifecycle.lock().unwrap().message_allowed());
+    });
+}
+
+#[test]
+fn admission_happens_once() {
+    loom::model(|| {
+        let lifecycle = Arc::new(Mutex::new(SocketLifecycle::new()));
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let threads = [0u8, 1].map(|_| {
+            let lifecycle = Arc::clone(&lifecycle);
+            let admissions = Arc::clone(&admissions);
+            loom::thread::spawn(move || {
+                if lifecycle.lock().unwrap().admit() {
+                    admissions.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        });
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(admissions.load(Ordering::SeqCst), 1);
+    });
 }

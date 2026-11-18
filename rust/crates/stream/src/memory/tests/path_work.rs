@@ -50,6 +50,19 @@ fn result<'a>(items: impl Iterator<Item = (&'a StreamPath, usize)>) -> Vec<Strin
         .filter_map(|(path, end)| path.as_str().get(..end).map(str::to_owned))
         .collect()
 }
+fn missing_paths<'a>(
+    state: &'a State,
+    destinations: impl Iterator<Item = &'a StreamPath> + 'a,
+    explicit: impl Fn(&str) -> bool + Copy + 'a,
+) -> Vec<(&'a StreamPath, usize)> {
+    let mut found = Vec::new();
+    for_each_missing_path(state, destinations, explicit, |path, end| {
+        found.push((path, end));
+        Ok(())
+    })
+    .unwrap();
+    found
+}
 fn verify(state: &State, destinations: &[StreamPath], actual: &[String]) {
     let unique = actual.iter().cloned().collect::<BTreeSet<_>>();
     assert_eq!(unique.len(), actual.len(), "duplicate path allocation");
@@ -93,7 +106,7 @@ fn ten_thousand_existing_appends_do_one_path_lookup_each() {
     let before = PATH_LOOKUPS.with(std::cell::Cell::get);
     PATH_LOOKUPS.with(|count| count.set(0));
     assert_eq!(
-        missing_paths(&state, destinations(), |prefix| path.as_str() == prefix).count(),
+        missing_paths(&state, destinations(), |prefix| path.as_str() == prefix).len(),
         0
     );
     let after = PATH_LOOKUPS.with(std::cell::Cell::get);
@@ -208,13 +221,13 @@ fn existing_commit_path_planning_scans_each_destination_once() {
         assert_eq!(
             missing_paths(&state, std::iter::once(&path), |prefix| path.as_str()
                 == prefix)
-            .count(),
+            .len(),
             0
         );
         assert_eq!(
             missing_paths(&state, std::iter::once(&path), |prefix| path.as_str()
                 == prefix)
-            .count(),
+            .len(),
             0
         );
     }

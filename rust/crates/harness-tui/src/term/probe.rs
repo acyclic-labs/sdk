@@ -144,6 +144,7 @@ pub struct Probe {
 }
 
 impl Probe {
+    #[cfg(not(loom))]
     pub(crate) fn pending_escape(&self) -> bool {
         self.frame == b"\x1b"
     }
