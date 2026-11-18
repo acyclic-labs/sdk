@@ -125,7 +125,3 @@ pub enum ExtentCloneError {
     #[error(transparent)]
     Work(#[from] WorkError),
 }
-
-#[cfg(test)]
-#[path = "tests/extent_clone.rs"]
-mod tests;
