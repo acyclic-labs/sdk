@@ -1,16 +1,5 @@
 use super::*;
 
-/// Concrete namespace mechanism selected for this binary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeMountKind {
-    /// Linux kernel FUSE through `/dev/fuse`.
-    LinuxFuse,
-    /// Self-contained macOS loopback-NFS session.
-    MacOsNfs,
-    /// Windows Projected File System provider.
-    WindowsProjFs,
-}
-
 /// Non-destructive compile-time and host capability facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeMountCapabilities {
@@ -115,10 +104,6 @@ pub type ContentSink<'a> =
 pub type NativeMountContentSink<'a> =
     dyn FnMut(u64, crate::kernel::OwnedSourceChunk) -> Result<(), MountSourceError> + 'a;
 
-/// Opaque evidence of the exact external content one lookup observed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MountContentPin(pub [u8; 32]);
-
 /// Namespace kinds representable by native projections.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MountNodeKind {
@@ -159,32 +144,6 @@ impl MountNodeKind {
     }
 }
 
-/// Native sparse-file seek target.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountSeekTarget {
-    /// First allocated-zero or content byte.
-    Data,
-    /// First unallocated hole byte, including logical end-of-file.
-    Hole,
-}
-
-/// Exact sparse-allocation operation requested by a native mount.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountRangeAllocation {
-    /// Deallocates the range without changing logical size.
-    PunchHole,
-    /// Replaces the range with allocated canonical zeros.
-    ZeroRange {
-        /// Permit logical growth to the range end.
-        extend: bool,
-    },
-    /// Allocates only holes while preserving all existing content.
-    Preallocate {
-        /// Preserve logical file length.
-        keep_size: bool,
-    },
-}
-
 /// One data span within a bounded sparse open-file snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MountSparseSpan {
@@ -201,19 +160,6 @@ pub struct MountSparseRange {
     pub logical_bytes: u64,
     /// Ordered, non-overlapping allocated spans.
     pub spans: Vec<MountSparseSpan>,
-}
-
-/// Content rights requested by a native open that also returns metadata.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountOpenAccess {
-    /// Names and metadata only.
-    Metadata,
-    /// Content reads.
-    Read,
-    /// Content writes or appends; each mutation retains its distinct check.
-    Write,
-    /// Both content reads and writes.
-    ReadWrite,
 }
 
 /// Path-independent regular-file handle used for every native open operation.
@@ -501,17 +447,6 @@ impl MountAttributePage {
             )
             .ok_or(crate::WorkError::Overflow)
     }
-}
-
-/// Native named-attribute write precondition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountAttributeWriteMode {
-    /// Insert or replace.
-    Upsert,
-    /// Require absence.
-    Create,
-    /// Require presence.
-    Replace,
 }
 
 /// Errors returned by the canonical checkout callback bridge.
