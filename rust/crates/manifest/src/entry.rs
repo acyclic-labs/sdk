@@ -171,7 +171,7 @@ impl<P: Blobs> EntryStore<P> {
     ) -> Result<LoadedEntry<'_, P>, Error> {
         let loaded = self
             .load_selected(
-                source.digest(),
+                Digest::from_bytes(*source.digest()),
                 source.length(),
                 source.environment(),
                 source.entry(),

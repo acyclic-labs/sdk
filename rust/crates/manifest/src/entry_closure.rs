@@ -124,7 +124,7 @@ impl PreparedEntry {
         let (environment, entry) = selected(&self.record.manifest)?;
         let closure = seal(&self.record)?;
         let source = acyclic_actors::domain::EntrySource::new(
-            acyclic_objects::Digest::sealed(&closure),
+            *closure.digest(),
             closure.bytes().len() as u64,
             environment.name.clone(),
             entry.name.clone(),

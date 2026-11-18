@@ -9,7 +9,7 @@ use super::*;
 pub struct EntrySource {
     #[wire(tag = 1, bytes, from = source_digest, into = digest_bytes)]
     #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
-    digest: acyclic_objects::Digest,
+    digest: [u8; 32],
     #[wire(tag = 2, uint64)]
     length: PositiveU64,
     #[wire(tag = 3)]
@@ -18,21 +18,20 @@ pub struct EntrySource {
     entry: String,
 }
 
-fn source_digest(bytes: Vec<u8>) -> Result<acyclic_objects::Digest, DomainError> {
-    let bytes = bytes
+fn source_digest(bytes: Vec<u8>) -> Result<[u8; 32], DomainError> {
+    bytes
         .try_into()
-        .map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))?;
-    Ok(acyclic_objects::Digest::from_bytes(bytes))
+        .map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))
 }
 
-fn digest_bytes(digest: acyclic_objects::Digest) -> Vec<u8> {
-    digest.as_bytes().to_vec()
+fn digest_bytes(digest: [u8; 32]) -> Vec<u8> {
+    digest.to_vec()
 }
 
 impl EntrySource {
     /// Retain the exact publication identity and original selected names.
     pub fn new(
-        digest: acyclic_objects::Digest,
+        digest: [u8; 32],
         length: u64,
         environment: String,
         entry: String,
@@ -59,8 +58,8 @@ impl EntrySource {
     }
 
     /// Canonical Objects content identity, without another hash or codec.
-    pub const fn digest(&self) -> acyclic_objects::Digest {
-        self.digest
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.digest
     }
 
     /// Exact descriptor byte admission.

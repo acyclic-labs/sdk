@@ -86,11 +86,7 @@ fn preparation_controls() -> TestResult {
     )?;
     let (request, descriptor, payloads) = prepared.into_deployment("original-intent")?.into_parts();
     assert_eq!(
-        request
-            .entry_source()
-            .ok_or("selected source")?
-            .digest()
-            .as_bytes(),
+        request.entry_source().ok_or("selected source")?.digest(),
         descriptor.digest()
     );
     let bytes: usize = payloads.iter().map(|body| body.bytes().len()).sum();
@@ -167,11 +163,7 @@ fn preparation_controls() -> TestResult {
     assert!(request.worker_limits().is_some());
     assert!(request.subscriptions().is_empty());
     assert_eq!(
-        request
-            .entry_source()
-            .ok_or("worker source")?
-            .digest()
-            .as_bytes(),
+        request.entry_source().ok_or("worker source")?.digest(),
         descriptor.digest()
     );
     Ok(())
@@ -244,7 +236,10 @@ async fn accepted_configuration<P: Blobs>(
         "lowering adds no reads"
     );
     let source = published.request.entry_source().ok_or("selected source")?;
-    assert_eq!(source.digest(), published.publication.object.digest);
+    assert_eq!(
+        source.digest(),
+        published.publication.object.digest.as_bytes()
+    );
     assert_eq!(source.length(), published.publication.object.length);
     assert_eq!(published.request.idempotency_key(), "original-intent");
     assert_eq!(
@@ -358,7 +353,10 @@ async fn accepted_configuration<P: Blobs>(
     let before = provider.requests();
     let restored_actor = store.load_actor(&actor).await?;
     assert_eq!(provider.requests().since(before).data(), 1);
-    assert_eq!(restored_actor.descriptor().head().digest, source.digest());
+    assert_eq!(
+        restored_actor.descriptor().head().digest.as_bytes(),
+        source.digest()
+    );
     assert_eq!(&**restored_actor.artifact().await?.body(), CODE);
     let update = wire::UpdateNamespaceRequest {
         namespace_id: request.name.clone(),

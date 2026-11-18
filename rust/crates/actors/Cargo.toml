@@ -25,7 +25,6 @@ test-support = [
     "acyclic-auth/test-support",
     "acyclic-grpc-observability/test-support",
     "acyclic-native-runtime/test-support",
-    "acyclic-objects/test-support",
     "acyclic-stream/test-support"]
 
 [dependencies]
@@ -34,7 +33,6 @@ acyclic-actors-guest-wire = { version = "=0.2.0", path = "../actors-guest-wire" 
 acyclic-actors-inventory = { version = "=0.2.0", path = "../actors-inventory" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 loom = { version = "0.7.3", features = ["futures"], optional = true }
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }

@@ -149,12 +149,7 @@ pub(super) fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, d::D
     seed!(SubscriptionSpec, subscription.clone());
     seed!(
         EntrySource,
-        d::EntrySource::new(
-            acyclic_objects::Digest::from_bytes([1; 32]),
-            22,
-            "package".into(),
-            "codec".into(),
-        )?
+        d::EntrySource::new([1; 32], 22, "package".into(), "codec".into(),)?
     );
     seed!(
         SecretSelection,

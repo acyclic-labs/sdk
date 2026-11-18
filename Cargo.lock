@@ -27,7 +27,6 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-native-runtime",
- "acyclic-objects",
  "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
