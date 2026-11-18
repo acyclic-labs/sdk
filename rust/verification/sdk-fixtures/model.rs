@@ -1,5 +1,5 @@
 // Run from the repository root:
-// ACYCLIC_LOOM=1 cargo test --manifest-path rust/verification/sdk-fixtures/Cargo.toml --features model-checking --locked --test fixture-model
+// bazel test --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/verification/sdk-fixtures:@--cfg=loom //rust/verification/sdk-fixtures:fixture-model
 #![cfg(loom)]
 
 use loom::sync::{

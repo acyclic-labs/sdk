@@ -1,7 +1,6 @@
 //! Loom models of stream publication. They exist only under `cfg(loom)`,
-//! which the build script sets for `model-checking` builds under ACYCLIC_LOOM:
-//! `ACYCLIC_LOOM=1 cargo test --locked -p
-//! acyclic-stream-publication-models --features model-checking --test publication`.
+//! enabled for this package with
+//! `bazel test --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/stream/publication-models:@--cfg=loom //rust/crates/stream/publication-models:publication`.
 //! Without it the features stay additive and this target is empty; the
 //! `conditional-watch-parity` proof's mutations fail if the models never run.
 #![cfg(loom)]
