@@ -110,7 +110,7 @@ fn unsupported_target_is_hard_error() {
 }
 
 #[test]
-fn historical_defaults_cover_features_without_changing_current_profiles() {
+fn historical_defaults_cover_features() {
     let metadata = metadata();
     let targets = BTreeSet::from(["host".into()]);
     let historical =
@@ -122,12 +122,6 @@ fn historical_defaults_cover_features_without_changing_current_profiles() {
         .any(|profile| profile.features == BTreeSet::from(["codec".into(), "json".into()])));
     assert!(historical.iter().any(|profile| profile.features
         == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
-    assert!(
-        profiles_for_package(metadata, "feature-rich", "host", &targets)
-            .unwrap()
-            .iter()
-            .any(|profile| !profile.default_features && profile.features.is_empty())
-    );
 }
 
 #[test]
@@ -156,7 +150,7 @@ fn historical_docs_rs_policy_is_required_and_validated() {
 }
 
 #[test]
-fn feature_profiles_include_default_baseline_and_local_closure() {
+fn feature_profiles_include_both_baselines_and_local_closure() {
     let profiles = profiles_for_package(
         metadata(),
         "feature-rich",
@@ -164,6 +158,9 @@ fn feature_profiles_include_default_baseline_and_local_closure() {
         &BTreeSet::from(["host".into()]),
     )
     .unwrap();
+    assert!(profiles
+        .iter()
+        .any(|profile| !profile.default_features && profile.features.is_empty()));
     assert!(profiles
         .iter()
         .any(|profile| profile.default_features && profile.features.is_empty()));
