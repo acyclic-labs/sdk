@@ -28,8 +28,13 @@ path = "tests/native_receipt.rs"
 name = "plan-markdown"
 path = "tests/plan_markdown_cases.rs"
 
+[[test]]
+name = "file-tools-fixture"
+path = "tests/file_tools_fixture_cases.rs"
+
 [package.metadata.bazel.test-dependencies]
 file-tools-contract = ["acyclic_harness_core", "serde", "serde_json"]
+file-tools-fixture = ["acyclic_harness_core", "acyclic_test_support", "serde", "serde_json"]
 plan-markdown = ["acyclic_harness_client", "acyclic_test_support", "proptest"]
 
 [[bin]]
