@@ -591,6 +591,14 @@ fn retention_root(root: &RootId) -> impl AsRef<str> + use<> {
     Digest::of(root.as_bytes()).encoded_hex()
 }
 
+struct VersionHex([u8; 16]);
+
+impl std::fmt::Display for VersionHex {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:032x}", u128::from_be_bytes(self.0))
+    }
+}
+
 impl<M, P: Deref<Target = M>> Account<M, P> {
     /// The account's original physical availability producer. A repair service
     /// that writes bytes outside this engine must publish completion here,
@@ -641,11 +649,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Ac
 
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
-        self.sharded_key(
-            'p',
-            digest,
-            format_args!(".{:032x}", u128::from_be_bytes(*version)),
-        )
+        self.sharded_key('p', digest, format_args!(".{}", VersionHex(*version)))
     }
 
     /// This account's revisions, opening them on first use.
@@ -896,7 +900,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 
     /// The `i/` holder tag of an envelope.
     fn envelope_tag(parent: &Digest, version: &[u8; 16]) -> String {
-        format!("e{parent}.{:032x}", u128::from_be_bytes(*version))
+        format!("e{parent}.{}", VersionHex(*version))
     }
 
     /// The `i/` holder tag of the root batch named `batch`.
@@ -951,10 +955,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let batch = encode_batch(references);
         let digest = Digest::of(&batch);
         // A unique version keeps concurrent retains of equal batches distinct.
-        let version = u128::from_be_bytes(version()?);
+        let version = VersionHex(version()?);
         let (kind, name, extra_writes) = match fence {
-            Some(fence) => ('f', format!("{fence:016x}.{digest}.{version:032x}"), 2),
-            None => ('r', format!("{digest}.{version:032x}"), 0),
+            Some(fence) => ('f', format!("{fence:016x}.{digest}.{version}"), 2),
+            None => ('r', format!("{digest}.{version}"), 0),
         };
         let tag = Self::batch_tag(kind, root_hash, &name);
         let key = self.retention_key(kind, root_hash, &name);
