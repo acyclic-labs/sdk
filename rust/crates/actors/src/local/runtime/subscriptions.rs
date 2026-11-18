@@ -13,12 +13,12 @@ struct Notification {
 }
 
 fn open<P: StreamProvider + ?Sized>(
-    provider: &Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     path: &StreamPath,
     filter: Option<acyclic_stream::FollowFilter>,
     from: u64,
 ) -> Next {
-    let provider = Arc::clone(provider);
+    let provider = provider.clone();
     let path = path.clone();
     Box::pin(async move {
         let mut records = acyclic_stream::records_only(
@@ -114,7 +114,7 @@ impl Subscriptions {
     /// terminally failed input is never redelivered without a new event.
     pub(super) fn bind<P: StreamProvider + ?Sized>(
         &mut self,
-        provider: &Arc<P>,
+        provider: &acyclic_stream::ProviderOwner<P>,
         actor: &ActorReference,
         selected: Selections,
         tails: &BTreeMap<StreamPath, u64>,
