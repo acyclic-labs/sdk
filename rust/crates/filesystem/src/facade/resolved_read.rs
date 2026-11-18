@@ -17,7 +17,8 @@ pub struct FileDescription {
 /// always uses the reader that authenticated it.
 /// ```no_run
 /// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
-/// use acyclic_fs::{ResolvedFile, WorkBudget};
+/// use acyclic_fs::ResolvedFile;
+/// use acyclic_fs_work::performance::WorkBudget;
 /// async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(file: &ResolvedFile<A, O>) {
 ///     let range = ByteRange { offset: 0, length: 1 };
 ///     let cancel = CancellationToken::new();
@@ -28,7 +29,8 @@ pub struct FileDescription {
 /// A raw record cannot be read through an arbitrary reader.
 /// ```compile_fail,E0599
 /// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
-/// use acyclic_fs::{PinnedReader, WorkBudget, kernel::FileRecord};
+/// use acyclic_fs::{PinnedReader, kernel::FileRecord};
+/// use acyclic_fs_work::performance::WorkBudget;
 /// async fn transplant<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ///     reader: &PinnedReader<A, O>,
 ///     record: FileRecord,
@@ -41,7 +43,8 @@ pub struct FileDescription {
 /// Nor can its extents be planned through an arbitrary reader.
 /// ```compile_fail,E0599
 /// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
-/// use acyclic_fs::{PinnedReader, WorkBudget, kernel::FileRecord};
+/// use acyclic_fs::{PinnedReader, kernel::FileRecord};
+/// use acyclic_fs_work::performance::WorkBudget;
 /// async fn transplant<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ///     reader: &PinnedReader<A, O>,
 ///     record: FileRecord,

@@ -1,8 +1,9 @@
 //! Native demand files account for the fixture path key they retain.
+use acyclic_fs::CancellationToken;
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
 use acyclic_fs::kernel::{LogicalName, NameEncoding, NamespacePath};
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
-use acyclic_fs::{CancellationToken, WorkBudget};
+use acyclic_fs_work::performance::WorkBudget;
 
 fn path(name: &str) -> NamespacePath {
     NamespacePath::new(
