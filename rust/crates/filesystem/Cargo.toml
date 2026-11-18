@@ -80,6 +80,13 @@ build-script-inputs = [
 ]
 
 test-build-script = ["operation_claim_model"]
+test-without-build-script = [
+    "checkout_cancellation",
+    "checkout_reconciliation",
+    "memory_authority",
+    "memory_objects",
+    "mount_routing",
+]
 test-narrow-runfiles = [
     "checkout_cancellation",
     "checkout_content",

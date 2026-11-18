@@ -905,7 +905,9 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const separate = target => {
     const names = directTestDependencies(target);
     const includeOwn = !standaloneTest(target);
-    const needsBuildScript = includeOwn || p.metadata?.bazel?.["test-build-script"]?.includes(target.name);
+    const bazel = p.metadata?.bazel;
+    const needsBuildScript = bazel?.["test-build-script"]?.includes(target.name)
+      || (includeOwn && !bazel?.["test-without-build-script"]?.includes(target.name));
     const extraDeps = [...(includeOwn ? ownLib : []), ...(needsBuildScript ? ownDeps : [])];
     const crateRoot = local(target.src_path);
     const extra = extras(target, () => false);
