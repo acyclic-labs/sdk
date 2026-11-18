@@ -64,7 +64,8 @@ mod tool_output;
 mod verifier;
 pub use verifier::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
 #[cfg(not(target_arch = "wasm32"))]
-pub mod web;
+#[cfg(test)]
+mod web;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod workspace;
 pub use agents::{LocalAgents, LocalTurns};

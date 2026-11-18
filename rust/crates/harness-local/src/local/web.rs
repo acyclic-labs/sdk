@@ -1,5 +1,3 @@
-//! Host composition of the shared web tool executor.
-pub use crate::search::web::WebExecutor;
+//! Tests for the shared web executor in the local harness.
 
-#[cfg(test)]
 mod tests;

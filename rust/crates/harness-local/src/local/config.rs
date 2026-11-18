@@ -589,7 +589,7 @@ impl LocalHarnessConfig {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bind_web_tools(&self, registry: &mut ToolRegistry) -> Result<()> {
         if self.web_tools {
-            super::web::WebExecutor::bind(registry, self.search_provider.clone())?;
+            acyclic_harness_search::web::WebExecutor::bind(registry, self.search_provider.clone())?;
         }
         Ok(())
     }

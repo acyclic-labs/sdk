@@ -980,7 +980,7 @@ fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
     #[cfg(not(target_arch = "wasm32"))]
     let tools = if config.web_tools {
         let mut tools = tools;
-        web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
+        acyclic_harness_search::web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
         tools
     } else {
         tools
