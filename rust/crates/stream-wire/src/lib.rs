@@ -3,6 +3,8 @@
 pub mod authorization;
 /// Hosted token operation vocabulary derived from Stream admission.
 pub mod token;
+/// Canonical input grammar for Stream paths and retry identities.
+pub mod validation;
 
 /// Generated canonical Stream v1 protocol.
 #[allow(

@@ -1,5 +1,6 @@
 //! Pure validation for hosted Stream HTTP response payloads.
 
+use acyclic_stream_wire::validation::{is_idempotency_key, is_path};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value};
 
@@ -52,7 +53,7 @@ fn validate_revision(value: &Value) -> Result {
 
 pub(crate) fn path(value: &Value) -> Result {
     let value = string(value)?;
-    crate::StreamPath::validate(value).map_err(|_| "invalid path")
+    is_path(value).then_some(()).ok_or("invalid path")
 }
 
 pub(crate) fn bytes(value: &Value) -> Result<Vec<u8>> {
@@ -68,9 +69,9 @@ pub(crate) fn id(value: &Value) -> Result {
 }
 
 pub(crate) fn key(value: &Value) -> Result {
-    crate::IdempotencyKey::new(bytes(value)?)
-        .map(|_| ())
-        .map_err(|_| "invalid idempotency key")
+    is_idempotency_key(&bytes(value)?)
+        .then_some(())
+        .ok_or("invalid idempotency key")
 }
 
 fn validate_record_body(value: &Value) -> Result {
