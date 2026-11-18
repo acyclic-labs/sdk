@@ -1,4 +1,4 @@
-import { decodeUnaryResponse, validateHeadsRequest, validateReadRequest, validateWireRequest, wireRequest, wireWhenAbsent } from "./contract.js";
+import { decodeUnaryResponse, validateHeadsRequest, validateReadRequest, validateWireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -62,9 +62,10 @@ export class StreamSessions {
   }
 
   async tailRequest(path: string): Promise<{ input: Uint8Array; atLeast: Revision[] }> {
-    const validated = await validateWireRequest({ kind: "tail", path });
+    await ensureStreamWasm();
     const atLeast = this.revisionFloor();
-    return { atLeast, input: atLeast.length === 0 ? validated : wireRequest({ kind: "tail", path, atLeast }) };
+    const input = await validateWireRequest({ kind: "tail", path, atLeast });
+    return { input, atLeast };
   }
 
   /** Raises the floor with a revision a receipt or response served; lower revisions never lower it. */
