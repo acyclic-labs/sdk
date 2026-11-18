@@ -584,6 +584,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-fs-native-contract",
  "acyclic-fs-work",
  "acyclic-harness-client",
  "acyclic-harness-core",

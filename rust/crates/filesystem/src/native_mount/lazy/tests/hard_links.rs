@@ -104,7 +104,9 @@ async fn check_aliases(
             .filter(|parent| !parent.components().is_empty())
         {
             let first = String::from_utf8(parent.components()[0].clone())?;
-            parent.components[0] = format!("moved-{first}").into_bytes();
+            let mut components = parent.components().to_vec();
+            components[0] = format!("moved-{first}").into_bytes();
+            *parent = MountPath::from_components(components);
         }
         for name in &names {
             let untouched = std::path::Path::new(name).with_file_name("untouched");
