@@ -101,6 +101,9 @@ path = "tests/main.rs"
 name = "backoff"
 path = "tests/backoff.rs"
 
+[package.metadata.bazel.test-dependencies]
+backoff = ["proptest"]
+
 [[example]]
 name = "issuance_corpus"
 required-features = ["test-support"]
