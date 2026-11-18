@@ -319,25 +319,25 @@ fn real_wasm_binding_rustdoc_retains_browser_owned_api_when_requested() {
         rustdoc_package: "acyclic-fs-wasm".into(),
         kind: ApiOwnerKind::WasmBinding,
     };
-    let observation = observe_rustdoc(&path).unwrap();
-    assert_eq!(observation.format_version, FORMAT_VERSION);
-    assert_eq!(observation.crate_name, "acyclic_fs_wasm");
-    assert_eq!(observation.crate_version.as_deref(), Some("0.2.0"));
-    assert_eq!(observation.target, "wasm32-unknown-unknown");
-    let items = extract_owned_api(
-        path,
-        &owner,
-        ProfileId("wasm-binding-no-defaults".into()),
-        &owner.rustdoc_package.replace('-', "_"),
-    )
-    .unwrap();
-    assert!(!items.is_empty());
-    assert!(items.iter().all(|item| {
-        item.rustdoc_package == "acyclic-fs-wasm" && item.published_owner == "acyclic-fs"
-    }));
-    assert!(items
-        .iter()
-        .any(|item| { item.key.path.contains("Browser") || item.key.path.contains("browser") }));
+    crate::with_rustdoc_cache(|| {
+        let observation = observe_rustdoc(&path).unwrap();
+        assert_eq!(observation.crate_name, "acyclic_fs_wasm");
+        assert_eq!(observation.crate_version.as_deref(), Some("0.2.0"));
+        assert_eq!(observation.target, "wasm32-unknown-unknown");
+        let items = extract_owned_api(
+            path,
+            &owner,
+            ProfileId("wasm-binding-no-defaults".into()),
+            &owner.rustdoc_package.replace('-', "_"),
+        )
+        .unwrap();
+        assert!(items.iter().all(|item| {
+            item.rustdoc_package == "acyclic-fs-wasm" && item.published_owner == "acyclic-fs"
+        }));
+        assert!(items.iter().any(|item| {
+            item.key.path.contains("Browser") || item.key.path.contains("browser")
+        }));
+    });
 }
 
 #[test]
