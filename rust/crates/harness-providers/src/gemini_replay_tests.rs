@@ -154,7 +154,7 @@ fn signed_answer_fixture_replays_once_with_exact_native_parts() {
     let seed = include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse");
     let stream = std::str::from_utf8(&seed[1..]).unwrap();
     let events: Vec<ModelEvent> = futures::executor::block_on(
-        stream::events_named(
+        crate::event_driver::events_named(
             Adapter::Gemini,
             chunks(stream, 1),
             4096,
@@ -209,7 +209,7 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
         signed[0], signed[1]
     );
     let events = futures::executor::block_on(
-        stream::events_named(
+        crate::event_driver::events_named(
             Adapter::Gemini,
             chunks(&input, 1),
             4096,
@@ -353,7 +353,7 @@ proptest! {
         };
         let path = "models/tiny:streamGenerateContent";
         let wire = events_with_usage(path, &step, 4096).unwrap().concat();
-        let parsed = futures::executor::block_on(stream::events_named(
+        let parsed = futures::executor::block_on(crate::event_driver::events_named(
             Adapter::Gemini, chunks(&wire, width), 32768, dispatch, None,
             Some(provider.reasoning_origin(provider.key.as_deref(), None)),
          None,).try_collect::<Vec<_>>()).unwrap();
@@ -418,7 +418,7 @@ proptest! {
         // typed interruption, without admitting either tool in a partial batch.
         step.hold = true;
         let unfinished = events_with_usage(path, &step, 4096).unwrap().concat();
-        let parsed = futures::executor::block_on(stream::events_named(
+        let parsed = futures::executor::block_on(crate::event_driver::events_named(
             Adapter::Gemini, chunks(&unfinished, width), 32768, dispatch, None,
             Some(provider.reasoning_origin(provider.key.as_deref(), None)),
          None,).collect::<Vec<_>>());
@@ -495,8 +495,13 @@ fn malformed_native_part_fields_fail_before_publication() {
             "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{raw}]}},\"finishReason\":\"STOP\"}}]}}\n\n"
         );
         let events = futures::executor::block_on(
-            stream::events(Adapter::Gemini, chunks(&input, 1), 4096, parser_dispatch())
-                .try_collect::<Vec<_>>(),
+            crate::event_driver::events(
+                Adapter::Gemini,
+                chunks(&input, 1),
+                4096,
+                parser_dispatch(),
+            )
+            .try_collect::<Vec<_>>(),
         )
         .unwrap();
         assert!(natives(&events).contains(&raw.as_bytes()));
@@ -518,7 +523,7 @@ fn malformed_native_part_fields_fail_before_publication() {
             std::str::from_utf8(&raw).unwrap(),
         );
         let events = futures::executor::block_on(
-            stream::events_named(
+            crate::event_driver::events_named(
                 Adapter::Gemini,
                 chunks(&input, 1),
                 4096,
@@ -599,8 +604,13 @@ fn malformed_native_part_fields_fail_before_publication() {
             "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"functionCall\":{{\"name\":\"prior\",\"args\":{{}}}},\"thoughtSignature\":\"prior==\"}},{raw}]}},\"finishReason\":\"STOP\"}}]}}\n\n"
         );
         let events = futures::executor::block_on(
-            stream::events(Adapter::Gemini, chunks(&input, 1), 4096, parser_dispatch())
-                .collect::<Vec<_>>(),
+            crate::event_driver::events(
+                Adapter::Gemini,
+                chunks(&input, 1),
+                4096,
+                parser_dispatch(),
+            )
+            .collect::<Vec<_>>(),
         );
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], Err(Error::Invalid(_))));
@@ -674,7 +684,7 @@ proptest! {
                 parts.push(json!({"thoughtSignature":"tool-signature","functionCall":{"id":"call_0","name":"echo","args":{}}}).to_string());
             }
             let input=format!("data: {{\"candidates\":[{{\"content\":{{\"parts\":[{}]}},\"finishReason\":\"STOP\"}}]}}\n\n",parts.join(","));
-            let events=futures::executor::block_on(stream::events_named(
+            let events=futures::executor::block_on(crate::event_driver::events_named(
                 Adapter::Gemini,chunks(&input,width),4096,ModelDispatch {step,..dispatch},None,
                 Some(provider.reasoning_origin(provider.key.as_deref(),None)),
              None,).try_collect()).unwrap();

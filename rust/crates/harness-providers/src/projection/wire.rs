@@ -280,7 +280,8 @@ pub(super) fn replay_turns_with(
         super::sequence::push(adapter, &mut projected, next).unwrap();
     }
     super::sequence::finish_with(adapter, &mut projected, rules, false).ok()?;
-    match crate::json(&serde_json::to_vec(&projected).unwrap()).unwrap() {
+    match acyclic_harness_provider_response::json(&serde_json::to_vec(&projected).unwrap()).unwrap()
+    {
         Value::Array(output) => Some(output),
         _ => unreachable!("a message list encodes as an array"),
     }

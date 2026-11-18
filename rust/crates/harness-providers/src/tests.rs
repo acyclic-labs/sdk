@@ -97,7 +97,7 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             let body = chunks(&fixture, width);
             let mut parser = None;
             let allocated = acyclic_test_support::measure(|| {
-                parser = Some(stream::events_named(
+                parser = Some(crate::event_driver::events_named(
                     adapter,
                     body,
                     4096,
@@ -147,7 +147,7 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
                         json!({"value":1})
                     )
                     .with_metadata(
-                        json!({"provider_call":{"provider":stream::family(adapter),"id":"call"}})
+                        json!({"provider_call":{"provider":acyclic_harness_provider_response::stream::family(adapter),"id":"call"}})
                     )
                 )
             );
@@ -199,13 +199,13 @@ async fn errors_truncation_and_event_limits_fail_every_adapter() {
             "data: invalid\n\n",
         ] {
             let result: Result<Vec<_>> =
-                stream::events(adapter, chunks(input, 1), 1024, parser_dispatch())
+                crate::event_driver::events(adapter, chunks(input, 1), 1024, parser_dispatch())
                     .try_collect()
                     .await;
             assert!(result.is_err(), "{adapter:?} {input}");
         }
         assert!(
-            stream::events(
+            crate::event_driver::events(
                 adapter,
                 chunks("data: {\"text\":\"oversized\"}\n\n", 1),
                 8,
@@ -239,7 +239,8 @@ async fn malformed_chat_batches_emit_no_tool_calls_or_completion() {
             "data: {}\n\ndata: [DONE]\n\n",
             json!({"choices":[{"delta":{"tool_calls":calls}}]})
         );
-        let mut events = stream::events(Adapter::Chat, chunks(&input, 3), 4096, parser_dispatch());
+        let mut events =
+            crate::event_driver::events(Adapter::Chat, chunks(&input, 3), 4096, parser_dispatch());
         let mut failed = false;
         while let Some(event) = events.next().await {
             assert!(event.is_err());
@@ -259,10 +260,11 @@ async fn portable_chat_arguments_are_emitted_unchanged() {
         "data: {}\n\ndata: [DONE]\n\n",
         json!({"choices":[{"delta":{"tool_calls":calls}}]})
     );
-    let events: Vec<_> = stream::events(Adapter::Chat, chunks(&input, 3), 4096, parser_dispatch())
-        .try_collect()
-        .await
-        .unwrap();
+    let events: Vec<_> =
+        crate::event_driver::events(Adapter::Chat, chunks(&input, 3), 4096, parser_dispatch())
+            .try_collect()
+            .await
+            .unwrap();
     let call = events
         .iter()
         .find_map(|event| match event {
@@ -988,7 +990,8 @@ async fn model_content_is_available_before_the_network_stream_completes() -> Res
         };
         let chunk = Bytes::from(format!("data: {value}\n\n"));
         let body = futures::stream::once(async { Ok(chunk) }).chain(futures::stream::pending());
-        let mut events = stream::events(adapter, Box::pin(body), 4096, parser_dispatch());
+        let mut events =
+            crate::event_driver::events(adapter, Box::pin(body), 4096, parser_dispatch());
         let event = events
             .next()
             .now_or_never()
@@ -1020,7 +1023,8 @@ async fn dropping_model_stream_cancels_the_owned_http_body() -> Result<()> {
             yield Bytes::copy_from_slice(fixture.as_bytes());
             futures::future::pending::<()>().await;
         };
-        let mut stream = stream::events(adapter, Box::pin(body), 4096, parser_dispatch());
+        let mut stream =
+            crate::event_driver::events(adapter, Box::pin(body), 4096, parser_dispatch());
         assert!(stream.next().await.transpose()?.is_some());
         assert!(!cancelled.load(Ordering::SeqCst));
         drop(stream);

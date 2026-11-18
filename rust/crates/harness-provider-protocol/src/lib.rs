@@ -3,6 +3,7 @@
 pub mod content;
 pub mod gemini;
 pub mod name;
+pub mod refusal;
 pub mod sequence;
 pub mod shape;
 

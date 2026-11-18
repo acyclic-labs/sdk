@@ -1,6 +1,15 @@
 //! A fixed-size projection through the original JSON parser, with funded escape scratch.
-use acyclic_harness_core::Result;
+use acyclic_harness_core::{Error, Result};
+use acyclic_harness_provider_protocol::refusal::is_context_overflow;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::Value;
+
+/// Stateful decoding of provider events.
+pub mod stream;
+
+fn invalid(reason: impl Into<String>) -> Error {
+    Error::Invalid(reason.into())
+}
 
 /// No remote string or container survives the classification.
 struct Refusal(bool);
@@ -79,14 +88,9 @@ impl<'de> Visitor<'de> for Position {
     fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Projection, E> {
         Ok(Projection {
             present: true,
-            context: matches!(self, Self::Text)
-                && super::is_context_overflow(Some(text), None, None),
+            context: matches!(self, Self::Text) && is_context_overflow(Some(text), None, None),
             invalid_request: text == "invalid_request_error",
-            long_prompt: super::is_context_overflow(
-                None,
-                Some("invalid_request_error"),
-                Some(text),
-            ),
+            long_prompt: is_context_overflow(None, Some("invalid_request_error"), Some(text)),
             response_error: None,
         })
     }
@@ -192,13 +196,11 @@ impl acyclic_harness_core::filesystem::UploadRecord for Refusal {
     }
 }
 
-pub(crate) fn context_overflow_bytes(
-    bytes: &[u8],
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<bool> {
+/// Detects a context-window refusal without retaining remote strings or containers.
+pub fn context_overflow_bytes(bytes: &[u8], work: acyclic_fs::NativeWork<'_>) -> Result<bool> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        use acyclic_harness_core::{Error, filesystem::PreparationIo};
+        use acyclic_harness_core::filesystem::PreparationIo;
         return match PreparationIo::from_native_work(work)?.decode_json::<Refusal>(bytes) {
             Ok(value) => Ok(value.0),
             Err(Error::NativeJson { .. } | Error::NativeJsonAdmission { .. }) => Ok(false),
@@ -207,4 +209,58 @@ pub(crate) fn context_overflow_bytes(
     }
     let _ = work;
     Ok(serde_json::from_slice::<Refusal>(bytes).is_ok_and(|value| value.0))
+}
+
+/// Measures the JSON representation without allocating the encoded bytes.
+pub fn encoded_json_len<T: serde::Serialize>(value: &T) -> Result<usize> {
+    usize::try_from(acyclic_harness_core::executor::json::json_byte_length(
+        value, None, &mut None,
+    )?)
+    .map_err(|_| acyclic_harness_core::Error::Invalid("token size overflow".into()))
+}
+
+/// Parses a complete provider JSON value with a typed harness error.
+pub fn json(bytes: &[u8]) -> Result<Value> {
+    decode_json(bytes).map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))
+}
+
+/// Parses a complete provider JSON value and preserves serde's error class.
+pub fn decode_json(bytes: &[u8]) -> serde_json::Result<Value> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
+}
+
+/// The one status classification for dispatch, counting, refresh and stream error events.
+/// 408, 429 and 5xx are a typed refusal before generation that redelivery may clear.
+pub fn http_error(status: u16) -> Error {
+    unavailable(status).unwrap_or_else(|| {
+        let message = format!("model HTTP status {status}");
+        match status {
+            401 | 403 => Error::Unauthorized(message),
+            _ => Error::Invalid(message),
+        }
+    })
+}
+
+/// Classifies a transient status before a model starts generating.
+pub fn unavailable(status: u16) -> Option<Error> {
+    matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
+        failure: acyclic_harness_core::ModelTransportFailure::Status(status),
+        excerpt: String::new(),
+    })
+}
+
+/// Keep the transport class without formatting an untrusted cause. Transport errors
+/// may include request URLs, headers or response text containing credentials.
+pub fn transport_failure(
+    _native: bool,
+    failure: acyclic_harness_core::ModelTransportFailure,
+    _cause: impl std::fmt::Display,
+) -> Error {
+    Error::ModelUnavailable {
+        failure,
+        excerpt: String::new(),
+    }
 }

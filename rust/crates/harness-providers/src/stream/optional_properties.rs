@@ -1,5 +1,8 @@
-use super::*;
+use crate::Adapter;
+use acyclic_harness_core::model::ModelEvent;
+use acyclic_harness_provider_response::stream::{State, parse};
 use proptest::prelude::*;
+use serde_json::Value;
 use serde_json::json;
 
 // These are generated parser mutations, not captured provider transcripts.
@@ -54,13 +57,13 @@ proptest! {
                 let expected = parse(&mut omitted, adapter, &left.to_string()).unwrap();
                 let actual = parse(&mut nullable, adapter, &right.to_string()).unwrap();
                 prop_assert_eq!(actual, expected);
-                prop_assert_eq!(&nullable.metadata, &omitted.metadata);
-                prop_assert_eq!(&nullable.completed_message, &omitted.completed_message);
-                prop_assert_eq!(nullable.calls.len(), omitted.calls.len());
-                prop_assert_eq!(nullable.thinking.len(), omitted.thinking.len());
-                prop_assert_eq!(nullable.budget.used(), omitted.budget.used());
+                prop_assert_eq!(nullable.observe().metadata, omitted.observe().metadata);
+                prop_assert_eq!(nullable.observe().completed_message, omitted.observe().completed_message);
+                prop_assert_eq!(nullable.observe().calls, omitted.observe().calls);
+                prop_assert_eq!(nullable.observe().thinking, omitted.observe().thinking);
+                prop_assert_eq!(nullable.observe().retained_bytes, omitted.observe().retained_bytes);
                 if adapter == Adapter::Anthropic && left["delta"]["type"] == "thinking_delta" {
-                    prop_assert!(nullable.thinking.is_empty(), "absent reasoning deltas must not admit a block");
+                    prop_assert!(nullable.observe().thinking == 0, "absent reasoning deltas must not admit a block");
                 }
             }
             let dispatch = ModelDispatch {
@@ -129,15 +132,15 @@ proptest! {
         for frame in malformed {
             let mut state = State::new(16384);
             prop_assert!(parse(&mut state, Adapter::Anthropic, &initial.to_string()).unwrap().is_empty());
-            let receipt = state.budget.used();
+            let receipt = state.observe().retained_bytes;
             prop_assert!(parse(&mut state, Adapter::Anthropic, &frame.to_string()).is_err());
-            prop_assert_eq!(state.calls.len(),1);
-            prop_assert_eq!(&state.calls[&0].arguments, &input.to_string());
-            prop_assert_eq!(state.budget.used(), receipt, "invalid input allocated retained call storage");
+            prop_assert_eq!(state.observe().calls,1);
+            prop_assert_eq!(state.observe_call(0).unwrap().arguments, input.to_string());
+            prop_assert_eq!(state.observe().retained_bytes, receipt, "invalid input allocated retained call storage");
 
             let frames = format!("data: {initial}\n\ndata: {frame}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
             let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
-            let result = futures::executor::block_on(events(
+            let result = futures::executor::block_on(crate::event_driver::events(
                 Adapter::Anthropic, Box::pin(body), 16384, dispatch,
             ).try_collect::<Vec<_>>());
             prop_assert!(result.is_err(), "malformed input released the original pending tool batch");
@@ -156,7 +159,7 @@ proptest! {
 
         let frames = format!("data: {initial}\n\ndata: {second}\n\ndata: {empty}\n\ndata: {delta}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
         let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
-        let accepted = futures::executor::block_on(events(
+        let accepted = futures::executor::block_on(crate::event_driver::events(
             Adapter::Anthropic, Box::pin(body), 16384, dispatch,
         ).try_collect::<Vec<_>>()).unwrap();
         let calls: Vec<_> = accepted.iter().filter_map(|event| match event {

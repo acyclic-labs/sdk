@@ -86,7 +86,7 @@ impl CredentialIo {
     pub fn json(&mut self, bytes: &[u8]) -> Result<Value> {
         let (bytes_count, nodes) = native::shape(bytes);
         self.graph(bytes_count, nodes)?;
-        self.checked(crate::json(bytes))
+        self.checked(acyclic_harness_provider_response::json(bytes))
     }
 
     pub fn checked<T>(&mut self, result: Result<T>) -> Result<T> {

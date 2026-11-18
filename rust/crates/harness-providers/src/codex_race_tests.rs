@@ -194,7 +194,7 @@ async fn rejected_refresh_retries_the_changed_on_disk_refresh_token() -> Result<
             .map_err(|_| invalid("fixture lock"))?;
         assert_eq!(requests.len(), 2);
         assert_eq!(
-            crate::json(&requests[1].body)?["refresh_token"],
+            acyclic_harness_provider_response::json(&requests[1].body)?["refresh_token"],
             "rotated-by-cli"
         );
     }
@@ -469,9 +469,10 @@ fn oversized_merge_preserves_original(
     let outcome = if remove_size_bound {
         // Mutation of stage: use its real writer and atomic publication but
         // omit only the encoded-size guard. The same oracle must reject it.
-        let mut merged = crate::json(&original).unwrap();
+        let mut merged = acyclic_harness_provider_response::json(&original).unwrap();
         merged["tokens"]["access_token"] = transport.response["access_token"].clone();
-        let encoded = crate::projection::encoded_len(&merged).unwrap() as u64 + 1;
+        let encoded =
+            acyclic_harness_provider_response::encoded_json_len(&merged).unwrap() as u64 + 1;
         let mut staged = crate::credential_file::create(root.path()).unwrap();
         write_staged(
             &mut staged,

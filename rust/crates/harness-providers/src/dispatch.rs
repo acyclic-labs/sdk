@@ -66,7 +66,7 @@ pub(crate) fn generate_encoded<'a>(
             });
             let mut failure = None;
             {
-                let events = crate::stream::events_named(provider.config.adapter, response_body.body,
+                let events = crate::event_driver::events_named(provider.config.adapter, response_body.body,
                     provider.config.max_event_bytes, dispatch, Some(&names), Some(origin), response_body.request_id);
                 let mut events = core::pin::pin!(events);
                 while let Some(event) = events.next().await {

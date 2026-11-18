@@ -88,7 +88,7 @@ pub fn call<'a>(
         return Err(crate::invalid("retained Gemini call carries no call"));
     };
     let same_arguments = match original.args {
-        Some(raw) => crate::json(raw.get().as_bytes())? == *arguments,
+        Some(raw) => acyclic_harness_provider_response::json(raw.get().as_bytes())? == *arguments,
         None => arguments.as_object().is_some_and(|args| args.is_empty()),
     };
     if original.id.map(decode).transpose()?.as_deref() != id

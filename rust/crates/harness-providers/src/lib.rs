@@ -36,6 +36,7 @@ mod credentials;
 mod deadline;
 mod diagnostic;
 mod dispatch;
+mod event_driver;
 mod files;
 #[cfg(test)]
 mod fixtures;
@@ -58,6 +59,7 @@ mod resolved;
 mod retry;
 mod spec;
 mod sse;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod stream;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -87,6 +89,7 @@ pub use resolved::ResolvedModel;
 pub use spec::{Authentication, PromptCache, ProviderSpec, RetrySpec, TimeoutSpec};
 
 use acyclic_harness_core::{Error, Result};
+use acyclic_harness_provider_response::{http_error, unavailable};
 use serde_json::Value;
 mod sync;
 
@@ -98,40 +101,8 @@ fn invalid(reason: impl Into<String>) -> Error {
     Error::Invalid(reason.into())
 }
 
-/// The one status classification for dispatch, counting, refresh and stream error events.
-/// 408, 429 and 5xx are a typed refusal before generation that redelivery may clear.
-fn http_error(status: u16) -> Error {
-    unavailable(status).unwrap_or_else(|| {
-        let message = format!("model HTTP status {status}");
-        match status {
-            401 | 403 => Error::Unauthorized(message),
-            _ => Error::Invalid(message),
-        }
-    })
-}
-
 /// Admission for a locally rendered status diagnostic. Remote text is never retained.
 const EXCERPT_BYTES: usize = 256;
-
-fn unavailable(status: u16) -> Option<Error> {
-    matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
-        failure: acyclic_harness_core::ModelTransportFailure::Status(status),
-        excerpt: String::new(),
-    })
-}
-
-/// Keep the transport class without formatting an untrusted cause. Transport errors
-/// may include request URLs, headers or response text containing credentials.
-fn transport_failure(
-    _native: bool,
-    failure: acyclic_harness_core::ModelTransportFailure,
-    _cause: impl std::fmt::Display,
-) -> Error {
-    Error::ModelUnavailable {
-        failure,
-        excerpt: String::new(),
-    }
-}
 
 /// A retrying operation needs only refusal headers. Reading a transient diagnostic
 /// could wait forever and cannot change the HTTP recovery classification.
@@ -188,24 +159,15 @@ async fn read_http_failure(
     // Only context classification consumes a body; it emits a typed result.
     if matches!(status, 400 | 413) {
         return match http::bounded::read(body, maximum, work).await {
-            Ok(body) => match stream::context_overflow_bytes(&body.bytes, work) {
-                Ok(true) => Error::ModelContextOverflow,
-                Ok(false) => http_error(status),
-                Err(error) => error,
-            },
+            Ok(body) => {
+                match acyclic_harness_provider_response::context_overflow_bytes(&body.bytes, work) {
+                    Ok(true) => Error::ModelContextOverflow,
+                    Ok(false) => http_error(status),
+                    Err(error) => error,
+                }
+            }
             Err(error) => error,
         };
     }
     http_error(status)
-}
-
-fn json(bytes: &[u8]) -> Result<Value> {
-    decode_json(bytes).map_err(|error| invalid(error.to_string()))
-}
-
-fn decode_json(bytes: &[u8]) -> serde_json::Result<Value> {
-    let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)?;
-    decoder.end()?;
-    Ok(value)
 }

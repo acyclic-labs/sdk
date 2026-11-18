@@ -100,7 +100,8 @@ impl<'work> State<'work> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn reasoning_shape(&self) -> Result<(u64, u64)> {
+    /// Measures retained reasoning payloads before decoding final events.
+    pub fn reasoning_shape(&self) -> Result<(u64, u64)> {
         let bytes = self.thinking.values().try_fold(0u64, |bytes, block| {
             bytes
                 .checked_add(block.bytes() as u64)
@@ -116,7 +117,8 @@ impl<'work> State<'work> {
             .ok_or_else(|| invalid("reasoning size overflow"))?;
         Ok((bytes, self.thinking.len() as u64 * 8))
     }
-    pub(crate) fn set_origin(&mut self, origin: Option<ReasoningOrigin>) -> Result<()> {
+    /// Retains the origin associated with native reasoning state.
+    pub fn set_origin(&mut self, origin: Option<ReasoningOrigin>) -> Result<()> {
         if let Some(origin) = &origin {
             self.budget
                 .add(origin.provider.capacity() + origin.model.capacity())?;
@@ -196,7 +198,8 @@ pub(super) fn native_origin(
     })
 }
 
-pub(crate) fn family(adapter: Adapter) -> &'static str {
+/// Returns the canonical wire name of a model adapter.
+pub fn family(adapter: Adapter) -> &'static str {
     match adapter {
         Adapter::Anthropic => "anthropic",
         Adapter::Responses => "responses",

@@ -126,7 +126,7 @@ pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
 // building or parsing a second URL. Length framing separates every component.
 fn identity(provider: &ResolvedModel) -> [&[u8]; 3] {
     [
-        crate::stream::family(provider.config.adapter).as_bytes(),
+        acyclic_harness_provider_response::stream::family(provider.config.adapter).as_bytes(),
         provider.config.base_url.as_bytes(),
         provider.model.name.as_bytes(),
     ]
@@ -530,7 +530,7 @@ mod tests {
                 "\"prompt_tokens\":5",
                 "\"prompt_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":0}",
             );
-            let events: Vec<_> = crate::stream::events(
+            let events: Vec<_> = crate::event_driver::events(
                 Family::Chat,
                 crate::tests::chunks(reply, 7),
                 4096,
@@ -661,7 +661,7 @@ mod tests {
             let prepared =
                 PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
             let names = crate::tool_names::Names::new(prepared.request());
-            let events: Vec<_> = crate::stream::events_named(
+            let events: Vec<_> = crate::event_driver::events_named(
                 crate::Adapter::Chat,
                 crate::tests::chunks(reply, 7),
                 4096,

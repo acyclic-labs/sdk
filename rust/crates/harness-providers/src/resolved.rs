@@ -252,7 +252,7 @@ impl ResolvedModel {
         key: Option<&str>,
         account: Option<&str>,
     ) -> acyclic_harness_core::model::ReasoningOrigin {
-        let family = crate::stream::family(self.config.adapter);
+        let family = acyclic_harness_provider_response::stream::family(self.config.adapter);
         // Native continuity belongs to whoever authenticates the request. An
         // anonymous route sends no credential of ours: the endpoint and its
         // configured headers (a gateway or proxy that injects credentials)

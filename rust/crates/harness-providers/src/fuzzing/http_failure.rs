@@ -78,12 +78,12 @@ pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
         }
     }
     if matches!(status, 400 | 413)
-        && let Ok(value) = crate::json(bytes)
+        && let Ok(value) = acyclic_harness_provider_response::json(bytes)
     {
         let canonical = serde_json::to_vec(&value).expect("JSON value encodes");
         let escaped = escaped_strings(&canonical);
         assert_eq!(
-            crate::json(&escaped).unwrap(),
+            acyclic_harness_provider_response::json(&escaped).unwrap(),
             value,
             "escape mutation changed JSON meaning"
         );
@@ -95,7 +95,7 @@ pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
         return true;
     }
     assert!(
-        !matches!(status, 400 | 413) || crate::json(bytes).is_err(),
+        !matches!(status, 400 | 413) || acyclic_harness_provider_response::json(bytes).is_err(),
         "production-accepted refusal skipped fuzz spelling comparison"
     );
     false
@@ -210,7 +210,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         input[..2].copy_from_slice(&status.to_le_bytes());
         assert_http_failure_invariants(&input);
     }
-    let value = crate::json(&captured[2..]).unwrap();
+    let value = acyclic_harness_provider_response::json(&captured[2..]).unwrap();
     let mut control = value.clone();
     control["ignored"] = serde_json::Value::String("\u{000b}\\u000b".into());
     let mut control_input = captured[..2].to_vec();
@@ -241,7 +241,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         let bytes = serde_json::to_vec(&mutation).unwrap();
         for spelling in [&bytes, &escaped_strings(&bytes)] {
             assert_eq!(
-                crate::stream::context_overflow_bytes(spelling, None).unwrap(),
+                acyclic_harness_provider_response::context_overflow_bytes(spelling, None).unwrap(),
                 expected
             );
         }
@@ -254,10 +254,14 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         )
         .unwrap();
         let baseline = work.live_allocation_bytes();
-        assert!(crate::stream::context_overflow_bytes(bytes, Some(&work)).unwrap());
+        assert!(
+            acyclic_harness_provider_response::context_overflow_bytes(bytes, Some(&work)).unwrap()
+        );
         assert_eq!(work.live_allocation_bytes(), baseline);
         cancellation.cancel();
-        assert!(crate::stream::context_overflow_bytes(bytes, Some(&work)).is_err());
+        assert!(
+            acyclic_harness_provider_response::context_overflow_bytes(bytes, Some(&work)).is_err()
+        );
         assert_eq!(work.live_allocation_bytes(), baseline);
 
         let denied = acyclic_fs::NativeMaterializationWork::new(
@@ -269,7 +273,10 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         )
         .unwrap();
         let baseline = denied.live_allocation_bytes();
-        assert!(crate::stream::context_overflow_bytes(bytes, Some(&denied)).is_err());
+        assert!(
+            acyclic_harness_provider_response::context_overflow_bytes(bytes, Some(&denied))
+                .is_err()
+        );
         assert_eq!(denied.live_allocation_bytes(), baseline);
     }
 }
