@@ -100,8 +100,6 @@ fn assert_source_edit_invalidates_output(
 
     fs::write(&source, &original).unwrap();
     assert_eq!(hash_file(&source), original_hash);
-    let drift = run_drift(fixture);
-    assert!(drift.status.success(), "{}", output_message(&drift));
 
     original_hash
 }
@@ -144,6 +142,9 @@ fn crate_workspace_and_plugin_source_edits_invalidate_output() {
             assert_source_edit_invalidates_output(&fixture, path, changed),
         )
     });
+
+    let drift = run_drift(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
 
     let refreshed_output = fixture.root.join("refreshed-after-source-restore");
     let refreshed = run_generate(
