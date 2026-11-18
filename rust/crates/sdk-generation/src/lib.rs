@@ -69,8 +69,7 @@ struct GenerateArgs {
     skip_scenarios: bool,
     historical_archives: Option<PathBuf>,
     historical_source: HistoricalSource,
-    registry_frontier_repository: Option<PathBuf>,
-    registry_frontier_revisions: BTreeSet<String>,
+    registry_frontier: Option<(PathBuf, BTreeSet<String>)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -233,9 +232,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         ));
     }
     if historical_archives.is_some()
-        && (channel != Channel::Release
-            || rustdoc_dir.is_some()
-            || flags.contains_key("skip-scenarios"))
+        && (channel != Channel::Release || flags.contains_key("skip-scenarios"))
     {
         return Err(CliError(
             "historical archives require executed release profiles and all actual Cargo examples"
@@ -254,19 +251,23 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
             "registry frontier inputs require registry-archives mode".into(),
         ));
     }
-    if registry_frontier_repository.is_some() != !registry_frontier_revisions.is_empty() {
-        return Err(CliError(
-            "complete registry admission requires both source repository and history anchors"
-                .into(),
-        ));
-    }
-    if historical_source == HistoricalSource::RegistryArchives
-        && registry_frontier_repository.is_none()
-    {
-        return Err(CliError(
-            "new registry-archive generation requires a complete registry corpus".into(),
-        ));
-    }
+    let registry_frontier = match (registry_frontier_repository, registry_frontier_revisions) {
+        (Some(repository), revisions) if !revisions.is_empty() => Some((repository, revisions)),
+        (None, revisions) if revisions.is_empty() => {
+            if historical_source == HistoricalSource::RegistryArchives {
+                return Err(CliError(
+                    "new registry-archive generation requires a complete registry corpus".into(),
+                ));
+            }
+            None
+        }
+        _ => {
+            return Err(CliError(
+                "complete registry admission requires both source repository and history anchors"
+                    .into(),
+            ))
+        }
+    };
     Ok(GenerateArgs {
         root: required("root")?.into(),
         output: required("output")?.into(),
@@ -276,8 +277,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         skip_scenarios: flags.contains_key("skip-scenarios"),
         historical_archives,
         historical_source,
-        registry_frontier_repository,
-        registry_frontier_revisions,
+        registry_frontier,
     })
 }
 

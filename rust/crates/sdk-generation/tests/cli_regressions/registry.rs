@@ -647,7 +647,7 @@ fn historical_source_help_and_flag_contract_are_explicit() {
     let text = output_message(&help);
     assert!(text.contains("--historical-archives DIR"));
     assert!(text.contains("--historical-source git|registry-archives"));
-    let missing_frontier = invoke(Command::new(&binary).args([
+    let generate = [
         "generate",
         "--root",
         "missing-root",
@@ -662,9 +662,21 @@ fn historical_source_help_and_flag_contract_are_explicit() {
         "registry-archives",
         "--historical-archives",
         "missing-archives",
-    ]));
-    assert!(!missing_frontier.status.success());
-    assert!(output_message(&missing_frontier).contains("requires a complete registry corpus"));
+    ];
+    let rejected = invoke(Command::new(&binary).args(generate));
+    assert!(!rejected.status.success());
+    assert!(output_message(&rejected).contains("requires a complete registry corpus"));
+    for incomplete in [
+        ["--registry-frontier-repository", "missing-repository"],
+        [
+            "--registry-frontier-revisions",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+    ] {
+        let rejected = invoke(Command::new(&binary).args(generate).args(incomplete));
+        assert!(!rejected.status.success());
+        assert!(output_message(&rejected).contains("requires both"));
+    }
     for (mode, expected) in [
         ("registry-archives", "requires --historical-archives"),
         ("unverified", "unknown historical source"),

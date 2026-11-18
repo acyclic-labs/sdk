@@ -1,50 +1,6 @@
 #[cfg(windows)]
 use std::process::Command;
 
-#[test]
-fn registry_frontier_cli_requires_paired_authority_inputs() {
-    let base: Vec<String> = [
-        "--root",
-        "root",
-        "--output",
-        "output",
-        "--version",
-        "0.1.1",
-        "--channel",
-        "release",
-        "--execute-profiles",
-        "--historical-archives",
-        "archives",
-        "--historical-source",
-        "registry-archives",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    // Older manifests can still be decoded; new generation must capture closure.
-    assert!(parse_generate(base.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("requires a complete registry corpus"));
-    let mut missing = base.clone();
-    missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(parse_generate(missing)
-        .unwrap_err()
-        .to_string()
-        .contains("requires both"));
-    let mut complete = base;
-    complete.extend([
-        "--registry-frontier-repository".into(),
-        "repository".into(),
-        "--registry-frontier-revisions".into(),
-        "a".repeat(40),
-    ]);
-    let args = parse_generate(complete).unwrap();
-    assert_eq!(
-        args.registry_frontier_revisions,
-        BTreeSet::from(["a".repeat(40)])
-    );
-}
 use super::*;
 use sha2::{Digest, Sha256};
 

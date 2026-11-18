@@ -37,12 +37,11 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
         .then(|| documentation_cargo(&root, args.historical_archives.is_some()))
         .transpose()?;
     let registry_corpus = args
-        .registry_frontier_repository
-        .as_deref()
-        .map(|repository| {
+        .registry_frontier
+        .map(|(repository, revisions)| {
             historical::capture_registry_cohort(
-                repository,
-                args.registry_frontier_revisions.clone(),
+                &repository,
+                revisions,
                 &output.join("registry-frontier"),
                 cargo_path
                     .as_deref()
