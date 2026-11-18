@@ -284,11 +284,10 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
-        if root
-            .ancestors()
-            .any(|ancestor| ancestor.join(".cargo").exists())
-        {
-            continue;
+        for ancestor in root.ancestors() {
+            if ancestor.join(".cargo").try_exists()? {
+                continue 'fixture;
+            }
         }
         let sources = metadata["sources"].as_array().unwrap();
         let artifacts = metadata["artifacts"].as_str().unwrap();
