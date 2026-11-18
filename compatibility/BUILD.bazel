@@ -192,6 +192,7 @@ rust_test(
         "//rust/crates/stream/models:tree",
         "//rust/crates/stream/publication-models:tree",
         "//rust/crates/stream-body:tree",
+        "//rust/crates/stream-rpc-inventory:tree",
         "//rust/crates/stream-trust:tree",
         "//rust/crates/stream-wire:tree",
         "//rust/crates/stream:tree",

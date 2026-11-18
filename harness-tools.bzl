@@ -17,7 +17,7 @@ HARNESS_TOOLS = {
     "//rust/crates/proto-codegen:sdk-proto-codegen": Label("//rust/crates/proto-codegen:sdk-proto-codegen"),
     "//rust/crates/stream:stream-authorization_example": Label("//rust/crates/stream:stream-authorization_example"),
     "//rust/crates/stream-wire:stream-http-contract": Label("//rust/crates/stream-wire:stream-http-contract"),
-    "//rust/crates/stream:stream-rpc-inventory": Label("//rust/crates/stream:stream-rpc-inventory"),
+    "//rust/crates/stream-rpc-inventory:stream-rpc-inventory": Label("//rust/crates/stream-rpc-inventory:stream-rpc-inventory"),
     "//rust/crates/stream:token-operations_example": Label("//rust/crates/stream:token-operations_example"),
     "//rust/crates/workers:workers-authorization_example": Label("//rust/crates/workers:workers-authorization_example"),
     "//rust/crates/inference-wasm:inference-typescript-http-routes_example": Label("//rust/crates/inference-wasm:inference-typescript-http-routes_example"),
