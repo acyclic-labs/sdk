@@ -982,20 +982,21 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         Ok(())
     }
 
-    fn digest_from_key(&self, key: &str) -> Result<Digest, Error> {
+    fn medium_key(&self, key: &str) -> Result<crate::MediumKey, Error> {
         let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
-        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
-            crate::MediumKey::Envelope(digest) | crate::MediumKey::Payload { digest, .. } => {
-                Ok(digest)
-            }
+        crate::MediumKey::parse(relative).map_err(|_| corrupt())
+    }
+
+    fn digest_from_key(&self, key: &str) -> Result<Digest, Error> {
+        match self.medium_key(key)? {
+            crate::MediumKey::Envelope(digest) => Ok(digest),
             _ => Err(corrupt()),
         }
     }
 
     /// The digest and version a payload key names.
     fn payload_of(&self, key: &str) -> Result<(Digest, [u8; 16]), Error> {
-        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
-        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+        match self.medium_key(key)? {
             crate::MediumKey::Payload { digest, version } => Ok((digest, version)),
             _ => Err(corrupt()),
         }
