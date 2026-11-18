@@ -12,7 +12,7 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/core/observe";
-import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {
   readonly endpoint: string; readonly fetcher?: typeof fetch;
@@ -73,15 +73,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
       throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
     }
-    const input = await validateWireRequest({
-      kind: "children_page",
-      ...(request.offset === undefined ? {} : { offset: request.offset }),
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
-      limit: request.limit,
-    });
+    const input = await validateChildrenPageRequest(request);
     return this.#request("children/page", await encodeHttpRequest("children/page", input));
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { const authored = structuredClone(request); const retained = structuredClone(options); const input = await normalizeWireCommitBytes(authored, retained); const result = await this.#request("commit", await encodeHttpRequest("commit", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }

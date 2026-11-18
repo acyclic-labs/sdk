@@ -10,7 +10,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -246,15 +246,8 @@ export class NativeStreamProvider implements StreamProvider {
     }, signal);
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const authored = { kind: "children_page" as const,
-      ...(request.offset === undefined ? {} : { offset: request.offset }),
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
-    };
-    await validateWireRequest(authored);
-    const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(wireRequest(authored)))));
+    const input = await validateChildrenPageRequest(request);
+    const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(input))));
     return this.project("children_page", value) as ChildrenPage;
   }
 

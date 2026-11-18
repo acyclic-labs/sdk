@@ -200,6 +200,19 @@ export function wireRequest(request: WireRequest): Uint8Array {
   }
 }
 
+export function validateChildrenPageRequest(request: import("./types.js").ChildrenPageRequest): Promise<Uint8Array> {
+  const { offset, tailStream, parent, after, hierarchyVersion, limit } = request;
+  return validateWireRequest({
+    kind: "children_page",
+    ...(offset === undefined ? {} : { offset }),
+    ...(tailStream === undefined ? {} : { tailStream }),
+    ...(parent === undefined ? {} : { parent }),
+    ...(after === undefined ? {} : { after }),
+    ...(hierarchyVersion === undefined ? {} : { hierarchyVersion }),
+    limit,
+  });
+}
+
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
