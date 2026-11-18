@@ -234,11 +234,13 @@ function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
 }
 export async function validateAppend(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<Uint8Array> {
+  const records = values.map(value => value.slice());
+  const authored = structuredClone(options);
   // Validate path before optional fields so the canonical path error wins.
   await ensureStreamWasm();
   validatePathValue(path);
-  if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
-  return validateWireAppend(path, values, options);
+  if (authored?.ifTail !== undefined) validateSequenceValue(authored.ifTail);
+  return validateWireAppend(path, records, authored);
 }
 function environmentValue(name: string): string {
   const runtime = globalThis as typeof globalThis & { process?: { env?: Readonly<{ [key: string]: string | undefined }> } };

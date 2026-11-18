@@ -66,9 +66,7 @@ class RustStreamProvider implements StreamProvider {
     return fromBinary(TailResponseSchema, await this.#dispatch("tail", input)).tail;
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
-    const records = values.map(value => value.slice());
-    const authored = structuredClone(options);
-    const request = await validateAppend(path, records, authored);
+    const request = await validateAppend(path, values, options);
     return this.#project<AppendResult>("append", request);
   }
 

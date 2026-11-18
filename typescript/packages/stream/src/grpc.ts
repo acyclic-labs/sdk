@@ -274,9 +274,7 @@ export class GrpcStreamProvider implements StreamProvider {
     return response.tail;
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
-    const records = values.map(value => value.slice());
-    const authored = structuredClone(options);
-    const input = await validateAppend(path, records, authored);
+    const input = await validateAppend(path, values, options);
     const request = fromBinary(wire.AppendRequestSchema, input);
     const response = await this.#call("append", () => this.#client.append(request));
     const result = this.#project<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));

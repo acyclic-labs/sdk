@@ -168,9 +168,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
-    const records = values.map(value => value.slice());
-    const authored = structuredClone(options);
-    const input = await validateAppend(path, records, authored);
+    const input = await validateAppend(path, values, options);
     const value = await this.operation("append", this.request(client => client.appendResult(Buffer.from(input))));
     return this.project("append", value) as AppendResult;
   }
