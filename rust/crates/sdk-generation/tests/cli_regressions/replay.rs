@@ -201,7 +201,8 @@ fn project_inner(
                 .map(|feature| feature.as_str().unwrap().to_owned())
                 .collect(),
         };
-        assert_eq!(spec.id().0, row["profile"].as_str().unwrap());
+        let id = spec.id();
+        assert_eq!(id.0, row["profile"].as_str().unwrap());
         let receipt = receipt_path(&fixture.rustdoc, row);
         assert_eq!(
             rustdoc_digest(&receipt, &fixture.root).unwrap(),
@@ -217,7 +218,7 @@ fn project_inner(
         profiles::validate_rustdoc_version(metadata, &spec.package, &observation).unwrap();
         let owner = profiles::api_owner_for_package(metadata, &spec.package).unwrap();
         items.extend(
-            profiles::extract_owned_api(&receipt, &owner, spec.id(), &observation.crate_name)
+            profiles::extract_owned_api(&receipt, &owner, id.clone(), &observation.crate_name)
                 .unwrap(),
         );
         let package = metadata
@@ -227,19 +228,19 @@ fn project_inner(
             .unwrap();
         let package_metadata = sdk_docs::PackageMetadata {
             rustdoc_source_root: None,
-            rustdoc_file: receipt.clone(),
+            rustdoc_file: receipt,
             package_name: spec.package.clone(),
             crate_name: observation.crate_name,
             version: package.version.to_string(),
         };
         let base = spec.default_features && spec.features.is_empty();
-        assert!(specs.insert(spec.id(), spec).is_none());
-        prepared.push((base, receipt, package_metadata));
+        assert!(specs.insert(id, spec).is_none());
+        prepared.push((base, package_metadata));
     }
-    let build = |selected: Vec<&(bool, PathBuf, sdk_docs::PackageMetadata)>| {
+    let build = |selected: Vec<&(bool, sdk_docs::PackageMetadata)>| {
         let receipts = selected
             .iter()
-            .map(|(_, receipt, _)| receipt.clone())
+            .map(|(_, metadata)| metadata.rustdoc_file.clone())
             .collect::<Vec<_>>();
         sdk_docs::build_data(
             &sdk_docs::BuildInput {
@@ -257,7 +258,7 @@ fn project_inner(
                 rustdoc_files: receipts,
                 package_metadata: selected
                     .iter()
-                    .map(|(_, _, metadata)| metadata.clone())
+                    .map(|(_, metadata)| metadata.clone())
                     .collect(),
                 mark_latest: false,
             },
@@ -265,8 +266,8 @@ fn project_inner(
         )
         .unwrap()
     };
-    let mut data = build(prepared.iter().filter(|(base, _, _)| *base).collect());
-    for variant in prepared.iter().filter(|(base, _, _)| !*base) {
+    let mut data = build(prepared.iter().filter(|(base, _)| *base).collect());
+    for variant in prepared.iter().filter(|(base, _)| !*base) {
         sdk_docs::merge_profile_catalog(&mut data, build(vec![variant])).unwrap();
     }
     let availability = profiles::project_into_docs(&data, metadata, items, &specs).unwrap();
