@@ -18,139 +18,55 @@ pub use handler::{FencedHandler, VersionedHandler};
 #[cfg(test)]
 mod tests;
 
+pub use acyclic_actors_guest_wire::compatibility::{
+    Adapter, CompatibilityManifest, HandoffRequirements, PeerRange, RpcSchema, Schema,
+};
+use acyclic_actors_guest_wire::live_selection::decimal;
 pub use acyclic_actors_guest_wire::live_selection::{
     Artifact, CallPair, ChangeKind, DeploymentId, Error, Fraction, GuardDecision, POLICY_FILE, Pin,
     RolloutPolicy, RolloutStatus, SELECTION_FILE, SELECTION_REQUEST_FILE, STATUS_FILE, Selection,
     SelectionChange, Split, VERSIONS_DIRECTORY, Version, decode, encode,
 };
-use acyclic_actors_guest_wire::live_selection::{decimal, optional_decimal};
 
-/// Canonical public schema, rather than a Cloud-maintained parallel declaration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Schema {
-    /// Canonical Protobuf FileDescriptorSet including its dependency closure.
-    pub descriptor_set: Vec<u8>,
-    /// Fully qualified message name within that descriptor set.
-    pub message: String,
-}
-
-/// Request and reply must both remain readable across every reachable live edge.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RpcSchema {
-    /// Request declaration.
-    pub request: Schema,
-    /// Reply declaration, including unsupported-enum/unknown-field behavior.
-    pub reply: Schema,
-}
-
-/// Inclusive supported range in exactly one peer deployment, never a bare epoch.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PeerRange {
-    /// Scope of the peer's immutable publication numbers.
-    pub deployment: DeploymentId,
-    /// First supported immutable publication.
-    #[serde(with = "decimal")]
-    #[ts(type = "string")]
-    pub first: NonZeroU64,
-    /// Last supported publication; None means unbounded, without a fallback.
-    #[serde(with = "optional_decimal")]
-    #[ts(type = "string | null")]
-    pub last: Option<NonZeroU64>,
-}
-
-/// State and the original turn journal's decoder obligations at handoff.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HandoffRequirements {
-    /// Codec emitted by this publication.
-    pub writes: crate::guest::CodecIdentity,
-    /// Every state/continuation codec this publication can resume.
-    pub reads: Vec<crate::guest::CodecIdentity>,
-    /// Original journal formats this publication can consume without reissuing work.
-    pub journal_reads: Vec<crate::guest::CodecIdentity>,
-    /// Durable await support is explicit. False forbids idle-free cutover claims.
-    pub durable_await: bool,
-}
-
-/// Explicit application adapter in the immutable authenticated publication.
-/// Cloud validates its executable artifact and edge before accepting a rollout.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Adapter {
-    /// Exact source schema digest.
-    pub from: [u8; 32],
-    /// Exact destination schema digest.
-    pub to: [u8; 32],
-    /// Application code providing the declared adapter, never a host fallback.
-    pub code: [u8; 32],
-}
-
-/// Upload compatibility manifest. Live obligations include hibernated/pinned
-/// Actors and unresolved inboxes, turns and receipts, not only executing heaps.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CompatibilityManifest {
-    /// Public method name to canonical request/reply pair.
-    pub rpcs: BTreeMap<String, RpcSchema>,
-    /// Durable message name to canonical schema.
-    pub messages: BTreeMap<String, Schema>,
-    /// All declared peer deployment ranges; both call directions are checked.
-    pub peers: Vec<PeerRange>,
-    /// Retained state/journal obligations, also enforced before rollback.
-    pub handoff: HandoffRequirements,
-    /// Explicit incompatible-edge adapters supplied by the application.
-    pub adapters: Vec<Adapter>,
-}
-
-impl CompatibilityManifest {
-    /// Identity of the declared RPC requests/replies and durable messages.
-    pub fn schema_digest(&self) -> Result<[u8; 32], Error> {
-        Ok(Sha256::digest(encode(&(&self.rpcs, &self.messages))?).into())
+fn validate_compatibility(manifest: &CompatibilityManifest) -> Result<(), Error> {
+    let mut schemas = manifest.messages.iter().collect::<Vec<_>>();
+    for (name, rpc) in &manifest.rpcs {
+        schemas.extend([(name, &rpc.request), (name, &rpc.reply)]);
     }
-
-    fn validate(&self) -> Result<(), Error> {
-        let mut schemas = self.messages.iter().collect::<Vec<_>>();
-        for (name, rpc) in &self.rpcs {
-            schemas.extend([(name, &rpc.request), (name, &rpc.reply)]);
+    for (name, schema) in schemas {
+        #[cfg(test)]
+        tests::DESCRIPTOR_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
+        let pool = prost_reflect::DescriptorPool::decode(schema.descriptor_set.as_slice())
+            .map_err(|_| Error::Invalid("schema descriptor"))?;
+        if name.is_empty() || pool.get_message_by_name(&schema.message).is_none() {
+            return Err(Error::Invalid("public schema root"));
         }
-        for (name, schema) in schemas {
-            #[cfg(test)]
-            tests::DESCRIPTOR_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
-            let pool = prost_reflect::DescriptorPool::decode(schema.descriptor_set.as_slice())
-                .map_err(|_| Error::Invalid("schema descriptor"))?;
-            if name.is_empty() || pool.get_message_by_name(&schema.message).is_none() {
-                return Err(Error::Invalid("public schema root"));
-            }
-        }
-        let mut scopes = std::collections::BTreeSet::new();
-        for peer in &self.peers {
-            peer.deployment.validate()?;
-            if !scopes.insert(&peer.deployment) || peer.last.is_some_and(|last| last < peer.first) {
-                return Err(Error::Invalid("peer range"));
-            }
-        }
-        if !self.handoff.reads.contains(&self.handoff.writes)
-            || self.handoff.writes.name.is_empty()
-            || self.handoff.writes.version.is_empty()
-            || self
-                .handoff
-                .reads
-                .iter()
-                .chain(&self.handoff.journal_reads)
-                .any(|codec| codec.name.is_empty() || codec.version.is_empty())
-            || self.handoff.durable_await && self.handoff.journal_reads.is_empty()
-            || self
-                .adapters
-                .iter()
-                .any(|adapter| adapter.from == adapter.to || adapter.code == [0; 32])
-        {
-            return Err(Error::Invalid("handoff or adapter declaration"));
-        }
-        Ok(())
     }
+    let mut scopes = std::collections::BTreeSet::new();
+    for peer in &manifest.peers {
+        peer.deployment.validate()?;
+        if !scopes.insert(&peer.deployment) || peer.last.is_some_and(|last| last < peer.first) {
+            return Err(Error::Invalid("peer range"));
+        }
+    }
+    if !manifest.handoff.reads.contains(&manifest.handoff.writes)
+        || manifest.handoff.writes.name.is_empty()
+        || manifest.handoff.writes.version.is_empty()
+        || manifest
+            .handoff
+            .reads
+            .iter()
+            .chain(&manifest.handoff.journal_reads)
+            .any(|codec| codec.name.is_empty() || codec.version.is_empty())
+        || manifest.handoff.durable_await && manifest.handoff.journal_reads.is_empty()
+        || manifest
+            .adapters
+            .iter()
+            .any(|adapter| adapter.from == adapter.to || adapter.code == [0; 32])
+    {
+        return Err(Error::Invalid("handoff or adapter declaration"));
+    }
+    Ok(())
 }
 
 /// Immutable upload. Its monotonically assigned number uses expected_version
@@ -214,7 +130,7 @@ impl Publication {
         compatibility: CompatibilityManifest,
     ) -> Result<Self, Error> {
         deployment.validate()?;
-        compatibility.validate()?;
+        validate_compatibility(&compatibility)?;
         let schema = compatibility.schema_digest()?;
         if artifacts.is_empty()
             || artifacts.iter().any(|(name, artifact)| {

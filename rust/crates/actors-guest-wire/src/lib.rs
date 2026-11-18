@@ -8,6 +8,8 @@ pub use body::{
 mod events;
 pub use events::{GuestEvent, GuestRequest, GuestResponse};
 mod codec;
+/// Live-update compatibility declarations.
+pub mod compatibility;
 pub use codec::{Checkpoint, CodecIdentity, GuestError};
 /// Portable live-update selection contract.
 pub mod live_selection;
