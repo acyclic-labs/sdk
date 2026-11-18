@@ -166,43 +166,33 @@ fn plugin_rust_edits_invalidate_output() {
 }
 
 #[test]
-fn unknown_generate_option_is_rejected_before_writes() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    let result = invoke(Command::new(runtime::binary("sdk-generation")).args([
-        "generate",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--rustdoc-dir",
-        fixture.rustdoc.to_str().unwrap(),
-        "--version",
-        "unknown-option",
-        "--unknown",
-        "accepted",
-    ]));
-    assert!(!result.status.success());
-    let message = output_message(&result);
-    assert!(message.contains("unknown option `--unknown`"), "{message}");
-    assert!(
-        !fixture.output.exists(),
-        "unknown options must fail before generation writes output"
-    );
-}
-
-#[test]
-fn unknown_drift_option_is_rejected_before_reads() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    let result = invoke(drift_command(&fixture).args(["--unknown", "accepted"]));
-    assert!(!result.status.success());
-    let message = output_message(&result);
-    assert!(message.contains("unknown option `--unknown`"), "{message}");
-    assert!(
-        !fixture.output.exists(),
-        "unknown options must fail before drift reads or writes output"
-    );
+fn unknown_options_are_rejected_before_accessing_fixtures() {
+    let directory = fixture_directory();
+    let binary = runtime::binary("sdk-generation");
+    for (subcommand, args) in [("generate", &["--version", "1.0.0"][..]), ("drift", &[])] {
+        let result = Command::new(&binary)
+            .current_dir(directory.path())
+            .arg(subcommand)
+            .args([
+                "--root",
+                "source",
+                "--output",
+                "output",
+                "--rustdoc-dir",
+                "rustdoc",
+            ])
+            .args(args)
+            .args(["--unknown", "accepted"])
+            .output()
+            .unwrap();
+        let message = output_message(&result);
+        assert!(!result.status.success(), "{subcommand}: {message}");
+        assert!(
+            message.contains("unknown option `--unknown`"),
+            "{subcommand}: {message}"
+        );
+        assert!(!directory.path().join("output").exists(), "{subcommand}");
+    }
 }
 
 #[test]
