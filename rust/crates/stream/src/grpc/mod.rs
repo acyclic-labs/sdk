@@ -21,8 +21,8 @@ use crate::wire_codec::{
     observation_from_wire, observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider,
+    AppendOutcome, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation,
+    ReadRequest, Record, RecordStream, StreamError, StreamProvider,
 };
 use acyclic_stream_wire::wire;
 
