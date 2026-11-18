@@ -144,3 +144,10 @@ mod contract_errors {
         }
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+acyclic_test_support::counting_allocator!();
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "wire_api/mod.rs"]
+mod wire_api;

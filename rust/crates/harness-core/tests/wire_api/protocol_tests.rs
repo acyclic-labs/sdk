@@ -1,4 +1,7 @@
-use super::*;
+use acyclic_harness_core::{
+    Result, wire,
+    wire_api::{current_protocol, negotiate, validate_operation_status, validate_resume_protocol},
+};
 use proptest::prelude::*;
 use prost::Message as _;
 
