@@ -693,10 +693,11 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
   const libInputs = (target, unitTest = false) => {
     const extra = extras(target, libCovered);
+    const testOnly = file => !unitTest && testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
     return [
       ["srcs", plus(
         glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
-        list(extra.srcs.filter(file => !platformSourcePatterns.includes(file))),
+        list(extra.srcs.filter(file => !platformSourcePatterns.includes(file) && !testOnly(file))),
         configuredSources,
       )],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
