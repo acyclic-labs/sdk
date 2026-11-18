@@ -43,15 +43,12 @@ type Replayed<'a> = (&'a [u8; 32], &'a IdempotencyOutcome, u64, bool);
 
 impl Ephemeral {
     /// The root of the lease owning `path`: through the path itself or its
-    /// nearest owned ancestor.
+    /// outermost owned ancestor.
     fn root_of(&self, path: &str) -> Option<&StreamPath> {
         if self.owned.is_empty() {
             return None;
         }
-        path.match_indices('/')
-            .map(|(end, _)| end)
-            .chain(std::iter::once(path.len()))
-            .find_map(|end| self.owned.get(path.get(..end)?))
+        StreamPath::root_prefixes(path).find_map(|prefix| self.owned.get(prefix))
     }
 
     /// Owned subtrees strictly beneath `path`, relative to it.

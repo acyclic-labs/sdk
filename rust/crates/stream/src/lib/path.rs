@@ -248,6 +248,12 @@ impl StreamPath {
         std::iter::successors(Some(self.as_str()), |&path| Self::parent_text(path))
     }
 
+    pub(crate) fn root_prefixes(path: &str) -> impl Iterator<Item = &str> {
+        path.match_indices('/')
+            .filter_map(|(end, _)| path.get(..end))
+            .chain(std::iter::once(path))
+    }
+
     pub(crate) fn descendants(&self) -> Descendants {
         // ASCII '0' immediately follows '/', so this interval selects only descendants.
         Descendants {

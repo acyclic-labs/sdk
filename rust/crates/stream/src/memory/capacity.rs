@@ -68,21 +68,16 @@ fn missing_paths<'a>(
             let path = destination.as_str();
             let before = previous;
             previous = path;
-            path.match_indices('/')
-                .map(|(end, _)| end)
-                .chain(std::iter::once(path.len()))
-                .filter(move |end| {
-                    let Some(prefix) = path.get(..*end) else {
-                        return false;
-                    };
+            StreamPath::root_prefixes(path)
+                .filter(move |&prefix| {
                     !contains_path(state, prefix)
                         && before != prefix
                         && !before
                             .strip_prefix(prefix)
                             .is_some_and(|suffix| suffix.starts_with('/'))
-                        && (*end == path.len() || !explicit(prefix))
+                        && (prefix.len() == path.len() || !explicit(prefix))
                 })
-                .map(move |end| (destination, end))
+                .map(move |prefix| (destination, prefix.len()))
         })
 }
 
