@@ -50,7 +50,7 @@ The historical filesystem workload corpus remains available to proof producers. 
 The shared native hot-path benchmark runs on demand:
 
 ```sh
-cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
+bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
 ```
 
 Select a fresh directory on the device being measured. The benchmark uses full
@@ -88,7 +88,7 @@ Run quantile selection, cohort admission and encoding controls without calibrati
 setup or model calls:
 
 ```sh
-cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations
+bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --check-observations
 ```
 
 The report quantile constructor has an independent nearest-rank property over
@@ -211,7 +211,7 @@ The same fixture and root publisher also drive native crash controls without a
 latency campaign:
 
 ```sh
-cargo bench --locked -p acyclic-conformance --features local-hotpath-proofs --bench local_hotpath -- --proofs --operations 'swarm.session_start' --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
+bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --proofs --operations 'swarm.session_start' --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
 ```
 
 These controls cut the original joined journal frame before append, before

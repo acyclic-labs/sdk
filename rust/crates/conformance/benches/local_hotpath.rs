@@ -31,7 +31,7 @@ acyclic_test_support::counting_allocator!();
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the quantile selection, cohort admission and encoding controls, without calibration or population setup.\nFor native root crash controls, use --features local-hotpath-proofs and --proofs --operations 'swarm.session_start'."
+            "bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--setup-credit 1] [--operations comma-separated-core-operation-names] [--populations comma-separated-qualification-populations] [--observe-durability]\nUse --check-observations to run only the quantile selection, cohort admission and encoding controls, without calibration or population setup.\nFor native root crash controls, use --proofs --operations 'swarm.session_start'."
         );
         return;
     }
@@ -43,11 +43,11 @@ fn main() {
     };
     if let Err(error) = result {
         let recovery = if observations_only {
-            "cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations".into()
+            "bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --check-observations".into()
         } else {
             match Options::parse_from(std::env::args().skip(1)) {
                 Ok(options) => options.recovery(),
-                Err(_) => "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --help".into(),
+                Err(_) => "bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --help".into(),
             }
         };
         eprintln!("STEP_FAILED local-hotpath: {error}; recovery: {recovery}");
@@ -62,7 +62,7 @@ fn run() -> Result {
         #[cfg(feature = "local-hotpath-proofs")]
         return proofs::run(&options);
         #[cfg(not(feature = "local-hotpath-proofs"))]
-        return Err("--proofs requires --features local-hotpath-proofs".into());
+        return Err("--proofs requires the Bazel local_hotpath target".into());
     }
     report::check_observations()?;
     std::fs::create_dir(&options.root)?;

@@ -1,0 +1,54 @@
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+extract_cargo_lints(
+    name = "lints",
+    manifest = "//rust/crates/conformance:Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+rust_binary(
+    name = "local_hotpath",
+    srcs = [
+        "//rust/crates/conformance:benches/local_hotpath.rs",
+        "//rust/crates/conformance:benches/local_hotpath/actor_delivery.rs",
+        "//rust/crates/conformance:benches/local_hotpath/calibrate.rs",
+        "//rust/crates/conformance:benches/local_hotpath/durability.rs",
+        "//rust/crates/conformance:benches/local_hotpath/options.rs",
+        "//rust/crates/conformance:benches/local_hotpath/population.rs",
+        "//rust/crates/conformance:benches/local_hotpath/proofs.rs",
+        "//rust/crates/conformance:benches/local_hotpath/proofs_resources.rs",
+        "//rust/crates/conformance:benches/local_hotpath/quantiles.rs",
+        "//rust/crates/conformance:benches/local_hotpath/report.rs",
+        "//rust/crates/conformance:benches/local_hotpath/storage.rs",
+    ],
+    crate_root = "//rust/crates/conformance:benches/local_hotpath.rs",
+    crate_features = ["local-hotpath", "local-hotpath-proofs"],
+    edition = "2024",
+    lint_config = ":lints",
+    rustc_flags = ['--check-cfg=cfg(feature, values("local-hotpath", "local-hotpath-proofs"))'],
+    tags = ["manual"],
+    deps = [
+        "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/objects:acyclic_objects",
+        "//rust/crates/observability:acyclic_observability",
+        "//rust/crates/stream:acyclic_stream",
+        "//rust/crates/test-support:acyclic_test_support",
+        "@sdk_crates//blake3-1.8.7",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//divan-0.1.21",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//sha2-0.11.1",
+        "@sdk_crates//tempfile-3.27.0",
+        "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tracing-0.1.44",
+        "@sdk_crates//tracing-subscriber-0.3.23",
+    ],
+)

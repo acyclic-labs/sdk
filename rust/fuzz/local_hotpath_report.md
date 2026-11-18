@@ -8,7 +8,7 @@ and compares the encoded receipts and counters with the original backing.
 Run from the repository root, without calibration or population setup:
 
 ```sh
-cargo test --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --check-observations
+bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --check-observations
 ```
 
 The retained `clone-identity.patch` changes the actual receipt serializer to clone

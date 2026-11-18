@@ -27,13 +27,13 @@ impl Options {
         root.push(".retry");
         if self.proofs {
             return format!(
-                "cargo bench --locked -p acyclic-conformance --features local-hotpath-proofs --bench local_hotpath -- --proofs --root {} --source {} --operations 'swarm.session_start'",
+                "bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --proofs --root {} --source {} --operations 'swarm.session_start'",
                 quoted(&root.to_string_lossy()),
                 quoted(&self.source),
             );
         }
         format!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --setup-credit {} --operations {} --populations {}{}",
+            "bazel run -c opt //rust/crates/conformance/benches/bazel:local_hotpath -- --root {} --source {} --samples {} --setup-credit {} --operations {} --populations {}{}",
             quoted(&root.to_string_lossy()),
             quoted(&self.source),
             self.samples,
