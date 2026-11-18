@@ -275,6 +275,7 @@ rust_test(
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-mock-model:harness_mock_model",
+        "//rust/crates/harness-provider-response:acyclic_harness_provider_response",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",

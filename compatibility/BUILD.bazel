@@ -175,6 +175,7 @@ rust_test(
         "//rust/crates/objects-wasm:tree",
         "//rust/crates/objects:tree",
         "//rust/crates/observability:tree",
+        "//rust/crates/process-identity:tree",
         "//rust/crates/proto-codegen:tree",
         "//rust/crates/protobuf-json:tree",
         "//rust/crates/sdk-docs/file-identity:tree",

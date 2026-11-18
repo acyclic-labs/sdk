@@ -3,7 +3,9 @@ load("//rust/crates/test-runner:isolated_test.bzl", "isolated_test")
 load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-FEATURES = ["test-support"]
+FEATURES = [
+        "test-support",
+    ]
 
 WASM_FEATURES = []
 
@@ -73,6 +75,7 @@ isolated_test(
     id = "acyclic-harness-provider-response",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 isolated_test(
@@ -84,7 +87,7 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
-    tags = ["manual"],
+    tags = ["manual","no-sandbox"],
 )
 
 rust_library(
