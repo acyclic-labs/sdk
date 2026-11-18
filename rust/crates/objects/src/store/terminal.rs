@@ -108,8 +108,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         Ok(removed)
     }
 
-    pub(super) async fn fenced_rooted(&self) -> Result<Vec<Digest>, Error> {
-        let mut references = Vec::new();
+    pub(super) async fn fenced_rooted(
+        &self,
+        mut visit: impl FnMut(Vec<Digest>),
+    ) -> Result<(), Error> {
         let mut pages = self.pages(format!("{}f/", self.state.prefix));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
@@ -140,11 +142,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     self.medium.flush(&[terminal_key]).await.map_err(medium)?;
                     self.remove_fenced_batch(&key, root, name, &batch).await?;
                 } else {
-                    references.extend(batch);
+                    visit(batch);
                 }
             }
         }
-        Ok(references)
+        Ok(())
     }
 
     /// Retains one batch under the exact observed terminal fence.

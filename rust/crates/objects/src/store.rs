@@ -758,7 +758,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 }
             }
         }
-        self.fenced_rooted().await?;
+        self.fenced_rooted(drop).await?;
         Ok(repaired)
     }
 
@@ -1538,7 +1538,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 references.extend(batch);
             }
         }
-        references.extend(self.fenced_rooted().await.map_err(suspended)?);
+        self.fenced_rooted(|batch| references.extend(batch))
+            .await
+            .map_err(suspended)?;
         Ok(references)
     }
 
