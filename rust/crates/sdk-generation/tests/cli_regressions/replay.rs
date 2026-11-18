@@ -2,42 +2,40 @@ use super::*;
 use sdk_docs::rustdoc_profiles::{self as profiles, ProfileSpec};
 
 pub(super) fn copy_tree(source: &Path, destination: &Path) {
-    copy_tree_inner(source, destination, &|_| false);
+    copy_tree_inner(source, destination, false, &|_| false);
 }
 
-fn copy_tree_inner(source: &Path, destination: &Path, skip: &impl Fn(&Path) -> bool) {
+pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
+    copy_tree_inner(source, destination, true, &|_| false);
+}
+
+fn copy_tree_inner(
+    source: &Path,
+    destination: &Path,
+    immutable: bool,
+    skip: &dyn Fn(&Path) -> bool,
+) {
     fs::create_dir_all(destination).unwrap();
+    let git_dir = !immutable && source.file_name() == Some(std::ffi::OsStr::new(".git"));
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
         if skip(&path) {
             continue;
         }
-        let target = destination.join(entry.file_name());
-        if source.file_name() == Some(std::ffi::OsStr::new(".git"))
-            && entry.file_name() == "objects"
-        {
+        let name = entry.file_name();
+        let target = destination.join(&name);
+        if git_dir && name == "objects" {
             // Git objects are immutable; refs, index and configuration stay private.
             copy_git_objects(&path, &target);
         } else if entry.file_type().unwrap().is_dir() {
-            copy_tree_inner(&path, &target, skip);
-        } else {
+            copy_tree_inner(&path, &target, immutable, skip);
+        } else if !immutable {
             fs::copy(path, target).unwrap();
-        }
-    }
-}
-
-pub(super) fn copy_git_objects(source: &Path, destination: &Path) {
-    fs::create_dir_all(destination).unwrap();
-    for entry in fs::read_dir(source).unwrap() {
-        let entry = entry.unwrap();
-        let target = destination.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_git_objects(&entry.path(), &target);
         } else if target.exists() {
-            assert_eq!(fs::read(entry.path()).unwrap(), fs::read(target).unwrap());
+            assert_eq!(fs::read(path).unwrap(), fs::read(target).unwrap());
         } else {
-            fs::hard_link(entry.path(), target).unwrap();
+            fs::hard_link(path, target).unwrap();
         }
     }
 }
@@ -93,7 +91,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         original.output.join(&release_path),
         original.output.join(&digest_path),
     ];
-    copy_tree_inner(&original.output, &relocated.output, &|path| {
+    copy_tree_inner(&original.output, &relocated.output, false, &|path| {
         replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains_key(path)
     });
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
