@@ -53,3 +53,22 @@ pub(super) fn retain(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[test]
+fn unavailable_child_receipt_preserves_cause_and_fences_parent() {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let observation = crate::WorkObservationError::Poisoned;
+    let failure =
+        OperationFailure::without_receipt(crate::FsError::AccountingHandoffActive, observation);
+
+    let result = accept_step::<(), _>(&mut accounting, Err(failure.into()));
+
+    assert!(matches!(
+        result,
+        Err(crate::FsError::AccountingHandoffActive)
+    ));
+    assert_eq!(accounting.spent(), Err(observation));
+    assert!(accounting.check().is_err());
+}
