@@ -62,12 +62,12 @@ fn assert_source_edit_invalidates_output(
     let source = fixture.root.join(relative);
     let original = fs::read(&source).unwrap();
     let original_hash = hash_bytes(&original);
-    fs::write(&source, changed).unwrap();
-    let changed_hash = hash_file(&source);
     assert_ne!(
-        original_hash, changed_hash,
+        original.as_slice(),
+        changed.as_bytes(),
         "test edit did not change {relative}"
     );
+    fs::write(&source, changed).unwrap();
 
     let drift = run_drift(fixture);
     assert!(!drift.status.success());
@@ -99,7 +99,7 @@ fn assert_source_edit_invalidates_output(
     assert!(!stale_output.join(GENERATION_MANIFEST).exists());
 
     fs::write(&source, &original).unwrap();
-    assert_eq!(hash_file(&source), original_hash);
+    assert_eq!(fs::read(&source).unwrap(), original);
 
     original_hash
 }
