@@ -39,6 +39,7 @@ build-script-inputs = [
 acyclic-fs-work = "observations"
 
 [package.metadata.bazel.test-dependencies]
+native_view_table = ["acyclic_native_runtime"]
 native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
 wire_error_contracts = ["acyclic_fs", "acyclic_auth", "acyclic_fs_wire", "acyclic_objects", "acyclic_stream", "tokio", "tonic"]
@@ -95,6 +96,10 @@ path = "tests/wire_error_contracts.rs"
 [[test]]
 name = "native_checkpoint"
 path = "tests/native_checkpoint.rs"
+
+[[test]]
+name = "native_view_table"
+path = "tests/native_view_table.rs"
 
 [[bench]]
 name = "lease_paths"
