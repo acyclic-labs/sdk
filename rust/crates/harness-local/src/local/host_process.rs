@@ -838,7 +838,7 @@ mod tests {
         // Each poll is metered; run past one invocation budget. Pipes at EOF
         // are released, so a reaped child's polls cost one exit observation.
         for _ in 0..262_144 {
-            if work.receipt().backend_read_operations > 65_536 {
+            if work.receipt()?.backend_read_operations > 65_536 {
                 break;
             }
             process.read_stdout(&mut [0; 8192])?;
@@ -857,7 +857,7 @@ mod tests {
             assert_eq!(work.live_allocation_bytes(), live);
         }
         assert!(
-            work.receipt().backend_read_operations > 65_536,
+            work.receipt()?.backend_read_operations > 65_536,
             "polling must retain cumulative work beyond a single invocation budget"
         );
         assert!(

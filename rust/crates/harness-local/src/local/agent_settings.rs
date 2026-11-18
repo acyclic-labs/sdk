@@ -898,7 +898,7 @@ mod tests {
         assert_eq!(outcome.error.as_deref(), Some(reason.to_string().as_str()));
         assert_eq!(outcome.path, config::AGENT);
         assert_eq!(outcome.version, "original");
-        assert!(work.receipt().allocation_operations > 0);
+        assert!(work.receipt()?.allocation_operations > 0);
         let retained = work.live_allocation_bytes();
         record(
             &volumes,

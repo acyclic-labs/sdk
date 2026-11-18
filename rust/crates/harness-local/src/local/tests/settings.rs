@@ -944,7 +944,7 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     cancellation.cancel();
-    let before = work.receipt();
+    let before = work.receipt()?;
     let cancelled = match reader.select_private_generation(
         &harness.scratch,
         "",
@@ -959,8 +959,8 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         Ok(_) => panic!("cancelled selection must refuse before allocating its future"),
     };
     assert_eq!(cancelled.code(), crate::wire::ErrorCode::Cancelled);
-    assert_eq!(work.receipt().items_examined, before.items_examined);
-    assert_eq!(work.receipt().bytes_hashed, before.bytes_hashed);
+    assert_eq!(work.receipt()?.items_examined, before.items_examined);
+    assert_eq!(work.receipt()?.bytes_hashed, before.bytes_hashed);
     drop(present);
     drop(present_hold);
     drop(absent_generation);

@@ -227,7 +227,7 @@ mod tests {
                 &cancellation,
             )?);
         }
-        let before = work.receipt().items_examined;
+        let before = work.receipt()?.items_examined;
         let (observer, duplicate) = Bindings::select(&index, key, [0; 32], &work, &cancellation)?;
         assert!(
             duplicate.is_none(),
@@ -235,7 +235,7 @@ mod tests {
         );
         assert!(std::ptr::eq(old.as_ptr(), &*observer.binding));
         assert!(
-            work.receipt().items_examined - before <= 9 * 32 + 1,
+            work.receipt()?.items_examined - before <= 9 * 32 + 1,
             "binding lookup grew beyond the fixed-width path"
         );
         {
@@ -286,8 +286,11 @@ fn failure(
     work: &NativeMaterializationWork,
     cause: acyclic_fs::NativeTreeMaterializationError,
 ) -> Error {
-    Error::NativeConstruction {
-        cause,
-        work: Box::new(work.receipt()),
+    match work.receipt() {
+        Ok(receipt) => Error::NativeConstruction {
+            cause,
+            work: Box::new(receipt),
+        },
+        Err(error) => error.into(),
     }
 }
