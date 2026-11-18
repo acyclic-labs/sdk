@@ -1,10 +1,7 @@
 //! Token grants select declared method admission, never a second action list.
-use acyclic_auth::{
-    action::{Action, StreamsAction},
-    method::Resources,
-};
-use acyclic_stream_wire::authorization::StreamMethod;
-use acyclic_stream_wire::rpc::StreamRpc;
+use crate::authorization::StreamMethod;
+use crate::rpc::StreamRpc;
+use acyclic_auth_action::{Action, StreamsAction, method::Resources};
 
 // These narrow grants select an actual operation of a request-dependent method.
 // A registry change removing that operation fails constant evaluation.
@@ -43,6 +40,18 @@ const fn declares(method: StreamMethod, wanted: StreamsAction) -> bool {
     false
 }
 
+/// The input is outside the declared Stream token vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnknownTokenOperation;
+
+impl core::fmt::Display for UnknownTokenOperation {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("unknown Stream token operation")
+    }
+}
+
+impl core::error::Error for UnknownTokenOperation {}
+
 macro_rules! operations {
     ($($(#[$doc:meta])* $operation:ident => $name:literal, $first:expr, $second:expr;)*) => {
         /// Hosted access-token operations and their SDK-owned admission.
@@ -72,11 +81,11 @@ macro_rules! operations {
         }
 
         impl core::str::FromStr for TokenOperation {
-            type Err = crate::StreamError;
+            type Err = UnknownTokenOperation;
             fn from_str(value: &str) -> Result<Self, Self::Err> {
                 match value {
                     $($name => Ok(Self::$operation),)*
-                    _ => Err(crate::StreamError::InvalidArgument),
+                    _ => Err(UnknownTokenOperation),
                 }
             }
         }

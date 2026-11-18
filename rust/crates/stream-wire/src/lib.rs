@@ -1,6 +1,8 @@
 //! Canonical Stream protobuf messages, services and RPC authorization.
 
 pub mod authorization;
+/// Hosted token operation vocabulary derived from Stream admission.
+pub mod token;
 
 /// Generated canonical Stream v1 protocol.
 #[allow(

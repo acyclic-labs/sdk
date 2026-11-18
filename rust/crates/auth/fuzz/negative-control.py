@@ -26,8 +26,8 @@ if choice == "operation-admission":
         ("authorization.rs", b"Head => rpc::StreamRpc::Head.authorization(), Exact;",
          b"Head => MethodAuth { admitted: &[FOLLOW_ACTION, Action::Streams(StreamsAction::Read)], ..rpc::StreamRpc::Head.authorization() }, Exact;",
          "Session observations require exactly one declared action", True),
-        ("codec_fuzz.rs", b"let mut seeds = Vec::new();\n    for operation in crate::TokenOperation::ALL {",
-         b"let mut seeds = Vec::new();\n    for operation in &[] as &[crate::TokenOperation] {",
+        ("codec_fuzz.rs", b"let mut seeds = Vec::new();\n    for operation in TokenOperation::ALL {",
+         b"let mut seeds = Vec::new();\n    for operation in &[] as &[TokenOperation] {",
          "token corpus omitted declared operation", False),
     ]
     step = "admit the original signed method and token credentials"
