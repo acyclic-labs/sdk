@@ -260,6 +260,7 @@ fn request_session_token<T>(request: &S3Request<T>) -> Option<&str> {
 }
 
 include!("s3_http/multipart.rs");
+include!("s3_http/multipart_retention.rs");
 
 #[async_trait]
 impl<R, A, O> S3 for FilesystemS3Adapter<R, A, O>
