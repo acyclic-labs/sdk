@@ -44,7 +44,7 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
             };
             let (actual, hold) = decode_json::<Value>(bytes, Some(&io))?;
             assert_eq!(actual, expected);
-            assert_eq!(io.receipt().bytes_encoded, bytes.len() as u64);
+            assert_eq!(io.receipt()?.bytes_encoded, bytes.len() as u64);
             drop(actual);
             drop(hold);
             drop(io);
@@ -366,7 +366,7 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
         Err(Error::Unsupported(_))
     ));
     assert_eq!(
-        io.receipt(),
+        io.receipt()?,
         acyclic_fs_work::performance::WorkCounters::default()
     );
     assert_eq!(journal.3.load(Ordering::SeqCst), 0);

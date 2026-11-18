@@ -29,7 +29,7 @@ proptest! {
         #[cfg(target_arch = "wasm32")]
         let observed = None;
         #[cfg(not(target_arch = "wasm32"))]
-        let before = work.receipt().items_examined;
+        let before = work.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?.items_examined;
         for i in 0..count {
             let metadata = metadata_for_call(&messages, prefix + i, "reused", observed).unwrap();
             let ModelContentPart::ToolCall(expected) = &messages[prefix+i].content.parts()[0] else {unreachable!()};
@@ -37,7 +37,7 @@ proptest! {
             prop_assert_eq!(&metadata["signature"], &json!(format!("{i}:{signature}")));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        prop_assert_eq!(work.receipt().items_examined - before, count as u64);
+        prop_assert_eq!(work.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?.items_examined - before, count as u64);
         prop_assert!(metadata_for_call(&messages, messages.len(), "reused", observed).is_err());
         prop_assert!(metadata_for_call(&messages, prefix, "different", observed).is_err());
     }

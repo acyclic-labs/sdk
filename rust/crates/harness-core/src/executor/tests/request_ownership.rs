@@ -65,9 +65,9 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
                 "projection retained a second transcript"
             );
             assert_eq!(prepared.bytes(), expected.bytes());
-            let before = io.receipt();
+            let before = io.receipt()?;
             crate::context::validate_projected_request(&projection, &prepared, execution.io)?;
-            let examined = io.receipt().items_examined - before.items_examined;
+            let examined = io.receipt()?.items_examined - before.items_examined;
             assert_eq!(
                 *admission_work.get_or_insert(examined),
                 examined,
@@ -93,9 +93,9 @@ async fn funded_request_and_projection_share_one_owned_history() -> Result<()> {
                 current_input_index: Some(0),
                 ..Default::default()
             };
-            let before = io.receipt();
+            let before = io.receipt()?;
             crate::context::validate_projected_context(&decoded, executor.limits, execution.io)?;
-            let raw_work = io.receipt().items_examined - before.items_examined;
+            let raw_work = io.receipt()?.items_examined - before.items_examined;
             eprintln!(
                 "native={native} messages={count} admitted_items={examined} decoded_items={raw_work}"
             );
