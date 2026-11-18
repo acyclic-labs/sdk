@@ -3,8 +3,8 @@ use crate::{
     Durability,
     obs::{Metrics, Operations},
 };
-use acyclic_grpc_observability::tests::Capture;
 use acyclic_observability::{DurabilityRequest, DurabilitySyscall, Export, Outcome};
+use acyclic_test_support::trace_capture::Capture;
 use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt as _;
 

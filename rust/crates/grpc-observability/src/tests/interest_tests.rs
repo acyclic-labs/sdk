@@ -1,6 +1,6 @@
 //! First-use schedules run in separate processes so no unrelated dispatcher
 //! can hide the single-observer registration path.
-use super::Capture;
+use acyclic_test_support::trace_capture::Capture;
 use std::process::Command;
 use tracing::Dispatch;
 use tracing_subscriber::prelude::*;

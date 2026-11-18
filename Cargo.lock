@@ -552,6 +552,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
+ "acyclic-test-support",
  "futures",
  "http-body",
  "pin-project-lite",
@@ -1485,7 +1486,6 @@ name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
  "acyclic-collections",
- "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-observability",
  "acyclic-process-identity",
@@ -1906,6 +1906,8 @@ dependencies = [
  "proptest",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

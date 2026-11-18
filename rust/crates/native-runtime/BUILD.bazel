@@ -175,7 +175,6 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//loom-0.7.3",
         "@sdk_crates//proptest-1.12.0",
@@ -378,7 +377,6 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -413,7 +411,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -447,7 +444,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -540,7 +536,6 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -575,7 +570,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -609,7 +603,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -698,7 +691,6 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -733,7 +725,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -767,7 +758,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -859,7 +849,6 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -894,7 +883,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -928,7 +916,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1022,7 +1009,6 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1057,7 +1043,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1091,7 +1076,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1181,7 +1165,6 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1216,7 +1199,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1250,7 +1232,6 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1339,7 +1320,6 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1374,7 +1354,6 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1408,7 +1387,6 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1470,7 +1448,6 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1505,7 +1482,6 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1539,7 +1515,6 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1601,7 +1576,6 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1636,7 +1610,6 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
@@ -1670,7 +1643,6 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
-        "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",

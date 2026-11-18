@@ -304,7 +304,7 @@ mod tests {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         use tracing_subscriber::layer::SubscriberExt as _;
 
-        use acyclic_grpc_observability::tests::Capture;
+        use acyclic_test_support::trace_capture::Capture;
         let seen = Capture::default();
         let _guard =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));

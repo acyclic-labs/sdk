@@ -53,6 +53,8 @@ rust_library(
     ] + [
         "//rust/crates/differential:acyclic_differential",
         "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tracing-0.1.44",
+        "@sdk_crates//tracing-subscriber-0.3.23",
     ],
     visibility = ["//visibility:public"],
 )

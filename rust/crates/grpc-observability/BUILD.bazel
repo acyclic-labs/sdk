@@ -48,7 +48,6 @@ rust_library(
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//tonic-0.14.9",
         "@sdk_crates//tracing-0.1.44",
-        "@sdk_crates//tracing-subscriber-0.3.23",
     ],
     visibility = ["//visibility:public"],
 )
@@ -69,6 +68,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//http-body-1.1.0",
         "@sdk_crates//rcgen-0.14.10",
