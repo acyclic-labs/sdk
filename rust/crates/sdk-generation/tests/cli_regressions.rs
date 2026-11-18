@@ -405,19 +405,26 @@ fn run_drift(fixture: &Fixture) -> std::process::Output {
     invoke(&mut drift_command(fixture))
 }
 
-fn fixture_path(support: &Path) -> std::ffi::OsString {
-    std::env::join_paths(
+fn configure_historical<'a>(
+    command: &'a mut Command,
+    fixture: &Fixture,
+    support: &Path,
+) -> &'a mut Command {
+    let path = std::env::join_paths(
         std::iter::once(support.to_owned()).chain(std::env::split_paths(&runtime::path())),
     )
-    .unwrap()
+    .unwrap();
+    command
+        .env("PATH", path)
+        .env("CARGO_HOME", fixture_cargo_home(fixture))
 }
 
 fn run_historical_drift(fixture: &Fixture, support: &Path) -> std::process::Output {
-    invoke(
-        drift_command(fixture)
-            .env("PATH", fixture_path(support))
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
-    )
+    invoke(configure_historical(
+        &mut drift_command(fixture),
+        fixture,
+        support,
+    ))
 }
 
 fn generate_command(
@@ -562,7 +569,7 @@ fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
         generate_command(
             &fixture.root,
-            Some(&fixture.rustdoc),
+            None,
             &fixture.output,
             "feature-profile-catalog",
             "preview",
@@ -764,9 +771,7 @@ fn run_historical_generation(
         "release",
         false,
     );
-    command
-        .env("PATH", fixture_path(support))
-        .env("CARGO_HOME", fixture_cargo_home(fixture))
+    configure_historical(&mut command, fixture, support)
         .args(["--execute-profiles", "--historical-archives"])
         .arg(support.join("registry"));
     if let Some(mode) = mode {
