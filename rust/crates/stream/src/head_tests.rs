@@ -165,6 +165,9 @@ async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), St
         .children
         .clear();
     hidden.validate_for(&request)?;
+    let mut smaller_budget = request.clone();
+    smaller_budget.limit = 1;
+    refuses(&hidden, &smaller_budget);
     let mut continued = request.clone();
     continued
         .children

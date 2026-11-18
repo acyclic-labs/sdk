@@ -137,21 +137,19 @@ impl Heads {
     /// # Errors
     /// Returns `InvalidResponse` when a returned fact does not match the request.
     pub fn validate_for(&self, request: &HeadsRequest) -> Result<(), StreamError> {
-        let child_count = self.children.as_ref().map_or(0, |page| page.children.len());
+        let scanned = self
+            .children
+            .as_ref()
+            .map_or(0, |page| page.scanned as usize);
         if self.projection != request.projection
             || self.heads.len() != request.paths.len()
             || self.retained.len() != request.retained.len()
             || self.children.is_some() != request.children.is_some()
-            || child_count
-                > request
-                    .children
-                    .as_ref()
-                    .map_or(0, |page| page.limit as usize)
             || self
                 .heads
                 .len()
                 .saturating_add(self.retained.len())
-                .saturating_add(child_count)
+                .saturating_add(scanned)
                 > request.limit as usize
             || !request.at_least.proven_by(Some(&self.applied))
             || request
