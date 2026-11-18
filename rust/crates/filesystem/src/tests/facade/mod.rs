@@ -619,6 +619,7 @@ mod tracking;
 mod transactions;
 mod transfer;
 use protocol_helpers::*;
+#[path = "../../../tests/support/volume_fixture.rs"]
 mod fixtures;
 use fixtures::*;
 const B: WorkBudget = WorkBudget::UNBOUNDED;

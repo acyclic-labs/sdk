@@ -554,6 +554,7 @@ rust_test(
         "tests/support/simulation_image.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
+        "tests/support/volume_fixture.rs",
         "tests/support/wire_errors.rs",
         "tests/support/wire_requests.rs",
         "tests/support/workspace.rs",

@@ -1,14 +1,19 @@
-use super::*;
+use acyclic_fs::kernel::FileMetadata;
+use acyclic_fs::model::{CheckoutMode, GenerationSelector};
+use acyclic_fs::{
+    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
+    Checkout, Fs, FsError, MemoryAuthorityBackend, MemoryObjectBackend, PublicationPermit, Volume,
+    VolumeConfig,
+};
+use acyclic_fs_format::identity::{FileId, OperationId};
+use acyclic_fs_work::performance::OperationFailure;
+use acyclic_stream::OwnedBytes;
 
-pub(super) type TestVolume = Volume<
-    crate::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
->;
+use super::checkout_fixture::{path, writable_pinned};
+use super::{B, allow};
 
-pub(super) type TestCheckout = Checkout<
-    crate::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
->;
+pub(super) type TestVolume = Volume<MemoryAuthorityBackend, MemoryObjectBackend>;
+pub(super) type TestCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -17,7 +22,7 @@ pub(super) async fn fixture(
     cancel: &CancellationToken,
 ) -> TestResult<(TestVolume, TestCheckout)> {
     #[cfg(not(target_arch = "wasm32"))]
-    crate::initialize_test_native_io();
+    acyclic_native_runtime::initialize_native_io_services()?;
     let volume = Fs::memory().create_volume(config, B, cancel).await?.value;
     let checkout = open_checkout(&volume, writable_pinned(), cancel).await?;
     Ok((volume, checkout))
