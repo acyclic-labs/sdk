@@ -2591,6 +2591,7 @@ rust_test(
     srcs = [
         "tests/checkout_profiles.rs",
         "tests/checkout_profiles/facade/mod.rs",
+        "tests/checkout_profiles/facade/tests/creation.rs",
         "tests/checkout_profiles/facade/tests/mod.rs",
         "tests/checkout_profiles/facade/tests/profiles.rs",
         "tests/checkout_profiles/facade/tests/special.rs",
