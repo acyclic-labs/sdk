@@ -22,8 +22,17 @@ elif refusal_contract:
 elif sibling_validation:
     recovery += " --sibling-validation"
 test = "context::native_skills::tests::retained_records_share_one_sync_on_the_native_io_service"
-native = ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib",
-          "--features", "filesystem-local,native-execution,test-support", test, "--", "--exact"]
+native = ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases",
+          "--", test, "--exact"]
+run_env = {**os.environ, "ACYCLIC_TEST_SOURCE_ROOT": str(repository)}
+coverage_flags = (
+    "--cfg=fuzzing",
+    "-Cpasses=sancov-module",
+    "-Cllvm-args=-sanitizer-coverage-level=4",
+    "-Cllvm-args=-sanitizer-coverage-inline-8bit-counters",
+    "-Cllvm-args=-sanitizer-coverage-pc-table",
+    "-Cllvm-args=-sanitizer-coverage-trace-compares",
+)
 
 
 def fail(step, detail):
@@ -32,7 +41,7 @@ def fail(step, detail):
 
 def run(step, command, cwd, env=None):
     print(f"{step}: {' '.join(command)}", flush=True)
-    result = subprocess.run(command, cwd=cwd, env=env, text=True,
+    result = subprocess.run(command, cwd=cwd, env=run_env if env is None else env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     print(result.stdout, end="", flush=True)
     return result
@@ -75,7 +84,7 @@ def main():
         finally:
             source.write_bytes(original)
 
-    env = {**os.environ}
+    env = dict(run_env)
     if not (refusal_contract or sibling_validation):
         env["ACYCLIC_RETAINED_SKILL_CORPUS"] = str(corpus)
     result = run("native writer and admission", native, repository, env)
@@ -94,11 +103,10 @@ def main():
         configuration="native skill roots relative to the contributor working directory",
         captures=captures), indent=2) + "\n")
     with tempfile.TemporaryDirectory(prefix="retained-skill-records-") as artifacts:
-        command = ["cargo", "+nightly", "fuzz", "run", "--fuzz-dir", str(root),
-                   "--dev", "--sanitizer", "none",
-                   "--no-default-features", "--features", "native-skill-records",
-                   "--target-dir", os.environ.get("CARGO_TARGET_DIR", str(repository / "target")),
-                   "retained_skill_records", str(corpus), "--", "-runs=2000", "-seed=1",
+        command = ["bazel", "run",
+                   *[f"--@rules_rust//rust/settings:extra_rustc_flag={flag}" for flag in coverage_flags],
+                   "//rust/crates/harness-fuzz:retained_skill_records", "--",
+                   str(corpus), "-runs=2000", "-seed=1",
                    "-print_final_stats=1", f"-artifact_prefix={artifacts}/"]
         result = run("retained skill finite campaign", command, root)
         if result.returncode != 0 or "DONE" not in result.stdout or "cov:" not in result.stdout:
