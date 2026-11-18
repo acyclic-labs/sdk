@@ -57,7 +57,7 @@ def _test_impl(ctx):
         ctx.file.src.short_path,
         _quote(ctx.attr.harness),
     )
-    for argument in ctx.attr.args:
+    for argument in ctx.attr.kani_args:
         command += " " + _quote(argument)
     if ctx.attr.expect_failure:
         # A negative control must find a counterexample. A compile error or a
@@ -93,7 +93,7 @@ kani_test = rule(
         "src": attr.label(allow_single_file = [".rs"], mandatory = True),
         "srcs": attr.label_list(allow_files = [".rs"]),
         "harness": attr.string(mandatory = True),
-        "args": attr.string_list(),
+        "kani_args": attr.string_list(),
         "expect_failure": attr.bool(),
         "_kani": attr.label(default = Label("@kani//:kani"), executable = True, cfg = "exec"),
         "_process_wrapper": attr.label(default = Label("@rules_rust//util/process_wrapper"), executable = True, cfg = "exec"),
