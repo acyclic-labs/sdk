@@ -50,8 +50,6 @@ mod composition;
 
 mod populated_creation;
 
-mod operation_identity;
-
 mod proof_cache;
 
 mod publication;
