@@ -18,7 +18,7 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
     .map(str::to_owned)
     .into_iter()
     .collect::<BTreeSet<_>>();
-    let public_roots = metadata
+    let mut public_roots = metadata
         .workspace_packages()
         .into_iter()
         .filter(|package| {
@@ -27,8 +27,8 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
                 .as_ref()
                 .is_none_or(|registries| !registries.is_empty())
         })
-        .collect::<Vec<_>>();
-    assert!(!public_roots.is_empty());
+        .peekable();
+    assert!(public_roots.peek().is_some());
 
     for package in public_roots {
         let package_name = package.name.as_ref();
