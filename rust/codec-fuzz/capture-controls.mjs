@@ -77,8 +77,11 @@ try {
 `;
   await mutation(writer, originalWriter, originalWriter.replace(boundary, altered + boundary), async () => {
     const result = await run('bazel', ['run', '//rust/codec-fuzz:capture_example', '--', '--only-actors'], repository);
-    assert.equal(result.code, 1, result.output);
-    assert.match(result.output, /encoder changed golden corpus\/actor_codecs\/state-acs-v1/);
+    const rejected = /encoder changed golden corpus\/actor_codecs\/state-acs-v1/.test(result.output);
+    if (result.code !== 1 || !rejected) {
+      process.stderr.write(result.output);
+      throw Error(`Actor writer control did not reach the golden comparison (exit ${result.code})`);
+    }
     console.log('ACTOR_WRITER_CONTROL_DETECTED');
   });
 } catch (error) {
