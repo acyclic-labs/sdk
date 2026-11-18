@@ -2787,6 +2787,8 @@ rust_test(
         "tests/extent_codec/kernel/extent/mod.rs",
         "tests/extent_codec/kernel/extent/tests.rs",
         "tests/extent_codec/kernel/mod.rs",
+        "tests/extent_codec/kernel/types/mod.rs",
+        "tests/extent_codec/kernel/types/tests.rs",
     ],
     edition = "2024",
     version = "0.2.0",
