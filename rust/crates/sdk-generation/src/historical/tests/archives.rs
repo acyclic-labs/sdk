@@ -459,32 +459,38 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
-    for name in [
+    let names = [
         "descriptor.bin",
         "input.json",
         "schema.proto",
         "build.rs",
         ".cargo/config.toml",
-    ] {
+    ];
+    let (mut release, archive) = fixture.archive(&revision, "");
+    let entry = fixture.path().join("historical-fixture-0.1.0");
+    let original = b"original archived input";
+    for name in names {
         let path = fixture.path().join(name);
+        let archived = entry.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, b"original archived input").unwrap();
-        let (mut release, archive) = fixture.archive(&revision, "");
-        let archived = fixture.path().join("historical-fixture-0.1.0").join(name);
         fs::create_dir_all(archived.parent().unwrap()).unwrap();
-        fs::copy(&path, &archived).unwrap();
-        release.checksum =
-            pack_registry_archive(&fixture.path().join("historical-fixture-0.1.0"), &archive);
-        let (_, files) =
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
+        fs::write(path, original).unwrap();
+        fs::write(archived, original).unwrap();
+    }
+    release.checksum = pack_registry_archive(&entry, &archive);
+    let (_, files) =
+        verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
+    for name in names {
         assert!(files.contains_key(name));
+        let path = fixture.path().join(name);
         fs::write(&path, b"changed source input").unwrap();
         assert!(
             verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
                 .unwrap_err()
-                .contains("source bytes differ")
+                .contains("source bytes differ"),
+            "{name}"
         );
-        fs::copy(&archived, &path).unwrap();
+        fs::write(path, original).unwrap();
     }
 }
 
