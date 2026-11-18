@@ -261,8 +261,10 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
     let (release, archive) = fixture.archive(&revision, "");
-    let accepted =
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
+    let verify = |revision: &str, release: &RegistryVersion, archive: &Path| {
+        verify_archive(&metadata, fixture.path(), revision, release, archive)
+    };
+    let accepted = verify(&revision, &release, &archive).unwrap();
     assert!(accepted.0.yanked);
     assert_eq!(
         accepted.1.get("src/lib.rs"),
@@ -273,11 +275,9 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
         "//! Divergent checkout Rust bytes.\n",
     )
     .unwrap();
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("source bytes differ")
-    );
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("source bytes differ"));
     fs::copy(
         fixture.path().join("historical-fixture-0.1.0/src/lib.rs"),
         fixture.path().join("src/lib.rs"),
@@ -285,54 +285,36 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     .unwrap();
     let mut wrong = release.clone();
     wrong.checksum = "b".repeat(64);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &wrong, &archive)
-            .unwrap_err()
-            .contains("checksum differs")
-    );
-    assert!(verify_archive(
-        &metadata,
-        fixture.path(),
-        &"c".repeat(40),
-        &release,
-        &archive
-    )
-    .unwrap_err()
-    .contains("revision differs"));
+    assert!(verify(&revision, &wrong, &archive)
+        .unwrap_err()
+        .contains("checksum differs"));
+    assert!(verify(&"c".repeat(40), &release, &archive)
+        .unwrap_err()
+        .contains("revision differs"));
     let manifest = fixture.path().join("Cargo.toml");
     fs::write(&manifest, "different manifest").unwrap();
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("source bytes differ")
-    );
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("source bytes differ"));
     let entry = fixture.path().join("historical-fixture-0.1.0");
     fs::copy(entry.join("Cargo.toml.orig"), manifest).unwrap();
     fs::remove_file(entry.join("src/lib.rs")).unwrap();
     let (release, archive) = fixture.pack_archive(&entry);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("missing Cargo Rust source")
-    );
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("missing Cargo Rust source"));
     let (dirty, dirty_archive) = fixture.archive_with_dirty(&revision, "", true);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &dirty, &dirty_archive)
-            .unwrap_err()
-            .contains("dirty source")
-    );
+    assert!(verify(&revision, &dirty, &dirty_archive)
+        .unwrap_err()
+        .contains("dirty source"));
     let (escaping, archive) = fixture.archive(&revision, "../outside");
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &escaping, &archive)
-            .unwrap_err()
-            .contains("escapes")
-    );
+    assert!(verify(&revision, &escaping, &archive)
+        .unwrap_err()
+        .contains("escapes"));
     let (release, archive) = fixture.archive(&revision, "examples");
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("differs from Cargo")
-    );
+    assert!(verify(&revision, &release, &archive)
+        .unwrap_err()
+        .contains("differs from Cargo"));
     let mut metadata = metadata;
     metadata.packages[0].version = "0.1.1".parse().unwrap();
     assert!(
