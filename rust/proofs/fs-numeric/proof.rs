@@ -1,7 +1,7 @@
 //! The filesystem crate's numeric admission harness over the shared codec.
 
 #[path = "../../crates/filesystem-base/src/numeric.rs"]
-mod numeric;
+pub mod numeric;
 
 mod acyclic_fs_base {
     pub use super::numeric;
