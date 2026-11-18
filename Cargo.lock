@@ -327,6 +327,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-conformance-filesystem"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-fs-work",
+ "blake3",
+ "hex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
