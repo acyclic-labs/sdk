@@ -550,12 +550,15 @@ rust_test(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
         "tests/support/allow_publication.rs",
         "tests/support/append.rs",
+        "tests/support/blob_objects.rs",
+        "tests/support/blob_source.rs",
         "tests/support/checkout_defaults.rs",
         "tests/support/checkout_fixture.rs",
         "tests/support/checkout_live_fixture.rs",
         "tests/support/checkout_manual.rs",
         "tests/support/checkout_serialized.rs",
         "tests/support/checkout_tracking.rs",
+        "tests/support/codec_properties.rs",
         "tests/support/creation_budget.rs",
         "tests/support/extent_objects.rs",
         "tests/support/generation_objects.rs",
@@ -566,6 +569,7 @@ rust_test(
         "tests/support/native_access.rs",
         "tests/support/native_authority_publication.rs",
         "tests/support/provider_receipt.rs",
+        "tests/support/listing_tree.rs",
         "tests/support/put_object.rs",
         "tests/support/selected_budget.rs",
         "tests/support/simulation_image.rs",
@@ -573,6 +577,7 @@ rust_test(
         "tests/support/transfer_manifest.rs",
         "tests/support/tree_entries.rs",
         "tests/support/tree_objects.rs",
+        "tests/support/two_leaf_tree.rs",
         "tests/support/unbounded.rs",
         "tests/support/volume_commit.rs",
         "tests/support/volume_fixture.rs",
@@ -2793,11 +2798,18 @@ rust_test(
     crate_root = "tests/extent_codec.rs",
     srcs = [
         "tests/extent_codec.rs",
+        "tests/extent_codec/kernel/blob/mod.rs",
+        "tests/extent_codec/kernel/blob/tests.rs",
+        "tests/extent_codec/kernel/codec/mod.rs",
+        "tests/extent_codec/kernel/codec/tests.rs",
         "tests/extent_codec/kernel/extent/mod.rs",
         "tests/extent_codec/kernel/extent/tests.rs",
         "tests/extent_codec/kernel/mod.rs",
         "tests/extent_codec/kernel/types/mod.rs",
         "tests/extent_codec/kernel/types/tests.rs",
+        "tests/support/codec_association.rs",
+        "tests/support/codec_page_limit.rs",
+        "tests/support/codec_properties.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -2816,6 +2828,8 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//proptest-1.12.0",
     ],
     tags = ["manual"],
 )
@@ -2846,8 +2860,6 @@ rust_test(
     crate_root = "tests/export_codec.rs",
     srcs = [
         "tests/export_codec.rs",
-        "tests/export_codec/kernel/checkpoint/mod.rs",
-        "tests/export_codec/kernel/checkpoint/tests.rs",
         "tests/export_codec/kernel/export/mod.rs",
         "tests/export_codec/kernel/export/tests.rs",
         "tests/export_codec/kernel/generation/mod.rs",
@@ -2855,14 +2867,9 @@ rust_test(
         "tests/export_codec/kernel/mod.rs",
         "tests/export_codec/kernel/retention/mod.rs",
         "tests/export_codec/kernel/retention/tests.rs",
-        "tests/export_codec/kernel/transfer/mod.rs",
-        "tests/export_codec/kernel/transfer/tests.rs",
+        "tests/export_codec/kernel/volume/mod.rs",
+        "tests/export_codec/kernel/volume/tests.rs",
         "tests/support/export_manifest.rs",
-        "tests/support/generation_objects.rs",
-        "tests/support/memory_objects.rs",
-        "tests/support/put_object.rs",
-        "tests/support/transfer_manifest.rs",
-        "tests/support/tree_objects.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -2881,11 +2888,7 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/objects:acyclic_objects",
-        "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//hex-0.4.3",
-        "@sdk_crates//tokio-1.54.1",
     ],
     tags = ["manual"],
 )
@@ -2912,6 +2915,69 @@ isolated_test(
 )
 
 rust_test(
+    name = "generation_transfer_cases",
+    crate_root = "tests/generation_transfer.rs",
+    srcs = [
+        "tests/generation_transfer.rs",
+        "tests/generation_transfer/kernel/checkpoint/mod.rs",
+        "tests/generation_transfer/kernel/checkpoint/tests.rs",
+        "tests/generation_transfer/kernel/export/mod.rs",
+        "tests/generation_transfer/kernel/export/tests.rs",
+        "tests/generation_transfer/kernel/mod.rs",
+        "tests/generation_transfer/kernel/transfer/mod.rs",
+        "tests/generation_transfer/kernel/transfer/tests.rs",
+        "tests/support/export_manifest.rs",
+        "tests/support/generation_objects.rs",
+        "tests/support/put_object.rs",
+        "tests/support/transfer_manifest.rs",
+        "tests/support/tree_objects.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "generation_transfer",
+    binary = ":generation_transfer_cases",
+    id = "acyclic-fs::generation_transfer",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "generation_transfer_full-cloud",
+    binary = ":generation_transfer_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::generation_transfer",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
     name = "extent_clone_cases",
     crate_root = "tests/extent_clone.rs",
     srcs = [
@@ -2924,7 +2990,6 @@ rust_test(
         "tests/extent_clone/kernel/range/mod.rs",
         "tests/extent_clone/kernel/range/tests.rs",
         "tests/support/extent_objects.rs",
-        "tests/support/memory_objects.rs",
         "tests/support/put_object.rs",
     ],
     edition = "2024",
@@ -2945,7 +3010,6 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
     ],
@@ -2974,15 +3038,77 @@ isolated_test(
 )
 
 rust_test(
+    name = "blob_io_cases",
+    crate_root = "tests/blob_io.rs",
+    srcs = [
+        "tests/blob_io.rs",
+        "tests/blob_io/kernel/blob/mod.rs",
+        "tests/blob_io/kernel/blob/tests.rs",
+        "tests/blob_io/kernel/mod.rs",
+        "tests/support/blob_objects.rs",
+        "tests/support/blob_source.rs",
+        "tests/support/put_object.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/objects:acyclic_objects",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "blob_io",
+    binary = ":blob_io_cases",
+    id = "acyclic-fs::blob_io",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "blob_io_full-cloud",
+    binary = ":blob_io_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::blob_io",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
     name = "metadata_codec_cases",
     crate_root = "tests/metadata_codec.rs",
     srcs = [
         "tests/metadata_codec.rs",
         "tests/metadata_codec/kernel/attribute/mod.rs",
         "tests/metadata_codec/kernel/attribute/tests.rs",
+        "tests/metadata_codec/kernel/codec/mod.rs",
+        "tests/metadata_codec/kernel/codec/tests.rs",
         "tests/metadata_codec/kernel/metadata/mod.rs",
         "tests/metadata_codec/kernel/metadata/tests.rs",
         "tests/metadata_codec/kernel/mod.rs",
+        "tests/support/codec_association.rs",
+        "tests/support/codec_properties.rs",
         "tests/support/portable_metadata.rs",
     ],
     edition = "2024",
@@ -3003,6 +3129,7 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//proptest-1.12.0",
     ],
     tags = ["manual"],
 )
@@ -3083,18 +3210,14 @@ rust_test(
     name = "tree_codec_cases",
     crate_root = "tests/tree_codec.rs",
     srcs = [
-        "tests/support/memory_objects.rs",
-        "tests/support/put_object.rs",
-        "tests/support/tree_entries.rs",
-        "tests/support/tree_objects.rs",
+        "tests/support/codec_page_limit.rs",
+        "tests/support/codec_properties.rs",
         "tests/tree_codec.rs",
+        "tests/tree_codec/kernel/codec/mod.rs",
+        "tests/tree_codec/kernel/codec/tests.rs",
         "tests/tree_codec/kernel/mod.rs",
-        "tests/tree_codec/kernel/read/mod.rs",
-        "tests/tree_codec/kernel/read/tests.rs",
         "tests/tree_codec/kernel/tree/mod.rs",
         "tests/tree_codec/kernel/tree/tests.rs",
-        "tests/tree_codec/kernel/tree_mutation/mod.rs",
-        "tests/tree_codec/kernel/tree_mutation/tests.rs",
         "tests/tree_codec/kernel/types/mod.rs",
         "tests/tree_codec/kernel/types/tests.rs",
     ],
@@ -3115,11 +3238,8 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/objects:acyclic_objects",
-        "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//hex-0.4.3",
-        "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//proptest-1.12.0",
     ],
     tags = ["manual"],
 )
@@ -3138,6 +3258,69 @@ isolated_test(
     binary = ":tree_codec_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::tree_codec",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "directory_tree_cases",
+    crate_root = "tests/directory_tree.rs",
+    srcs = [
+        "tests/support/listing_tree.rs",
+        "tests/support/put_object.rs",
+        "tests/support/tree_entries.rs",
+        "tests/support/tree_objects.rs",
+        "tests/support/two_leaf_tree.rs",
+        "tests/directory_tree.rs",
+        "tests/directory_tree/kernel/list/mod.rs",
+        "tests/directory_tree/kernel/list/tests.rs",
+        "tests/directory_tree/kernel/mod.rs",
+        "tests/directory_tree/kernel/read/mod.rs",
+        "tests/directory_tree/kernel/read/tests.rs",
+        "tests/directory_tree/kernel/tree_mutation/mod.rs",
+        "tests/directory_tree/kernel/tree_mutation/tests.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "directory_tree",
+    binary = ":directory_tree_cases",
+    id = "acyclic-fs::directory_tree",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "directory_tree_full-cloud",
+    binary = ":directory_tree_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::directory_tree",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],

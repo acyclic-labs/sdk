@@ -82,10 +82,13 @@ build-script-inputs = [
 test-build-script = ["operation_claim_model"]
 test-without-build-script = [
     "export_codec",
+    "generation_transfer",
     "extent_clone",
+    "blob_io",
     "extent_codec",
     "metadata_codec",
     "tree_codec",
+    "directory_tree",
     "checkout_cancellation",
     "checkout_content",
     "checkout_live",
@@ -112,10 +115,13 @@ test-without-build-script = [
 ]
 test-narrow-runfiles = [
     "export_codec",
+    "generation_transfer",
     "extent_clone",
+    "blob_io",
     "extent_codec",
     "metadata_codec",
     "tree_codec",
+    "directory_tree",
     "checkout_cancellation",
     "checkout_content",
     "checkout_live",
@@ -158,12 +164,15 @@ acyclic-fs-work = "observations"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
-export_codec = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "hex", "tokio"]
-extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "tokio"]
-extent_codec = ["acyclic_fs", "acyclic_fs_format"]
-metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
+export_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
+generation_transfer = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
+blob_io = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "tokio"]
+extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
+extent_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
+metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
 metadata_stamps = ["acyclic_fs_format", "proptest"]
-tree_codec = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "hex", "tokio"]
+tree_codec = ["acyclic_fs", "acyclic_fs_format", "hex", "proptest"]
+directory_tree = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 memory_authority = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
 memory_objects = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
@@ -336,10 +345,22 @@ path = "tests/extent_codec.rs"
 [[test]]
 name = "export_codec"
 path = "tests/export_codec.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "generation_transfer"
+path = "tests/generation_transfer.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "extent_clone"
 path = "tests/extent_clone.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "blob_io"
+path = "tests/blob_io.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "metadata_codec"
@@ -352,6 +373,11 @@ path = "tests/metadata_stamps.rs"
 [[test]]
 name = "tree_codec"
 path = "tests/tree_codec.rs"
+
+[[test]]
+name = "directory_tree"
+path = "tests/directory_tree.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "checkout_cancellation"

@@ -277,7 +277,7 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
     CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/retention.rs"]
 mod tests;
 

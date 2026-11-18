@@ -162,15 +162,14 @@ fn decoder_rejects_version_and_bounded_field_overclaims_before_allocation()
     Ok(())
 }
 
+#[path = "../../../tests/support/codec_properties.rs"]
+mod codec_properties;
+
 mod properties {
     use super::super::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
-    use crate::foundation::{Digest, FileId};
-    use crate::kernel::{
-        Extent, ExtentKind, ExtentPage, FileKind, FileMetadata, LogicalName, MetadataField,
-        NameEncoding, TreeEntry, TreePage, decode_extent_page, decode_file_metadata,
-        decode_tree_page, encode_extent_page, encode_file_metadata, encode_tree_page,
-    };
-    use crate::storage::{ObjectId, ObjectKind};
+    use super::codec_properties::{change, check_canonical};
+    use crate::kernel::{decode_extent_page, decode_file_metadata, decode_tree_page};
+
     use proptest::prelude::*;
 
     const DOMAIN: &[u8] = b"PROPTEST";
@@ -238,153 +237,6 @@ mod properties {
         Ok(fields)
     }
 
-    type Change = (usize, u8, usize, Vec<u8>);
-
-    fn change() -> impl Strategy<Value = Change> {
-        (
-            any::<usize>(),
-            any::<u8>(),
-            0_usize..3,
-            prop::collection::vec(any::<u8>(), 0..2),
-        )
-    }
-
-    fn mutate(bytes: &[u8], (at, flip, cut, junk): &Change) -> Vec<u8> {
-        let mut mutated = bytes.to_vec();
-        if let Some(byte) = mutated.get_mut(at % bytes.len().max(1)) {
-            *byte ^= flip;
-        }
-        mutated.truncate(mutated.len().saturating_sub(*cut));
-        mutated.extend_from_slice(junk);
-        mutated
-    }
-
-    fn check_canonical<T: PartialEq + std::fmt::Debug, E: std::fmt::Debug>(
-        value: &T,
-        encode: impl Fn(&T) -> Result<Vec<u8>, E>,
-        decode: impl Fn(&[u8]) -> Result<T, CanonicalDecodeError>,
-        change: &Change,
-    ) -> Result<Vec<u8>, TestCaseError> {
-        let fail = |error: E| TestCaseError::fail(format!("{error:?}"));
-        let encoded = encode(value).map_err(fail)?;
-        let decoded = decode(&encoded);
-        prop_assert_eq!(decoded.as_ref(), Ok(value));
-        let mutated = mutate(&encoded, change);
-        if let Ok(decoded) = decode(&mutated) {
-            prop_assert_eq!(encode(&decoded).map_err(fail)?, mutated);
-        }
-        Ok(encoded)
-    }
-
-    fn tree_entries() -> impl Strategy<Value = Vec<TreeEntry>> {
-        let kind =
-            prop::sample::select(vec![FileKind::Regular, FileKind::Directory, FileKind::Fifo]);
-        prop::collection::btree_map("[a-e]{1,4}", (any::<u8>(), kind), 0..10).prop_map(|map| {
-            map.into_iter()
-                .filter_map(|(name, (id, kind))| {
-                    Some(TreeEntry {
-                        name: LogicalName::new(NameEncoding::Utf8, name.into_bytes()).ok()?,
-                        file_id: FileId::from_bytes([id; 16]),
-                        kind,
-                    })
-                })
-                .collect()
-        })
-    }
-
-    fn extents() -> impl Strategy<Value = Vec<Extent>> {
-        let kind = prop_oneof![
-            Just(ExtentKind::Hole),
-            Just(ExtentKind::AllocatedZero),
-            (any::<u8>(), 0_u64..1_000).prop_map(|(byte, object_offset)| ExtentKind::Content {
-                object: ObjectId {
-                    storage: association(byte),
-                    kind: ObjectKind::Blob,
-                    digest: Digest::from_bytes([byte; 32]),
-                },
-                object_offset,
-            }),
-        ];
-        let spans = prop::collection::vec((1_u64..100, kind), 0..10);
-        (0_u64..1_000, spans).prop_map(|(mut offset, spans)| {
-            spans
-                .into_iter()
-                .map(|(length, kind)| {
-                    let extent = Extent {
-                        offset,
-                        length,
-                        kind,
-                    };
-                    offset += length;
-                    extent
-                })
-                .collect()
-        })
-    }
-
-    fn field_of<T: Clone + std::fmt::Debug>(
-        value: impl Strategy<Value = T>,
-    ) -> impl Strategy<Value = MetadataField<T>> {
-        prop::option::of(value)
-            .prop_map(|value| value.map_or(MetadataField::Unavailable, MetadataField::Value))
-    }
-
-    fn object_of(kind: ObjectKind) -> impl Strategy<Value = MetadataField<ObjectId>> {
-        field_of(any::<u8>().prop_map(move |byte| ObjectId {
-            storage: association(byte),
-            kind,
-            digest: Digest::from_bytes([byte; 32]),
-        }))
-    }
-
-    fn association(byte: u8) -> Option<crate::ObjectStorage> {
-        (byte & 1 != 0).then_some(crate::ObjectStorage {
-            locator: Digest::from_bytes([byte.wrapping_add(1); 32]),
-            root_file_id: crate::FileId::from_bytes([byte; 16]),
-            origin_generation: Digest::from_bytes([byte; 32]),
-        })
-    }
-
-    fn metadata() -> impl Strategy<Value = FileMetadata> {
-        let ids = (
-            field_of(any::<u32>()),
-            field_of(any::<u32>()),
-            field_of(any::<u32>()),
-        );
-        let flags = (field_of(any::<u64>()), field_of(any::<u32>()));
-        let times = prop::array::uniform4(field_of(any::<i64>()));
-        let objects = (
-            object_of(ObjectKind::AttributePage),
-            object_of(ObjectKind::Blob),
-            object_of(ObjectKind::Blob),
-        );
-        (ids, flags, times, objects).prop_map(
-            |(
-                (posix_mode, posix_uid, posix_gid),
-                (posix_flags, windows_attributes),
-                [created_ns, modified_ns, accessed_ns, changed_ns],
-                (named_attributes, acl, security_descriptor),
-            )| FileMetadata {
-                posix_mode,
-                posix_uid,
-                posix_gid,
-                posix_flags,
-                windows_attributes,
-                created_ns,
-                modified_ns,
-                accessed_ns,
-                changed_ns,
-                named_attributes,
-                acl,
-                security_descriptor,
-            },
-        )
-    }
-
-    fn fewer(count: usize) -> Option<u32> {
-        u32::try_from(count).ok()?.checked_sub(1)
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
@@ -408,44 +260,6 @@ mod properties {
             let _ = decode_file_metadata(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
         }
 
-        #[test]
-        fn tree_pages_round_trip_canonically_within_limits(
-            entries in tree_entries(),
-            change in change(),
-        ) {
-            let limits = DecodeLimits::default();
-            let count = entries.len();
-            let page = TreePage::Leaf(entries);
-            let decode = |bytes: &[u8]| decode_tree_page(bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
-            let encoded = check_canonical(&page, |page| encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
 
-            if let Some(maximum_page_items) = fewer(count) {
-                let tight = DecodeLimits { maximum_page_items, ..limits };
-                prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err(), "page bounds");
-            }
-        }
-
-        #[test]
-        fn extent_pages_round_trip_canonically_within_limits(
-            extents in extents(),
-            change in change(),
-        ) {
-            let limits = DecodeLimits::default();
-            let count = extents.len();
-            let page = ExtentPage::Leaf(extents);
-            let decode = |bytes: &[u8]| decode_extent_page(bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
-            let encoded = check_canonical(&page, |page| encode_extent_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
-            if let Some(maximum_page_items) = fewer(count) {
-
-                let tight = DecodeLimits { maximum_page_items, ..limits };
-                prop_assert!(decode_extent_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
-            }
-        }
-
-        #[test]
-        fn metadata_round_trips_canonically(metadata in metadata(), change in change()) {
-            let decode = |bytes: &[u8]| decode_file_metadata(bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
-            check_canonical(&metadata, |metadata| encode_file_metadata(*metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
-        }
     }
 }

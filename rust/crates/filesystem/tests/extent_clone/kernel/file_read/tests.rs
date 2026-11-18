@@ -1,3 +1,4 @@
+use acyclic_fs::MemoryObjectStore;
 use acyclic_fs::kernel::{
     DecodeLimits, FileKind, FilePayload, FileRangeReadError, FileRangeRequest, FileRecord,
     InlineFileData, read_file_range_async,
@@ -8,8 +9,6 @@ use acyclic_fs_format::{
     object_reference::{ObjectId, ObjectKind},
 };
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters, WorkError};
-
-use super::super::memory::memory_objects;
 
 fn inline_record(bytes: &[u8]) -> Result<FileRecord, Box<dyn std::error::Error>> {
     Ok(FileRecord {
@@ -48,8 +47,12 @@ async fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dy
         limits: limits(),
         budget: WorkBudget::UNBOUNDED,
     };
-    let read =
-        (read_file_range_async(&memory_objects(), request, &CancellationToken::new())).await?;
+    let read = (read_file_range_async(
+        &MemoryObjectStore::default(),
+        request,
+        &CancellationToken::new(),
+    ))
+    .await?;
     assert_eq!(read.bytes.as_ref(), b"cde");
     assert_eq!(read.logical_owned_bytes(), 3);
     let shared = read.bytes.slice(1..2);
@@ -77,8 +80,12 @@ async fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::err
         limits: limits(),
         budget: WorkBudget::UNBOUNDED,
     };
-    let result =
-        (read_file_range_async(&memory_objects(), request, &CancellationToken::new())).await;
+    let result = (read_file_range_async(
+        &MemoryObjectStore::default(),
+        request,
+        &CancellationToken::new(),
+    ))
+    .await;
     let Err(failure) = result else {
         return Err("invalid range succeeded".into());
     };
@@ -90,7 +97,7 @@ async fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::err
 #[tokio::test]
 async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let cancelled = (read_file_range_async(
@@ -183,7 +190,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
 #[tokio::test]
 async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.output_bytes = 2;
     let rejected = (read_file_range_async(
@@ -218,7 +225,7 @@ async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn
 async fn zero_length_inline_read_at_eof_is_allocation_free()
 -> Result<(), Box<dyn std::error::Error>> {
     let read = (read_file_range_async(
-        &memory_objects(),
+        &MemoryObjectStore::default(),
         FileRangeRequest {
             record: inline_record(b"abc")?,
             range: ByteRange {

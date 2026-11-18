@@ -28,16 +28,6 @@ pub(crate) async fn put_attribute_page<S: AsyncObjectStore>(
     put_object(store, ObjectKind::AttributePage, bytes).await
 }
 
-pub(crate) async fn put_blob_page<S: AsyncObjectStore>(
-    store: &S,
-    value: &BlobPage,
-    maximum_items: u32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let bytes = encode_blob_page(
-        value,
-        maximum_items,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )?;
-    put_object(store, ObjectKind::Blob, bytes).await
-}
+#[path = "../../../tests/support/blob_objects.rs"]
+mod blob_objects;
+pub(crate) use blob_objects::put_blob_page;

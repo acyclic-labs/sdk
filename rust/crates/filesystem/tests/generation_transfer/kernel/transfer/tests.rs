@@ -5,7 +5,7 @@ use acyclic_fs::kernel::{
 };
 use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, CancellationToken, FilesystemProfile, Lifecycle,
-    MemoryObjectBackend, VolumeConfig,
+    MemoryObjectStore, VolumeConfig,
 };
 use acyclic_fs_format::{
     identity::{FileId, VolumeId},
@@ -14,7 +14,6 @@ use acyclic_fs_format::{
 };
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
-use super::super::memory::memory_objects;
 use super::super::tree_objects::put_tree_page;
 
 #[path = "../../../support/transfer_manifest.rs"]
@@ -29,7 +28,7 @@ use super::super::generation_objects::{
 async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, _) = fixture();
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let terminal = (export_generation_batch_async(
         &store,
@@ -87,7 +86,7 @@ async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
 async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, _) = fixture();
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
 
     for (maximum_objects, maximum_object_bytes) in
@@ -170,7 +169,7 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
 async fn import_rejects_every_noncanonical_page_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, [chunk, root]) = fixture();
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     for (cursor, bodies, maximum_objects, expected) in [
         (
@@ -229,8 +228,8 @@ async fn import_rejects_every_noncanonical_page_before_backend_work()
 async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, bodies) = fixture();
-    let source = memory_objects();
-    let destination = memory_objects();
+    let source = MemoryObjectStore::default();
+    let destination = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies.iter().cloned()) {
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -324,7 +323,7 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
 }
 
 async fn minimal_generation(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
     volume_id: VolumeId,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let metadata = put_file_metadata(store, FileMetadata::default()).await?;
@@ -369,7 +368,7 @@ fn closure_limits() -> ClosureLimits {
 #[tokio::test]
 async fn manifest_construction_rejects_foreign_volume_after_complete_authentication()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let actual_volume = VolumeId::from_bytes([42; 16]);
     let generation = minimal_generation(&store, actual_volume).await?;
     let cancellation = CancellationToken::new();

@@ -1,0 +1,314 @@
+use acyclic_fs::kernel::{Child, DecodeLimits, DirectoryReadError, TreePage, list_tree_entries};
+use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
+use acyclic_fs::{CancellationToken, MemoryObjectStore, ObjectReadRequest};
+use acyclic_fs_format::{
+    identity::Digest,
+    object_reference::{ObjectId, ObjectKind},
+};
+use acyclic_fs_work::performance::{WorkBudget, WorkCounters, WorkError};
+
+use super::super::tree_entries::{entry as tree_entry, name};
+use super::super::tree_objects::put_tree_page as put;
+
+#[path = "../../../support/listing_tree.rs"]
+mod fixture;
+use fixture::{entry, tree};
+
+async fn four_leaf_tree(
+    store: &MemoryObjectStore,
+) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
+    let mut children = Vec::new();
+    let mut third = None;
+    for (index, value) in ["a", "b", "c", "d"].into_iter().enumerate() {
+        let page = put(
+            store,
+            &TreePage::Leaf(vec![entry(
+                value,
+                u8::try_from(index + 1).map_err(|_| "fixture index overflow")?,
+            )?]),
+            8,
+        )
+        .await?;
+        if index == 2 {
+            third = Some(page);
+        }
+        children.push(Child {
+            first: name(value)?,
+            page,
+        });
+    }
+    Ok((
+        put(store, &TreePage::Internal(children), 8).await?,
+        third.ok_or("missing third fixture leaf")?,
+    ))
+}
+
+#[tokio::test]
+async fn bounded_listing_exposes_one_authenticated_unvisited_successor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (root, expected) = four_leaf_tree(&store).await?;
+    let limits = DecodeLimits::default();
+    let page = list_tree_entries(
+        &store,
+        root,
+        None,
+        1,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|entry| entry.name.as_bytes())
+            .collect::<Vec<_>>(),
+        [b"a".as_slice()]
+    );
+    assert!(page.has_more);
+    assert_eq!(
+        page.next_residency,
+        Some(ResidencyHint {
+            request: ObjectReadRequest {
+                object_id: expected,
+                maximum_bytes: limits.maximum_object_bytes,
+            },
+            reason: ResidencyReason::DirectorySuccessor,
+        })
+    );
+    assert_eq!(page.work.page_reads, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cursor_page_reads_only_frontier_and_required_successors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = tree(&store).await?;
+    let cursor = name("c")?;
+    let page = list_tree_entries(
+        &store,
+        root,
+        Some(&cursor),
+        2,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|entry| entry.name.as_bytes())
+            .collect::<Vec<_>>(),
+        vec![b"d".as_slice(), b"e".as_slice()]
+    );
+    assert!(page.has_more);
+    assert_eq!(page.work.page_reads, 3);
+    assert_eq!(page.work.items_returned, 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_tail_is_proved_without_scanning_earlier_subtrees()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = tree(&store).await?;
+    let page = list_tree_entries(
+        &store,
+        root,
+        Some(&name("z")?),
+        4,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert!(page.entries.is_empty());
+    assert!(!page.has_more);
+    assert_eq!(page.work.page_reads, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn output_bound_is_admitted_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = tree(&store).await?;
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.items_returned = 1;
+    let failure = list_tree_entries(
+        &store,
+        root,
+        None,
+        2,
+        DecodeLimits::default(),
+        budget,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("unadmitted page unexpectedly read")?;
+    assert!(matches!(
+        failure.error,
+        DirectoryReadError::Work(WorkError::BudgetExceeded {
+            counter: "items_returned",
+            ..
+        })
+    ));
+    assert_eq!(*failure.work()?, WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_object_ceiling_does_not_size_a_tiny_cursor_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = tree(&store).await?;
+    let limits = DecodeLimits {
+        maximum_page_height: 64,
+        ..DecodeLimits::default()
+    };
+    let page = list_tree_entries(
+        &store,
+        root,
+        None,
+        1,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(page.entries.len(), 1);
+    assert!(page.work.peak_allocation_bytes < 100_000);
+    assert_eq!(page.work.page_reads, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = tree(&store).await?;
+    let zero = list_tree_entries(
+        &store,
+        root,
+        None,
+        0,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("zero directory page limit unexpectedly succeeded")?;
+    assert!(matches!(zero.error, DirectoryReadError::ZeroLimit));
+    assert_eq!(*zero.work()?, WorkCounters::default());
+
+    let wrong = list_tree_entries(
+        &store,
+        ObjectId {
+            storage: None,
+            kind: ObjectKind::Blob,
+            digest: Digest::from_bytes([8; 32]),
+        },
+        None,
+        1,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("wrong directory root kind unexpectedly succeeded")?;
+    assert!(matches!(wrong.error, DirectoryReadError::WrongRootKind));
+    assert_eq!(*wrong.work()?, WorkCounters::default());
+
+    let invalid = list_tree_entries(
+        &store,
+        root,
+        None,
+        1,
+        DecodeLimits {
+            maximum_page_height: 0,
+            ..DecodeLimits::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("invalid directory limits unexpectedly succeeded")?;
+    assert!(matches!(invalid.error, DirectoryReadError::InvalidLimits));
+    assert_eq!(*invalid.work()?, WorkCounters::default());
+
+    let height = list_tree_entries(
+        &store,
+        root,
+        None,
+        1,
+        DecodeLimits {
+            maximum_page_height: 1,
+            ..DecodeLimits::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("directory height limit unexpectedly succeeded")?;
+    assert!(matches!(height.error, DirectoryReadError::HeightExceeded));
+    assert_eq!(height.work()?.page_reads, 1);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = (list_tree_entries(
+        &store,
+        root,
+        None,
+        1,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancelled,
+    ))
+    .await
+    .err()
+    .ok_or("cancelled directory listing unexpectedly succeeded")?;
+    assert!(matches!(failure.error, DirectoryReadError::Cancelled));
+    assert_eq!(*failure.work()?, WorkCounters::default());
+
+    let leaf = put(
+        &store,
+        &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
+        8,
+    )
+    .await?;
+    let forged = put(
+        &store,
+        &TreePage::Internal(vec![Child {
+            first: name("a")?,
+            page: leaf,
+        }]),
+        8,
+    )
+    .await?;
+    let failure = list_tree_entries(
+        &store,
+        forged,
+        None,
+        1,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("forged directory lower bound unexpectedly succeeded")?;
+    assert!(matches!(
+        failure.error,
+        DirectoryReadError::ChildBoundsMismatch
+    ));
+    assert_eq!(failure.work()?.page_reads, 2);
+    Ok(())
+}
