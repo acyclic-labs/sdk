@@ -6,7 +6,10 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "rust/crates/harness-core/src/agent/layout.rs"
 TEST = "agent::layout::tests::canonical_subtree_admission_borrows_ancestry_without_parent_copies"
-COMMAND = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-harness-core", "--lib", "-E", f"test(={TEST})", "--no-tests=fail"]
+COMMAND = [
+    "bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases",
+    "--", TEST, "--exact", "--nocapture",
+]
 RECOVERY = "git diff -- rust/crates/harness-core/src/agent/layout.rs; inspect target/agent-path/*.log before running python3 rust/proofs/agent-path/run.py on changed source"
 
 
@@ -33,13 +36,14 @@ def main():
     try:
         SOURCE.write_bytes(original.replace(before, after))
         negative = run("parent-copy")
-        require(negative.returncode != 0 and b"child admission copied ancestry" in negative.stdout,
+        require(negative.returncode != 0 and b"0 passed; 1 failed" in negative.stdout
+                and b"child admission copied ancestry" in negative.stdout,
                 "unchanged allocation oracle rejects original copying operation")
     finally:
         SOURCE.write_bytes(original)
     require(SOURCE.read_bytes() == original, "exact production restoration")
     positive = run("restored")
-    require(positive.returncode == 0 and b"1 test run: 1 passed" in positive.stdout,
+    require(positive.returncode == 0 and b"1 passed; 0 failed" in positive.stdout,
             "nonempty restored ancestry and allocation control")
 
 
