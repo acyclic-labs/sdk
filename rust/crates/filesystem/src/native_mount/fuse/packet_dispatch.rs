@@ -472,7 +472,8 @@ impl FuseProjection {
                         if request.opcode == 9 {
                             return Ok(self.core.source.create_directory(path, metadata, work)?);
                         }
-                        let (kind, device) = MountNodeKind::special(kind, u64::from(rdev))?;
+                        let (kind, device) =
+                            crate::native_mount::source::special_mount_node(kind, u64::from(rdev))?;
                         Ok(self
                             .core
                             .source

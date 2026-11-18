@@ -64,3 +64,24 @@ pub enum MountAttributeWriteMode {
     /// Require presence.
     Replace,
 }
+
+/// Namespace kinds representable by native projections.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MountNodeKind {
+    /// Regular byte stream.
+    Regular,
+    /// Directory.
+    Directory,
+    /// Symbolic link.
+    SymbolicLink,
+    /// POSIX named pipe.
+    Fifo,
+    /// POSIX socket node.
+    Socket,
+    /// POSIX character device.
+    CharacterDevice,
+    /// POSIX block device.
+    BlockDevice,
+    /// A canonical kind this driver cannot project safely.
+    Unsupported,
+}

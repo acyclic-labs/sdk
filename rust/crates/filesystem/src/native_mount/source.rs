@@ -104,44 +104,24 @@ pub type ContentSink<'a> =
 pub type NativeMountContentSink<'a> =
     dyn FnMut(u64, crate::kernel::OwnedSourceChunk) -> Result<(), MountSourceError> + 'a;
 
-/// Namespace kinds representable by native projections.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountNodeKind {
-    /// Regular byte stream.
-    Regular,
-    /// Directory.
-    Directory,
-    /// Symbolic link.
-    SymbolicLink,
-    /// POSIX named pipe.
-    Fifo,
-    /// POSIX socket node.
-    Socket,
-    /// POSIX character device.
-    CharacterDevice,
-    /// POSIX block device.
-    BlockDevice,
-    /// A canonical kind this driver cannot project safely.
-    Unsupported,
-}
-
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-impl MountNodeKind {
-    pub(super) fn special(
-        mode: libc::mode_t,
-        device: u64,
-    ) -> Result<(Self, Option<(u32, u32)>), i32> {
-        let kind = match mode {
-            libc::S_IFIFO => Self::Fifo,
-            libc::S_IFSOCK => Self::Socket,
-            libc::S_IFCHR => Self::CharacterDevice,
-            libc::S_IFBLK => Self::BlockDevice,
-            _ => return Err(libc::EOPNOTSUPP),
-        };
-        let device = matches!(kind, Self::CharacterDevice | Self::BlockDevice)
-            .then(|| crate::native_host::split_device(device));
-        Ok((kind, device))
-    }
+pub(super) fn special_mount_node(
+    mode: libc::mode_t,
+    device: u64,
+) -> Result<(MountNodeKind, Option<(u32, u32)>), i32> {
+    let kind = match mode {
+        libc::S_IFIFO => MountNodeKind::Fifo,
+        libc::S_IFSOCK => MountNodeKind::Socket,
+        libc::S_IFCHR => MountNodeKind::CharacterDevice,
+        libc::S_IFBLK => MountNodeKind::BlockDevice,
+        _ => return Err(libc::EOPNOTSUPP),
+    };
+    let device = matches!(
+        kind,
+        MountNodeKind::CharacterDevice | MountNodeKind::BlockDevice
+    )
+    .then(|| crate::native_host::split_device(device));
+    Ok((kind, device))
 }
 
 /// One data span within a bounded sparse open-file snapshot.

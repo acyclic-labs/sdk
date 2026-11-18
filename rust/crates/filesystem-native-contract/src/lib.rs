@@ -6,7 +6,7 @@ mod mount_path;
 mod native_identity;
 
 pub use mount_operation::{
-    MountAttributeWriteMode, MountContentPin, MountOpenAccess, MountRangeAllocation,
+    MountAttributeWriteMode, MountContentPin, MountNodeKind, MountOpenAccess, MountRangeAllocation,
     MountSeekTarget, NativeMountKind,
 };
 pub use mount_path::MountPath;
