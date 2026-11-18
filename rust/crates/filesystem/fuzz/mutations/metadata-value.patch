@@ -1,7 +1,7 @@
 --- a/rust/crates/filesystem/src/kernel/metadata.rs
 +++ b/rust/crates/filesystem/src/kernel/metadata.rs
-@@ -272,7 +272,7 @@
-     observe(super::codec::ReadAllocationStep::BeforeItem)?;
+@@ -179,7 +179,7 @@
+     observe(acyclic_fs_work::read_allocation::ReadAllocationStep::BeforeItem)?;
      let metadata = FileMetadata {
          posix_mode: decode_u32(&mut decoder, "posix_mode", observe)?,
 -        posix_uid: decode_u32(&mut decoder, "posix_uid", observe)?,
