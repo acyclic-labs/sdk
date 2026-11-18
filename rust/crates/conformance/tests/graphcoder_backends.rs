@@ -190,6 +190,11 @@ fn answer(request: &Value, steps: &Mutex<BTreeSet<Step>>, outputs: &Mutex<Output
             text("followup answer")
         }]);
     }
+    // A server may open a root agent before the test's scenario turn. That
+    // turn is not the scenario, so it must not run it.
+    if !prompt.contains(SCENARIO) {
+        return events(&[text("idle")]);
+    }
     steps.lock().unwrap().insert(("root", results));
     events(&[match results {
         0 => call(
@@ -770,8 +775,11 @@ enum Backend {
 /// its shell call awaits approval, and a fresh run of the same operation
 /// approves it and prints the answer.
 async fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) -> String {
-    let run = |prompt: &str, operation: &str| {
+    let run = |prompt: &str, operation: &str, agent: Option<&str>| {
         let mut args = vec!["-p", prompt, "--operation", operation];
+        if let Some(agent) = agent {
+            args.extend(["--agent", agent]);
+        }
         Running::start(match backend {
             Backend::Local => home.command(model, Some(policy), &args),
             Backend::Endpoint { url, credential } => {
@@ -783,16 +791,34 @@ async fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) 
         })
     };
     // Reconnect mid-turn: the first client leaves while the approval is
-    // pending; the second sees the same pending turn and settles it.
-    let mut first = run(SCENARIO, "conformance");
+    // pending; the second sees the same pending turn and settles it. The
+    // first client's departure must not decide the approval.
+    let mut first = run(SCENARIO, "conformance", None);
     first.wait_for("approve request").await.unwrap();
     first.kill().await;
-    let mut second = run(SCENARIO, "conformance");
+    let mut second = run(SCENARIO, "conformance", None);
     second.answer("y\n");
     let (answer, stderr) = second.finish().await;
     assert!(stderr.contains("approve request"), "{stderr}");
     // The original agent wait resumes only once the child's own reply settled.
-    let (followup, _) = run(FOLLOWUP, "conformance-follow-up").finish().await;
+    let spawned: Value = serde_json::from_str(
+        model
+            .outputs
+            .lock()
+            .unwrap()
+            .get("spawn")
+            .expect("spawn result"),
+    )
+    .unwrap();
+    let root = spawned["agent"]
+        .as_str()
+        .expect("spawn named no agent")
+        .split("/children/")
+        .next()
+        .unwrap();
+    let (followup, _) = run(FOLLOWUP, "conformance-follow-up", Some(root))
+        .finish()
+        .await;
     format!("{}\n{}", answer.trim(), followup.trim())
 }
 
@@ -832,7 +858,10 @@ impl Shape {
             "immutable read differs from the requested write"
         );
         assert!(
-            read["page"].is_null(),
+            read["page"].is_null()
+                || (read["page"]["start"] == 0
+                    && read["page"]["end"] == read["page"]["total"]
+                    && read["page"]["eof"] == true),
             "read returned a partial view: {read}"
         );
         // The child's path under the root, less the backend's agent ids.
