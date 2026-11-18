@@ -1,45 +1,19 @@
-use acyclic_fs::model::{
-    CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, VolumeConfig,
-};
-use acyclic_fs::{
-    CancellationToken, Checkout, Fs, MemoryAuthorityBackend, MemoryObjectBackend, Volume,
-};
-use acyclic_fs_work::performance::WorkBudget;
+use acyclic_fs::{CancellationToken, VolumeConfig};
 
-pub(super) type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
-pub(super) type TestCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
-type TestVolume = Volume<MemoryAuthorityBackend, MemoryObjectBackend>;
+#[path = "checkout_defaults.rs"]
+mod checkout_defaults;
+pub(super) use checkout_defaults::config;
+pub(super) use checkout_defaults::writable_pinned;
 
-pub(super) fn config() -> VolumeConfig {
-    VolumeConfig::portable(Lifecycle::Ephemeral)
-}
+#[path = "memory_checkout.rs"]
+mod memory_checkout;
+pub(super) use memory_checkout::{TestCheckout, TestResult, open_checkout, volume};
 
 pub(super) async fn checkout() -> TestResult<TestCheckout> {
     checkout_with_config(config()).await
 }
 
 pub(super) async fn checkout_with_config(config: VolumeConfig) -> TestResult<TestCheckout> {
-    open_checkout(&volume(config).await?).await
-}
-
-pub(super) async fn volume(config: VolumeConfig) -> TestResult<TestVolume> {
-    Ok(Fs::memory()
-        .create_volume(config, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await?
-        .value)
-}
-
-pub(super) async fn open_checkout(volume: &TestVolume) -> TestResult<TestCheckout> {
-    Ok(volume
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode {
-                consistency: ConsistencyMode::Pinned,
-                ..CheckoutMode::tracking_transaction()
-            },
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?
-        .value)
+    let cancel = CancellationToken::new();
+    Ok(open_checkout(&volume(config, &cancel).await?, writable_pinned(), &cancel).await?)
 }

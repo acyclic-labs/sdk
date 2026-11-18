@@ -6,6 +6,7 @@ mod allow_publication;
 mod checkout_fixture;
 #[path = "../../../support/checkout_tracking.rs"]
 mod checkout_tracking;
+mod creation;
 #[path = "../../../support/volume_fixture.rs"]
 mod fixtures;
 mod profiles;

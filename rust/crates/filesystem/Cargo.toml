@@ -19,6 +19,8 @@ mounts-fuse = true
 share-separate-deps = true
 unit-test-only-sources = [
     "src/access/fixtures.rs",
+    "src/access/trie/shared/tests.rs",
+    "src/async_storage/work/frame/tests.rs",
     "src/collection/tests.rs",
     "src/core_state/group/tests/**",
     "src/core_state/tests/**",
@@ -30,6 +32,7 @@ unit-test-only-sources = [
     "src/distributed/tests.rs",
     "src/distributed/tests/**",
     "src/facade/test_fixtures.rs",
+    "src/git_compat/stream_store/tests.rs",
     "src/git_compat/tests/**",
     "src/heap_future/frame_tests.rs",
     "src/kernel/rebase/tests/**",
@@ -37,14 +40,20 @@ unit-test-only-sources = [
     "src/lazy_workspace/hash_tests.rs",
     "src/lazy_workspace/tests/**",
     "src/lineage/tests.rs",
+    "src/logical_objects/sealing/tests.rs",
     "src/logical_objects/tests.rs",
+    "src/materializer/directory_preparation/tests.rs",
+    "src/materializer/window/tests.rs",
     "src/multi_root/tests/**",
     "src/native_mount/adapter/tests/**",
     "src/native_mount/fixture_access.rs",
     "src/native_mount/lazy/tests/**",
     "src/native_mount/materialize/tests/**",
     "src/native_mount/tests/**",
+    "src/native_name/encoding/tests.rs",
+    "src/operation_window/streams/tests.rs",
     "src/operation_window/tests/**",
+    "src/publication_changes/entry/tests.rs",
     "src/s3_http/tests.rs",
     "src/s3/access_tests.rs",
     "src/simulation/native_write_controls.rs",
@@ -59,6 +68,7 @@ unit-test-only-sources = [
     "src/wire_service/tests.rs",
     "src/workspace/access_tests.rs",
     "src/workspace/accounting_tests.rs",
+    "src/workspace/read_core/tests.rs",
     "src/workspace/retention_accounting_tests.rs",
     "tests/support/**",
 ]
@@ -70,6 +80,60 @@ build-script-inputs = [
 ]
 
 test-build-script = ["operation_claim_model"]
+test-without-build-script = [
+    "extent_codec",
+    "metadata_codec",
+    "checkout_cancellation",
+    "checkout_content",
+    "checkout_live",
+    "checkout_merge",
+    "checkout_profiles",
+    "checkout_publication",
+    "checkout_read",
+    "checkout_reconciliation",
+    "checkout_tracking",
+    "checkout_transactions",
+    "git_history",
+    "memory_authority",
+    "memory_objects",
+    "mount_routing",
+    "workspace_append",
+    "workspace_context_contracts",
+    "workspace_contracts",
+    "workspace_fork_selection",
+    "workspace_join_history",
+    "workspace_merge",
+    "workspace_rebase",
+    "workspace_restore",
+    "workspace_transactions",
+]
+test-narrow-runfiles = [
+    "extent_codec",
+    "metadata_codec",
+    "checkout_cancellation",
+    "checkout_content",
+    "checkout_live",
+    "checkout_merge",
+    "checkout_profiles",
+    "checkout_publication",
+    "checkout_read",
+    "checkout_reconciliation",
+    "checkout_tracking",
+    "checkout_transactions",
+    "git_history",
+    "memory_authority",
+    "memory_objects",
+    "mount_routing",
+    "workspace_append",
+    "workspace_context_contracts",
+    "workspace_contracts",
+    "workspace_fork_selection",
+    "workspace_join_history",
+    "workspace_merge",
+    "workspace_rebase",
+    "workspace_restore",
+    "workspace_transactions",
+]
 
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]
@@ -88,6 +152,8 @@ acyclic-fs-work = "observations"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
+extent_codec = ["acyclic_fs", "acyclic_fs_format"]
+metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
 memory_authority = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
 memory_objects = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
@@ -106,7 +172,7 @@ creation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_objec
 native_source = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tempfile", "tokio"]
 operation_claim = ["acyclic_fs", "acyclic_stream"]
 operation_claim_model = ["acyclic_stream", "loom"]
-git_history = ["acyclic_fs", "acyclic_fs_format", "acyclic_stream", "serde_json", "thiserror", "tokio"]
+git_history = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "futures", "proptest", "serde_json", "thiserror", "tokio"]
 git_marker_contracts = ["proptest"]
 merge_driver_contracts = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_base"]
 native_root_identity = ["acyclic_fs_native_contract"]
@@ -252,6 +318,14 @@ path = "tests/memory_authority.rs"
 [[test]]
 name = "memory_objects"
 path = "tests/memory_objects.rs"
+
+[[test]]
+name = "extent_codec"
+path = "tests/extent_codec.rs"
+
+[[test]]
+name = "metadata_codec"
+path = "tests/metadata_codec.rs"
 
 [[test]]
 name = "checkout_cancellation"
