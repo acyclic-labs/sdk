@@ -65,7 +65,7 @@ fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
     let mutex = Arc::new(Mutex::<_, 1>::new(()));
     let other = Arc::clone(&mutex);
     assert!(
-        sync::native::thread::spawn(move || {
+        std::thread::spawn(move || {
             let _guard = healthy(other.lock());
             std::panic::resume_unwind(Box::new("poison the guarded value"));
         })
@@ -89,7 +89,7 @@ fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
     let higher = Arc::new(Mutex::<_, 1>::new(false));
     let condition = Arc::new(Condvar::new());
     let mut guard = healthy(higher.lock());
-    let notifier = sync::native::thread::spawn({
+    let notifier = std::thread::spawn({
         let higher = Arc::clone(&higher);
         let condition = Arc::clone(&condition);
         move || {
@@ -120,9 +120,9 @@ fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn independent_threads_can_hold_equal_ranks() {
-    let (first_ready, wait_first) = sync::native::retirement_channel();
-    let (second_ready, wait_second) = sync::native::retirement_channel();
-    sync::native::thread::scope(|scope| {
+    let (first_ready, wait_first) = std::sync::mpsc::sync_channel(1);
+    let (second_ready, wait_second) = std::sync::mpsc::sync_channel(1);
+    std::thread::scope(|scope| {
         for (ready, wait) in [(first_ready, wait_second), (second_ready, wait_first)] {
             scope.spawn(move || {
                 let mutex = Mutex::<_, 1>::new(());
