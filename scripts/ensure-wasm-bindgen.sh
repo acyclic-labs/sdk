@@ -7,10 +7,12 @@ bun_platform="$(bun -e 'process.stdout.write(process.platform)')"
 rustup_bin=rustup
 rustc_bin=rustc
 bindgen_bin=wasm-bindgen
-if [[ "$bun_platform" == win32 ]] && command -v rustup.exe >/dev/null 2>&1; then
-  rustup_bin=rustup.exe
-  rustc_bin=rustc.exe
+if [[ "$bun_platform" == win32 ]]; then
   bindgen_bin=wasm-bindgen.exe
+  if command -v rustup.exe >/dev/null 2>&1; then
+    rustup_bin=rustup.exe
+    rustc_bin=rustc.exe
+  fi
 fi
 "$BASH" "$root/scripts/ensure-rust-target.sh" wasm32-unknown-unknown "$rustup_bin" "$rustc_bin" >&2
 
