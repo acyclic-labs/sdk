@@ -331,8 +331,7 @@ pub fn browser_profile_for_package(
         napi.get("wasm-package").and_then(serde_json::Value::as_str) == Some(package.name.as_str())
     });
     let mut features = BTreeSet::new();
-    let mut default_features = false;
-    if let Some(napi) = binding {
+    let default_features = if let Some(napi) = binding {
         if let Some(value) = napi.get("wasm-features") {
             let values = value.as_array().ok_or_else(|| {
                 ProfileError::InvalidRustdoc("wasm-features must be an array".into())
@@ -348,17 +347,20 @@ pub fn browser_profile_for_package(
                 );
             }
         }
-        default_features = !match napi.get("wasm-no-default-features") {
+        !match napi.get("wasm-no-default-features") {
             Some(value) => value.as_bool().ok_or_else(|| {
                 ProfileError::InvalidRustdoc("wasm-no-default-features must be a boolean".into())
             })?,
             None => false,
-        };
-    } else if let Some(feature) = package.features.get_key_value("wasm") {
-        extend_feature_closure(&package.features, feature, &mut features);
-    } else if !has_browser_target_dependencies {
-        return Ok(None);
-    }
+        }
+    } else {
+        if let Some(feature) = package.features.get_key_value("wasm") {
+            extend_feature_closure(&package.features, feature, &mut features);
+        } else if !has_browser_target_dependencies {
+            return Ok(None);
+        }
+        false
+    };
     let target = "wasm32-unknown-unknown";
     validate_profile_target(target, available_targets)?;
     Ok(Some(ProfileSpec {
