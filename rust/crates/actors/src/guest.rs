@@ -1,8 +1,9 @@
 //! Guest ABI v1. Artifacts own their codec; hosts own admission and publication.
 
 pub use acyclic_actors_guest_wire::{
-    GuestEventResult, GuestSocketEvent, SocketCloseInitiator, SocketCommand, SocketPayload,
-    SocketReply, SocketTransport, WebSocketAutoResponse, WebSocketId,
+    Checkpoint, CodecIdentity, GuestError, GuestEventResult, GuestSocketEvent,
+    SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply, SocketTransport,
+    WebSocketAutoResponse, WebSocketId,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};

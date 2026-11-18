@@ -81,8 +81,10 @@ dependencies = [
 name = "acyclic-actors-guest-wire"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "bytes",
  "serde",
+ "thiserror 2.0.21",
  "ts-rs",
 ]
 

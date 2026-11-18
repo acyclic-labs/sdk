@@ -8,8 +8,10 @@ repository.workspace = true
 description = "Portable Actors guest socket messages"
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 bytes = { workspace = true, features = ["serde"] }
 serde.workspace = true
+thiserror.workspace = true
 ts-rs = "=12.0.1"
 
 [lints]

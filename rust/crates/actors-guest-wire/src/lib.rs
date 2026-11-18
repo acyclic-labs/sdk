@@ -1,5 +1,7 @@
 //! Portable Actors guest socket messages shared by host adapters and code generation.
 
+mod codec;
+pub use codec::{Checkpoint, CodecIdentity, GuestError};
 mod sockets;
 use serde::{Deserialize, Serialize};
 pub use sockets::{
@@ -116,4 +118,16 @@ pub enum SocketReply {
         /// Connection tags in their retained order.
         tags: Vec<String>,
     },
+}
+
+/// Canonical environment property grammar for bindings and secret selections.
+pub fn valid_environment_name(value: &str) -> bool {
+    value.len() <= 63
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }

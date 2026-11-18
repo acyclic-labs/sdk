@@ -29,6 +29,7 @@ mod worker;
 pub use worker::*;
 
 mod secrets;
+pub use acyclic_actors_guest_wire::valid_environment_name;
 pub use secrets::*;
 
 mod fetch;

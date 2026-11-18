@@ -33,8 +33,10 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//ts-rs-12.0.1",
     ],
     visibility = ["//visibility:public"],
@@ -61,8 +63,10 @@ rust_library(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
+        "//rust/crates/auth:acyclic_auth_wasm",
         "@wasm_crates//bytes-1.12.1",
         "@wasm_crates//serde-1.0.229",
+        "@wasm_crates//thiserror-2.0.21",
         "@wasm_crates//ts-rs-12.0.1",
     ],
     visibility = ["//visibility:public"],
