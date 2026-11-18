@@ -21,7 +21,7 @@ fn foreign() {
 fn schedule(case: &str) {
     let capture = Capture::default();
     if std::env::var_os(RELEASE).is_some() {
-        capture.0.lock().unwrap()._registration = Dispatch::none();
+        capture.0.lock().unwrap().release_registration();
     }
     if case == "foreign-before-install" {
         foreign();

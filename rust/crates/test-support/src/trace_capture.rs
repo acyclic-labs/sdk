@@ -45,6 +45,13 @@ pub struct Evidence {
     _registration: tracing::Dispatch,
 }
 
+impl Evidence {
+    /// Releases the registration owned by this capture.
+    pub fn release_registration(&mut self) {
+        self._registration = tracing::Dispatch::none();
+    }
+}
+
 impl Default for Evidence {
     fn default() -> Self {
         Self {
