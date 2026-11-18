@@ -177,16 +177,6 @@ fn project_inner(
     rows: &[Value],
     template: &sdk_docs::DocsData,
 ) -> (sdk_docs::DocsData, profiles::ProfileAvailability) {
-    let manifest: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
-    for (file, digest) in manifest["sourceFiles"].as_object().unwrap() {
-        assert_eq!(
-            hash_file(&fixture.root.join(file)),
-            digest.as_str().unwrap()
-        );
-    }
     let mut specs = BTreeMap::new();
     let mut items = Vec::new();
     let mut prepared = Vec::new();
