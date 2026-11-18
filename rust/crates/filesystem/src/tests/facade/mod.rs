@@ -14,12 +14,9 @@ use checkout_fixture::{config, path, path_parts, writable_pinned};
 mod checkout_tracking;
 use checkout_tracking::tracking;
 
-fn serialized_config() -> VolumeConfig {
-    VolumeConfig {
-        concurrency: ConcurrencyMode::SerializedAuthority,
-        ..config()
-    }
-}
+#[path = "../../../tests/support/checkout_live_fixture.rs"]
+mod live_fixture;
+use live_fixture::{serialized_config, writable_live};
 
 fn exclusive_config() -> VolumeConfig {
     VolumeConfig {
@@ -53,14 +50,6 @@ fn writable_tracking() -> CheckoutMode {
         access: AccessMode::ReadWrite,
         consistency: ConsistencyMode::TrackingSafe,
         mutations: MutationMode::PrivateOverlay,
-    }
-}
-
-fn writable_live() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Live,
-        mutations: MutationMode::DirectLive,
     }
 }
 
