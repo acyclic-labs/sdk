@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["js-credential"] }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 js-sys.workspace = true
 prost.workspace = true
 wasm-bindgen.workspace = true

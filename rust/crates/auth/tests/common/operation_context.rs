@@ -1,4 +1,4 @@
-use acyclic_auth::operation::{Context, Stopped};
+use acyclic_auth_operation::{Context, Stopped};
 use futures::channel::oneshot;
 
 /// The fixture's original caller retains the sole terminal producer. No clock

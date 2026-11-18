@@ -136,7 +136,7 @@ fn input_error() -> Error {
 
 pub(super) async fn execute(
     arguments: &[String],
-    context: Option<acyclic_auth::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
 ) -> Result<Value, Error> {
     let options = Options::parse(arguments)?;
     let context = context
@@ -428,9 +428,9 @@ mod tests {
         ];
         assert!(args.iter().all(|arg| !arg.contains(planted)));
         let (stop, stopped) = futures::channel::oneshot::channel::<()>();
-        let context = acyclic_auth::operation::Context::from_stopped(0, async move {
+        let context = acyclic_auth_operation::Context::from_stopped(0, async move {
             let _ = stopped.await;
-            acyclic_auth::operation::Stopped::Cancelled
+            acyclic_auth_operation::Stopped::Cancelled
         });
         let Err(error) = execute(&args, Some(context)).await else {
             return Err("CAS conflict admitted".into());

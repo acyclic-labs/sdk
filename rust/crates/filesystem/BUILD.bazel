@@ -26,6 +26,7 @@ SEPARATE_DEPS = [
         ":build_script",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -102,6 +103,7 @@ SEPARATE_DEPS = [
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -171,6 +173,7 @@ SEPARATE_DEPS = [
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -357,6 +360,7 @@ rust_library(
         ":build_script",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -420,6 +424,7 @@ rust_library(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -476,6 +481,7 @@ rust_library(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -619,6 +625,7 @@ rust_test(
         ":build_script",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -695,6 +702,7 @@ rust_test(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -764,6 +772,7 @@ rust_test(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/filesystem-base:acyclic_fs_base",
@@ -2969,6 +2978,7 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
@@ -3099,6 +3109,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "@sdk_crates//thiserror-2.0.21",
@@ -3561,6 +3572,7 @@ rust_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/collections:acyclic_collections_wasm",
         "//rust/crates/filesystem-base:acyclic_fs_base_wasm",

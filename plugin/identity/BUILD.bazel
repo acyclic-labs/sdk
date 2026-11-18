@@ -34,6 +34,7 @@ rust_library(
     lint_config = ":lints",
     deps = select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -50,6 +51,7 @@ rust_library(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -66,6 +68,7 @@ rust_library(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -156,6 +159,7 @@ rust_test(
         ":acyclic_plugin_identity",
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -174,6 +178,7 @@ rust_test(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -192,6 +197,7 @@ rust_test(
         "@sdk_crates//zeroize-1.9.1",
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",

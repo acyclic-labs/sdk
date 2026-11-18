@@ -25,6 +25,7 @@ acyclic-harness-provider-protocol = { path = "../harness-provider-protocol", ver
 acyclic-harness-provider-response = { path = "../harness-provider-response", version = "=0.2.0" }
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
 acyclic-auth = { path = "../auth", version = "=0.2.0" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"

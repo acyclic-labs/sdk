@@ -115,7 +115,7 @@ pub struct HttpObjects {
     endpoint: Url,
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
-    context: Option<acyclic_auth::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
     maximum: Option<usize>,
 }
 
@@ -123,7 +123,7 @@ impl HttpObjects {
     /// Bind credentials, connection, body reading, decoding and semantic
     /// admission to one caller-owned absolute deadline and cancellation event.
     /// Clones retain that same budget; no stage starts another timer.
-    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+    pub fn with_context(mut self, context: acyclic_auth_operation::Context) -> Self {
         self.context = Some(context);
         self
     }

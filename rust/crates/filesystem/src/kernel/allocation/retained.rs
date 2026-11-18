@@ -570,7 +570,7 @@ impl<B: AsRef<[u8]> + Send + 'static> Retained<B> {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<bytes::Bytes, crate::FsError> {
         let control =
-            acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<B, T>>() as u64;
+            acyclic_auth_operation::bytes_owner_allocation_bytes::<RetainedBytes<B, T>>() as u64;
         let mut allocation = RetainedAllocation::claim(control, 1, accounting)?;
         self.allocation.absorb(&mut allocation)?;
         Ok(bytes::Bytes::from_owner(RetainedBytes {

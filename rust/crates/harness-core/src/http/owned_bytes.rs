@@ -25,7 +25,7 @@ pub fn owned<T: AsRef<[u8]> + Send + 'static>(
         _custody: custody,
     };
     let mut control = owner._custody.work().claim(
-        acyclic_auth::operation::bytes_owner_allocation_bytes::<Owned<T>>() as u64,
+        acyclic_auth_operation::bytes_owner_allocation_bytes::<Owned<T>>() as u64,
         1,
         WorkCounters::UNCHARGED,
     )?;
@@ -55,7 +55,7 @@ mod tests {
                 let baseline = work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let bytes = vec![b'c'; length];
                 let capacity = bytes.capacity() as u64;
-                let control = acyclic_auth::operation::bytes_owner_allocation_bytes::<Owned<Vec<u8>>>() as u64;
+                let control = acyclic_auth_operation::bytes_owner_allocation_bytes::<Owned<Vec<u8>>>() as u64;
                 let custody = work.claim(
                     capacity + if complete_control { 0 } else { std::mem::size_of::<Owned<Vec<u8>>>() as u64 },
                     1,
@@ -86,7 +86,7 @@ mod tests {
     }
 
     struct Observed {
-        bytes: Option<acyclic_auth::operation::ProtectedBytes>,
+        bytes: Option<acyclic_auth_operation::ProtectedBytes>,
         work: NativeMaterializationWork,
         retired_at: Arc<Mutex<Option<std::result::Result<u64, acyclic_fs::WorkObservationError>>>>,
     }
@@ -121,7 +121,7 @@ mod tests {
             let custody = work.claim(CAPACITY, 0, WorkCounters::UNCHARGED)?;
             let retired_at = Arc::new(Mutex::new(None));
             let payload = Observed {
-                bytes: Some(acyclic_auth::operation::ProtectedBytes::new(
+                bytes: Some(acyclic_auth_operation::ProtectedBytes::new(
                     zeroize::Zeroizing::new(vec![b'Z'; CAPACITY as usize]),
                 )),
                 work: work.clone(),

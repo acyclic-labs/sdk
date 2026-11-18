@@ -75,6 +75,7 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/stream-wire:acyclic_stream_wire",
@@ -176,6 +177,7 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/markdown:acyclic_markdown",
@@ -282,6 +284,7 @@ rust_library(
         ":build_script_wasm",
     ] + [
         "//rust/crates/actors:acyclic_actors_wasm",
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/harness-core:acyclic_harness_core_wasm",
         "//rust/crates/stream-wire:acyclic_stream_wire_wasm",

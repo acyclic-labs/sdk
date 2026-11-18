@@ -1,6 +1,6 @@
 //! Real loopback gateway controls with event-held response bodies.
 use super::*;
-use acyclic_auth::operation::{Context, Stopped};
+use acyclic_auth_operation::{Context, Stopped};
 use futures::{FutureExt, channel::oneshot, future::pending};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 

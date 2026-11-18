@@ -200,9 +200,9 @@ fn bearer_storage(case: &str) -> Result<(), Box<dyn std::error::Error>> {
 fn json_storage(case: &str) -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_auth::{
         credential::CredentialProvider,
-        operation::ProtectedBytes,
         secrets::{Client, Response, Transport, TransportFuture},
     };
+    use acyclic_auth_operation::ProtectedBytes;
     use zeroize::Zeroize as _;
 
     struct Capture<'a>(&'a [u8]);
@@ -284,7 +284,7 @@ fn json_storage(case: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn body_storage(case: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_auth::operation::reserve_protected_bytes;
+    use acyclic_auth_operation::reserve_protected_bytes;
 
     let mut bytes = Zeroizing::new(Vec::new());
     reserve_protected_bytes(&mut bytes, 64)?;

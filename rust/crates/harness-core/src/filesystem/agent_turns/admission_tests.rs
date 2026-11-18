@@ -141,13 +141,13 @@ async fn child_activity_verifies_under_the_admission_that_signed_it() -> Result<
 
     for (scope, expected) in [(scope, false), (broad, true)] {
         let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
-        let context = acyclic_auth::operation::Context::from_stopped(
+        let context = acyclic_auth_operation::Context::from_stopped(
             root.verifier(&mut None)?
                 .expiry(&scope)?
                 .saturating_mul(1000),
             async move {
                 let _ = stopped.await;
-                acyclic_auth::operation::Stopped::Cancelled
+                acyclic_auth_operation::Stopped::Cancelled
             },
         );
         let issuer = RuntimeAuthority::admitted(root.admit(scope, context)?, OperationId::new());
@@ -326,13 +326,13 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
         )?;
         let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
         let runtime = if delegated {
-            let context = acyclic_auth::operation::Context::from_stopped(
+            let context = acyclic_auth_operation::Context::from_stopped(
                 root.verifier(&mut None)?
                     .expiry(&scope)?
                     .saturating_mul(1000),
                 async move {
                     let _ = stopped.await;
-                    acyclic_auth::operation::Stopped::Cancelled
+                    acyclic_auth_operation::Stopped::Cancelled
                 },
             );
             RuntimeAuthority::admitted(
@@ -470,13 +470,13 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             scope: parent.clone(),
         };
         let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
-        let context = acyclic_auth::operation::Context::from_stopped(
+        let context = acyclic_auth_operation::Context::from_stopped(
             root.verifier(&mut None)?
                 .expiry(&parent)?
                 .saturating_mul(1000),
             async move {
                 let _ = stopped.await;
-                acyclic_auth::operation::Stopped::Cancelled
+                acyclic_auth_operation::Stopped::Cancelled
             },
         );
         let issuer = RuntimeAuthority::admitted(
@@ -1204,13 +1204,13 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .expect_err("read-only source admission acquired an existing writer");
         }
         let (_source_producer, source_stopped) = futures::channel::oneshot::channel::<()>();
-        let source_context = acyclic_auth::operation::Context::from_stopped(
+        let source_context = acyclic_auth_operation::Context::from_stopped(
             root.verifier(&mut None)?
                 .expiry(&read_only)?
                 .saturating_mul(1000),
             async move {
                 let _ = source_stopped.await;
-                acyclic_auth::operation::Stopped::Cancelled
+                acyclic_auth_operation::Stopped::Cancelled
             },
         );
         let source_issuer = RuntimeAuthority::admitted(
@@ -1302,13 +1302,13 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .await?;
             let (_administrator_producer, administrator_stopped) =
                 futures::channel::oneshot::channel::<()>();
-            let administrator_context = acyclic_auth::operation::Context::from_stopped(
+            let administrator_context = acyclic_auth_operation::Context::from_stopped(
                 root.verifier(&mut None)?
                     .expiry(&administrator_scope)?
                     .saturating_mul(1000),
                 async move {
                     let _ = administrator_stopped.await;
-                    acyclic_auth::operation::Stopped::Cancelled
+                    acyclic_auth_operation::Stopped::Cancelled
                 },
             );
             let administrator_issuer = RuntimeAuthority::admitted(

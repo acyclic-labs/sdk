@@ -4,9 +4,9 @@
 use super::*;
 use crate::{
     contract::*,
-    operation::{Clock, StopFuture, Stopped},
     trust::{AccountRoot, Issuer, Snapshot},
 };
+use acyclic_auth_operation::{Clock, StopFuture, Stopped};
 use ed25519_dalek::{Signer, SigningKey};
 use futures::{channel::oneshot, executor::block_on, future::pending};
 use std::sync::{

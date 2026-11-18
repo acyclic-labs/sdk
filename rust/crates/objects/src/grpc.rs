@@ -46,7 +46,7 @@ pub enum ConnectError {
 pub struct GrpcObjects {
     channel: Channel,
     credential: CredentialProvider,
-    context: Option<acyclic_auth::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
     transfer_timeout: Option<std::time::Duration>,
     revisions: RevisionArc<RevisionTracker>,
 }
@@ -56,7 +56,7 @@ impl GrpcObjects {
     /// readiness and response admission, to the original operation budget.
     /// Clones retain that same deadline and cancellation event.
     /// This replaces relative transfer and control-call timeouts.
-    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+    pub fn with_context(mut self, context: acyclic_auth_operation::Context) -> Self {
         self.context = Some(context);
         self
     }
@@ -225,7 +225,7 @@ impl GrpcObjects {
 /// categories; whatever else the member said is retained as its refusal.
 fn error_from_status(status: &tonic::Status) -> Error {
     if let Some(stopped) = std::error::Error::source(status)
-        .and_then(|source| source.downcast_ref::<acyclic_auth::operation::Stopped>())
+        .and_then(|source| source.downcast_ref::<acyclic_auth_operation::Stopped>())
     {
         return (*stopped).into();
     }

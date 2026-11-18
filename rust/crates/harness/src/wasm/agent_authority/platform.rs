@@ -1,6 +1,7 @@
 //! Thin adapter over the authenticated platform's invocation-owned capability.
 use super::*;
-use acyclic_auth::{contract::CallerContext, operation::Context};
+use acyclic_auth::contract::CallerContext;
+use acyclic_auth_operation::Context;
 use acyclic_stream::BoxProviderFuture;
 use js_sys::{Function, Promise};
 use serde::de::DeserializeOwned;
@@ -247,7 +248,7 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
     }
     let stopped = field("stopped")?.dyn_into::<Promise>()?;
     let clock = field("clock")?;
-    let context = acyclic_auth::operation::javascript::from_promise(
+    let context = acyclic_auth_operation::javascript::from_promise(
         admission.deadline_unix_millis,
         stopped,
         (!clock.is_undefined()).then_some(clock),

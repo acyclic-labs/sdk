@@ -19,7 +19,7 @@ pub enum Error {
     Credential(#[from] acyclic_auth::credential::CredentialError),
     /// The caller stopped waiting; a submitted mutation may still have committed.
     #[error(transparent)]
-    Stopped(#[from] acyclic_auth::operation::Stopped),
+    Stopped(#[from] acyclic_auth_operation::Stopped),
     /// Network failure.
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
@@ -48,8 +48,8 @@ impl Error {
         match self {
             Self::InvalidArgument => "invalid_argument",
             Self::Credential(_) => "unauthenticated",
-            Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_elapsed",
-            Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => "cancelled",
+            Self::Stopped(acyclic_auth_operation::Stopped::Deadline) => "deadline_elapsed",
+            Self::Stopped(acyclic_auth_operation::Stopped::Cancelled) => "cancelled",
             Self::Transport(_) => "transport",
             Self::ResponseTooLarge => "response_too_large",
             Self::MalformedResponse => "malformed_response",
@@ -139,7 +139,7 @@ pub struct Client {
     credential: Option<CredentialProvider>,
     maximum: usize,
     descriptors: DescriptorPool,
-    context: Option<acyclic_auth::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
 }
 
 #[cfg(test)]
@@ -169,7 +169,7 @@ impl Client {
     /// Bind credential resolution, connection and complete response reading to
     /// one caller budget. Clones retain the same deadline and cancellation.
     /// This adds no automatic retry or claim about remote mutation settlement.
-    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+    pub fn with_context(mut self, context: acyclic_auth_operation::Context) -> Self {
         self.context = Some(context);
         self
     }

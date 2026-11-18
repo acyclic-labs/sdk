@@ -34,6 +34,7 @@ acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 pin-project-lite = "0.2.16"
 http-body = { version = "1" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }

@@ -25,7 +25,7 @@ pub struct Error {
     pub source: Option<acyclic_auth::failure::Failure<Error>>,
     /// Original local stop, when the caller's operation budget ended. Neither
     /// cancellation nor expiry proves that a remote mutation did not commit.
-    pub stopped: Option<acyclic_auth::operation::Stopped>,
+    pub stopped: Option<acyclic_auth_operation::Stopped>,
     /// What the server said beyond `code`: its cause, and the member's
     /// original status when that said more than `code`'s canonical status.
     /// A diagnostic only; recovery follows `code`.
@@ -203,12 +203,12 @@ impl From<wire::ErrorCode> for Error {
         }
     }
 }
-impl From<acyclic_auth::operation::Stopped> for Error {
-    fn from(stopped: acyclic_auth::operation::Stopped) -> Self {
+impl From<acyclic_auth_operation::Stopped> for Error {
+    fn from(stopped: acyclic_auth_operation::Stopped) -> Self {
         Self {
             code: match stopped {
-                acyclic_auth::operation::Stopped::Deadline => wire::ErrorCode::DeadlineElapsed,
-                acyclic_auth::operation::Stopped::Cancelled => wire::ErrorCode::OutcomeUnknown,
+                acyclic_auth_operation::Stopped::Deadline => wire::ErrorCode::DeadlineElapsed,
+                acyclic_auth_operation::Stopped::Cancelled => wire::ErrorCode::OutcomeUnknown,
             },
             source: None,
             stopped: Some(stopped),

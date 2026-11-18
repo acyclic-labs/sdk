@@ -1,6 +1,5 @@
 //! Original source invalidation cancels real HTTP headers and body waits.
 #![cfg(feature = "client")]
-use acyclic_auth::operation::Stopped;
 use acyclic_auth::{
     contract::SecretListRequest,
     credential::{
@@ -10,6 +9,7 @@ use acyclic_auth::{
     },
     secrets::{Client, Error, HttpTransport},
 };
+use acyclic_auth_operation::Stopped;
 use futures::FutureExt as _;
 use futures::channel::oneshot;
 use std::sync::{

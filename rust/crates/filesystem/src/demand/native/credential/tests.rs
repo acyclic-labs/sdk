@@ -7,7 +7,7 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 /// Synthetic payload; the finite allocation custody and transport owners are real.
 #[test]
 fn protected_body_retains_original_allocation_through_transport_owners() -> TestResult {
-    use acyclic_auth::operation::ProtectedBytes;
+    use acyclic_auth_operation::ProtectedBytes;
 
     let mut control_bytes = None;
     for length in [1024, 1024 * 1024] {

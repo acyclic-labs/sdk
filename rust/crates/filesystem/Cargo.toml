@@ -278,6 +278,7 @@ acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-fs-wire = { version = "=0.2.0", path = "../filesystem-wire" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
 async-trait.workspace = true
 blake3.workspace = true

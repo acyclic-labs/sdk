@@ -149,6 +149,7 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/decimal-u64:acyclic_decimal_u64",
@@ -426,6 +427,7 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/decimal-u64:acyclic_decimal_u64",
@@ -570,6 +572,7 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/decimal-u64:acyclic_decimal_u64",
@@ -714,6 +717,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/decimal-u64:acyclic_decimal_u64",
@@ -830,6 +834,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/decimal-u64:acyclic_decimal_u64",
@@ -945,6 +950,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/decimal-u64:acyclic_decimal_u64",
@@ -1060,6 +1066,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
         "//rust/crates/decimal-u64:acyclic_decimal_u64",
@@ -1277,6 +1284,7 @@ rust_library(
         ":build_script_wasm",
     ] + [
         "//rust/crates/actors:acyclic_actors_wasm",
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/collections:acyclic_collections_wasm",
         "//rust/crates/decimal-u64:acyclic_decimal_u64_wasm",

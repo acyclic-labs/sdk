@@ -4,10 +4,10 @@ use acyclic_auth::{
     authority::{PolicyDecision, Scope, Target as AuthorityTarget},
     contract::*,
     credential::CredentialProvider,
-    operation::ProtectedBytes,
     secrets::{self, Client, Error, Response, Transport, TransportFuture},
     verify::{VerifiedCapability, verify},
 };
+use acyclic_auth_operation::ProtectedBytes;
 use futures::executor::block_on;
 use prost::Message;
 use std::{
@@ -291,7 +291,7 @@ impl Transport for Provider {
     }
 }
 fn client(
-    context: &acyclic_auth::operation::Context,
+    context: &acyclic_auth_operation::Context,
     state: &Arc<Mutex<State>>,
     allowed: bool,
     mutants: Mutants,

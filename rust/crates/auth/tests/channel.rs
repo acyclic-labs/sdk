@@ -222,7 +222,7 @@ impl CredentialRequest for StopDuringAdmission {
 
 #[tokio::test]
 async fn a_credential_owner_cannot_stop_then_admit_native_dispatch() {
-    use acyclic_auth::operation::{Context, Stopped};
+    use acyclic_auth_operation::{Context, Stopped};
     use tonic::codegen::Service;
     for deferred in [false, true] {
         let cache = CredentialCache::new(
@@ -353,9 +353,9 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         let (entered, started) = oneshot::channel();
         let (release, released) = oneshot::channel();
         let (cancel, cancelled) = oneshot::channel::<()>();
-        let context = acyclic_auth::operation::Context::from_stopped(u64::MAX, async move {
+        let context = acyclic_auth_operation::Context::from_stopped(u64::MAX, async move {
             let _ = cancelled.await;
-            acyclic_auth::operation::Stopped::Cancelled
+            acyclic_auth_operation::Stopped::Cancelled
         });
         let call = channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),

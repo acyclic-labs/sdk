@@ -44,7 +44,7 @@ async fn credential_custody_survives_held_successful_http_bodies()
             provider.clone(),
             1024,
         )?
-        .with_context(acyclic_auth::operation::Context::new(
+        .with_context(acyclic_auth_operation::Context::new(
             u64::MAX,
             std::future::pending(),
             cancellation.clone().cancelled_owned(),
@@ -105,7 +105,7 @@ async fn credential_custody_survives_held_successful_http_bodies()
             }
             5 => assert!(matches!(
                 result,
-                Err(Error::Stopped(acyclic_auth::operation::Stopped::Cancelled))
+                Err(Error::Stopped(acyclic_auth_operation::Stopped::Cancelled))
             )),
             _ => assert!(matches!(result, Err(Error::Credential(_)))),
         }
@@ -256,7 +256,7 @@ async fn expired_context_refuses_before_the_actual_credential_callback()
         }),
         1024,
     )?
-    .with_context(acyclic_auth::operation::Context::new(
+    .with_context(acyclic_auth_operation::Context::new(
         1,
         std::future::ready(()),
         std::future::pending(),
@@ -268,7 +268,7 @@ async fn expired_context_refuses_before_the_actual_credential_callback()
     for client in [client.clone(), client] {
         assert!(matches!(
             client.inspect_actor(&request).await,
-            Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
+            Err(Error::Stopped(acyclic_auth_operation::Stopped::Deadline))
         ));
     }
     assert_eq!(calls.load(Ordering::Relaxed), 0);
@@ -292,7 +292,7 @@ async fn credential_cancellation_with_a_ready_token_stops_before_sending()
         }),
         1024,
     )?
-    .with_context(acyclic_auth::operation::Context::new(
+    .with_context(acyclic_auth_operation::Context::new(
         u64::MAX,
         std::future::pending(),
         cancellation.cancelled_owned(),
@@ -307,7 +307,7 @@ async fn credential_cancellation_with_a_ready_token_stops_before_sending()
         assert!(matches!(
             futures::poll!(operation),
             std::task::Poll::Ready(Err(Error::Stopped(
-                acyclic_auth::operation::Stopped::Cancelled
+                acyclic_auth_operation::Stopped::Cancelled
             )))
         ));
     }

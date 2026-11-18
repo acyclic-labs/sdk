@@ -18,7 +18,7 @@ impl OwnedBytes {
     /// Payload capacity remains separately funded by the original owner.
     #[must_use]
     pub const fn vec_owner_allocation_bytes<G>() -> usize {
-        acyclic_auth::operation::bytes_owner_allocation_bytes::<VectorOwner<G>>()
+        acyclic_auth_operation::bytes_owner_allocation_bytes::<VectorOwner<G>>()
     }
 
     /// Transfers a vector and its original custody without copying bytes.

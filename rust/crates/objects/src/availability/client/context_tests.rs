@@ -1,6 +1,6 @@
 //! The same original-stop controls run through both shipping transports.
 use super::*;
-use acyclic_auth::operation::Stopped;
+use acyclic_auth_operation::Stopped;
 use futures::{FutureExt as _, channel::oneshot};
 use std::sync::{Arc, Mutex};
 

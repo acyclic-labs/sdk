@@ -34,6 +34,7 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",

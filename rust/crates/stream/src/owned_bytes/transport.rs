@@ -23,7 +23,7 @@ impl OwnedBytes {
             bytes => {
                 let control = ReadAllocation::new(
                     bytes.data.meter().ok_or(std::io::ErrorKind::InvalidData)?,
-                    acyclic_auth::operation::bytes_owner_allocation_bytes::<NativeTransport>(),
+                    acyclic_auth_operation::bytes_owner_allocation_bytes::<NativeTransport>(),
                 )?;
                 Ok(Bytes::from_owner(NativeTransport {
                     bytes,

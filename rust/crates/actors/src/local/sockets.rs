@@ -261,7 +261,7 @@ fn open_effects(
 
 /// Pacing for retries of one keyed request whose outcome is unknown.
 struct Undecided {
-    backoff: Option<acyclic_auth::operation::Backoff>,
+    backoff: Option<acyclic_auth_operation::Backoff>,
 }
 
 impl Undecided {
@@ -282,7 +282,7 @@ impl Undecided {
             return Err(error);
         }
         let backoff = self.backoff.get_or_insert_with(|| {
-            acyclic_auth::operation::Backoff::new(
+            acyclic_auth_operation::Backoff::new(
                 1,
                 BACKOFF_CEILING_MS,
                 uuid::Uuid::new_v4().as_fields().0,

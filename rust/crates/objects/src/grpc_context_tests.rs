@@ -1,6 +1,6 @@
 //! Real HTTP/2 controls for the original caller budget; no readiness sleeps.
 use super::*;
-use acyclic_auth::operation::{Context, Stopped};
+use acyclic_auth_operation::{Context, Stopped};
 use futures::{
     FutureExt,
     channel::oneshot,

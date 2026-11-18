@@ -5,7 +5,7 @@
 //! action and the canonical `secrets:/<scope>[/<name>]` resource.
 use crate::contract::*;
 use crate::credential::CredentialProvider;
-use crate::operation::{Context, ProtectedBytes, Stopped};
+use acyclic_auth_operation::{Context, ProtectedBytes, Stopped};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, pin::Pin};
 use zeroize::Zeroizing;
@@ -365,7 +365,9 @@ impl Response {
         // Never consume an error body: even a malicious provider cannot
         // attach a planted value to a propagated error or source chain.
         let body = if (200..300).contains(&status) {
-            crate::operation::protect_bytes(response.bytes().await.map_err(|_| Error::Transport)?)
+            acyclic_auth_operation::protect_bytes(
+                response.bytes().await.map_err(|_| Error::Transport)?,
+            )
         } else {
             Zeroizing::new(Vec::new())
         };

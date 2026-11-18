@@ -547,7 +547,7 @@ impl Client {
             }
             // Backoff follows retryable's captured transient HTTP/2 or I/O failure.
             let backoff = backoff.get_or_insert_with(|| {
-                acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
+                acyclic_auth_operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
             });
             let wait = tokio::time::sleep(backoff.delay());
             crate::trace::observe_value(

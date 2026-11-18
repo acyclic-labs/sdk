@@ -76,7 +76,7 @@ pub enum Error {
     Cancelled,
     /// The caller's original absolute budget or cancellation ended the wait.
     #[error(transparent)]
-    Stopped(#[from] acyclic_auth::operation::Stopped),
+    Stopped(#[from] acyclic_auth_operation::Stopped),
 }
 
 /// Lossless Rust-owned diagnostic projection shared by both JavaScript bridges.
@@ -165,8 +165,8 @@ impl Error {
             Self::Stopped(reason) => {
                 metadata.message = reason.to_string();
                 metadata.grpc_code = Some(match reason {
-                    acyclic_auth::operation::Stopped::Deadline => 4,
-                    acyclic_auth::operation::Stopped::Cancelled => 1,
+                    acyclic_auth_operation::Stopped::Deadline => 4,
+                    acyclic_auth_operation::Stopped::Cancelled => 1,
                 });
                 metadata.grpc_name = Some(code);
             }
@@ -188,8 +188,8 @@ impl Error {
             Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
             Self::Semantic(error) => error.code_name(),
             Self::Cancelled => "cancelled",
-            Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_exceeded",
-            Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => "cancelled",
+            Self::Stopped(acyclic_auth_operation::Stopped::Deadline) => "deadline_exceeded",
+            Self::Stopped(acyclic_auth_operation::Stopped::Cancelled) => "cancelled",
             Self::Credential(_) => "unauthenticated",
         }
     }
@@ -278,7 +278,7 @@ async fn request_error(
 /// Connected Actors client whose operation methods are shared by all targets.
 pub struct Client {
     credential: Option<CredentialProvider>,
-    context: Option<acyclic_auth::operation::Context>,
+    context: Option<acyclic_auth_operation::Context>,
     #[cfg(not(target_arch = "wasm32"))]
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
@@ -290,7 +290,7 @@ pub struct Client {
 impl Client {
     /// Bind all operation stages to the caller's original absolute budget.
     /// Reusing this client retains that same budget; no stage starts a timer.
-    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+    pub fn with_context(mut self, context: acyclic_auth_operation::Context) -> Self {
         self.context = Some(context);
         self
     }

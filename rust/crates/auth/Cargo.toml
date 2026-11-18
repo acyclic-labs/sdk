@@ -13,7 +13,7 @@ description = "Shared capability chain contract and verification"
 [features]
 javascript = ["dep:js-sys", "dep:wasm-bindgen"]
 native-javascript = ["dep:napi", "dep:napi-derive"]
-js-credential = ["javascript", "dep:wasm-bindgen-futures", "dep:web-sys"]
+js-credential = ["javascript", "acyclic-auth-operation/js-credential", "dep:wasm-bindgen-futures", "dep:web-sys"]
 grpc-metadata = ["dep:tonic"]
 grpc = ["grpc-metadata", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
 test-support = ["dep:acyclic-differential"]
@@ -21,6 +21,7 @@ client = ["dep:reqwest"]
 
 [dependencies]
 acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }

@@ -17,6 +17,7 @@ serde_json.workspace = true
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }

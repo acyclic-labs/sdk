@@ -147,6 +147,7 @@ rust_library(
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -365,6 +366,7 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/actors:acyclic_actors",
+        "//rust/crates/auth-operation:acyclic_auth_operation",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
@@ -704,6 +706,7 @@ rust_shared_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/filesystem:acyclic_fs_wasm",
@@ -832,6 +835,7 @@ rust_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/filesystem-work:acyclic_fs_work_wasm",
         "//rust/crates/filesystem:acyclic_fs_wasm",
