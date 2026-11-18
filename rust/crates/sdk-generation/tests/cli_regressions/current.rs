@@ -725,10 +725,6 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let relocated_receipts =
         assert_executed_profiles(&relocated.output, &relocated.rustdoc, &owners);
     let (data, availability) = super::replay::project(&relocated, &metadata, &relocated_receipts);
-    assert_eq!(
-        serde_json::to_vec_pretty(&availability).unwrap(),
-        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
-    );
     let host = original_receipts[0]["target"].as_str().unwrap();
     let available = BTreeSet::from([host.to_owned()]);
     let mut expected = BTreeSet::new();
@@ -803,14 +799,23 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             "completed compiler artifacts share their native file identity"
         );
     }
-    let path = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
-    let replayed_bytes = serde_json::to_vec_pretty(&data).unwrap();
-    for checkout in [&fixture, &relocated] {
-        assert_eq!(
-            fs::read(checkout.output.join(path)).unwrap(),
-            replayed_bytes,
-            "both published catalogs must match the independent replay"
-        );
+    for (path, replayed) in [
+        (
+            "preview/feature-profile-catalog/sdk-docs-data.v1.json",
+            serde_json::to_vec_pretty(&data).unwrap(),
+        ),
+        (
+            "sdk-docs-profile-availability.v1.json",
+            serde_json::to_vec_pretty(&availability).unwrap(),
+        ),
+    ] {
+        for checkout in [&fixture, &relocated] {
+            assert_eq!(
+                fs::read(checkout.output.join(path)).unwrap(),
+                replayed,
+                "published {path} must match the independent replay"
+            );
+        }
     }
     let data: Value = serde_json::to_value(data).unwrap();
     let mut spans = BTreeSet::new();
@@ -845,13 +850,4 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             );
         }
     }
-    assert_eq!(
-        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
-        fs::read(
-            relocated
-                .output
-                .join("sdk-docs-profile-availability.v1.json")
-        )
-        .unwrap()
-    );
 }
