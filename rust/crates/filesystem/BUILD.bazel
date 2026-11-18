@@ -1635,6 +1635,56 @@ isolated_test(
     tags = ["manual","no-sandbox"],
 )
 
+rust_test(
+    name = "operation_claim_model_cases",
+    crate_root = "tests/operation_claim_model.rs",
+    srcs = [
+        "tests/operation_claim_model.rs",
+        "tests/operation_claim_model_cases.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":build_script",
+    ] + [
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//loom-0.7.3",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "operation_claim_model",
+    binary = ":operation_claim_model_cases",
+    id = "acyclic-fs::operation_claim_model",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "operation_claim_model_full-cloud",
+    binary = ":operation_claim_model_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::operation_claim_model",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
 rust_binary(
     name = "bench-fs_example",
     crate_root = "examples/bench-fs.rs",

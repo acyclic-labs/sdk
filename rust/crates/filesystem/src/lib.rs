@@ -60,9 +60,6 @@ mod arc_layout;
 pub use arc_layout::shared_allocation_bytes;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_sync;
-#[cfg(test)]
-#[cfg(all(loom))]
-mod operation_claim;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch_queue;

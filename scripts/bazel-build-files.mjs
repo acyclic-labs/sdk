@@ -902,6 +902,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const separate = target => {
     const names = directTestDependencies(target);
     const includeOwn = !standaloneTest(target);
+    const needsBuildScript = includeOwn || p.metadata?.bazel?.["test-build-script"]?.includes(target.name);
+    const extraDeps = [...(includeOwn ? ownLib : []), ...(needsBuildScript ? ownDeps : [])];
     const crateRoot = local(target.src_path);
     const extra = extras(target, () => false);
     return [
@@ -909,7 +911,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["srcs", list(extra.srcs)],
       ["compile_data", list(extra.data)],
       ...common(target),
-      ...(names ? deps([null, "dev"], includeOwn ? [...ownLib, ...ownDeps] : [],
+      ...(names ? deps([null, "dev"], extraDeps,
         includeOwn ? ownMacro : [], {}, names)
         : sharedDeps.length ? sharedDeps.map(([key]) => [key, depVariable(key)]) : separateDeps()),
     ];

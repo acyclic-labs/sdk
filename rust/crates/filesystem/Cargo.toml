@@ -25,6 +25,8 @@ build-script-inputs = [
     "vendor/darwinfuse",
 ]
 
+test-build-script = ["operation_claim_model"]
+
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]
 "@platforms//os:macos" = ["src/fsevents/**/*.rs", "src/native_mount/darwin_mount/**/*.rs"]
@@ -39,6 +41,7 @@ build-script-inputs = [
 acyclic-fs-work = "observations"
 
 [package.metadata.bazel.test-dependencies]
+operation_claim_model = ["acyclic_stream", "loom"]
 native_view_table = []
 native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
@@ -100,6 +103,11 @@ path = "tests/native_checkpoint.rs"
 [[test]]
 name = "native_view_table"
 path = "tests/native_view_table.rs"
+
+[[test]]
+name = "operation_claim_model"
+path = "tests/operation_claim_model.rs"
+required-features = ["model-checking"]
 
 [[bench]]
 name = "lease_paths"
