@@ -96,8 +96,8 @@ async fn reasoning_only_length_stops_continue_through_real_protocol_encoding() -
         assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
         let sent = transport.1.lock().unwrap();
         assert_eq!(sent.len(), 2);
-        let first = crate::json(&sent[0].body)?;
-        let second = crate::json(&sent[1].body)?;
+        let first = acyclic_harness_provider_response::json(&sent[0].body)?;
+        let second = acyclic_harness_provider_response::json(&sent[1].body)?;
         assert!(first.get("max_output_tokens").is_none());
         assert!(second.get("max_output_tokens").is_none());
         if adapter == Adapter::Anthropic {

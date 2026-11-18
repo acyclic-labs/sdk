@@ -14,12 +14,13 @@ mod reasoning;
 mod responses;
 pub(crate) use reasoning::family;
 
-use crate::{Adapter, invalid, json};
+use crate::{Adapter, invalid};
 use acyclic_harness_core::{
     Result,
     conversation::validate_portable_json,
     model::{ModelDispatch, ModelEvent},
 };
+use acyclic_harness_provider_response::json;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,17 +63,18 @@ pub(crate) fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<V
         state.terminal = true;
         return Ok(Vec::new());
     }
-    let value = crate::decode_json(data.as_bytes()).map_err(|error| {
-        if adapter == Adapter::Responses && error.is_eof() {
-            crate::transport_failure(
-                state.budget.is_native(),
-                acyclic_harness_core::ModelTransportFailure::Interrupted,
-                "truncated Responses JSON",
-            )
-        } else {
-            invalid(error.to_string())
-        }
-    })?;
+    let value =
+        acyclic_harness_provider_response::decode_json(data.as_bytes()).map_err(|error| {
+            if adapter == Adapter::Responses && error.is_eof() {
+                crate::transport_failure(
+                    state.budget.is_native(),
+                    acyclic_harness_core::ModelTransportFailure::Interrupted,
+                    "truncated Responses JSON",
+                )
+            } else {
+                invalid(error.to_string())
+            }
+        })?;
     if !value.is_object() {
         return Err(invalid("model event must be an object"));
     }

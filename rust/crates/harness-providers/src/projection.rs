@@ -79,7 +79,7 @@ pub(crate) fn plan(
         .messages
         .iter()
         .map(|message| {
-            let bytes = crate::encoded_json_len(message)?
+            let bytes = acyclic_harness_provider_response::encoded_json_len(message)?
                 .checked_add(crate::files::extra_bytes(
                     &message.content,
                     provider.files.maximum_bytes,

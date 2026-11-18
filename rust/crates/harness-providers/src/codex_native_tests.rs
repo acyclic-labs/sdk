@@ -70,7 +70,9 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
         (200, RESPONSE.into()),
     ])?;
     let path = root.path().join("auth.json");
-    let mut auth = crate::json(&std::fs::read(&path).expect("fixture credentials"))?;
+    let mut auth = acyclic_harness_provider_response::json(
+        &std::fs::read(&path).expect("fixture credentials"),
+    )?;
     auth["tokens"]["access_token"] = json!(format!(
         "header.{}.signature",
         URL_SAFE_NO_PAD.encode(json!({"exp":0}).to_string())

@@ -2,6 +2,7 @@
 use acyclic_harness_core::Result;
 use acyclic_harness_provider_protocol::refusal::is_context_overflow;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::Value;
 
 /// No remote string or container survives the classification.
 struct Refusal(bool);
@@ -201,4 +202,25 @@ pub fn context_overflow_bytes(bytes: &[u8], work: acyclic_fs::NativeWork<'_>) ->
     }
     let _ = work;
     Ok(serde_json::from_slice::<Refusal>(bytes).is_ok_and(|value| value.0))
+}
+
+/// Measures the JSON representation without allocating the encoded bytes.
+pub fn encoded_json_len<T: serde::Serialize>(value: &T) -> Result<usize> {
+    usize::try_from(acyclic_harness_core::executor::json::json_byte_length(
+        value, None, &mut None,
+    )?)
+    .map_err(|_| acyclic_harness_core::Error::Invalid("token size overflow".into()))
+}
+
+/// Parses a complete provider JSON value with a typed harness error.
+pub fn json(bytes: &[u8]) -> Result<Value> {
+    decode_json(bytes).map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))
+}
+
+/// Parses a complete provider JSON value and preserves serde's error class.
+pub fn decode_json(bytes: &[u8]) -> serde_json::Result<Value> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
 }

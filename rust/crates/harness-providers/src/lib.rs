@@ -201,21 +201,3 @@ async fn read_http_failure(
     }
     http_error(status)
 }
-
-fn encoded_json_len<T: serde::Serialize>(value: &T) -> Result<usize> {
-    usize::try_from(acyclic_harness_core::executor::json::json_byte_length(
-        value, None, &mut None,
-    )?)
-    .map_err(|_| invalid("token size overflow"))
-}
-
-fn json(bytes: &[u8]) -> Result<Value> {
-    decode_json(bytes).map_err(|error| invalid(error.to_string()))
-}
-
-fn decode_json(bytes: &[u8]) -> serde_json::Result<Value> {
-    let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)?;
-    decoder.end()?;
-    Ok(value)
-}

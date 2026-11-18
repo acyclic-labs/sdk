@@ -74,7 +74,7 @@ fn checked_in_byte_corpus() {
     }
     // A lone surrogate in an ignored field is rejected before validation.
     assert!(
-        crate::json(include_bytes!(
+        acyclic_harness_provider_response::json(include_bytes!(
             "../../../fuzz/corpus/response_sequence/malformed-skipped.json"
         ))
         .is_err()

@@ -177,7 +177,7 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
     assert_eq!(requests[1].url, "https://auth.openai.com/oauth/token");
     assert_eq!(requests[2].headers["authorization"], "Bearer new-access");
     assert_eq!(requests[0].body, requests[2].body);
-    let mut body = crate::json(&requests[2].body)?;
+    let mut body = acyclic_harness_provider_response::json(&requests[2].body)?;
     // The stable header (model, tools, instructions) names the cache route.
     let key = body
         .as_object_mut()
@@ -241,7 +241,7 @@ async fn api_key_precedence_uses_public_responses_without_reading_cli_login()
     assert_eq!(requests[0].headers["authorization"], "Bearer api-key");
     assert!(!requests[0].headers.contains_key("chatgpt-account-id"));
     assert!(
-        crate::json(&requests[0].body)?
+        acyclic_harness_provider_response::json(&requests[0].body)?
             .get("max_output_tokens")
             .is_none()
     );
@@ -340,7 +340,9 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
         .try_collect::<Vec<_>>()
         .await?;
     let path = root.path().join("auth.json");
-    let mut auth = crate::json(&std::fs::read(&path).map_err(|e| invalid(e.to_string()))?)?;
+    let mut auth = acyclic_harness_provider_response::json(
+        &std::fs::read(&path).map_err(|e| invalid(e.to_string()))?,
+    )?;
     auth["tokens"]["account_id"] = json!("new-account");
     std::fs::write(path, auth.to_string()).map_err(|e| invalid(e.to_string()))?;
     changes.send_replace(1);

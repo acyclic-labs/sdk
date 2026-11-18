@@ -66,7 +66,7 @@ proptest! {
             assert_expansion(&text, extra);
             // Planning starts with the complete canonical request, including the
             // file reference and framing; an omitted-file wire body is not a baseline.
-            prop_assert!(crate::encoded_json_len(&after).unwrap()
+            prop_assert!(acyclic_harness_provider_response::encoded_json_len(&after).unwrap()
                 <= request.bytes().len() + extra);
         }
     }
@@ -500,7 +500,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             let request = PreparedModelRequest::prepare(source, Limits::default(), None)?;
             let shared =
                 Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request).await?);
-            let generation = crate::json(&shared.generation)?;
+            let generation = acyclic_harness_provider_response::json(&shared.generation)?;
             assert!(crate::validate_input(adapter, &generation).is_empty());
             let turns = generation["contents"].as_array().unwrap();
             assert_eq!(turns.len(), 3);
@@ -515,7 +515,9 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                     .await?;
             count.validate(&shared.request, &mut None)?;
             let counted = script.counted.lock().unwrap();
-            let counted = crate::json(counted.as_ref().expect("original count was not sent"))?;
+            let counted = acyclic_harness_provider_response::json(
+                counted.as_ref().expect("original count was not sent"),
+            )?;
             assert_eq!(
                 counted["generateContentRequest"]["contents"],
                 generation["contents"]
@@ -568,7 +570,7 @@ proptest! {
             bound.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap();
             assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
             let sent = script.sent.lock().unwrap();
-            let body = crate::json(&sent[0].body).unwrap();
+            let body = acyclic_harness_provider_response::json(&sent[0].body).unwrap();
             let expected = if text.is_empty() { json!([]) } else { json!([
                 {"type":"message","role":"user","content":[{"type":"input_text","text":text}]}
             ]) };
@@ -1091,7 +1093,7 @@ async fn optional_file_policy_preserves_aggregate_admission_and_rebinding() -> R
             assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
             let sent = script.sent.lock().unwrap();
             assert_eq!(sent.len(), 1);
-            let body = crate::json(&sent[0].body)?;
+            let body = acyclic_harness_provider_response::json(&sent[0].body)?;
             assert_eq!(
                 body["input"],
                 json!([

@@ -107,7 +107,7 @@ pub(super) fn replay_responses_with(
     }
     super::sequence::finish(Adapter::Responses, &mut messages, false)?;
     let encoded = serde_json::to_vec(&messages).unwrap();
-    match crate::json(&encoded).unwrap() {
+    match acyclic_harness_provider_response::json(&encoded).unwrap() {
         serde_json::Value::Array(output) => Ok(output),
         _ => unreachable!("a message list encodes as an array"),
     }

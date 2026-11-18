@@ -106,7 +106,7 @@ fn projection(provider: &crate::ResolvedModel, events: Vec<ModelEvent>) -> Resul
         &mut crate::files::FileText::default(),
     )?
     .encode()?;
-    let body = crate::json(&bytes)?;
+    let body = acyclic_harness_provider_response::json(&bytes)?;
     assert!(crate::validate_input(provider.config.adapter, &body).is_empty());
     Ok(bytes)
 }
