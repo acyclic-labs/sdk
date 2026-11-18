@@ -945,7 +945,7 @@ impl WasmAgents {
             when_absent: acyclic_stream::wire::WhenAbsent::Wait as i32,
             ..Default::default()
         };
-        acyclic_stream::WasmStream::from_provider(Arc::clone(self.agents.provider()))
+        acyclic_stream::WasmStream::from_provider(self.agents.provider().clone())
             .open_follow(&request.encode_to_vec())
     }
 

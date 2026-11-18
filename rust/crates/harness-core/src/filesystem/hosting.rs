@@ -213,7 +213,10 @@ impl Prepared {
         P: AuthorityProvider + ?Sized + 'static,
         O: AsyncObjectStore + 'static,
     {
-        if !Arc::ptr_eq(agents.provider(), &host.filesystem.stream_provider()) {
+        if !acyclic_stream::ProviderOwner::ptr_eq(
+            agents.provider(),
+            &host.filesystem.stream_provider(),
+        ) {
             return Err(Error::Record("root activation uses another provider"));
         }
         let Self { child, commit } = self;

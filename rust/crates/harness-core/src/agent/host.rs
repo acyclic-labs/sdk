@@ -57,7 +57,7 @@ pub struct InputProgress {
 
 /// One runtime for every agent in one account and namespace.
 pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     agents: Agents<P>,
     runtime: Runtime<P>,
     within: ActorReference,
@@ -70,7 +70,7 @@ pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
 
 /// The agents' actor store in `provider`'s domain, under [`super::ACTORS`].
 pub fn actor_store<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
 ) -> Result<Store<P>, Error> {
     let root = StreamPath::new(super::ACTORS).map_err(|_| Error::Path("actor root"))?;
     Ok(Store::new(provider.clone(), root))
@@ -80,7 +80,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Host for the agents of `within`'s account and namespace, with actor state
     /// under [`super::ACTORS`] in `provider`'s consistency domain.
     pub fn new<D: TurnDriver + 'static>(
-        provider: Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         driver: D,
         within: ActorReference,
         limits: ActorLimits,
@@ -92,7 +92,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Host whose spawns create each child's volumes through `volumes`, in the
     /// spawn's commit; `volumes` must place them in `provider`'s domain.
     pub fn with_spawn_volumes<D: TurnDriver + 'static>(
-        provider: Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         driver: D,
         within: ActorReference,
         limits: ActorLimits,
@@ -106,7 +106,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// whose agents' resources `lifecycle` parks on pause and releases in each
     /// agent's closing step, before that step commits.
     pub fn composing<D: TurnDriver + 'static>(
-        provider: Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         driver: D,
         within: ActorReference,
         limits: ActorLimits,
@@ -170,14 +170,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Bind the guest bridge to a clone of `requests` before opening this host.
     pub fn hosting(
         requests: acyclic_actors::guest::Requests,
-        provider: Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         within: ActorReference,
         handler: Arc<dyn Handler>,
         clock: Arc<dyn Clock>,
         composer: Option<Arc<dyn Composer>>,
     ) -> Result<Self, Error> {
         let published = actor_store(&provider)?.with_composer(Arc::new(AgentComposer::wrapping(
-            Arc::clone(&provider),
+            provider.clone(),
             composer,
         )));
         Ok(Self {
@@ -267,7 +267,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     }
 
     /// The shared provider session.
-    pub const fn provider(&self) -> &Arc<P> {
+    pub const fn provider(&self) -> &acyclic_stream::ProviderOwner<P> {
         &self.provider
     }
 
@@ -589,7 +589,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             "the step consuming the spawn has no checkpoint",
         ))?)?
         .state;
-        state.topology_refusals.bind(Arc::clone(&self.provider));
+        state.topology_refusals.bind(self.provider.clone());
         let topology_refusal = state.topology_refusals.contains(&child).await?;
         if !state.closed && !topology_refusal {
             return Err(Error::Record("consumed spawn has no creation status"));

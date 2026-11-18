@@ -56,7 +56,7 @@ pub(super) fn close_participant(
 
 /// The host composer of agent steps: spawned volumes and closing releases.
 pub struct AgentComposer<P: ?Sized> {
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     volumes: Option<Arc<dyn SpawnVolumes>>,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
     delegate: Option<Arc<dyn Composer>>,
@@ -66,7 +66,7 @@ impl<P: ?Sized> AgentComposer<P> {
     /// Composes spawns through `volumes` and closes through `lifecycle`.
     #[must_use]
     pub fn new(
-        provider: Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         volumes: Option<Arc<dyn SpawnVolumes>>,
         lifecycle: Option<Arc<dyn AgentLifecycle>>,
     ) -> Self {
@@ -80,7 +80,10 @@ impl<P: ?Sized> AgentComposer<P> {
 
     /// Every agent hosting entrance owns the shared retirement protocol;
     /// other participants retain the host's original composer and custody.
-    pub(super) fn wrapping(provider: Arc<P>, delegate: Option<Arc<dyn Composer>>) -> Self {
+    pub(super) fn wrapping(
+        provider: acyclic_stream::ProviderOwner<P>,
+        delegate: Option<Arc<dyn Composer>>,
+    ) -> Self {
         Self {
             provider,
             volumes: None,
@@ -175,7 +178,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized + 'static> Composer for AgentCom
 
 /// Releases one closing agent's resources before its step first commits.
 struct Closing<P: ?Sized> {
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
     owner: Option<Arc<dyn SpawnVolumes>>,
     original: super::checkpoint::Head,

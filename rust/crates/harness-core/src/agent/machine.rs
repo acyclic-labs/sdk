@@ -792,7 +792,7 @@ pub(super) struct PreparedStep {
 impl PreparedStep {
     pub(super) async fn persist_indexes<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
-        provider: std::sync::Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         previous: Option<&acyclic_actors::guest::Checkpoint>,
     ) -> Result<(), Error> {
         self.step.state.open_children.bind(provider.clone());
