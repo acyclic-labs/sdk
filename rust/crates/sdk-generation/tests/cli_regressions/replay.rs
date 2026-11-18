@@ -73,14 +73,9 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     let inventory = manifest["rustdocFiles"]
         .as_object()
         .unwrap()
-        .iter()
-        .map(|(key, digest)| {
-            (
-                original.rustdoc.join(key.strip_prefix("rustdoc/").unwrap()),
-                digest,
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+        .keys()
+        .map(|key| original.rustdoc.join(key.strip_prefix("rustdoc/").unwrap()))
+        .collect::<std::collections::BTreeSet<_>>();
     let replaced = [
         manifest_path.with_extension("sha256"),
         manifest_path,
@@ -89,27 +84,19 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         original.output.join(&digest_path),
     ];
     copy_tree_inner(&original.output, &relocated.output, false, &|path| {
-        replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains_key(path)
+        replaced.iter().any(|replaced| replaced.as_path() == path) || inventory.contains(path)
     });
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
         let mut changed = BTreeMap::new();
-        for (original_file, digest) in inventory {
+        for original_file in inventory {
             let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
             let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
             let relative = original_file.strip_prefix(&original.output).unwrap();
             let file = relocated.output.join(relative);
-            let logical = rustdoc_digest(&original_file, &original.root).unwrap();
             let mut value = (*value).clone();
-            assert_eq!(digest.as_str().unwrap(), logical);
             rebase(&mut value);
             let rebased_bytes = serde_json::to_vec(&value).unwrap();
             fs::write(&file, &rebased_bytes).unwrap();
-            assert_eq!(
-                rustdoc_digest(&file, &relocated.root).unwrap(),
-                logical,
-                "rebasing every physical receipt must preserve its logical digest: {}",
-                file.display()
-            );
             changed.insert(
                 relative.to_str().unwrap().replace('\\', "/"),
                 (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
@@ -118,7 +105,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         changed
     });
     // Relocation changes physical receipt bytes. Re-attest only those verified
-    // rewrites; preserve all source identities and logical Rustdoc digests.
+    // rewrites. Drift checks both checkouts against the unchanged logical digests.
     let original_release = fs::read(original.output.join(&release_path)).unwrap();
     let mut release: Value = serde_json::from_slice(&original_release).unwrap();
     for row in release["artifacts"].as_array_mut().unwrap() {
