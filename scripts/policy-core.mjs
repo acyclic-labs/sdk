@@ -17,11 +17,15 @@ export function* manifestDependencies(manifest) {
         yield {target, kind, alias, value};
 }
 
-export function lockedReference(reference) {
-  const match = /^(\S+)(?: ([^\s()]+)(?: \(([^\s]+)\))?)?$/.exec(reference);
-  if (!match) throw Error(`invalid Cargo.lock dependency ${reference}`);
-  const [, name, version, source] = match;
-  return pkg => pkg.name === name && (!version || pkg.version === version) && (!source || pkg.source === source);
+export function lockDependencyIndex(packages) {
+  const byName = Map.groupBy(packages, pkg => pkg.name);
+  return (reference, requiredName) => {
+    const match = /^(\S+)(?: ([^\s()]+)(?: \(([^\s]+)\))?)?$/.exec(reference);
+    if (!match) throw Error(`invalid Cargo.lock dependency ${reference}`);
+    const [, name, version, source] = match;
+    return requiredName !== undefined && name !== requiredName ? [] : (byName.get(name) ?? [])
+      .filter(pkg => (!version || pkg.version === version) && (!source || pkg.source === source));
+  };
 }
 
 export function selectionWorker(name, flags, workers) {

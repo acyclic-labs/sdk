@@ -1,4 +1,4 @@
-import {lockedReference, toml} from './policy-core.mjs';
+import {lockDependencyIndex, toml} from './policy-core.mjs';
 import {workspacePackages, compareVersions, versionMatches} from './workspace-model.mjs';
 
 export function checkLock(root) {
@@ -6,6 +6,7 @@ export function checkLock(root) {
   if (lock.version !== 4 || !Array.isArray(lock.package)) throw Error('expected a version 4 package lock');
   const identities = new Set();
   const resolved = new Map();
+  const resolve = lockDependencyIndex(lock.package);
   let previous;
   for (const pkg of lock.package) {
     const identity = `${pkg.name} ${pkg.version} ${pkg.source ?? ''}`;
@@ -18,7 +19,7 @@ export function checkLock(root) {
     if (new Set(dependencies).size !== dependencies.length || dependencies.some((d, n) => n && d < dependencies[n - 1]))
       throw Error(`dependency ordering or duplicate in ${identity}`);
     resolved.set(pkg, dependencies.map(dep => {
-      const candidates = lock.package.filter(lockedReference(dep));
+      const candidates = resolve(dep);
       if (candidates.length !== 1) throw Error(`ambiguous or missing dependency ${dep} in ${identity}`);
       return {ref: dep, package: candidates[0]};
     }));

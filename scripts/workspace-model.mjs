@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
-import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, lockedReference, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
+import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, lockDependencyIndex, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -71,6 +71,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
   }
   if (lockFile && !withinSource(path.resolve(sourceRoot, lockFile))) throw Error('workspace lock escapes source root');
   const lock = lockFile ? toml(sourceRoot, lockFile) : null;
+  const resolveLocked = lockDependencyIndex(lock?.package ?? []);
   const manifests = new Set();
   const expand = pattern => fs.globSync(pattern.replace(/\/$/, '') + '/Cargo.toml', {cwd: root});
   const excluded = file => {
@@ -101,7 +102,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
         if (!manifests.has(file)) {manifests.add(file); pending.push(file);}
       }
       return (item.dependencies ?? []).map(dependency => {
-        const candidates = (lock.package ?? []).filter(lockedReference(dependency));
+        const candidates = resolveLocked(dependency);
         if (candidates.length !== 1) throw Error(`ambiguous or missing Cargo.lock dependency ${dependency}`);
         return candidates[0];
       });
@@ -294,10 +295,9 @@ function lockedOwner(lock, {name, version}) {
   return owner;
 }
 
-function lockedCandidates(candidates, declaration, owner) {
-  const edges = (owner.dependencies ?? []).map(lockedReference);
-  return candidates.filter(pkg => pkg.name === declaration.name && versionMatches(pkg.version, declaration.req) &&
-    edges.some(matches => matches(pkg)));
+function lockedCandidates(resolve, declaration, owner) {
+  return [...new Set((owner.dependencies ?? []).flatMap(ref => resolve(ref, declaration.name)))]
+    .filter(pkg => versionMatches(pkg.version, declaration.req));
 }
 
 function uniqueDependency(owner, declaration, matches) {
@@ -325,6 +325,7 @@ export function registryInputs(root) {
   const candidates = (lock.package ?? []).filter(p => p.source?.startsWith('registry+')).map(p => ({
     ...p, features: new Set(), defaultFeatures: false,
   }));
+  const resolve = lockDependencyIndex(candidates);
   const inputs = new Set();
   for (const triple of ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
     const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : [])]));
@@ -343,7 +344,7 @@ export function registryInputs(root) {
             add(reachable, dep.id);
             applyRequests(add, enabled.get(dep.id), dep, d, features);
           } else {
-            const input = uniqueDependency(p, d, lockedCandidates(candidates, d, locked));
+            const input = uniqueDependency(p, d, lockedCandidates(resolve, d, locked));
             inputs.add(input);
             recordRegistryRequests(input, d, features);
           }
@@ -392,6 +393,7 @@ export function workspaceBrowserGraph(root, selections) {
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-wasm-bazel-lock.json'), 'utf8'));
   const registry = registryPackages(lock, universe, triple);
+  const resolve = lockDependencyIndex(registry);
   const packages = [...local, ...registry], byId = new Map(packages.map(p => [p.id, p]));
   const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
   const byPath = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
@@ -408,7 +410,7 @@ export function workspaceBrowserGraph(root, selections) {
   }
   const localDependency = (pkg, d) => {
     if (d.resolved_path) return byPath.get(d.resolved_path);
-    return uniqueDependency(pkg, d, lockedCandidates(registry, d, lockedOwner(lock, pkg)));
+    return uniqueDependency(pkg, d, lockedCandidates(resolve, d, lockedOwner(lock, pkg)));
   };
   const nodes = new Map();
   growSets(add => {
@@ -469,6 +471,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const universe = JSON.parse(fs.readFileSync(universePath, 'utf8'));
   const registry = registryPackages(lock, universe, allPlatforms ? null : triple);
   const packages = [...local, ...registry];
+  const resolve = lockDependencyIndex(packages);
   const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
@@ -488,7 +491,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
     const deps = new Map();
     for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d))) {
       const dependency = uniqueDependency(p, d, d.resolved_path
-        ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : lockedCandidates(packages, d, locked));
+        ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : lockedCandidates(resolve, d, locked));
       const name = (d.rename ?? d.name).replaceAll('-', '_');
       const key = `${name}:${dependency.id}`;
       if (!deps.has(key)) deps.set(key, {name, pkg: dependency.id, dep_kinds: []});
