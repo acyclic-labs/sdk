@@ -1,16 +1,15 @@
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { Opened, captureFollow, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
-import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
 import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { fromBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -192,11 +191,7 @@ export class NativeStreamProvider implements StreamProvider {
     return new Opened(async signal => {
       const input = operation === "read"
         ? await validateReadRequest(path, options as ReadOptions)
-        : (await validateWireRequest({ kind: "follow", path, from: options.from }),
-          toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, { path, from: options.from,
-            whenAbsent: wireWhenAbsent((options as FollowOptions).whenAbsent),
-            ...((options as FollowOptions).filter === undefined ? {} : { filter: (options as FollowOptions).filter }),
-          })));
+        : await validateFollowRequest(path, options as FollowOptions);
       signal.throwIfAborted();
       const cancellation = new this.module.NativeStreamCancellation();
       let cursor: GeneratedNative.NativeStreamFollow | undefined;

@@ -1,15 +1,12 @@
-import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { fromBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import {
-  TailResponseSchema, FollowRequestSchema,
-} from "../generated/proto/stream/v1/stream_pb.js";
+import { TailResponseSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -89,11 +86,7 @@ class RustStreamProvider implements StreamProvider {
     return wasmRecords(async signal => {
       const input = operation === "read"
         ? await validateReadRequest(path, options as ReadOptions)
-        : (await validateWireRequest({ kind: "follow", path, from: options.from }),
-          toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: options.from,
-            whenAbsent: wireWhenAbsent((options as FollowOptions).whenAbsent),
-            ...((options as FollowOptions).filter === undefined ? {} : { filter: (options as FollowOptions).filter }),
-          })));
+        : await validateFollowRequest(path, options as FollowOptions);
       const inner = await this.#inner;
       signal.throwIfAborted();
       return operation === "read" ? inner.read(input) : inner.open_follow(input);

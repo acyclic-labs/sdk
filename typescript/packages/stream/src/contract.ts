@@ -218,6 +218,14 @@ export function validateReadRequest(path: string, options: import("./types.js").
   return validateWireRequest({ ...options, kind: "read", path });
 }
 
+export async function validateFollowRequest(path: string, options: import("./types.js").FollowOptions): Promise<Uint8Array> {
+  await validateWireRequest({ kind: "follow", path, from: options.from });
+  return toBinary(FollowRequestSchema, create(FollowRequestSchema, {
+    path, from: options.from, whenAbsent: wireWhenAbsent(options.whenAbsent),
+    ...(options.filter === undefined ? {} : { filter: options.filter }),
+  }));
+}
+
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
   let input: Uint8Array;
   try {
