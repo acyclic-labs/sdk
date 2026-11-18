@@ -658,9 +658,11 @@ fn start_identity(
     pid: u32,
     meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> Result<Identity, ProbeError> {
-    let probe = read_operation(meter, || crate::process_identity::ProcessProbe::open(pid))
-        .map_err(ProbeError::Work)??
-        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    let probe = read_operation(meter, || {
+        acyclic_process_identity::process_identity::ProcessProbe::open(pid)
+    })
+    .map_err(ProbeError::Work)??
+    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
     if read_operation(meter, || probe.exited()).map_err(ProbeError::Work)?? {
         return Err(io::Error::from(io::ErrorKind::NotFound).into());
     }

@@ -220,8 +220,5 @@ use health::{FileHealth, HealthOwner};
 #[cfg(test)]
 mod tests;
 
-/// Cross-platform process incarnation decisions and native identity queries.
-pub mod process_identity;
-
 /// Portable platform contracts are also available without native effects.
 pub use acyclic_host_platform::{paths, shell as shell_spec};

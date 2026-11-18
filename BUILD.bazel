@@ -178,6 +178,7 @@ filegroup(
         "//rust/crates/objects-wasm:Cargo.toml",
         "//rust/crates/objects:Cargo.toml",
         "//rust/crates/observability:Cargo.toml",
+        "//rust/crates/process-identity:Cargo.toml",
         "//rust/crates/proto-codegen:Cargo.toml",
         "//rust/crates/protobuf-json:Cargo.toml",
         "//rust/crates/sdk-docs:Cargo.toml",

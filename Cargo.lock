@@ -345,6 +345,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
+ "acyclic-process-identity",
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
@@ -551,6 +552,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
+ "acyclic-test-support",
  "futures",
  "http-body",
  "pin-project-lite",
@@ -1507,9 +1509,9 @@ name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
  "acyclic-collections",
- "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-observability",
+ "acyclic-process-identity",
  "acyclic-test-support",
  "base64 0.23.1",
  "blake3",
@@ -1668,6 +1670,14 @@ dependencies = [
  "tokio",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "acyclic-process-identity"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1919,6 +1929,8 @@ dependencies = [
  "proptest",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

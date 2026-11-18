@@ -35,7 +35,7 @@ pub(super) mod wait;
 pub(super) use wait::wait_for_exit;
 
 pub(super) fn wait_without_reaping(child: &super::Child) -> io::Result<()> {
-    crate::process_identity::ProcessProbe::from_process(child)?.await_exit()
+    acyclic_process_identity::process_identity::ProcessProbe::from_process(child)?.await_exit()
 }
 #[cfg(test)]
 pub(super) use wait::wait_for_exit_coarse;

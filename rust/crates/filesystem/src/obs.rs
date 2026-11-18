@@ -174,7 +174,7 @@ mod worker_context_tests {
     use std::sync::{Arc, Mutex, mpsc};
     use tracing_subscriber::{layer::Context, prelude::*};
 
-    use acyclic_grpc_observability::tests::{Capture, Evidence};
+    use acyclic_test_support::trace_capture::{Capture, Evidence};
 
     #[test]
     fn measured_terminal_retains_original_work_and_native_failure()

@@ -14,6 +14,7 @@ pub mod fixture_compiler;
 mod fixtures;
 /// Finite trace conformance through the same checked correspondence inventory.
 pub mod trace;
+pub mod trace_capture;
 pub mod waker;
 pub use fixtures::{crate_source_path, executable_file, runtime_path, source_path};
 /// Construct a future before entering its polling frame. Large test and model
