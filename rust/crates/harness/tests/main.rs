@@ -105,9 +105,6 @@ mod filesystem_access;
 ))]
 mod virtiofs;
 
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod host_hooks;
-
 #[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "test-support"))]
 mod skills_context;
 

@@ -28,7 +28,12 @@ path = "tests/native_receipt.rs"
 name = "plan-markdown"
 path = "tests/plan_markdown_cases.rs"
 
+[[test]]
+name = "host-hooks"
+path = "tests/host_hooks_cases.rs"
+
 [package.metadata.bazel.test-dependencies]
+host-hooks = ["acyclic_harness", "acyclic_test_support", "proptest", "regex_lite", "serde_json", "tempfile"]
 plan-markdown = ["acyclic_harness_client", "acyclic_test_support", "proptest"]
 
 [[bin]]
