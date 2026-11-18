@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [features]
 model-checking = ["dep:loom"]
-fuzz-targets = ["dep:libfuzzer-sys"]
+fuzz-targets = ["dep:libfuzzer-sys", "dep:acyclic-fs-native-contract"]
 
 [dependencies]
 acyclic-stream = { path = "../../stream" }
@@ -29,7 +29,7 @@ tempfile = "3.27.0"
 rustix = { workspace = true, features = ["fs", "net"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-acyclic-fs-native-contract = { version = "=0.2.0", path = "../../filesystem-native-contract", features = ["fuzzing"] }
+acyclic-fs-native-contract = { version = "=0.2.0", path = "../../filesystem-native-contract", optional = true, features = ["fuzzing"] }
 
 [dev-dependencies]
 acyclic-fs-work = { version = "=0.2.0", path = "../../filesystem-work" }

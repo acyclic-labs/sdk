@@ -1,10 +1,14 @@
-use super::{join_device, split_device, widen};
+use super::{join_device, special_mount_node, split_device, widen};
 
 #[test]
 fn split_and_join_round_trip() -> Result<(), i32> {
     for (major, minor) in [(0, 0), (1, 3), (0xFF, 0xFF_FFFF)] {
         let device = join_device(major, minor)?;
         assert_eq!(split_device(widen(device)), (major, minor));
+        assert_eq!(
+            special_mount_node(libc::S_IFCHR | 0o600, widen(device))?,
+            (crate::MountNodeKind::CharacterDevice, Some((major, minor)))
+        );
         #[cfg(target_os = "macos")]
         if device < 0 {
             // A checked narrowing loses valid device numbers after the

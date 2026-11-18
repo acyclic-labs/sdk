@@ -116,7 +116,7 @@ pub fn special_mount_node(
     mode: libc::mode_t,
     device: u64,
 ) -> Result<(crate::MountNodeKind, Option<(u32, u32)>), i32> {
-    let kind = match mode {
+    let kind = match mode & libc::S_IFMT {
         libc::S_IFIFO => crate::MountNodeKind::Fifo,
         libc::S_IFSOCK => crate::MountNodeKind::Socket,
         libc::S_IFCHR => crate::MountNodeKind::CharacterDevice,
