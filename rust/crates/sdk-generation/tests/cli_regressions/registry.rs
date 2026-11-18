@@ -94,20 +94,21 @@ fn archive_locks_override_foreign_cargo_authority() {
                             "docsProducer"
                         }
                     );
-                    let mut manifest: Value =
-                        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-                    let frontier = manifest
-                        .get_mut("registryCorpus")
-                        .and_then(Value::as_object_mut)
-                        .and_then(|corpus| corpus.remove("frontier"))
-                        .expect("generation manifest must contain registryCorpus.frontier");
-                    let frontier: Vec<sdk_generation::historical::RegistryOwnerSource> =
-                        serde_json::from_value(frontier).expect("invalid discovery frontier");
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase")]
+                    struct DiscoveryManifest {
+                        registry_corpus: sdk_generation::historical::RegistryCorpus,
+                    }
+                    let manifest: DiscoveryManifest =
+                        serde_json::from_slice(&fs::read(&manifest_path).unwrap())
+                            .expect("generation must publish a typed registry corpus");
                     // Each case gets a new admission: its discovery context differs.
                     // Retain the exact source, receipts and compiler directory only.
                     fs::remove_file(&manifest_path).unwrap();
                     fs::remove_file(&manifest_digest).unwrap();
-                    frontier
+                    manifest
+                        .registry_corpus
+                        .frontier
                         .into_iter()
                         .map(|owner| owner.discovery)
                         .collect::<Vec<_>>()
