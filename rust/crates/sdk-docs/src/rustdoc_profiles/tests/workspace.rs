@@ -49,22 +49,22 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             }
             assert!(profiles.len() <= declared.len() + 3, "{package_name}");
             assert_eq!(*count.get_or_insert(profiles.len()), profiles.len());
+            let mut covered = BTreeSet::new();
+            let mut has_all_features = false;
             for profile in &profiles {
                 assert_eq!(&profile.target, target);
                 assert!(ids.insert(profile.id()));
                 assert!(profile.features.is_subset(&declared));
+                if profile.default_features {
+                    has_all_features |= profile.features == declared;
+                } else {
+                    covered.extend(&profile.features);
+                }
             }
-            let covered = profiles
-                .iter()
-                .filter(|profile| !profile.default_features)
-                .flat_map(|profile| &profile.features)
-                .collect::<BTreeSet<_>>();
             for feature in &declared {
                 assert!(covered.contains(feature), "{package_name}: {feature}");
             }
-            assert!(profiles
-                .iter()
-                .any(|profile| profile.default_features && profile.features == declared));
+            assert!(has_all_features, "{package_name}: {target}");
         }
     }
 }
