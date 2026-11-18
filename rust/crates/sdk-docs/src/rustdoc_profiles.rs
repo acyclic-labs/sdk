@@ -218,14 +218,6 @@ fn insert_profile(ordered: &mut BTreeMap<ProfileId, ProfileSpec>, profile: Profi
     ordered.entry(profile.id()).or_insert(profile);
 }
 
-fn order_profiles(profiles: Vec<ProfileSpec>) -> Vec<ProfileSpec> {
-    let mut ordered = BTreeMap::new();
-    for profile in profiles {
-        insert_profile(&mut ordered, profile);
-    }
-    ordered.into_values().collect()
-}
-
 /// Derive the bounded profile matrix from the package's actual Cargo feature
 /// map. Every returned profile is intended to compile; a failed profile is a
 /// qualification failure rather than a reason to omit an API.
@@ -379,10 +371,11 @@ pub fn historical_profiles_for_package(
     target: &str,
     available_targets: &BTreeSet<String>,
 ) -> Result<Vec<ProfileSpec>, ProfileError> {
-    let (owner, mut profiles) =
-        current_package_profiles(metadata, package, target, available_targets)?;
-    for profile in &mut profiles {
+    let (owner, current) = current_package_profiles(metadata, package, target, available_targets)?;
+    let mut profiles = BTreeMap::new();
+    for mut profile in current {
         profile.default_features = true;
+        insert_profile(&mut profiles, profile);
     }
     if let Some(policy) = owner.metadata.get("docs").and_then(|docs| docs.get("rs")) {
         #[derive(Deserialize, Default)]
@@ -422,14 +415,17 @@ pub fn historical_profiles_for_package(
                     .cloned(),
             );
         }
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: !policy.no_default_features,
-            features,
-        });
+        insert_profile(
+            &mut profiles,
+            ProfileSpec {
+                package: package.to_owned(),
+                target: target.to_owned(),
+                default_features: !policy.no_default_features,
+                features,
+            },
+        );
     }
-    Ok(order_profiles(profiles))
+    Ok(profiles.into_values().collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
