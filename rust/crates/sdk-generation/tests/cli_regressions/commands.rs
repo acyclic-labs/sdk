@@ -177,7 +177,7 @@ struct FixtureMetadata {
 #[derive(serde::Deserialize)]
 struct FixtureSource {
     file: String,
-    relative: String,
+    relative: PathBuf,
 }
 
 fn rustdoc_fixtures() -> std::io::Result<&'static [FixtureMetadata]> {
@@ -304,28 +304,26 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let artifacts = &metadata.artifacts;
         let mut relative_sources = Vec::new();
         for source in sources {
-            let relative = source.relative.as_str();
+            let relative = source.relative.as_path();
             let Some(actual) = optional_io(fs::read(root.join(relative)))? else {
                 continue 'fixture;
             };
             if actual != fs::read(acyclic_test_support::source_path(&source.file))? {
                 continue 'fixture;
             }
-            if Path::new(relative)
+            if relative
                 .file_name()
                 .is_some_and(|name| name == "Cargo.toml")
             {
-                let build = Path::new(relative).parent().unwrap().join("build.rs");
-                let covered = !artifacts.is_empty()
-                    && sources
-                        .iter()
-                        .any(|source| Path::new(&source.relative) == build.as_path());
+                let build = relative.parent().unwrap().join("build.rs");
+                let covered =
+                    !artifacts.is_empty() && sources.iter().any(|source| source.relative == build);
                 if !covered && root.join(&build).try_exists()? {
                     continue 'fixture;
                 }
             }
-            if relative.ends_with(".rs") {
-                relative_sources.push(Path::new(relative));
+            if relative.extension() == Some(OsStr::new("rs")) {
+                relative_sources.push(relative);
             }
         }
         let output_path = metadata.output.as_str();
