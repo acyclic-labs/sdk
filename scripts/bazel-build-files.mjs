@@ -1024,6 +1024,12 @@ ${rule("cc_toolchain_config", [
     ["win32_winnt_flag", q("/D_WIN32_WINNT=0x0A00")],
 ])}
 ${rule("filegroup", [
+    ["name", q("windows_cc_all_files")],
+    ["visibility", q(["//:__pkg__"])],
+    ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
+    ["srcs", q(["@xwin//:includes", "@xwin//:libs", "@llvm_toolchain_llvm//:bin"])],
+])}
+${rule("filegroup", [
     ["name", q("windows_cc_compiler_files")],
     ["visibility", q(["//:__pkg__"])],
     ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
@@ -1057,15 +1063,15 @@ ${rule("toolchain", [
 // module that depends on this one never analyses this target.
 function windowsCcToolchain() {
   const pkg = `//${WINDOWS_TOOLCHAIN_PACKAGE}:`;
-  // The sysroot's headers are compiler inputs only; a link reads the import libraries, so `all_files`
-  // carries the libraries and every Rust link action stops depending on the 5000 headers.
-  const files = { all: "windows_cc_linker_files", compiler: "windows_cc_compiler_files" };
+  // `all_files` is the whole toolchain, as rules_cc requires. A Rust link action reads
+  // `linker_files` (the import libraries), so it never depends on the 5000 sysroot headers.
+  const files = { all: "windows_cc_all_files", compiler: "windows_cc_compiler_files", linker: "windows_cc_linker_files" };
   return `
 ${rule("cc_toolchain", [
     ["name", q("windows_cc_toolchain")],
     ["toolchain_config", q(`//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_config`)],
     ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
-    ...["all", "ar", "compiler", "linker", "dwp", "objcopy", "strip"].map(kind => [`${kind}_files`, q(`${pkg}${files[kind] ?? (kind === "linker" ? "windows_cc_linker_files" : "windows_cc_tool_files")}`)]),
+    ...["all", "ar", "compiler", "linker", "dwp", "objcopy", "strip"].map(kind => [`${kind}_files`, q(`${pkg}${files[kind] ?? "windows_cc_tool_files"}`)]),
     ["visibility", q([`//${WINDOWS_TOOLCHAIN_PACKAGE}:__pkg__`])],
 ])}
 `;
