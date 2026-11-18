@@ -229,14 +229,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         if !manifest_path.ends_with(declared_manifest) {
             continue;
         }
-        let mut expected_args = vec![
-            "rustdoc",
-            "--locked",
-            "--manifest-path",
-            manifest,
-            "--package",
-            package,
-        ];
         let flags = |key: &str| {
             metadata[key]
                 .as_array()
@@ -244,9 +236,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 .iter()
                 .map(|flag| flag.as_str().unwrap())
         };
-        expected_args.extend(flags("target_args"));
-        expected_args.extend(["--target", target]);
-        expected_args.extend(flags("cargo_flags"));
         let Some(root) = manifest_path
             .ancestors()
             .nth(declared_manifest.components().count())
@@ -265,14 +254,29 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 serde_json::to_string(lock.to_str().unwrap())?
             ))
         };
-        if let Some(config) = &config {
-            expected_args.extend(["--config", config.as_str()]);
-        }
-        expected_args.extend(["--", "-Z", "unstable-options", "--output-format", "json"]);
+        let expected_args = [
+            "rustdoc",
+            "--locked",
+            "--manifest-path",
+            manifest,
+            "--package",
+            package,
+        ]
+        .into_iter()
+        .chain(flags("target_args"))
+        .chain(["--target", target])
+        .chain(flags("cargo_flags"))
+        .chain(
+            config
+                .as_deref()
+                .into_iter()
+                .flat_map(|value| ["--config", value]),
+        )
+        .chain(["--", "-Z", "unstable-options", "--output-format", "json"]);
         if !command
             .get_args()
             .map(OsStr::to_str)
-            .eq(expected_args.into_iter().map(Some))
+            .eq(expected_args.map(Some))
         {
             continue;
         }
