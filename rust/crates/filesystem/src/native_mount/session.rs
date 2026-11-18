@@ -1,5 +1,16 @@
 use super::*;
 
+fn driver_callback_work(
+    driver: &DriverSession,
+) -> Result<crate::WorkCounters, crate::WorkObservationError> {
+    with_driver!(
+        driver,
+        session,
+        session.completed_callback_work(),
+        Ok(crate::WorkCounters::UNCHARGED)
+    )
+}
+
 /// Process-owned mounted namespace.
 /// Dropping an observer signals its accepted physical retirement owner. Use
 /// an explicit stop to wait for cleanup and observe its terminal outcome.
@@ -171,14 +182,7 @@ impl NativeMountSession {
     ) -> Result<crate::WorkCounters, crate::WorkObservationError> {
         self.driver
             .as_ref()
-            .map_or(self.completed_future_callback_work, |driver| {
-                with_driver!(
-                    driver,
-                    session,
-                    session.completed_callback_work(),
-                    Ok(crate::WorkCounters::UNCHARGED)
-                )
-            })
+            .map_or(self.completed_future_callback_work, driver_callback_work)
     }
 
     pub(super) fn capture_host_paths(
@@ -380,12 +384,7 @@ impl NativeMountSession {
                     false
                 );
                 // Copy settled callback totals and faults before dropping the driver context.
-                self.completed_future_callback_work = with_driver!(
-                    &*driver,
-                    session,
-                    session.completed_callback_work(),
-                    Ok(crate::WorkCounters::UNCHARGED)
-                );
+                self.completed_future_callback_work = driver_callback_work(driver);
                 *self
                     .retired_callback_failure
                     .get_mut()
