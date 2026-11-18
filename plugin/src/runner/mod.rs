@@ -42,6 +42,12 @@ use std::{future::Future, io::IsTerminal as _, sync::Arc};
 
 const SESSION_PRICES: &str = "prices.jsonl";
 
+fn session_root(conversation: &Conversation) -> acyclic_harness::client_files::FileRoot {
+    acyclic_harness::client_files::FileRoot::ClientSession {
+        session: conversation.client_session(),
+    }
+}
+
 fn session_prices(
     file: Option<&acyclic_harness::client_files::ClientFile>,
 ) -> acyclic_harness::Result<acyclic_harness::executor::ModelPrices> {

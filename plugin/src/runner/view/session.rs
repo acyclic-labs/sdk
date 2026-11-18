@@ -1,9 +1,9 @@
 //! Disposable projections of the selected conversation's UI-session volume.
-use super::super::{SESSION_PRICES as PRICES, session_prices};
+use super::super::{SESSION_PRICES as PRICES, session_prices, session_root};
 use super::*;
 use acyclic_harness::{
     OperationId,
-    client_files::{ClientFileChange, ClientFiles, FileRoot},
+    client_files::{ClientFileChange, ClientFiles},
     command_request::{
         CommandFileChange, CommandFileRoot, CommandFileSnapshot, layout_view, view_changes,
     },
@@ -44,12 +44,6 @@ struct FeedbackFile {
     reports: Vec<String>,
 }
 
-fn root(conversation: &Conversation) -> FileRoot {
-    FileRoot::ClientSession {
-        session: conversation.client_session(),
-    }
-}
-
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandFile {
@@ -72,7 +66,7 @@ fn paths() -> Vec<String> {
 impl Session {
     pub async fn open(conversation: &Conversation) -> Result<Self, Failure> {
         let snapshot = conversation
-            .files(root(conversation), paths(), None)
+            .files(session_root(conversation), paths(), None)
             .await?;
         let mut session = Self {
             snapshot,
@@ -193,7 +187,7 @@ impl Session {
         }
         let published = conversation
             .publish_files(
-                root(conversation),
+                session_root(conversation),
                 pending.operation,
                 vec![pending.change.clone()],
             )
@@ -205,7 +199,7 @@ impl Session {
             return Err(error.into());
         }
         let snapshot = conversation
-            .files(root(conversation), paths(), None)
+            .files(session_root(conversation), paths(), None)
             .await?;
         self.snapshot = snapshot;
         self.project()?;
@@ -221,7 +215,7 @@ impl Session {
         // Preparation does not advance the displayed snapshot. A failed edit
         // leaves the original file follow responsible for other UI changes.
         let snapshot = conversation
-            .files(root(conversation), vec![FEEDBACK.into()], None)
+            .files(session_root(conversation), vec![FEEDBACK.into()], None)
             .await?;
         let source = snapshot.files.get(FEEDBACK).and_then(Option::as_ref);
         let mut document = match source {
@@ -260,7 +254,7 @@ impl Session {
         }
         conversation
             .publish_files(
-                root(conversation),
+                session_root(conversation),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: PRICES.into(),
@@ -270,7 +264,7 @@ impl Session {
             )
             .await?;
         self.snapshot = conversation
-            .files(root(conversation), paths(), None)
+            .files(session_root(conversation), paths(), None)
             .await?;
         self.project()
     }
@@ -405,13 +399,13 @@ impl Session {
             })
             .collect::<Result<Vec<_>, Failure>>()?;
         conversation
-            .publish_files(root(conversation), operation, changes)
+            .publish_files(session_root(conversation), operation, changes)
             .await?;
         // The next conditional edit needs the committed descriptor, including
         // another command in this input batch. Read one consistent query cut
         // while retaining projections of unchanged original file contents.
         self.snapshot = conversation
-            .files(root(conversation), paths(), None)
+            .files(session_root(conversation), paths(), None)
             .await?;
         self.project()
     }
@@ -431,7 +425,7 @@ pub(super) fn follow(
 ) -> futures::future::LocalBoxFuture<'static, acyclic_harness::Result<ClientFiles>> {
     super::super::phase(|| async move {
         conversation
-            .files(root(&conversation), paths(), Some(after))
+            .files(session_root(&conversation), paths(), Some(after))
             .await
     })
 }
@@ -466,6 +460,7 @@ pub(super) fn read_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_harness::client_files::FileRoot;
     use acyclic_harness::{
         LocalHarness,
         model::Model,
@@ -510,7 +505,7 @@ mod tests {
             follow(Arc::clone(&conversation), reader.snapshot.cut.clone()).map_err(Failure::from),
             conversation
                 .publish_files(
-                    root(&conversation),
+                    session_root(&conversation),
                     pending.operation,
                     vec![pending.change.clone()]
                 )
@@ -715,7 +710,11 @@ mod tests {
             };
             let (snapshot, _) = futures::try_join!(
                 follow(Arc::clone(&conversation), ui.snapshot.cut.clone()),
-                conversation.publish_files(root(&conversation), OperationId::new(), vec![change],),
+                conversation.publish_files(
+                    session_root(&conversation),
+                    OperationId::new(),
+                    vec![change],
+                ),
             )?;
             ui.snapshot = snapshot;
             ui.project()?;
@@ -966,7 +965,7 @@ mod tests {
         if std::env::var_os("ACYCLIC_CAPTURE_CLIENT_FILES").is_some() {
             let command = acyclic_harness_client::AgentCommand::ClientFiles {
                 agent: connection.root().clone(),
-                root: root(&conversation),
+                root: session_root(&conversation),
                 publication: None,
                 paths: paths(),
                 after: None,
@@ -996,7 +995,7 @@ mod tests {
         replacement["currency"] = "EUR".into();
         conversation
             .publish_files(
-                root(&conversation),
+                session_root(&conversation),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: PRICES.into(),
@@ -1090,7 +1089,7 @@ mod tests {
         unsupported["version"] = Value::from(2);
         resumed
             .publish_files(
-                root(&resumed),
+                session_root(&resumed),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: COMMANDS.into(),
@@ -1111,11 +1110,11 @@ mod tests {
         // Restore the exact original catalogue through its new conditional cut
         // before checking the independently versioned layout file.
         let source = resumed
-            .files(root(&resumed), vec![COMMANDS.into()], None)
+            .files(session_root(&resumed), vec![COMMANDS.into()], None)
             .await?;
         resumed
             .publish_files(
-                root(&resumed),
+                session_root(&resumed),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: COMMANDS.into(),
@@ -1131,7 +1130,7 @@ mod tests {
         let replacement = serde_json::json!({"version":2,"open_view":"history"}).to_string();
         let command = acyclic_harness_client::AgentCommand::PublishClientFiles {
             agent: connection.root().clone(),
-            root: root(&resumed),
+            root: session_root(&resumed),
             operation: OperationId::new(),
             changes: vec![ClientFileChange {
                 path: "layout.json".into(),
@@ -1179,7 +1178,7 @@ mod tests {
     ) -> acyclic_harness::Result<acyclic_harness::resources::GenerationRef> {
         conversation
             .publish_files(
-                root(conversation),
+                session_root(conversation),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: "layout.json".into(),
