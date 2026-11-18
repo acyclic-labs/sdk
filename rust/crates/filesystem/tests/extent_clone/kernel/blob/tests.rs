@@ -5,7 +5,7 @@ use acyclic_fs::kernel::{
 };
 use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
 use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectBackend,
+    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectStore,
     ObjectReadRequest,
 };
 use acyclic_fs_format::object_reference::{ObjectId, ObjectKind};
@@ -210,7 +210,7 @@ async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 }
 
 async fn adjacent_chunks(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let first = put_object(
         store,

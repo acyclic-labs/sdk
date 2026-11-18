@@ -2,7 +2,7 @@ use acyclic_fs::kernel::{
     CanonicalDecodeError, CheckpointError, CheckpointRequest, DecodeLimits, GenerationRoot,
     build_checkpoint, decode_generation_root,
 };
-use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectBackend};
+use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectStore};
 use acyclic_fs_format::{
     identity::{Digest, FileId, VolumeId},
     object_reference::{GenerationId, ObjectId, ObjectKind},
@@ -21,7 +21,7 @@ fn table(byte: u8) -> ObjectId {
 }
 
 async fn put_root(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
     volume_byte: u8,
     root_file_byte: u8,
     table_byte: u8,

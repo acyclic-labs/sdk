@@ -3,7 +3,7 @@ use acyclic_fs::kernel::{
     ExtentMutationError, ExtentPage, clone_extent_range, decode_extent_page,
 };
 use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectBackend,
+    AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectStore,
     ObjectStoreError,
 };
 use acyclic_fs_format::{
@@ -16,14 +16,14 @@ use super::super::extent_objects::put_extent_page;
 use super::super::memory::memory_objects;
 
 async fn put(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
     extents: Vec<Extent>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     put_extent_page(store, &ExtentPage::Leaf(extents), 16).await
 }
 
 async fn extents(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
     root: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
     let bytes = store

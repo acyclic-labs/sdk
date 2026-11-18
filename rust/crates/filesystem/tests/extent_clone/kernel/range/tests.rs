@@ -3,16 +3,13 @@ use acyclic_fs::kernel::{
     ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent,
 };
 use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
-use acyclic_fs::{
-    ByteRange, CancellationToken, LogicalObjectStore, MemoryObjectBackend, ObjectReadRequest,
-};
+use acyclic_fs::{ByteRange, CancellationToken, MemoryObjectStore, ObjectReadRequest};
 use acyclic_fs_format::{
     identity::Digest,
     object_reference::{ObjectId, ObjectKind},
 };
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters, WorkError};
 
-use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use super::super::extent_objects::put_extent_page;
@@ -597,7 +594,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
 }
 
 async fn adjacent_extents(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let first = put_extent_page(
         store,
@@ -720,8 +717,6 @@ async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
         u64::try_from(3 * size_of::<ExtentSlice>())?
     );
     let maximum = baseline.work.peak_allocation_bytes - 1;
-    // Measure the same cold path with the tighter budget.
-    let store = LogicalObjectStore::new(Arc::clone(store.provider()));
     let failure = plan_extent_range(
         &store,
         ExtentRangeRequest {

@@ -1,7 +1,5 @@
-use acyclic_fs::{LogicalObjectStore, MemoryObjectBackend};
-use acyclic_objects::MemoryObjects;
-use std::sync::Arc;
+use acyclic_fs::MemoryObjectStore;
 
-pub(super) fn memory_objects() -> MemoryObjectBackend {
-    LogicalObjectStore::new(Arc::new(MemoryObjects::memory()))
+pub(super) fn memory_objects() -> MemoryObjectStore {
+    MemoryObjectStore::default()
 }

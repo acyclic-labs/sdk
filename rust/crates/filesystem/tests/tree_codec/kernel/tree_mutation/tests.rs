@@ -2,7 +2,7 @@ use acyclic_fs::kernel::{
     CanonicalDecodeError, Child, DecodeLimits, FileKind, TreeEntry, TreeMutation,
     TreeMutationError, TreePage, apply_tree_mutations, decode_tree_page,
 };
-use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectBackend};
+use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, MemoryObjectStore};
 use acyclic_fs_format::{identity::FileId, object_reference::ObjectId};
 use acyclic_fs_work::performance::{WorkBudget, WorkError};
 
@@ -208,7 +208,7 @@ fn numbered_entry(value: u8, kind: FileKind) -> Result<TreeEntry, Box<dyn std::e
 }
 
 async fn build_tree(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
     entries: &[TreeEntry],
     width: usize,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
@@ -256,7 +256,7 @@ async fn build_tree(
 }
 
 async fn flatten_tree(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
     root: ObjectId,
 ) -> Result<Vec<TreeEntry>, Box<dyn std::error::Error>> {
     let bytes = store

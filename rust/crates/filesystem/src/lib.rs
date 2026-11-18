@@ -114,7 +114,7 @@ pub mod lazy_workspace;
 pub mod lineage;
 mod lock_order;
 pub mod materializer;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod memory;
 pub mod model;
 pub mod mount;
@@ -309,7 +309,7 @@ pub use materializer::{
     load_native_materialization_journal, prepare_native_generation_transition,
     publish_native_generation_transition,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
 pub use model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
 pub use mount::{

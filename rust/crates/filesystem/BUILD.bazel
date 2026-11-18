@@ -2893,7 +2893,6 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//hex-0.4.3",
         "@sdk_crates//tokio-1.54.1",
@@ -2959,7 +2958,6 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
     ],
@@ -3139,7 +3137,6 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//hex-0.4.3",
         "@sdk_crates//proptest-1.12.0",

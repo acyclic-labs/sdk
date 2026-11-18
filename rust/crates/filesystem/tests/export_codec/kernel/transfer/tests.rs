@@ -5,7 +5,7 @@ use acyclic_fs::kernel::{
 };
 use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, CancellationToken, FilesystemProfile, Lifecycle,
-    MemoryObjectBackend, VolumeConfig,
+    MemoryObjectStore, VolumeConfig,
 };
 use acyclic_fs_format::{
     identity::{FileId, VolumeId},
@@ -324,7 +324,7 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
 }
 
 async fn minimal_generation(
-    store: &MemoryObjectBackend,
+    store: &MemoryObjectStore,
     volume_id: VolumeId,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let metadata = put_file_metadata(store, FileMetadata::default()).await?;
