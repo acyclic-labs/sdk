@@ -1,6 +1,5 @@
 """Cache real Rustdoc JSON as declared, independently keyed fixture actions."""
 
-load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain", "use_cpp_toolchain")
 load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
@@ -81,7 +80,9 @@ def _rustdoc_fixture_impl(ctx):
     tool_inputs = [ctx.attr._rustup[DefaultInfo].data_runfiles.files]
     linker_env = {}
     if ctx.attr.needs_linker:
-        cc = find_cpp_toolchain(ctx)
+        # The producer runs Cargo on the execution platform for `--target <host>`, so build scripts and the
+        # fixture link there: the C++ toolchain is the exec configuration's, never the target platform's.
+        cc = ctx.attr._cc_toolchain[cc_common.CcToolchainInfo]
         features = cc_common.configure_features(ctx = ctx, cc_toolchain = cc, requested_features = ctx.features, unsupported_features = ctx.disabled_features)
         action = ACTION_NAMES.cpp_link_executable
         variables = cc_common.create_link_variables(feature_configuration = features, cc_toolchain = cc, output_file = "fixture-link-output")
@@ -113,7 +114,6 @@ def _rustdoc_fixture_impl(ctx):
 rustdoc_fixture = rule(
     implementation = _rustdoc_fixture_impl,
     fragments = ["cpp"],
-    toolchains = use_cpp_toolchain(),
     attrs = {
         "srcs": attr.label_list(allow_files = True, mandatory = True),
         "fixture_root": attr.string(mandatory = True),
@@ -128,6 +128,7 @@ rustdoc_fixture = rule(
         "retain_artifacts": attr.bool(),
         "package": attr.string(mandatory = True),
         "cargo_flags": attr.string_list(),
+        "_cc_toolchain": attr.label(default = "@bazel_tools//tools/cpp:current_cc_toolchain", cfg = "exec"),
         "_producer": attr.label(default = ":producer", executable = True, cfg = "exec"),
         "_rustup": attr.label(default = "@sdk_compilers//:rustup", allow_single_file = True, cfg = "exec"),
     },
