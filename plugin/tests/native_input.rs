@@ -60,7 +60,7 @@ fn native_input_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
                 None,
             )
             .map_err(|failure| format!(
-                "step=capture native stdin refusal for {args:?}; cleanup_completed={}; error={}; recovery: cargo test --locked -p acyclic-plugin --test main native_input::native_input_failures_stop_before_workspace_effects -- --exact --nocapture",
+                "step=capture native stdin refusal for {args:?}; cleanup_completed={}; error={}; recovery: bazel test //plugin:main --test_output=all --test_arg=native_input::native_input_failures_stop_before_workspace_effects --test_arg=--exact",
                 failure.cleanup_completed, failure.error
             ))?;
         assert!(

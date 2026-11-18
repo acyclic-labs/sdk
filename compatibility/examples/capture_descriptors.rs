@@ -19,7 +19,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "descriptor capture failed: {error}\nrecovery: cargo run --locked -p acyclic-proto-build --example capture_descriptors"
+            "descriptor capture failed: {error}\nrecovery: bazel run //compatibility:capture_descriptors_example"
         );
         std::process::exit(1);
     }
