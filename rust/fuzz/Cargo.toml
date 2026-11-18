@@ -17,7 +17,7 @@ bench = false
 
 [features]
 proto-descriptors = ["dep:acyclic-proto-build", "dep:prost", "dep:prost-reflect"]
-process-arguments = ["dep:serde_json"]
+process-arguments = ["dep:acyclic-process-host-arguments", "dep:serde_json"]
 local-hotpath-options = ["dep:acyclic-test-support"]
 local-hotpath-quantiles = ["dep:serde"]
 report-port = ["dep:acyclic-native-runtime", "dep:serde_json", "dep:tokio"]
@@ -32,6 +32,7 @@ owner-record = ["dep:acyclic-native-runtime", "dep:serde_json"]
 runner-request = ["dep:acyclic-native-runtime", "acyclic-native-runtime/test-support"]
 
 [dependencies]
+acyclic-process-host-arguments = { path = "../crates/process-host-arguments", optional = true }
 serde = { workspace = true, optional = true }
 acyclic-test-support = { path = "../crates/test-support", optional = true }
 acyclic-native-runtime = { path = "../crates/native-runtime", optional = true }

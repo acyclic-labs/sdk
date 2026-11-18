@@ -11,6 +11,7 @@
   "acyclic-native-stdin",
   "acyclic-process-identity",
   "acyclic-process-resources",
+  "acyclic-process-host-arguments",
   "acyclic-native-runtime",
   "acyclic-contract-derive",
   "acyclic-auth",

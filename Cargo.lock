@@ -1674,6 +1674,7 @@ dependencies = [
  "acyclic-executable-search",
  "acyclic-host-platform",
  "acyclic-observability",
+ "acyclic-process-host-arguments",
  "acyclic-process-identity",
  "acyclic-process-resources",
  "acyclic-test-support",
@@ -1852,6 +1853,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-process-host-arguments"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-process-identity"
 version = "0.2.0"
 dependencies = [
@@ -1912,6 +1917,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-native-runtime",
  "acyclic-observability",
+ "acyclic-process-host-arguments",
  "acyclic-proto-build",
  "acyclic-test-support",
  "arrayvec",

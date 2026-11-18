@@ -4,20 +4,30 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The process host command and its admission options.
 #[derive(Debug, Eq, PartialEq)]
-pub(super) struct Invocation {
-    pub(super) executable: OsString,
-    pub(super) arguments: Vec<OsString>,
-    pub(super) inherit_input: bool,
-    pub(super) control: Option<PathBuf>,
-    pub(super) custody: Option<PathBuf>,
-    pub(super) lease: Option<PathBuf>,
-    pub(super) completion: Option<PathBuf>,
-    pub(super) invocation: Option<String>,
+pub struct Invocation {
+    /// Executable selected by the invocation.
+    pub executable: OsString,
+    /// Arguments passed to the executable.
+    pub arguments: Vec<OsString>,
+    /// Whether the process inherits standard input.
+    pub inherit_input: bool,
+    /// Absolute path to the control endpoint.
+    pub control: Option<PathBuf>,
+    /// Absolute path to the custody directory.
+    pub custody: Option<PathBuf>,
+    /// Absolute path to the lease root.
+    pub lease: Option<PathBuf>,
+    /// Absolute path to the completion receipt.
+    pub completion: Option<PathBuf>,
+    /// Opaque identifier binding the completion receipt.
+    pub invocation: Option<String>,
 }
 
 impl Invocation {
-    pub(super) fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Self> {
+    /// Parses options followed by a literal executable and its arguments.
+    pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Self> {
         let mut arguments = arguments.into_iter();
         let mut inherit_input = false;
         let mut control = None;
@@ -92,7 +102,8 @@ impl Invocation {
     }
 }
 
-pub(super) fn invalid_arguments() -> io::Error {
+/// Returns the process host's standard admission error.
+pub fn invalid_arguments() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         "step=process-host-arguments; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT | --custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE [--invocation OPAQUE_ID]] [--control ABSOLUTE_ENDPOINT] [--inherit-input] -- EXECUTABLE ARGS",
