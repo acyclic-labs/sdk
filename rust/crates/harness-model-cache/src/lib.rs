@@ -1,7 +1,8 @@
 //! Provider-neutral model cache observations and residency transitions.
 
-mod executor {
-    pub mod model_cache;
-}
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
+
+mod executor;
 
 pub use executor::model_cache::*;

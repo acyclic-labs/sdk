@@ -1100,6 +1100,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
  "acyclic-harness-layout",
+ "acyclic-test-support",
  "proptest",
  "serde",
  "serde_json",

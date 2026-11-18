@@ -20,6 +20,7 @@ thiserror.workspace = true
 tsify = { workspace = true, optional = true }
 
 [dev-dependencies]
+acyclic-test-support = { version = "=0.2.0", path = "../test-support" }
 proptest.workspace = true
 
 [lints]
