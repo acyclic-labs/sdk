@@ -157,8 +157,32 @@ fn execute_command(command: &mut Command) -> std::io::Result<Output> {
     command.output()
 }
 
-fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
-    static FIXTURES: std::sync::OnceLock<std::io::Result<Vec<Value>>> = std::sync::OnceLock::new();
+#[derive(serde::Deserialize)]
+struct FixtureMetadata {
+    package: String,
+    toolchain: String,
+    manifest_path: PathBuf,
+    owner_path: PathBuf,
+    selected_lock: String,
+    receipt_name: String,
+    target_args: Vec<String>,
+    entrypoint: PathBuf,
+    proc_macro: bool,
+    cargo_flags: Vec<String>,
+    sources: Vec<FixtureSource>,
+    output: String,
+    artifacts: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FixtureSource {
+    file: String,
+    relative: String,
+}
+
+fn rustdoc_fixtures() -> std::io::Result<&'static [FixtureMetadata]> {
+    static FIXTURES: std::sync::OnceLock<std::io::Result<Vec<FixtureMetadata>>> =
+        std::sync::OnceLock::new();
     FIXTURES
         .get_or_init(|| {
             let index = acyclic_test_support::source_path(
@@ -219,23 +243,16 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         return Ok(None);
     };
     'fixture: for metadata in rustdoc_fixtures()? {
-        if metadata["package"].as_str() != Some(package) {
+        if metadata.package != package {
             continue;
         }
-        if metadata["toolchain"].as_str().unwrap() != selected_toolchain {
+        if metadata.toolchain != selected_toolchain {
             continue;
         }
-        let declared_manifest = Path::new(metadata["manifest_path"].as_str().unwrap());
+        let declared_manifest = &metadata.manifest_path;
         if !manifest_path.ends_with(declared_manifest) {
             continue;
         }
-        let flags = |key: &str| {
-            metadata[key]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|flag| flag.as_str().unwrap())
-        };
         let mut prefix = [
             "rustdoc",
             "--locked",
@@ -245,9 +262,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             package,
         ]
         .into_iter()
-        .chain(flags("target_args"))
+        .chain(metadata.target_args.iter().map(String::as_str))
         .chain(["--target", target])
-        .chain(flags("cargo_flags"));
+        .chain(metadata.cargo_flags.iter().map(String::as_str));
         let mut actual = command.get_args().map(OsStr::to_str);
         if !prefix.all(|expected| actual.next() == Some(Some(expected))) {
             continue;
@@ -258,7 +275,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         else {
             return Ok(None);
         };
-        let selected_lock = metadata["selected_lock"].as_str().unwrap();
+        let selected_lock = &metadata.selected_lock;
         let config = if selected_lock.is_empty() {
             None
         } else {
@@ -283,16 +300,15 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 continue 'fixture;
             }
         }
-        let sources = metadata["sources"].as_array().unwrap();
-        let artifacts = metadata["artifacts"].as_str().unwrap();
+        let sources = &metadata.sources;
+        let artifacts = &metadata.artifacts;
         let mut relative_sources = Vec::new();
         for source in sources {
-            let relative = source["relative"].as_str().unwrap();
+            let relative = source.relative.as_str();
             let Some(actual) = optional_io(fs::read(root.join(relative)))? else {
                 continue 'fixture;
             };
-            let source = source["file"].as_str().unwrap();
-            if actual != fs::read(acyclic_test_support::source_path(source))? {
+            if actual != fs::read(acyclic_test_support::source_path(&source.file))? {
                 continue 'fixture;
             }
             if Path::new(relative)
@@ -301,9 +317,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             {
                 let build = Path::new(relative).parent().unwrap().join("build.rs");
                 let covered = !artifacts.is_empty()
-                    && sources.iter().any(|source| {
-                        source["relative"].as_str().map(Path::new) == Some(build.as_path())
-                    });
+                    && sources
+                        .iter()
+                        .any(|source| Path::new(&source.relative) == build.as_path());
                 if !covered && root.join(&build).try_exists()? {
                     continue 'fixture;
                 }
@@ -312,7 +328,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 relative_sources.push(Path::new(relative));
             }
         }
-        let output_path = metadata["output"].as_str().unwrap();
+        let output_path = metadata.output.as_str();
         let mut json: Value =
             serde_json::from_slice(&fs::read(acyclic_test_support::source_path(output_path))?)?;
         if json["target"]["triple"].as_str() != Some(target) {
@@ -321,9 +337,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let target_dir = Path::new(env("CARGO_TARGET_DIR").unwrap());
         let mut referenced = std::collections::BTreeSet::new();
         let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
-        let owner = metadata["owner_path"].as_str().unwrap();
-        let entrypoint = Path::new(metadata["entrypoint"].as_str().unwrap());
-        let owner_entrypoint = Path::new(owner).join(entrypoint);
+        let owner = &metadata.owner_path;
+        let entrypoint = metadata.entrypoint.as_path();
+        let owner_entrypoint = owner.join(entrypoint);
         rustdoc_paths::visit(&mut json, |kind, path| {
             if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
                 let relative = PathBuf::from(relative);
@@ -362,12 +378,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 }
             }
         }
-        let target = (metadata["proc_macro"].as_bool() != Some(true)).then_some(OsStr::new(target));
+        let target = (!metadata.proc_macro).then_some(OsStr::new(target));
         let output_dir = rustdoc_directory(target_dir, target);
-        let output = output_dir.join(format!(
-            "{}.json",
-            metadata["receipt_name"].as_str().unwrap()
-        ));
+        let output = output_dir.join(format!("{}.json", metadata.receipt_name));
         fs::create_dir_all(output.parent().unwrap())?;
         fs::write(output, serde_json::to_vec(&json)?)?;
         #[cfg(unix)]
