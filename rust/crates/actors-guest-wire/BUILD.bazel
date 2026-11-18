@@ -19,7 +19,10 @@ rust_library(
     name = "acyclic_actors_guest_wire",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//compatibility:descriptors/actors-v1.bin",
+        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -104,7 +107,10 @@ rust_library(
     crate_name = "acyclic_actors_guest_wire",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//compatibility:descriptors/actors-v1.bin",
+        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,
