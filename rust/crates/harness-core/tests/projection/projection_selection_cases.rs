@@ -10,7 +10,7 @@ use acyclic_harness_core::{
 };
 use uuid::Uuid;
 
-#[path = "../projection_fixture.rs"]
+#[path = "fixture.rs"]
 mod fixture;
 use fixture::{file, message};
 

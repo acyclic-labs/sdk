@@ -5,7 +5,7 @@ use crate::conversation::{
 };
 use crate::{AgentId, resources::ProviderRef};
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[path = "../../tests/projection_fixture.rs"]
+#[path = "../../tests/projection/fixture.rs"]
 mod fixture;
 use fixture::{file, message};
 
