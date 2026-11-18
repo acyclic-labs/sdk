@@ -48,6 +48,9 @@ tokio = { version = "1.48.0", default-features = false, features = ["rt-multi-th
 futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
 parking_lot.workspace = true
 
+[target.'cfg(any(windows, target_os = "linux", target_vendor = "apple"))'.dependencies]
+acyclic-wall-clock = { version = "=0.2.0", path = "../wall-clock" }
+
 [target.'cfg(unix)'.dependencies]
 tokio = { version = "1.54.1", default-features = false, features = ["net"] }
 libc = "0.2.175"

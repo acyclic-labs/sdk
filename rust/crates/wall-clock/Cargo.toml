@@ -1,0 +1,25 @@
+[package]
+name = "acyclic-wall-clock"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native wall-clock waits and readings"
+
+[package.metadata.bazel.platform-sources]
+"@platforms//os:macos" = ["src/wall_alarm/apple.rs"]
+"@platforms//os:windows" = ["src/wall_alarm/windows.rs"]
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = "0.2.175"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

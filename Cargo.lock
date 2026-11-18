@@ -1677,6 +1677,7 @@ dependencies = [
  "acyclic-process-identity",
  "acyclic-process-resources",
  "acyclic-test-support",
+ "acyclic-wall-clock",
  "base64 0.23.1",
  "blake3",
  "bytes",
@@ -2183,6 +2184,14 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.7.0",
  "web-sys",
+]
+
+[[package]]
+name = "acyclic-wall-clock"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -210,6 +210,7 @@ filegroup(
         "//rust/crates/stream/publication-models:Cargo.toml",
         "//rust/crates/test-runner:Cargo.toml",
         "//rust/crates/test-support:Cargo.toml",
+        "//rust/crates/wall-clock:Cargo.toml",
         "//rust/crates/workers:Cargo.toml",
         "//rust/fuzz:Cargo.toml",
         "//rust/fuzz/native-callback-path:Cargo.toml",
