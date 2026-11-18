@@ -336,6 +336,7 @@ rust_test(
     srcs = [
         "src/claim/record.rs",
         "src/file_lock_test_fixture.rs",
+        "src/output/test_flags.rs",
         "tests/cached_flush.rs",
         "tests/claim_codec/oracle.rs",
         "tests/file_lock/mod.rs",
@@ -345,6 +346,8 @@ rust_test(
         "tests/native_owner_record.rs",
         "tests/native_report_port.rs",
         "tests/node_process.rs",
+        "tests/output/mod.rs",
+        "tests/output/tests.rs",
         "tests/owner_codec/oracle.rs",
         "tests/positional/mod.rs",
         "tests/positional/positional.rs",
