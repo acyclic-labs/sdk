@@ -103,7 +103,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // This batch is terminal or its admission lost the conditional commit.
         // Keep it as a cleanup receipt until its index removals are durable,
         // so interruption cannot leave a permanent orphan pin.
-        let tag = Self::batch_tag("f", root, name);
+        let tag = Self::batch_tag('f', root, name);
         let mut indexes = Vec::with_capacity(references.len());
         self.unreference(references, &tag, Some(&mut indexes))
             .await?;
@@ -157,29 +157,16 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         fence: u64,
         references: Vec<Digest>,
     ) -> Result<Retained, Error> {
-        let references = canonical(references);
-        if references.is_empty() {
-            return Err(invalid());
-        }
+        let references = retention_references(references)?;
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        let encoded = Digest::of(root.as_bytes()).encoded_hex();
+        let encoded = retention_root(root);
         let root_hash = encoded.as_ref();
         let terminal_key = self.terminal_key(root_hash);
         let (state, observed) = self.terminal_observed(&terminal_key).await?;
         state.require_open(fence)?;
-        self.medium
-            .allocate(references.len() as u64 * 32)
-            .map_err(medium)?;
-        let batch = encode_batch(&references);
-        let name = format!(
-            "{fence:016x}.{}.{:032x}",
-            Digest::of(&batch),
-            u128::from_be_bytes(version()?)
-        );
-        let tag = Self::batch_tag("f", root_hash, &name);
-        let key = self.retention_key('f', root_hash, &name);
-        self.commit_retention(&references, &tag, &key, batch, 2)
+        let (key, name) = self
+            .commit_retention(&references, root_hash, Some(fence))
             .await?;
         if !self.terminal_replace(observed, state.terminal).await? {
             self.remove_fenced_batch(&key, root_hash, &name, &references)
@@ -208,7 +195,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     pub async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        let encoded = Digest::of(root.as_bytes()).encoded_hex();
+        let encoded = retention_root(root);
         let root_hash = encoded.as_ref();
         let terminal_key = self.terminal_key(root_hash);
         let (state, observed) = self.terminal_observed(&terminal_key).await?;
