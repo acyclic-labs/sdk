@@ -67,6 +67,14 @@ pub(super) mod codec_fuzz {
     }
 
     pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
+        let result = check_observation(bytes);
+        assert!(
+            result.is_ok(),
+            "execution observation codec check failed: {result:?}"
+        );
+    }
+
+    fn check_observation(bytes: &[u8]) -> Result<()> {
         let ordinary = decode_observation(bytes, None);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -74,18 +82,17 @@ pub(super) mod codec_fuzz {
             let work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
-            )
-            .expect("unbounded decoder work");
+            )?;
             let baseline = work.live_allocation_bytes();
             {
-                let io = PreparationIo::from_native_work(&work).expect("original work is admitted");
+                let io = PreparationIo::from_native_work(&work)?;
                 let funded = decode_observation(bytes, Some(&io));
                 assert_eq!(
                     funded.as_ref().map(|_| ()).map_err(Error::code),
                     ordinary.as_ref().map(|_| ()).map_err(Error::code)
                 );
                 if let (Ok(funded), Ok(ordinary)) = (&funded, &ordinary) {
-                    assert_eq!(encode(funded).unwrap(), encode(ordinary).unwrap());
+                    assert_eq!(encode(funded)?, encode(ordinary)?);
                 }
             }
             assert_eq!(
@@ -95,16 +102,15 @@ pub(super) mod codec_fuzz {
             );
         }
         if let Ok(value) = ordinary {
-            let encoded = encode(&value).expect("admitted observation encodes");
-            let restored = decode_observation(&encoded, None).expect("writer output decodes");
-            assert_eq!(encode(&restored).unwrap(), encoded);
-            let version = b"{\"version\":".len();
-            let header_end = version
-                + encoded[version..]
-                    .iter()
-                    .position(|byte| *byte == b',')
-                    .unwrap()
-                + 1;
+            let encoded = encode(&value)?;
+            let restored = decode_observation(&encoded, None)?;
+            assert_eq!(encode(&restored)?, encoded);
+            let suffix = encoded
+                .strip_prefix(b"{\"version\":")
+                .and_then(|body| body.splitn(2, |byte| *byte == b',').nth(1))
+                .ok_or_else(|| {
+                    Error::Invalid("writer omitted the observation version header".into())
+                })?;
             for unsupported in [
                 0,
                 OBSERVATION_VERSION - 1,
@@ -112,20 +118,21 @@ pub(super) mod codec_fuzz {
                 u32::MAX,
             ] {
                 let mut header = format!("{{\"version\":{unsupported},").into_bytes();
-                header.extend_from_slice(&encoded[header_end..]);
-                assert_eq!(
-                    decode_observation(&header, None).err().unwrap().code(),
-                    crate::wire::ErrorCode::Unsupported
+                header.extend_from_slice(suffix);
+                assert!(
+                    decode_observation(&header, None)
+                        .is_err_and(|error| error.code() == crate::wire::ErrorCode::Unsupported)
                 );
             }
-            assert_ne!(
-                decode_observation(&encoded[..header_end], None)
-                    .err()
-                    .unwrap()
-                    .code(),
-                crate::wire::ErrorCode::Unsupported
+            let header = encoded
+                .get(..encoded.len() - suffix.len())
+                .ok_or_else(|| Error::Invalid("invalid observation header length".into()))?;
+            assert!(
+                decode_observation(header, None)
+                    .is_err_and(|error| error.code() != crate::wire::ErrorCode::Unsupported)
             );
         }
+        Ok(())
     }
 
     pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
