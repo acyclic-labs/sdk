@@ -8,14 +8,19 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn indexed_ceiling_preserves_wide_configured_bounds(
-        base in any::<u64>(),
+        base in prop_oneof![Just(0_u64), 0..64_u64, any::<u64>()],
         maximum in any::<u64>(),
-        doublings in 0..=65_u32,
     ) {
-        let expected = (u128::from(base) << doublings.min(64)).min(u128::from(maximum));
+        for doublings in 0..=65 {
+            let expected = (u128::from(base) << doublings.min(64)).min(u128::from(maximum));
+            prop_assert_eq!(
+                u128::from(Backoff::ceiling_ms_at(base, maximum, doublings)),
+                expected,
+            );
+        }
         prop_assert_eq!(
-            u128::from(Backoff::ceiling_ms_at(base, maximum, doublings)),
-            expected,
+            Backoff::ceiling_ms_at(base, maximum, u32::MAX),
+            if base == 0 { 0 } else { maximum },
         );
     }
 
