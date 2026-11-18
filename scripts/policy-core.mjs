@@ -12,7 +12,7 @@ export const repositoryRoot = resolve(fileURLToPath(repositoryUrl));
 
 export function* manifestDependencies(manifest) {
   for (const [target, tables] of [[null, manifest], ...Object.entries(manifest.target ?? {})])
-    for (const [table, kind] of [['dependencies', null], ['dev-dependencies', 'dev'], ['build-dependencies', 'build']])
+    for (const [table, kind] of Object.entries({dependencies: null, 'dev-dependencies': 'dev', 'build-dependencies': 'build'}))
       for (const [alias, value] of Object.entries(tables[table] ?? {}))
         yield {target, kind, alias, value};
 }
@@ -159,7 +159,7 @@ export function dependencyEnabled(features, dependency) {
 export function* forwardedFeatures(features, alias) {
   for (const feature of features) {
     const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-    if (match?.[1] === alias) yield match[2];
+    if (match && match[1] === alias) yield match[2];
   }
 }
 
