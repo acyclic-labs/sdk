@@ -290,7 +290,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 }
             }
             if relative.ends_with(".rs") {
-                relative_sources.push(relative.to_owned());
+                relative_sources.push(Path::new(relative));
             }
         }
         if !matches {
@@ -311,7 +311,8 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let mut referenced = std::collections::BTreeSet::new();
         let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
         let owner = metadata["owner_path"].as_str().unwrap();
-        let owner_library = format!("{owner}/src/lib.rs");
+        let library = Path::new("src/lib.rs");
+        let owner_library = Path::new(owner).join(library);
         rustdoc_paths::visit(&mut json, |kind, path| {
             if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
                 let relative = PathBuf::from(relative);
@@ -321,10 +322,10 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                     .into_owned();
                 referenced.insert(relative);
             } else if matches!(kind, rustdoc_paths::Kind::Source) {
-                let normalized = path.replace('\\', "/");
+                let filename = Path::new(path);
                 if let Some(source) = relative_sources.iter().find(|source| {
-                    normalized.ends_with(source.as_str())
-                        || normalized == "src/lib.rs" && **source == owner_library
+                    filename.ends_with(source)
+                        || filename == library && **source == owner_library.as_path()
                 }) {
                     *path = root.join(source).to_string_lossy().into_owned();
                 }
