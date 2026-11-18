@@ -33,6 +33,7 @@
   "acyclic-machines-grpc",
   "acyclic-manifest",
   "acyclic-workers",
+  "acyclic-fs-access-glob",
   "acyclic-fs-base",
   "acyclic-fs-format",
   "acyclic-fs-wire",

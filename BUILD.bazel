@@ -124,6 +124,7 @@ filegroup(
         "//rust/crates/decimal-u64:Cargo.toml",
         "//rust/crates/differential:Cargo.toml",
         "//rust/crates/executable-search:Cargo.toml",
+        "//rust/crates/filesystem-access-glob:Cargo.toml",
         "//rust/crates/filesystem-base:Cargo.toml",
         "//rust/crates/filesystem-darwin-bridge:Cargo.toml",
         "//rust/crates/filesystem-format:Cargo.toml",

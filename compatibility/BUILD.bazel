@@ -121,6 +121,7 @@ rust_test(
         "//rust/crates/decimal-u64:tree",
         "//rust/crates/differential:tree",
         "//rust/crates/executable-search:tree",
+        "//rust/crates/filesystem-access-glob:tree",
         "//rust/crates/filesystem-base:tree",
         "//rust/crates/filesystem-darwin-bridge:tree",
         "//rust/crates/filesystem-format:tree",

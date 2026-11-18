@@ -30,6 +30,7 @@ SEPARATE_DEPS = [
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-merge:acyclic_fs_merge",
@@ -100,6 +101,7 @@ SEPARATE_DEPS = [
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-darwin-bridge:acyclic_fs_darwin_bridge",
         "//rust/crates/filesystem-format:acyclic_fs_format",
@@ -164,6 +166,7 @@ SEPARATE_DEPS = [
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-merge:acyclic_fs_merge",
@@ -241,7 +244,6 @@ cargo_build_script(
     crate_root = "build.rs",
     srcs = [
         "build.rs",
-        "build/case_fold.rs",
     ],
     pkg_name = "acyclic-fs",
     edition = "2024",
@@ -258,9 +260,6 @@ cargo_build_script(
     ],
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV,
-    deps = [
-        "@sdk_crates//icu_casemap-2.3.0",
-    ],
 )
 
 rust_library(
@@ -323,6 +322,7 @@ rust_library(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-merge:acyclic_fs_merge",
@@ -381,6 +381,7 @@ rust_library(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-darwin-bridge:acyclic_fs_darwin_bridge",
         "//rust/crates/filesystem-format:acyclic_fs_format",
@@ -433,6 +434,7 @@ rust_library(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-merge:acyclic_fs_merge",
@@ -585,6 +587,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-merge:acyclic_fs_merge",
@@ -655,6 +658,7 @@ rust_test(
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-darwin-bridge:acyclic_fs_darwin_bridge",
         "//rust/crates/filesystem-format:acyclic_fs_format",
@@ -719,6 +723,7 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob",
         "//rust/crates/filesystem-base:acyclic_fs_base",
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "//rust/crates/filesystem-merge:acyclic_fs_merge",
@@ -4263,7 +4268,6 @@ cargo_build_script(
     crate_root = "build.rs",
     srcs = [
         "build.rs",
-        "build/case_fold.rs",
     ],
     pkg_name = "acyclic-fs",
     edition = "2024",
@@ -4281,9 +4285,6 @@ cargo_build_script(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
-    deps = [
-        "@sdk_crates//icu_casemap-2.3.0",
-    ],
 )
 
 rust_library(
@@ -4342,6 +4343,7 @@ rust_library(
     ] + [
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/collections:acyclic_collections_wasm",
+        "//rust/crates/filesystem-access-glob:acyclic_fs_access_glob_wasm",
         "//rust/crates/filesystem-base:acyclic_fs_base_wasm",
         "//rust/crates/filesystem-format:acyclic_fs_format_wasm",
         "//rust/crates/filesystem-merge:acyclic_fs_merge_wasm",
