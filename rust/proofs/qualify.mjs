@@ -261,6 +261,8 @@ const claims = {
     "rust/crates/test-support/src/lib.rs", "acyclic-test-support",
     "tests::accounting_matches_complete_allocation_lifetimes",
     "first allocation event differs from physical trace", [],
+    { runner: ["bazel", "run", "//rust/crates/test-support:acyclic_test_support_test_cases", "--",
+      "tests::accounting_matches_complete_allocation_lifetimes", "--exact", "--nocapture"] },
   ],
   "native-line-eof": [
     "rust/crates/native-runtime/src/lines.rs", "acyclic-native-runtime",
