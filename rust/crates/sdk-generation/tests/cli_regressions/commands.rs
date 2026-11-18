@@ -88,6 +88,14 @@ fn rustdoc_directory(target_dir: &Path, target: Option<&OsStr>) -> PathBuf {
     )
 }
 
+fn optional_io<T>(result: std::io::Result<T>) -> std::io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 // Replay exactly the JSON that this real Cargo invocation produced. Different
 // feature/target/owner arguments have different keys. Build scripts and examples
 // in mutation controls never enter this scope.
@@ -100,10 +108,8 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
     let target = argument_value(args, "--target").unwrap();
     let mut artifacts = Vec::new();
     for target in [None, Some(target)] {
-        let entries = match fs::read_dir(rustdoc_directory(directory, target)) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
+        let Some(entries) = optional_io(fs::read_dir(rustdoc_directory(directory, target)))? else {
+            continue;
         };
         for entry in entries {
             let path = entry?.path();
@@ -158,10 +164,9 @@ fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
             let index = acyclic_test_support::source_path(
                 "rust/proofs/sdk-rustdoc-fixtures/feature_profiles.index.json",
             );
-            match fs::read(index) {
-                Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-                Err(error) => Err(error),
+            match optional_io(fs::read(index))? {
+                Some(bytes) => Ok(serde_json::from_slice(&bytes)?),
+                None => Ok(Vec::new()),
             }
         })
         .as_deref()
@@ -290,11 +295,8 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             let relative = source["relative"].as_str().unwrap();
             let source = source["file"].as_str().unwrap();
             let expected = fs::read(acyclic_test_support::source_path(source))?;
-            match fs::read(root.join(relative)) {
-                Ok(actual) if actual == expected => {}
-                Ok(_) => continue 'fixture,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue 'fixture,
-                Err(error) => return Err(error),
+            if optional_io(fs::read(root.join(relative)))? != Some(expected) {
+                continue 'fixture;
             }
             if Path::new(relative)
                 .file_name()
@@ -348,19 +350,18 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             for relative in referenced {
                 let destination = artifact_target.join(&relative);
                 let source = artifacts.join(relative);
-                match fs::read(&destination) {
-                    Ok(existing) if existing == fs::read(&source)? => {}
-                    Ok(_) => {
+                match optional_io(fs::read(&destination))? {
+                    Some(existing) if existing == fs::read(&source)? => {}
+                    Some(_) => {
                         return Err(std::io::Error::other(format!(
                             "Rustdoc fixture artifacts disagree at {}",
                             destination.display()
                         )));
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    None => {
                         fs::create_dir_all(destination.parent().unwrap())?;
                         fs::copy(source, destination)?;
                     }
-                    Err(error) => return Err(error),
                 }
             }
         }
@@ -402,13 +403,9 @@ impl Queries {
                 };
                 if let Some((output, artifacts)) = state.outputs.borrow().get(&key) {
                     for (path, bytes) in artifacts {
-                        match fs::read(path) {
-                            Ok(existing) if &existing == bytes => continue,
-                            Ok(_) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(error) => return Err(error),
+                        if optional_io(fs::read(path))?.as_ref() != Some(bytes) {
+                            fs::write(path, bytes)?;
                         }
-                        fs::write(path, bytes)?;
                     }
                     if !artifacts.is_empty() {
                         state
