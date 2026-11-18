@@ -125,6 +125,7 @@ rust_test(
         "//rust/crates/filesystem-native-contract:tree",
         "//rust/crates/filesystem-native-core-tests:tree",
         "//rust/crates/filesystem-wasm:tree",
+        "//rust/crates/filesystem-windows:tree",
         "//rust/crates/filesystem-wire:tree",
         "//rust/crates/filesystem-work:tree",
         "//rust/crates/filesystem/fuzz:tree",
