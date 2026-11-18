@@ -18,6 +18,7 @@ build = "build.rs"
 build-script-inputs = []
 unit-test-only-sources = [
     "src/filtered_follow_fixture.rs",
+    "src/follow_index_tests.rs",
     "src/grpc/credential_tests.rs",
     "src/grpc/receipt_tests.rs",
     "src/grpc/tests.rs",
