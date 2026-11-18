@@ -1108,14 +1108,15 @@ fn install_namespace(
     for fact in &envelope.mutations {
         let path = crate::request::fact_path(fact);
         state.ephemeral.adopt(scope, &previous, path);
-        if previous.get(path).is_some() {
+        let mut created_ancestors = path
+            .ancestors_including_self()
+            .take_while(|&ancestor| !previous.contains_key(ancestor))
+            .peekable();
+        if created_ancestors.peek().is_none() {
             continue;
         }
-        for path in path.ancestors_including_self() {
-            if previous.contains_key(path) {
-                break;
-            }
-            if let Some(signals) = state.signals.get(path)? {
+        for ancestor in created_ancestors {
+            if let Some(signals) = state.signals.get(ancestor)? {
                 let _ = signals.changed.notify();
                 crate::follow_index::FollowIndex::created(&signals.follows);
             }
