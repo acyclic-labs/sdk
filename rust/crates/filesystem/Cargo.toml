@@ -82,6 +82,7 @@ build-script-inputs = [
 test-build-script = ["operation_claim_model"]
 test-without-build-script = [
     "export_codec",
+    "extent_clone",
     "extent_codec",
     "metadata_codec",
     "tree_codec",
@@ -111,6 +112,7 @@ test-without-build-script = [
 ]
 test-narrow-runfiles = [
     "export_codec",
+    "extent_clone",
     "extent_codec",
     "metadata_codec",
     "tree_codec",
@@ -157,6 +159,7 @@ rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
 export_codec = ["acyclic_fs", "acyclic_fs_format"]
+extent_clone = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "tokio"]
 extent_codec = ["acyclic_fs", "acyclic_fs_format"]
 metadata_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
 tree_codec = ["acyclic_fs", "acyclic_fs_format", "hex"]
@@ -332,6 +335,10 @@ path = "tests/extent_codec.rs"
 [[test]]
 name = "export_codec"
 path = "tests/export_codec.rs"
+
+[[test]]
+name = "extent_clone"
+path = "tests/extent_clone.rs"
 
 [[test]]
 name = "metadata_codec"

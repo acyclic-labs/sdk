@@ -558,6 +558,7 @@ rust_test(
         "tests/support/checkout_tracking.rs",
         "tests/support/creation_budget.rs",
         "tests/support/export_manifest.rs",
+        "tests/support/extent_objects.rs",
         "tests/support/git_history.rs",
         "tests/support/join_plan.rs",
         "tests/support/memory_checkout.rs",
@@ -2880,6 +2881,61 @@ isolated_test(
     binary = ":export_codec_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::export_codec",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "extent_clone_cases",
+    crate_root = "tests/extent_clone.rs",
+    srcs = [
+        "tests/extent_clone.rs",
+        "tests/extent_clone/kernel/extent_clone/mod.rs",
+        "tests/extent_clone/kernel/extent_clone/tests.rs",
+        "tests/extent_clone/kernel/mod.rs",
+        "tests/support/extent_objects.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+    ] + [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+        "@sdk_crates//tokio-1.54.1",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "extent_clone",
+    binary = ":extent_clone_cases",
+    id = "acyclic-fs::extent_clone",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "extent_clone_full-cloud",
+    binary = ":extent_clone_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::extent_clone",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],

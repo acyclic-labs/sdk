@@ -1,8 +1,10 @@
 use crate::async_storage::AsyncObjectStore;
 use crate::kernel::*;
-use crate::storage::{ObjectId, ObjectKind, object_digest};
-use crate::{AuthorityWork, CancellationToken, WorkBudget};
-use acyclic_stream::OwnedBytes;
+use crate::storage::{ObjectId, ObjectKind};
+
+#[path = "../../../tests/support/extent_objects.rs"]
+mod extent_objects;
+pub(crate) use extent_objects::{put_extent_page, put_object};
 
 pub(crate) async fn put_attribute_page<S: AsyncObjectStore>(
     store: &S,
@@ -16,20 +18,6 @@ pub(crate) async fn put_attribute_page<S: AsyncObjectStore>(
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
     put_object(store, ObjectKind::AttributePage, bytes).await
-}
-
-pub(crate) async fn put_extent_page<S: AsyncObjectStore>(
-    store: &S,
-    value: &ExtentPage,
-    maximum_items: u32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let bytes = encode_extent_page(
-        value,
-        maximum_items,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )?;
-    put_object(store, ObjectKind::ExtentPage, bytes).await
 }
 
 pub(crate) async fn put_file_table_page<S: AsyncObjectStore>(
@@ -96,25 +84,4 @@ pub(crate) async fn put_generation_root<S: AsyncObjectStore>(
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
     put_object(store, ObjectKind::GenerationRoot, bytes).await
-}
-
-pub(crate) async fn put_object<S: AsyncObjectStore>(
-    store: &S,
-    kind: ObjectKind,
-    bytes: impl Into<OwnedBytes>,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let bytes = bytes.into();
-    let id = ObjectId {
-        storage: None,
-        kind,
-        digest: object_digest(&bytes),
-    };
-    store
-        .put(
-            id,
-            bytes,
-            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
-    Ok(id)
 }
