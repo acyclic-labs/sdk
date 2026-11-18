@@ -195,7 +195,6 @@ impl BrowserStream {
 pub(super) struct Observer<'a> {
     pub(super) stream: &'a BrowserStream,
     pub(super) changed: &'a mut Changes,
-    pub(super) cursor: u64,
     pub(super) announced: u64,
     pub(super) before: Option<Before>,
 }
@@ -204,6 +203,7 @@ impl crate::replicated::ReplayObserver for Observer<'_> {
         &'a mut self,
         provider: &'a MemoryStream,
         command: &'a WriteRequest,
+        cursor: u64,
         after: bool,
     ) -> Result<(), StreamError> {
         if after {
@@ -211,11 +211,10 @@ impl crate::replicated::ReplayObserver for Observer<'_> {
                 before
                     .collect(provider, self.changed, &self.stream.inner.publications)
                     .await?;
-                self.announced = self.cursor + 1;
+                self.announced = cursor;
             }
-            self.cursor += 1;
         } else {
-            self.before = if self.cursor >= self.announced {
+            self.before = if cursor >= self.announced {
                 Some(Before::capture(provider, command, &self.stream.inner.publications).await?)
             } else {
                 None

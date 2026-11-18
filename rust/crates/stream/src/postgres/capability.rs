@@ -495,6 +495,7 @@ impl ReplayObserver for AppendDuringReplay<'_> {
         &'a mut self,
         _: &'a MemoryStream,
         _: &'a WriteRequest,
+        _: u64,
         after: bool,
     ) -> Result<(), StreamError> {
         if after && !self.appended {
@@ -567,6 +568,7 @@ impl ReplayObserver for CompetingPublication<'_> {
         &'a mut self,
         _: &'a MemoryStream,
         _: &'a WriteRequest,
+        _: u64,
         after: bool,
     ) -> Result<(), StreamError> {
         if !after && !self.published {

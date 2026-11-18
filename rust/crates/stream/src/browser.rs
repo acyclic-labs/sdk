@@ -220,7 +220,6 @@ impl BrowserStream {
         let mut observe = publication::Observer {
             stream: self,
             changed,
-            cursor: cache.cursor,
             announced: cache.announced,
             before: None,
         };

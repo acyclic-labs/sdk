@@ -170,6 +170,7 @@ pub(crate) trait ReplayObserver: ProviderPlatform {
         &'a mut self,
         provider: &'a MemoryStream,
         command: &'a WriteRequest,
+        cursor: u64,
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a;
 }
@@ -178,9 +179,10 @@ impl<T: ReplayObserver + ?Sized> ReplayObserver for &mut T {
         &'a mut self,
         provider: &'a MemoryStream,
         command: &'a WriteRequest,
+        cursor: u64,
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
-        (**self).observe(provider, command, after)
+        (**self).observe(provider, command, cursor, after)
     }
 }
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
@@ -191,6 +193,7 @@ impl ReplayObserver for NoopObserver {
         &'a mut self,
         _: &'a MemoryStream,
         _: &'a WriteRequest,
+        _: u64,
         _: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
         std::future::ready(Ok(()))
@@ -370,11 +373,15 @@ impl<J: CommandJournal> Replicated<J> {
                     }
                     let command = decode_command(&entry.command)?;
                     self.clock.set(entry.at_millis);
-                    observe.observe(&self.provider, &command, false).await?;
+                    observe
+                        .observe(&self.provider, &command, self.cursor, false)
+                        .await?;
                     // Only accepted commands are journal entries. Any refusal
                     // during replay contradicts that ordered durable history.
                     replay(&self.provider, command.clone()).await?;
-                    observe.observe(&self.provider, &command, true).await?;
+                    observe
+                        .observe(&self.provider, &command, entry.sequence, true)
+                        .await?;
                     self.cursor = entry.sequence;
                     if self.cursor == target {
                         self.clock.set(received.at_millis);
@@ -457,7 +464,9 @@ impl<J: CommandJournal> Replicated<J> {
         if fresh {
             self.refresh_with(page, &mut observe).await?;
         }
-        observe.observe(&self.provider, command, false).await?;
+        observe
+            .observe(&self.provider, command, self.cursor, false)
+            .await?;
         let expected = self.cursor;
         let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
         let frame = JournalFrame {
@@ -508,7 +517,9 @@ impl<J: CommandJournal> Replicated<J> {
             return Err(StreamError::PrefixNotRetained);
         }
         if self.cursor > expected {
-            observe.observe(&self.provider, command, true).await?;
+            observe
+                .observe(&self.provider, command, self.cursor, true)
+                .await?;
         }
         result
     }
