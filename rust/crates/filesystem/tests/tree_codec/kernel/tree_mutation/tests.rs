@@ -12,6 +12,10 @@ use super::super::memory::memory_objects;
 use super::super::tree_entries::{entry, name, wide_entry};
 use super::super::tree_objects::put_tree_page;
 
+#[path = "../../../support/two_leaf_tree.rs"]
+mod pair;
+use pair::{pair_limits, two_leaf_tree};
+
 #[tokio::test]
 async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -476,5 +480,108 @@ async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std:
     assert!(failure.work()?.peak_allocation_bytes <= maximum);
     assert_eq!(failure.work()?.backend_write_operations, 0);
     assert_eq!(failure.work()?.object_bytes_written, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = memory_objects();
+    let (root, leaves) = two_leaf_tree(&store).await?;
+    let receipt = apply_tree_mutations(
+        &store,
+        root,
+        vec![
+            TreeMutation::Replace {
+                entry: entry("n", 3, FileKind::Fifo)?,
+                expected_file_id: FileId::from_bytes([3; 16]),
+            },
+            TreeMutation::Replace {
+                entry: entry("x", 4, FileKind::Fifo)?,
+                expected_file_id: FileId::from_bytes([4; 16]),
+            },
+        ],
+        pair_limits(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(receipt.work.page_reads, 2);
+    assert_eq!(receipt.work.page_writes, 2);
+    let root_bytes = store
+        .read(
+            receipt.value,
+            u64::MAX,
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+        )
+        .await?;
+    let TreePage::Internal(children) = decode_tree_page(&root_bytes, pair_limits(), &mut |_| {
+        Ok::<_, CanonicalDecodeError>(())
+    })?
+    else {
+        return Err("candidate root is not internal".into());
+    };
+    let [left, right] = children.as_slice() else {
+        return Err("candidate root does not hold two leaves".into());
+    };
+    let [previous_left, previous_right] = leaves;
+    assert_eq!(left.page, previous_left);
+    assert_ne!(right.page, previous_right);
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = memory_objects();
+    let (root, _) = two_leaf_tree(&store).await?;
+    let receipt = apply_tree_mutations(
+        &store,
+        root,
+        vec![TreeMutation::Replace {
+            entry: entry("m", 2, FileKind::Regular)?,
+            expected_file_id: FileId::from_bytes([2; 16]),
+        }],
+        pair_limits(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(receipt.value, root);
+    assert_eq!(receipt.work.page_reads, 2);
+    assert_eq!(receipt.work.page_writes, 0);
+    assert_eq!(receipt.work.backend_write_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = memory_objects();
+    let (root, _) = two_leaf_tree(&store).await?;
+    let failure = apply_tree_mutations(
+        &store,
+        root,
+        vec![TreeMutation::Remove {
+            name: name("n")?,
+            expected_file_id: Some(FileId::from_bytes([9; 16])),
+        }],
+        pair_limits(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("identity conflict unexpectedly succeeded")?;
+    assert!(matches!(
+        failure.error,
+        TreeMutationError::FileIdentityConflict
+    ));
+    // Removing the following leaf's first name retains its predecessor tail
+    // before checking the selected identity: root, predecessor, selected leaf.
+    assert_eq!(failure.work()?.page_reads, 3);
+    assert_eq!(failure.work()?.backend_write_operations, 0);
+    assert_eq!(failure.work()?.page_writes, 0);
+    assert_eq!(failure.work()?.bytes_encoded, 0);
     Ok(())
 }
