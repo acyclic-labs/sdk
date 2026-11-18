@@ -2,6 +2,7 @@
 //! pointers; this adapter only projects calls and owns cursor cancellation.
 //! Every byte argument is the port's own copy, so an asynchronous port may
 //! read it after WebAssembly memory grows.
+use super::read_chunk_frame;
 use crate::*;
 use futures::StreamExt;
 use js_sys::{Promise, Reflect, Uint8Array};
