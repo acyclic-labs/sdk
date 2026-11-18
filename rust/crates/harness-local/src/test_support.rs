@@ -193,30 +193,6 @@ pub fn check_native_child_reference(input: &[u8]) {
     }
 }
 
-/// The one fixture catalog: `binding` serves its own selection and every
-/// model a shipped role selects. Role policy wins at admission, so a fixture
-/// with one provider supplies the role models through this resolver, and each
-/// request keeps the binding's own model identity, which its provider serves.
-///
-/// # Errors
-/// When a shipped role template does not parse.
-pub fn role_models(
-    binding: crate::model::ModelBinding,
-) -> crate::Result<crate::model::ModelResolver> {
-    let own = format!("{}/{}", binding.0.provider, binding.0.name);
-    let roles = crate::templates::role_models()?;
-    Ok(crate::model::ModelResolver::new(
-        own.clone(),
-        move |selection: &str| {
-            if selection == own || roles.contains(selection) {
-                Ok(binding.clone())
-            } else {
-                Err(crate::Error::NotFound(format!("fixture model {selection}")))
-            }
-        },
-    ))
-}
-
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn local_harness_config(

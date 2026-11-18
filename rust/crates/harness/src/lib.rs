@@ -35,8 +35,13 @@ pub mod completion;
 pub use acyclic_harness_local::local;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_harness_local::server;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub use acyclic_harness_local::test_support;
+#[cfg(all(target_arch = "wasm32", any(test, feature = "test-support")))]
+pub mod test_support {
+    pub use acyclic_harness_core::test_support::*;
+    pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
+}
 #[cfg(feature = "conformance")]
 pub use acyclic_harness_suite::conformance;
 #[cfg(not(target_arch = "wasm32"))]
