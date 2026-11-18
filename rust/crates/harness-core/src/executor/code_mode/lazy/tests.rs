@@ -187,14 +187,14 @@ async fn rebuilt_executor_retains_selection_without_source_reads_and_refuses_cha
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let tight_io = PreparationIo::from_native_work(&tight)?;
-    let baseline = tight.live_allocation_bytes();
+    let baseline = tight.live_allocation_bytes()?;
     let error = match rebuilt.tools.load("echo", Some(&tight_io)).await {
         Err(error) => error,
         Ok(_) => panic!("source future must refuse before polling the unavailable source"),
     };
     assert!(matches!(error, Error::NativeWork { .. }));
     drop(error);
-    assert_eq!(tight.live_allocation_bytes(), baseline);
+    assert_eq!(tight.live_allocation_bytes()?, baseline);
     let mut changed = call();
     changed.arguments = serde_json::json!({"text": "changed"});
     let refusal = StockExecution::ordinary(&rebuilt)

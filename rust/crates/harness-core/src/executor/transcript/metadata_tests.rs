@@ -43,7 +43,7 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
                     acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
                 let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let baseline = work.live_allocation_bytes();
+                let baseline = work.live_allocation_bytes()?;
                 let io = if native {
                     PreparationIo::from_native_work(&work)?
                 } else {
@@ -67,7 +67,7 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
                 );
                 assert_eq!(io.owned_bytes()?, 0);
                 drop(io);
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes()?, baseline);
             }
         }
     }
@@ -93,7 +93,7 @@ fn check_scratch_control<T: PreparationRecord + Serialize>(value: &T) -> Result<
         let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -117,7 +117,7 @@ fn check_scratch_control<T: PreparationRecord + Serialize>(value: &T) -> Result<
         drop(hold);
         assert_eq!(io.owned_bytes()?, 0);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -153,7 +153,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
                 acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let io = if native {
                 PreparationIo::from_native_work(&work)?
             } else {
@@ -231,7 +231,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
                 assert_eq!(io.owned_bytes()?, 0);
             }
             drop(io);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
