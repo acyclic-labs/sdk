@@ -342,6 +342,15 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
     let (mut release, archive) = fixture.archive(&revision, "");
+    let manifest = fixture.path().join("Cargo.toml");
+    let original_manifest = fs::read(&manifest).unwrap();
+    fs::write(&manifest, "different manifest").unwrap();
+    assert!(
+        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
+            .unwrap_err()
+            .contains("source bytes differ")
+    );
+    fs::write(manifest, original_manifest).unwrap();
     fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
     fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
     release.checksum = crate::sha256_file(&archive)
@@ -352,13 +361,6 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
         verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
             .unwrap_err()
             .contains("missing Cargo Rust source")
-    );
-    let (release, archive) = fixture.archive(&revision, "");
-    fs::write(fixture.path().join("Cargo.toml"), "different manifest").unwrap();
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-            .unwrap_err()
-            .contains("source bytes differ")
     );
 }
 #[test]
