@@ -1,5 +1,5 @@
 {
-  "checksum": "c80452f2063bf397fbc14ece5cb11efb57a15f9a0de482222a755530ad2e7900",
+  "checksum": "bc3f9b83a0a5e0c06972ecb7ef24a2a6963c15ca00c7a96892fc500da0e4fc9d",
   "conditions": {
     "aarch64-pc-windows-gnullvm": [],
     "cfg(all(all(target_arch = \"aarch64\", target_endian = \"little\"), target_os = \"windows\"))": [],
@@ -12919,7 +12919,7 @@
       ],
       "name": "ts-rs-macros",
       "override_targets": {
-        "proc-macro": "@@//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros_wasm"
+        "proc-macro": "@@//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros"
       },
       "package_url": "https://github.com/Aleph-Alpha/ts-rs",
       "repository": {

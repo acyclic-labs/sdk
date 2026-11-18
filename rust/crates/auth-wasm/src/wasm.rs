@@ -31,8 +31,8 @@ pub fn websocket_credential(value: &JsValue) -> Result<js_sys::JsString, JsValue
 /// clears its JavaScript proof and output buffers.
 #[wasm_bindgen(js_name = encodeCapability)]
 pub fn encode_capability_bytes(
-    blocks: Array,
-    proof: Uint8Array,
+    blocks: &Array,
+    proof: &Uint8Array,
     sealed: bool,
 ) -> Result<Uint8Array, JsValue> {
     let length = if sealed { 64 } else { 32 };
@@ -81,28 +81,32 @@ impl TrustSnapshot {
     #[wasm_bindgen(constructor)]
     pub fn new(
         environment: String,
-        environment_keys: Uint8Array,
+        environment_keys: &Uint8Array,
         account: String,
-        issuer_keys: Uint8Array,
-        minimum_key_epoch: BigInt,
+        issuer_keys: &Uint8Array,
+        times: &Array,
         revoked_key_ids: Vec<String>,
-        revoked_block_ids: Uint8Array,
-        environment_keys_valid_until: Option<BigInt>,
-        not_before_unix_seconds: BigInt,
+        revoked_block_ids: &Uint8Array,
     ) -> Result<Self, JsValue> {
+        let integer = |value: JsValue| {
+            value
+                .dyn_into::<BigInt>()
+                .map_err(|_| error(VerifyError::Malformed))
+                .and_then(|value| u64::try_from(value).map_err(|_| error(VerifyError::Malformed)))
+        };
+        let valid_until = times.get(1);
         Ok(Self(Snapshot {
             environment,
             environment_keys: block_ids(&environment_keys.to_vec()).map_err(error)?,
-            environment_keys_valid_until: environment_keys_valid_until
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| error(VerifyError::Malformed))?,
+            environment_keys_valid_until: if valid_until.is_undefined() {
+                None
+            } else {
+                Some(integer(valid_until)?)
+            },
             account,
             issuer_keys: block_ids(&issuer_keys.to_vec()).map_err(error)?,
-            minimum_key_epoch: u64::try_from(minimum_key_epoch)
-                .map_err(|_| error(VerifyError::Malformed))?,
-            not_before_unix_seconds: u64::try_from(not_before_unix_seconds)
-                .map_err(|_| error(VerifyError::Malformed))?,
+            minimum_key_epoch: integer(times.get(0))?,
+            not_before_unix_seconds: integer(times.get(2))?,
             revoked_key_ids: revoked_key_ids.into_iter().collect(),
             revoked_block_ids: block_ids(&revoked_block_ids.to_vec())
                 .map_err(error)?
@@ -122,7 +126,7 @@ impl Capability {
     /// unguarded slice temporaries. The caller owns its JavaScript input buffer.
     #[wasm_bindgen(js_name = verify)]
     pub fn verify_bytes(
-        bytes: Uint8Array,
+        bytes: &Uint8Array,
         trust: &TrustSnapshot,
         now_unix_seconds: BigInt,
     ) -> Result<Self, JsValue> {
@@ -142,8 +146,8 @@ impl Capability {
     /// semantic values. Only the supplied fresh tip secret can be retained.
     pub fn attenuate(
         &self,
-        caveats: Array,
-        next_secret: Uint8Array,
+        caveats: &Array,
+        next_secret: &Uint8Array,
     ) -> Result<Capability, JsValue> {
         if next_secret.length() != 32 {
             return Err(error(VerifyError::Malformed));

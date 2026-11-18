@@ -111,6 +111,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "@wasm_crates//prost-0.14.4",
         "@wasm_crates//prost-reflect-0.16.5",

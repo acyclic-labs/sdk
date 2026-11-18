@@ -97,11 +97,11 @@ pub fn actor_reference_from_legacy_fields(
     namespace: Option<String>,
     id: &str,
 ) -> Result<Vec<u8>, JsValue> {
-    Ok(
-        ActorReference::from_legacy_fields(account, namespace.as_deref(), id)
-            .map_err(identity_error)?
-            .encode(),
-    )
+    let reference = match namespace {
+        Some(namespace) => ActorReference::from_legacy_fields(account, Some(&namespace), id),
+        None => ActorReference::from_legacy_fields(account, None, id),
+    };
+    Ok(reference.map_err(identity_error)?.encode())
 }
 
 /// Recover an exact actor-reference field after validating the entire encoding.

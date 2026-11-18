@@ -177,6 +177,7 @@ rust_shared_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/actors:acyclic_actors_wasm",
         "@wasm_crates//js-sys-0.3.94",
@@ -212,6 +213,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/actors:acyclic_actors_wasm",
         "@wasm_crates//js-sys-0.3.94",

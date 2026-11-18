@@ -109,6 +109,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/collections:acyclic_collections_wasm",
         "@wasm_crates//serde-1.0.229",
