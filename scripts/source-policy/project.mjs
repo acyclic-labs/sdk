@@ -235,7 +235,24 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   symbolQueue.push(symbol);
   return value;
  };
- const roots = new Map(scripts.map(file => [file, dependency(file + ':initialization', required(units, file.slice(1)).fingerprint)]));
+ const roots = new Map(program.getSourceFiles().map(source => {
+  const file = source.fileName.slice(1);
+  const unit = required(units, file);
+  const bodies = source.statements.flatMap(statement =>
+   ts.isFunctionDeclaration(statement) && statement.body
+    ? [{start: statement.body.getStart(source), end: statement.body.end}] : []);
+  let fingerprint = unit.fingerprint;
+  if (bodies.length) {
+   // Initialization calls carry function bodies through their dependency edges.
+   let body = 0;
+   const initialized = unit.stream.filter(token => {
+    while (body < bodies.length && token.start >= bodies[body].end) body++;
+    return body === bodies.length || token.start < bodies[body].start;
+   });
+   fingerprint = digest(initialized.map(token => [token.kind, token.value]));
+  }
+  return [source.fileName, dependency(source.fileName + ':initialization', fingerprint)];
+ }));
  /** @type {Reference[]} */
  const references = [];
  /** @type {{node: import('typescript-parser').Node, owner: Dependency, target: Dependency}[]} */

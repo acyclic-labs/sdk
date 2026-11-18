@@ -77,4 +77,7 @@ test('a dormant function body does not change a module initialization dependency
  assert.ok(!changes(source.replace('true', 'false')).some(site => site.file === consumer));
  assert.ok(changes(source.replace('sleep(1)', 'sleep(2)'))
   .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
+ const active = new Map(before).set(producer, source + ' dormant();');
+ assert.ok(newProjectPollingSites(active, new Map(active).set(producer, active.get(producer).replace('true', 'false')))
+  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
 });
