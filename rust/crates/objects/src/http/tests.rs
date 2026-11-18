@@ -45,13 +45,12 @@ async fn dispatch(
         .path()
         .strip_prefix("/v1/objects/")
         .ok_or(StatusCode::NOT_FOUND)?;
-    if let Some((_, input, _)) = crate::HTTP_STREAM_ROUTES
-        .iter()
-        .find(|(path, ..)| *path == route)
-    {
-        let bytes = json::decode_binary(input, &body, Some(1024 * 1024))
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
-        let events = crate::route::invoke_stream(&blobs, route, bytes.into())
+    let method = crate::ObjectsMethod::from_http_route(route).ok_or(StatusCode::NOT_FOUND)?;
+    let (input, output) = method.http_message_types();
+    let input = json::decode_binary(input, &body, Some(1024 * 1024))
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if method == crate::ObjectsMethod::Availability {
+        let events = crate::route::invoke_stream(&blobs, route, input.into())
             .await
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         let frames = events.map(move |event| {
@@ -65,12 +64,6 @@ async fn dispatch(
             .body(Body::from_stream(frames))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
-    let (_, input, output) = crate::HTTP_ROUTES
-        .iter()
-        .find(|(path, ..)| *path == route)
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let input = json::decode_binary(input, &body, Some(1024 * 1024))
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
     let output = match crate::route::invoke(&blobs, route, input.into()).await {
         Ok(bytes) => json::encode_binary(output, &bytes, Some(1024 * 1024))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
