@@ -2,7 +2,7 @@ use super::*;
 
 use std::{
     cell::{Cell, RefCell},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     process::Output,
     rc::Rc,
 };
@@ -70,6 +70,10 @@ fn query(command: &Command) -> Option<Key> {
     })
 }
 
+fn argument_value<'a>(args: impl Iterator<Item = &'a OsStr>, name: &str) -> Option<&'a OsStr> {
+    args.skip_while(|arg| *arg != name).nth(1)
+}
+
 // Replay exactly the JSON that this real Cargo invocation produced. Different
 // feature/target/owner arguments have different keys. Build scripts and examples
 // in mutation controls never enter this scope.
@@ -84,7 +88,7 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
         .and_then(|(_, value)| value)
         .map(PathBuf::from)
         .unwrap();
-    let target = args.skip_while(|arg| *arg != "--target").nth(1).unwrap();
+    let target = argument_value(args, "--target").unwrap();
     let mut artifacts = Vec::new();
     for directory in [directory.join("doc"), directory.join(target).join("doc")] {
         let entries = match fs::read_dir(directory) {
@@ -165,11 +169,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     if !args.iter().any(|arg| *arg == "--lib" || *arg == "--bin") {
         return Ok(None);
     }
-    let value = |name: &str| {
-        args.windows(2)
-            .find(|pair| pair[0] == name)
-            .map(|pair| pair[1])
-    };
+    let value = |name: &str| argument_value(args.iter().copied(), name);
     let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
         return Ok(None);
     };
