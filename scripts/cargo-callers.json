@@ -55,7 +55,6 @@
   "scripts/node-tests.mjs",
   "scripts/publish-cargo-crates.mjs",
   "scripts/qualify-agent-host.sh",
-  "scripts/qualify-cloudflare.sh",
   "scripts/qualify-main-green-debts.mjs",
   "scripts/qualify-mcp-loom.mjs",
   "scripts/qualify-rustfmt.mjs",
