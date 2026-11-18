@@ -385,7 +385,7 @@ pub fn historical_profiles_for_package(
             all_features: bool,
             #[serde(default)]
             no_default_features: bool,
-            #[serde(default)]
+            #[serde(default, borrow)]
             features: Vec<&'a str>,
         }
         let policy = DocsRsFeatures::deserialize(policy).map_err(|error| {
