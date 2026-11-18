@@ -839,6 +839,7 @@ rust_test(
         "src/native_mount/projfs/probe_guard.rs",
         "src/native_mount/projfs/tests/enumeration.rs",
         "src/native_mount/shared/view_table.rs",
+        "src/native_mount/shared/view_table/implementation.rs",
         "src/native_mount/shared/views.rs",
         "src/native_sync.rs",
         "src/sync.rs",
@@ -2117,7 +2118,7 @@ rust_test(
     name = "native_view_table_cases",
     crate_root = "tests/native_view_table.rs",
     srcs = [
-        "src/native_mount/shared/view_table.rs",
+        "src/native_mount/shared/view_table/implementation.rs",
         "src/native_sync.rs",
         "tests/native_view_table.rs",
         "tests/native_view_table/native_mount.rs",
