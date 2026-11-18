@@ -16,10 +16,7 @@ impl DeleteWorkerRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         crate::addressing::validate_dns_label(self.worker_name.as_str().as_bytes())
             .map_err(|_| DomainError::InvalidBinding)?;
-        if self.idempotency_key.is_empty() || self.idempotency_key.len() > 256 {
-            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
-        }
-        Ok(())
+        crate::contract::validate_idempotency_key(&self.idempotency_key).map_err(Into::into)
     }
     /// Select the exact deployment under the authenticated account.
     pub fn new(worker_name: ActorNamespace, idempotency_key: String) -> Result<Self, DomainError> {
@@ -49,6 +46,11 @@ mod tests {
             DeleteWorkerRequest::new(ActorNamespace::new("worker".into())?, "delete".repeat(32))?;
         let cost = acyclic_test_support::measure(|| request.validate_from_proto().unwrap());
         assert_eq!(cost.count_total, 0);
+        for (length, admitted) in [(0, false), (1, true), (256, true), (257, false)] {
+            let request =
+                DeleteWorkerRequest::new(ActorNamespace::new("worker".into())?, "k".repeat(length));
+            assert_eq!(request.is_ok(), admitted);
+        }
         Ok(())
     }
 }

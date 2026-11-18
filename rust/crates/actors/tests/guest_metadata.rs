@@ -147,7 +147,7 @@ fn rejected_metadata_never_enters_context() -> Result<(), Box<dyn std::error::Er
         "i".into(),
         1,
     )?
-    .with_capability(CallerCapability::new(1, "cap".into())?)?;
+    .with_capability(CallerCapability::new(1, "cap".into())?);
     assert_eq!(
         (
             caller.account_id(),
@@ -196,7 +196,7 @@ fn host_metadata_round_trips_without_field_size_policy() -> Result<(), Box<dyn s
         "actor".into(),
         1,
     )?
-    .with_capability(capability)?;
+    .with_capability(capability);
     assert_eq!(
         serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?,
         caller

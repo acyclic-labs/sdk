@@ -86,6 +86,30 @@ fn managed_usage_rejects_missing_lineage_authority() {
 #[test]
 fn local_response_credential_refusal_keeps_recovery_identity() {
     let key = IdempotencyKey::from_digest([1; 32]);
+    let request = crate::grpc::codec::request_credential_status(
+        "credential source unavailable".into(),
+        Some("credential callback failed".into()),
+    );
+    let expected = "credential source unavailable: credential callback failed";
+    assert_eq!(request.message(), expected);
+    assert_eq!(
+        std::error::Error::source(&request)
+            .map(ToString::to_string)
+            .as_deref(),
+        Some(expected)
+    );
+    assert_eq!(
+        mutation_error(key, request.clone()).classification(),
+        &ProviderError::Unavailable
+    );
+    assert_eq!(
+        guest_error(
+            ProviderError::CommandIndeterminate(MachineId::from_digest([2; 32])),
+            request
+        )
+        .classification(),
+        &ProviderError::Unavailable
+    );
     let mut response = Status::permission_denied("credential expired");
     response.set_source(std::sync::Arc::new(
         acyclic_auth::credential::ResponseCredentialError::from_browser(),

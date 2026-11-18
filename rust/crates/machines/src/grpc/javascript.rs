@@ -235,6 +235,12 @@ fn function(owner: &JsValue, name: &str) -> Result<Function, Status> {
         .dyn_into::<Function>()
         .map_err(status)
 }
+fn error_text(error: &JsValue, field: &str) -> Option<String> {
+    Reflect::get(error, &JsValue::from_str(field))
+        .ok()?
+        .as_string()
+}
+
 fn status(error: JsValue) -> Status {
     let code = Reflect::get(&error, &JsValue::from_str("code"))
         .ok()
@@ -243,18 +249,25 @@ fn status(error: JsValue) -> Status {
         .map_or(tonic::Code::Unknown, |code| {
             tonic::Code::from_i32(code as i32)
         });
-    let message = Reflect::get(&error, &JsValue::from_str("rawMessage"))
-        .ok()
-        .and_then(|message| message.as_string())
-        .or_else(|| {
-            Reflect::get(&error, &JsValue::from_str("message"))
-                .ok()
-                .and_then(|message| message.as_string())
-        })
+    let message = error_text(&error, "rawMessage")
+        .or_else(|| error_text(&error, "message"))
         .unwrap_or_else(|| {
             "public Machines transport failed; recovery: retain the original operation identity"
                 .into()
         });
+    if Reflect::get(&error, &JsValue::from_str("requestCredentialAdmission"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        let cause = Reflect::get(&error, &JsValue::from_str("cause")).ok();
+        return super::codec::request_credential_status(
+            message,
+            cause
+                .as_ref()
+                .and_then(|cause| cause.as_string().or_else(|| error_text(cause, "message"))),
+        );
+    }
     let mut status = Status::new(code, message);
     if Reflect::get(&error, &JsValue::from_str("responseCredentialAdmission"))
         .ok()

@@ -613,7 +613,7 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
         WorkerLimits::new(2, 3, 4)?,
         "deploy".into(),
     )?;
-    let raw: wire::DeploymentRequest = worker.into();
+    let raw: wire::DeploymentRequest = worker.clone().into();
     assert!(crate::client::validate_operation("DeployWorker", &raw).is_ok());
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -636,6 +636,31 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
     let mut namespace = raw;
     namespace.worker_limits = None;
     namespace.limits = Some(ActorLimits::new(1, 2, 3)?.into());
+    let actor = DeploymentRequest::try_from(namespace.clone())?;
+    for (jurisdiction, actor_allowed, worker_allowed) in [
+        ("", true, true),
+        ("eu", true, false),
+        ("us", true, false),
+        ("fedramp", true, false),
+        ("invalid", false, false),
+    ] {
+        for (request, allowed) in [(&actor, actor_allowed), (&worker, worker_allowed)] {
+            assert_eq!(
+                request
+                    .clone()
+                    .with_jurisdiction(jurisdiction.into())
+                    .is_ok(),
+                allowed
+            );
+            assert_eq!(
+                request
+                    .clone()
+                    .with_placement(b"account".to_vec(), jurisdiction.into(), 0)
+                    .is_ok(),
+                allowed
+            );
+        }
+    }
     assert!(crate::client::validate_operation("DeployNamespace", &namespace).is_ok());
     assert!(crate::client::validate_operation("DeployWorker", &namespace).is_err());
     for name in ["worker", "worker-1", "a"] {

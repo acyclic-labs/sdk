@@ -1,6 +1,15 @@
 load(":node_test.bzl", "node_test")
 load("//:typescript_consumer.bzl", "typescript_consumer")
 
+node_test(
+    name = "machines_http2_test",
+    srcs = ["//:wasm_machines_node_modules"],
+    links = {"//:scripts/fixture-server.mjs": "wasm_machines_node_modules/scripts/fixture-server.mjs"},
+    entry = "wasm_machines_node_modules/node_modules/@acyclic-labs/machines/test/grpc.test.mjs",
+    name_pattern = "RPC bridge distinguishes server refusal from expired response custody",
+    preserve_symlinks = True,
+)
+
 typescript_consumer(
     name = "package_entrypoints_types",
     packages = {

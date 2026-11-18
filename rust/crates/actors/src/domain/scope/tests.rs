@@ -5,6 +5,10 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::addressing::DEFAULT_ACTOR_NAMESPACE;
 
+    let actor = ActorId::new("original".into())?;
+    assert!(RemoveSubscriptionRequest::new(actor.clone(), String::new(), "remove".into()).is_err());
+    assert!(ResumeSubscriptionRequest::new(actor, "events".into(), String::new()).is_err());
+
     for account in [vec![0xff, 0, 1], vec![0xfe; 65_536]] {
         let address = ActorReference::new(&account, b"Class_One", b"Bound_ID")?;
         let subscription = wire::SubscriptionSpec {
@@ -30,15 +34,12 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
 
                 #[cfg(not(target_arch = "wasm32"))]
                 let bound = {
-                    let mut bound = None;
-                    let allocations = acyclic_test_support::measure(|| {
-                        bound = Some(request.with_reference(&address));
-                    });
+                    let allocations = acyclic_test_support::measure(|| request.with_reference(&address));
                     assert_eq!(allocations.count_total, 3);
-                    bound.ok_or("binding did not complete")??
+                    allocations.output
                 };
                 #[cfg(target_arch = "wasm32")]
-                let bound = request.with_reference(&address)?;
+                let bound = request.with_reference(&address);
                 assert_eq!(bound.reference(b"wrong-account")?, address);
                 assert_eq!(bound.namespace(), "Class_One");
                 let mut expected = raw;
@@ -65,14 +66,25 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
         check!(InvokeActorRequest, method: "POST".into(), url: "/call".into(), body: vec![0, 0xff]);
         check!(ActorObservation, code_sha256: vec![1; 32], state: 1);
 
-        let fork = ForkActorRequest::try_from(wire::ForkActorRequest {
+        let raw = wire::ForkActorRequest {
             actor_id: "parent".into(),
             child_actor_id: "child".into(),
             namespace: Some("Class_One".into()),
             account_id: account,
             idempotency_key: "fork".into(),
             ..Default::default()
-        })?;
+        };
+        let mut invalid_child = raw.clone();
+        invalid_child.child_actor_id = "invalid/child".into();
+        assert!(crate::contract::validate_fork(&invalid_child).is_err());
+        let mut same_actor = raw.clone();
+        same_actor.child_actor_id.clone_from(&raw.actor_id);
+        assert_eq!(
+            crate::contract::validate_fork(&same_actor),
+            Err(crate::ContractError::InvalidArgument)
+        );
+        assert!(ForkActorRequest::try_from(same_actor).is_err());
+        let fork = ForkActorRequest::try_from(raw)?;
         let parent = fork.reference(b"wrong-account")?;
         let child = fork.child_reference(b"wrong-account")?;
         assert_eq!(parent.account(), child.account());
@@ -85,12 +97,9 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
         {
             let name = address.namespace().as_str().to_owned();
             let original = name.as_ptr();
-            let mut admitted = None;
-            let allocations = acyclic_test_support::measure(|| {
-                admitted = Some(ActorNamespace::new(name));
-            });
+            let allocations = acyclic_test_support::measure(|| ActorNamespace::new(name));
             assert_eq!(allocations.count_total, 0);
-            let namespace = admitted.unwrap()?;
+            let namespace = allocations.output?;
             assert_eq!(namespace.as_str().as_ptr(), original);
         }
     }

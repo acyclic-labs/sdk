@@ -328,17 +328,7 @@ pub struct SubscriptionStart {
 fn parse_subscription_start(
     value: Option<subscription_start::StartProto>,
 ) -> Result<subscription_start::Start, DomainError> {
-    match value {
-        Some(subscription_start::StartProto::Cursor(cursor)) => {
-            Ok(subscription_start::Start::Cursor(cursor))
-        }
-        Some(subscription_start::StartProto::CurrentHead(true)) => Ok(
-            subscription_start::Start::CurrentHead(subscription_start::CurrentHeadMarker::new()),
-        ),
-        Some(subscription_start::StartProto::CurrentHead(false)) | None => {
-            Err(DomainError::InvalidSubscription)
-        }
-    }
+    value.ok_or(DomainError::InvalidSubscription)?.try_into()
 }
 
 pub mod subscription_start {

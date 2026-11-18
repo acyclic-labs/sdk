@@ -131,11 +131,10 @@ impl DeploymentRequest {
     }
     /// Set a namespace restriction while retaining the authenticated account.
     pub fn with_jurisdiction(mut self, jurisdiction: String) -> Result<Self, DomainError> {
-        if !matches!(jurisdiction.as_str(), "" | "eu" | "us" | "fedramp") {
+        if !crate::contract::valid_jurisdiction(&jurisdiction, self.worker_limits.is_some()) {
             return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
         }
         self.jurisdiction = jurisdiction;
-        self.validate_from_proto()?;
         Ok(self)
     }
     /// Set the account, jurisdiction and compare-and-replace deployment revision.
@@ -146,9 +145,6 @@ impl DeploymentRequest {
         expected_revision: u64,
     ) -> Result<Self, DomainError> {
         crate::addressing::validate_account(&account)?;
-        if !matches!(jurisdiction.as_str(), "" | "eu" | "us" | "fedramp") {
-            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
-        }
         self.account_id = account;
         self.jurisdiction = jurisdiction;
         self.expected_revision = expected_revision;
@@ -382,20 +378,18 @@ impl AddSubscriptionRequest {
         subscription: SubscriptionSpec,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        let wire = wire::AddSubscriptionRequest {
+        crate::contract::validate_idempotency_key(&idempotency_key)?;
+        Ok(Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
-            subscription: Some(subscription.into()),
+            actor_id,
+            subscription,
             idempotency_key,
-        };
-        Self::try_from(wire)
+        })
     }
 
-    /// Re-runs the canonical request validator without recursively invoking
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::AddSubscriptionRequest = self.clone().into();
-        crate::validate_add_subscription(&wire).map_err(DomainError::Contract)
+        crate::contract::validate_idempotency_key(&self.idempotency_key).map_err(Into::into)
     }
 
     /// Returns the Actor identity.
@@ -412,12 +406,14 @@ impl AddSubscriptionRequest {
     }
 }
 
-/// Remove subscription request after canonical scope, identifier and retry admission.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = RemoveSubscriptionRequest::validate_from_proto)]
+macro_rules! subscription_control {
+    ($request:ident, $export:literal, $doc:literal) => {
+#[doc = $doc]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = $request::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
+#[ts(export_to = $export)]
 #[ts(rename_all = "camelCase")]
-pub struct RemoveSubscriptionRequest {
+pub struct $request {
     #[wire(tag = 1, string)]
     pub(super) actor_id: ActorId,
     #[wire(tag = 2)]
@@ -433,23 +429,28 @@ pub struct RemoveSubscriptionRequest {
     pub(super) account_id: Vec<u8>,
 }
 
-impl RemoveSubscriptionRequest {
-    /// Creates and validates a removal through the canonical request validator.
+impl $request {
+    /// Creates a subscription control request through canonical admission.
     pub fn new(
         actor_id: ActorId,
         subscription_id: String,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        Self::try_from(wire::RemoveSubscriptionRequest {
+        crate::contract::validate_subscription_identity(&subscription_id, &idempotency_key)?;
+        Ok(Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
+            actor_id,
             subscription_id,
             idempotency_key,
         })
     }
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        crate::validate_remove_subscription(&self.clone().into()).map_err(DomainError::Contract)
+        crate::contract::validate_subscription_identity(
+            &self.subscription_id,
+            &self.idempotency_key,
+        )
+        .map_err(Into::into)
     }
     /// Returns the Actor identity.
     pub fn actor_id(&self) -> &ActorId {
@@ -464,59 +465,19 @@ impl RemoveSubscriptionRequest {
         &self.idempotency_key
     }
 }
-
-/// Resume subscription request after canonical scope, identifier and retry admission.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = ResumeSubscriptionRequest::validate_from_proto)]
-#[derive(Clone, Debug, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
-#[ts(rename_all = "camelCase")]
-pub struct ResumeSubscriptionRequest {
-    #[wire(tag = 1, string)]
-    pub(super) actor_id: ActorId,
-    #[wire(tag = 2)]
-    subscription_id: String,
-    #[wire(tag = 3)]
-    idempotency_key: String,
-
-    #[wire(tag = 90, string)]
-    #[ts(optional)]
-    pub(super) namespace: Option<ActorNamespace>,
-    #[wire(tag = 91, bytes)]
-    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
-    pub(super) account_id: Vec<u8>,
+    };
 }
 
-impl ResumeSubscriptionRequest {
-    /// Creates and validates resumption through the canonical request validator.
-    pub fn new(
-        actor_id: ActorId,
-        subscription_id: String,
-        idempotency_key: String,
-    ) -> Result<Self, DomainError> {
-        Self::try_from(wire::ResumeSubscriptionRequest {
-            namespace: None,
-            account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
-            subscription_id,
-            idempotency_key,
-        })
-    }
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        crate::validate_resume_subscription(&self.clone().into()).map_err(DomainError::Contract)
-    }
-    /// Returns the Actor identity.
-    pub fn actor_id(&self) -> &ActorId {
-        &self.actor_id
-    }
-    /// Returns the subscription identifier.
-    pub fn subscription_id(&self) -> &str {
-        &self.subscription_id
-    }
-    /// Returns the idempotency key.
-    pub fn idempotency_key(&self) -> &str {
-        &self.idempotency_key
-    }
-}
+subscription_control!(
+    RemoveSubscriptionRequest,
+    "actors/RemoveSubscriptionRequest.ts",
+    "Remove an admitted Actor subscription."
+);
+subscription_control!(
+    ResumeSubscriptionRequest,
+    "actors/ResumeSubscriptionRequest.ts",
+    "Resume an admitted Actor subscription."
+);
 
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
@@ -590,19 +551,28 @@ impl ForkActorRequest {
         subscriptions: Vec<SubscriptionSpec>,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        Self::try_from(wire::ForkActorRequest {
+        let request = Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
-            child_actor_id: child_actor_id.as_str().to_owned(),
-            subscriptions: subscriptions.into_iter().map(Into::into).collect(),
+            actor_id,
+            child_actor_id,
+            subscriptions,
             idempotency_key,
-        })
+        };
+        request.validate_from_proto()?;
+        Ok(request)
     }
 
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::ForkActorRequest = self.clone().into();
-        crate::validate_fork(&wire).map_err(DomainError::Contract)
+        crate::contract::validate_fork_identity(
+            self.actor_id.as_str(),
+            self.child_actor_id.as_str(),
+            &self.idempotency_key,
+            self.subscriptions
+                .iter()
+                .map(SubscriptionSpec::subscription_id),
+        )
+        .map_err(Into::into)
     }
 
     /// Returns the parent Actor identity.
@@ -645,18 +615,17 @@ pub struct DeleteAllRequest {
 impl DeleteAllRequest {
     /// Builds and validates a deletion request through the canonical admission path.
     pub fn new(actor_id: ActorId, idempotency_key: String) -> Result<Self, DomainError> {
-        Self::try_from(wire::DeleteAllRequest {
+        crate::contract::validate_idempotency_key(&idempotency_key)?;
+        Ok(Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
+            actor_id,
             idempotency_key,
         })
     }
 
-    /// Re-runs the canonical request validator without recursively invoking
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::DeleteAllRequest = self.clone().into();
-        crate::validate_delete(&wire).map_err(DomainError::Contract)
+        crate::contract::validate_idempotency_key(&self.idempotency_key).map_err(Into::into)
     }
 
     /// Returns the Actor identity.

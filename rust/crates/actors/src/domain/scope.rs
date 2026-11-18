@@ -38,11 +38,11 @@ macro_rules! actor_scope {
                 reference(&self.actor_id, self.namespace.as_ref(), &self.account_id, account)
             }
             /// Bind an operation to a validated address, without adding authority.
-            pub fn with_reference(mut self, reference: &ActorReference) -> Result<Self, DomainError> {
+            pub fn with_reference(mut self, reference: &ActorReference) -> Self {
                 self.actor_id = reference.into();
                 self.namespace = Some(reference.namespace().into());
                 self.account_id = reference.account().as_bytes().to_vec();
-                Ok(self)
+                self
             }
         }
     )*};

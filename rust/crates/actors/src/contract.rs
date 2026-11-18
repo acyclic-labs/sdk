@@ -2,8 +2,14 @@
 use crate::wire;
 use std::collections::HashSet;
 
-fn valid_idempotency_key(value: &str) -> bool {
+pub(super) fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
+}
+
+pub(super) fn validate_idempotency_key(value: &str) -> Result<(), ContractError> {
+    valid_idempotency_key(value)
+        .then_some(())
+        .ok_or(ContractError::InvalidArgument)
 }
 
 fn valid_actor_scope(namespace: Option<&str>, id: &str) -> bool {
@@ -61,6 +67,14 @@ fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
     })
 }
 
+pub(super) fn valid_jurisdiction(jurisdiction: &str, worker: bool) -> bool {
+    if worker {
+        jurisdiction.is_empty()
+    } else {
+        matches!(jurisdiction, "" | "eu" | "us" | "fedramp")
+    }
+}
+
 /// Validates an explicit namespace or named script deployment before admission.
 pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), ContractError> {
     if !request.publication.is_empty() {
@@ -77,8 +91,8 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
             return Err(ContractError::InvalidArgument);
         }
     }
-    if !matches!(request.jurisdiction.as_str(), "" | "eu" | "us" | "fedramp")
-        || !domain::valid_code_sha256(&request.code_sha256)
+    if !valid_jurisdiction(&request.jurisdiction, request.worker_limits.is_some())
+        || domain::CodeSha256::new(&request.code_sha256).is_err()
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
@@ -90,7 +104,6 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
                 crate::addressing::validate_dns_label(request.name.as_bytes()).is_ok()
                     && domain::WorkerLimits::try_from(limits.clone()).is_ok()
                     && request.subscriptions.is_empty()
-                    && request.jurisdiction.is_empty()
             }
             _ => false,
         }
@@ -123,7 +136,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
 /// Validates a full compare-and-replace Actor configuration mutation.
 pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), ContractError> {
     if crate::addressing::NamespaceId::validate_deployment(request.namespace_id.as_bytes()).is_err()
-        || !domain::valid_code_sha256(&request.code_sha256)
+        || domain::CodeSha256::new(&request.code_sha256).is_err()
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.namespace_id)
         || !request
@@ -177,12 +190,10 @@ fn validate_configuration(
 
 /// Validates a Actor storage deletion, leaving the address reusable. Identity and idempotency rules match
 pub fn validate_delete(request: &wire::DeleteAllRequest) -> Result<(), ContractError> {
-    if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id)
-        || !valid_idempotency_key(&request.idempotency_key)
-    {
+    if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id) {
         return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_idempotency_key(&request.idempotency_key)
 }
 
 /// Validates a newly authored subscription; its cursor may not later be rewound.
@@ -228,13 +239,20 @@ fn validate_subscription_control(
     subscription: &str,
     identity: &str,
 ) -> Result<(), ContractError> {
-    if !valid_actor_scope(namespace, actor)
-        || !valid_idempotency_key(identity)
-        || subscription.is_empty()
-    {
+    if !valid_actor_scope(namespace, actor) {
         return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_subscription_identity(subscription, identity)
+}
+
+pub(super) fn validate_subscription_identity(
+    subscription: &str,
+    key: &str,
+) -> Result<(), ContractError> {
+    if subscription.is_empty() {
+        return Err(ContractError::InvalidArgument);
+    }
+    validate_idempotency_key(key)
 }
 
 /// Validates a fork: both Actors share one account and namespace, the child
@@ -242,22 +260,37 @@ fn validate_subscription_control(
 pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractError> {
     let namespace = request.namespace.as_deref();
     if !valid_actor_scope(namespace, &request.actor_id)
-        || !valid_actor_scope(namespace, &request.child_actor_id)
-        || request.actor_id == request.child_actor_id
-        || !valid_idempotency_key(&request.idempotency_key)
+        || crate::addressing::validate_actor_id(request.child_actor_id.as_bytes()).is_err()
         || !request.subscriptions.iter().all(subscription)
     {
         return Err(ContractError::InvalidArgument);
     }
-    let mut seen = HashSet::new();
-    if !request
-        .subscriptions
-        .iter()
-        .all(|value| seen.insert(value.subscription_id.as_str()))
-    {
-        return Err(ContractError::DuplicateName);
+    validate_fork_identity(
+        &request.actor_id,
+        &request.child_actor_id,
+        &request.idempotency_key,
+        request
+            .subscriptions
+            .iter()
+            .map(|value| value.subscription_id.as_str()),
+    )
+}
+
+pub(super) fn validate_fork_identity<'a>(
+    parent: &str,
+    child: &str,
+    key: &str,
+    mut subscriptions: impl Iterator<Item = &'a str>,
+) -> Result<(), ContractError> {
+    if parent == child {
+        return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_idempotency_key(key)?;
+    let mut seen = HashSet::new();
+    subscriptions
+        .all(|id| seen.insert(id))
+        .then_some(())
+        .ok_or(ContractError::DuplicateName)
 }
 
 mod generated {
