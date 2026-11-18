@@ -1,8 +1,8 @@
 --- a/rust/crates/harness-local/src/local/workspace/projection.rs
 +++ b/rust/crates/harness-local/src/local/workspace/projection.rs
-@@ -182,7 +182,7 @@ impl MountedVolume {
+@@ -212,7 +212,7 @@ impl MountedVolume {
+             let mut native = Native {
                  mount,
-                 discard: false,
                  binding: None,
 -                _binding_owner: self._binding.clone(),
 +                _binding_owner: None,

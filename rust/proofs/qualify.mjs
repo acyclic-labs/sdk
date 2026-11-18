@@ -330,8 +330,10 @@ const claims = {
   "task-binding-physical": [
     "rust/crates/harness-local/src/local/workspace/projection.rs", "acyclic-harness-local",
     "local::workspace::task_views::tests::native_guard_retains_the_original_binding_until_physical_retirement",
-    "physical native guard lost the original binding owner", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
+    "physical native guard lost the original binding owner", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-local:acyclic_harness_local_test_cases", "--",
+      "local::workspace::task_views::tests::native_guard_retains_the_original_binding_until_physical_retirement", "--exact", "--nocapture"],
+      oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_physical_owner.patch", label: "physical-owner", diagnostic: "physical native guard lost the original binding owner" },
     ] },
   ],
