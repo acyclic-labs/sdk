@@ -37,7 +37,10 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
                 .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
                 .transpose()
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let before = work.as_ref().map(|work| work.live_allocation_bytes());
+            let before = work
+                .as_ref()
+                .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes)
+                .transpose()?;
             let io = match &work {
                 Some(work) => PreparationIo::from_native_work(work)?,
                 None => PreparationIo::from_budget(budget, &cancellation)?,
@@ -49,7 +52,7 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
             drop(hold);
             drop(io);
             if let Some(work) = work {
-                assert_eq!(Some(work.live_allocation_bytes()), before);
+                assert_eq!(Some(work.live_allocation_bytes()?), before);
             }
         }
     }
@@ -75,7 +78,10 @@ fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Re
                 .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
                 .transpose()
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let before = work.as_ref().map(|work| work.live_allocation_bytes());
+            let before = work
+                .as_ref()
+                .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes)
+                .transpose()?;
             let io = match &work {
                 Some(work) => PreparationIo::from_native_work(work)?,
                 None => PreparationIo::from_budget(budget, &cancellation)?,
@@ -83,7 +89,7 @@ fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Re
             assert!(decode_json::<Value>(bytes, Some(&io)).is_err());
             drop(io);
             if let Some(work) = work {
-                assert_eq!(Some(work.live_allocation_bytes()), before);
+                assert_eq!(Some(work.live_allocation_bytes()?), before);
             }
         }
     }
