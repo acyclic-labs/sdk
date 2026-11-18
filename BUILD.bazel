@@ -386,6 +386,8 @@ typescript_packages(
         "//rust/crates/inference:inference-typescript-defaults_example": "//rust/crates/inference:inference-typescript-defaults_example",
         "//rust/crates/machines-limits:machines-managed-oci-contract": "//rust/crates/machines-limits:machines-managed-oci-contract",
         "//rust/crates/machines:machines-authorization_example": "//rust/crates/machines:machines-authorization_example",
+        "//rust/crates/objects:objects-authorization_example": "//rust/crates/objects:objects-authorization_example",
+        "//rust/crates/objects:objects-rpc-inventory": "//rust/crates/objects:objects-rpc-inventory",
         "//rust/crates/proto-codegen:sdk-proto-codegen": "//rust/crates/proto-codegen:sdk-proto-codegen",
     },
 )
