@@ -4,7 +4,6 @@
   ".github/workflows/publish-npm.yml",
   "MODULE.bazel",
   "fuzz/guest-negative-control.mjs",
-  "plugin/tests/hosts/prepare-native.mjs",
   "rust/codec-fuzz/actor-negative-control.py",
   "rust/codec-fuzz/capture-actors-interruption.mjs",
   "rust/codec-fuzz/capture-actors.mjs",
