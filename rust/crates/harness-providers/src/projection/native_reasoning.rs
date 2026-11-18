@@ -12,7 +12,7 @@ pub(crate) fn chat(bytes: &[u8]) -> Option<&RawValue> {
         reasoning_content: &'a RawValue,
     }
     let raw: &RawValue = serde_json::from_slice(bytes).ok()?;
-    if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
+    if raw.get().as_bytes() != bytes || !acyclic_model_render::strict::valid(raw.get()) {
         return None;
     }
     let chat: Chat<'_> = serde_json::from_str(raw.get()).ok()?;
@@ -42,7 +42,7 @@ struct Native<'a> {
 
 pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
     let raw: &RawValue = serde_json::from_slice(bytes).ok()?;
-    if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
+    if raw.get().as_bytes() != bytes || !acyclic_model_render::strict::valid(raw.get()) {
         return None;
     }
     let item: Native<'_> = serde_json::from_slice(bytes).ok()?;

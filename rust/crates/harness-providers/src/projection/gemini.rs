@@ -32,7 +32,7 @@ pub(crate) fn part(
 ) -> acyclic_harness_core::Result<(&RawValue, crate::protocol::gemini::NativePart<'_>)> {
     let raw: &RawValue = serde_json::from_slice(bytes)
         .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
-    if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
+    if raw.get().as_bytes() != bytes || !acyclic_model_render::strict::valid(raw.get()) {
         return Err(crate::invalid("invalid retained Gemini part"));
     }
     Ok((raw, crate::protocol::gemini::native_part(raw)?))

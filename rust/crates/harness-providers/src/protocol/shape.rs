@@ -21,7 +21,9 @@ impl Constraint {
                 .is_some_and(|text| !nonempty || !text.is_empty()),
             Self::Array => value.is_array(),
             Self::Name(rule) => value.as_str().is_some_and(|text| rule.accepts(text)),
-            Self::ObjectJson => value.as_str().is_some_and(super::strict::object),
+            Self::ObjectJson => value
+                .as_str()
+                .is_some_and(acyclic_model_render::strict::object),
         }
     }
     /// The enclosing payload must already have passed `strict::valid`.

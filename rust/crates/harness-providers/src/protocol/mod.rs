@@ -3,7 +3,6 @@ pub(crate) mod gemini;
 pub(crate) mod name;
 pub(crate) mod sequence;
 pub(crate) mod shape;
-pub(crate) mod strict;
 
 /// Optional wire values use null and omission interchangeably. Apply before
 /// alias selection or retained-state admission, not after allocating a block.
