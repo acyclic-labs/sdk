@@ -123,3 +123,39 @@ methods! {
     /// Inspect a retained request's selected resources.
     InspectIdempotency => rpc::StreamRpc::InspectIdempotency.authorization(), Exact;
 }
+
+#[cfg(test)]
+mod rpc_admission_tests {
+    use super::{Action, StreamsAction, rpc::StreamRpc};
+
+    #[test]
+    fn every_stream_rpc_resolves_to_its_declared_actions() {
+        for &method in StreamRpc::ALL {
+            let row = method.authorization();
+            let actions: Vec<_> = row.actions().collect();
+            assert_eq!(StreamRpc::from_route(row.route), Some(method));
+            assert!(
+                !actions.is_empty()
+                    && actions
+                        .iter()
+                        .all(|action| matches!(action, Action::Streams(_))),
+                "{method:?}: {actions:?}"
+            );
+            match method {
+                StreamRpc::Tail => assert_eq!(actions, [StreamsAction::Tail.into()]),
+                StreamRpc::ReadCommit => assert_eq!(actions, [StreamsAction::ReadCommit.into()]),
+                StreamRpc::InspectIdempotency => {
+                    assert_eq!(actions, [StreamsAction::InspectIdempotency.into()]);
+                }
+                StreamRpc::Heads | StreamRpc::Fork | StreamRpc::Commit => {
+                    assert!(actions.len() > 1, "{method:?}: {actions:?}");
+                }
+                _ => assert_eq!(actions.len(), 1, "{method:?}: {actions:?}"),
+            }
+        }
+        assert_eq!(
+            StreamRpc::from_route("/acyclic.stream.v1.StreamService/Unmapped"),
+            None
+        );
+    }
+}
