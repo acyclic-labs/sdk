@@ -3,12 +3,11 @@ use crate::conversation::{
     Attachment, ConversationMessage, FileDescriptor, FileRef, ReferencedAttachments, VolumeClass,
     VolumeOwner, VolumeRef,
 };
-use crate::{AgentId, OperationId, resources::ProviderRef};
-use std::{
-    collections::BTreeMap,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-use uuid::Uuid;
+use crate::{AgentId, resources::ProviderRef};
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "../../tests/projection_fixture.rs"]
+mod fixture;
+use fixture::{file, message};
 
 #[derive(Default)]
 struct Resolver {
@@ -30,23 +29,6 @@ impl ContentResidencyVerifier for Resolver {
             ))
         })
     }
-}
-
-fn file(agent: AgentId, path: &str, media_type: &str, bytes: &[u8]) -> Result<FileRef> {
-    FileRef::new(
-        VolumeRef::new(
-            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-            "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?,
-        path.into(),
-        "v1".into(),
-        FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
-        "data".into(),
-        &mut None,
-    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -100,164 +82,6 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
     }
     assert_eq!(work.live_allocation_bytes(), before);
     Ok(())
-}
-
-fn message(
-    sequence: u64,
-    kind: MessageKind,
-    content: FileRef,
-    reply_to: Option<Uuid>,
-) -> ConversationMessage {
-    ConversationMessage {
-        id: Uuid::new_v4(),
-        sequence,
-        kind,
-        content,
-        attachments: ReferencedAttachments::Inline { items: Vec::new() },
-        reply_to,
-        tool_call_id: None,
-        extensions: BTreeMap::new(),
-    }
-}
-
-fn append(
-    conversation: &mut ConversationState,
-    content: &FileRef,
-    kind: MessageKind,
-    reply: Option<Uuid>,
-) -> Result<Uuid> {
-    let message = message(
-        conversation.logical_revision() + 1,
-        kind,
-        content.clone(),
-        reply,
-    );
-    let id = message.id;
-    conversation.append(message, &mut None)?;
-    Ok(id)
-}
-
-#[test]
-fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() -> Result<()> {
-    let agent = AgentId::new();
-    let mut conversation = ConversationState::default();
-    conversation.bind(agent)?;
-    let content = file(agent, "message.txt", "text/plain", b"data")?;
-    for _ in 0..5_000 {
-        let user = append(&mut conversation, &content, MessageKind::User, None)?;
-        append(
-            &mut conversation,
-            &content,
-            MessageKind::Assistant,
-            Some(user),
-        )?;
-    }
-    let current = message(10_001, MessageKind::User, content, None);
-    let limits = Limits {
-        context_messages: std::num::NonZeroUsize::new(3),
-        ..Limits::default()
-    };
-    assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
-    let payload = file(agent, "source.json", "application/json", b"data")?;
-    let checkpoint = crate::context::CanonicalContextCheckpoint {
-        operation_id: OperationId::new(),
-        selection: ModelContextSelection {
-            conversation_revision: 9_998,
-            message_ids: vec![
-                conversation.messages[9_996].id,
-                conversation.messages[9_997].id,
-            ],
-            checkpoint: Some(file(agent, "previous.json", "application/json", b"data")?),
-        },
-        source: payload.clone(),
-        retained: payload.clone(),
-        compaction: payload,
-    };
-    let bytes = crate::contract::canonical_json_bytes(&checkpoint)?;
-    let pinned = file(agent, "checkpoint.json", "application/json", &bytes)?;
-    let selected = select_turn_delta(
-        &conversation,
-        &current,
-        true,
-        Some((&checkpoint, pinned.clone())),
-        limits,
-    )?;
-    assert_eq!(
-        selected.message_ids,
-        vec![
-            conversation.messages[9_998].id,
-            conversation.messages[9_999].id,
-            current.id
-        ]
-    );
-    assert_eq!(selected.checkpoint, Some(pinned.clone()));
-    assert_eq!(selected.conversation_revision, 10_001);
-    assert!(
-        select_turn_delta(
-            &conversation,
-            &current,
-            true,
-            Some((&checkpoint, pinned.clone())),
-            Limits {
-                context_messages: std::num::NonZeroUsize::new(2),
-                ..limits
-            }
-        )
-        .is_err()
-    );
-    let mut changed = checkpoint.clone();
-    changed.operation_id = OperationId::new();
-    assert!(
-        select_turn_delta(
-            &conversation,
-            &current,
-            true,
-            Some((&changed, pinned.clone())),
-            limits
-        )
-        .is_err()
-    );
-    conversation.append(current.clone(), &mut None)?;
-    assert_eq!(
-        select_turn_delta(
-            &conversation,
-            &current,
-            false,
-            Some((&checkpoint, pinned)),
-            limits
-        )?,
-        selected
-    );
-    Ok(())
-}
-
-#[test]
-fn dispatch_admission_checks_bounds_and_current_user() {
-    let mut selected = SelectedModelContext {
-        selection: ModelContextSelection {
-            checkpoint: None,
-            conversation_revision: 1,
-            message_ids: vec![Uuid::new_v4()],
-        },
-        messages: vec![ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Text("hello".into()),
-        }],
-    };
-    assert!(selected.validate_for_dispatch(Limits::default()).is_ok());
-    assert!(
-        selected
-            .validate_for_dispatch(Limits {
-                render_bytes: Some(4),
-                ..Limits::default()
-            })
-            .is_err()
-    );
-    selected.messages[0].role = ModelRole::Assistant;
-    assert!(selected.validate_for_dispatch(Limits::default()).is_err());
-    selected.messages[0].role = ModelRole::User;
-    selected.selection.message_ids.clear();
-    assert!(selected.validate_for_dispatch(Limits::default()).is_err());
 }
 
 #[tokio::test]

@@ -42,6 +42,10 @@ path = "tests/computed_ui_records.rs"
 name = "contract_error_cases"
 path = "tests/contract_error_cases.rs"
 
+[[test]]
+name = "projection_selection"
+path = "tests/projection_selection.rs"
+
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
