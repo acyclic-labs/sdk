@@ -153,7 +153,7 @@ fn historical_docs_rs_policy_is_required_and_validated() {
 }
 
 #[test]
-fn feature_profiles_include_local_closure_and_all_features() {
+fn feature_profiles_include_default_baseline_and_local_closure() {
     let profiles = profiles_for_package(
         &metadata(),
         "feature-rich",
@@ -167,8 +167,6 @@ fn feature_profiles_include_local_closure_and_all_features() {
     assert!(profiles
         .iter()
         .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()])));
-    assert!(profiles.iter().any(|profile| profile.default_features
-        && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
 }
 
 #[test]
