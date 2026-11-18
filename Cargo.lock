@@ -829,6 +829,7 @@ dependencies = [
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-conformance",
+ "acyclic-machines-local",
  "acyclic-machines-simulation",
  "acyclic-mcp",
  "acyclic-model-render",
@@ -952,6 +953,7 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-machines",
+ "acyclic-machines-local",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -1463,6 +1465,21 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "acyclic-machines-local"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-machines",
+ "acyclic-machines-conformance",
+ "acyclic-native-runtime",
+ "acyclic-stream",
+ "async-trait",
+ "futures",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

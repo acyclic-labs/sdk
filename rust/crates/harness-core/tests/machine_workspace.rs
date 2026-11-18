@@ -82,9 +82,9 @@ async fn workspace_fixture_for_mode(
         created_at_unix_ms: 1,
         changed_at_unix_ms: 1,
     };
-    let provider = acyclic_machines::local::provider(
+    let provider = acyclic_machines_local::provider(
         observation.clone(),
-        acyclic_machines::local::LocalOptions {
+        acyclic_machines_local::LocalOptions {
             cwd: std::env::current_dir()
                 .map_err(|_| Error::Storage("local shell test has no current directory".into()))?,
             environment: ["PATH", "PATHEXT", "SystemRoot"]

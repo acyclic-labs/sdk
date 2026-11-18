@@ -332,9 +332,9 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
         native.contract.platform =
             acyclic_machines::Platform::host(acyclic_machines::DeviceKind::Desktop)
                 .ok_or_else(|| Error::Unsupported("no native platform".into()))?;
-        let provider = acyclic_machines::local::provider(
+        let provider = acyclic_machines_local::provider(
             native.clone(),
-            acyclic_machines::local::LocalOptions {
+            acyclic_machines_local::LocalOptions {
                 cwd: directory.path().to_path_buf(),
                 environment: Default::default(),
                 process_custody: None,

@@ -79,9 +79,9 @@ impl TurnExecutors for NativeTurns {
                 created_at_unix_ms: 1,
                 changed_at_unix_ms: 1,
             };
-            let provider = acyclic_machines::local::provider(
+            let provider = acyclic_machines_local::provider(
                 observation.clone(),
-                acyclic_machines::local::LocalOptions {
+                acyclic_machines_local::LocalOptions {
                     cwd: directory.path().to_path_buf(),
                     environment: ["PATH", "PATHEXT", "SystemRoot"]
                         .into_iter()

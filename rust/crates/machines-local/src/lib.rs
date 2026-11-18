@@ -1,6 +1,7 @@
 //! Native execution over the public command and output contract. The local
 //! host retains workspace admission; no shell or output reader is inserted.
-use super::*;
+use acyclic_machines::*;
+use async_trait::async_trait;
 use acyclic_native_runtime::{CaptureHandler, CaptureStop, ProcessCaptureStream};
 use futures::Stream;
 use std::{

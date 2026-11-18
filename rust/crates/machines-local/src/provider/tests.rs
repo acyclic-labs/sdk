@@ -1,5 +1,5 @@
 use super::*;
-use crate::local::provider_tests::{enrollment, options};
+use crate::provider_tests::{enrollment, options};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
     StreamProviderExt as _,

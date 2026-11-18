@@ -143,6 +143,7 @@ hyper = { version = "1", default-features = false }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "process"] }
 
 [dev-dependencies]
+acyclic-machines-local = { version = "=0.2.0", path = "../machines-local" }
 acyclic-machines-conformance = { version = "=0.2.0", path = "../machines-conformance" }
 acyclic-machines-simulation = { version = "=0.2.0", path = "../machines-simulation", features = ["test-support"] }
 acyclic-harness-control = { version = "=0.2.0", path = "../harness-control", features = ["test-support"] }

@@ -577,7 +577,7 @@ async fn deadline_during_implicit_wake_never_strands_the_machine()
         gate: Arc<tokio::sync::Notify>,
     }
     #[async_trait]
-    impl crate::provider::admitted::NativeMachine for GatedWake {
+    impl acyclic_machines::admitted::NativeMachine for GatedWake {
         async fn exec(
             &self,
             _: ExecCommand,
@@ -591,7 +591,7 @@ async fn deadline_during_implicit_wake_never_strands_the_machine()
             &self,
             _: FileAccess,
             _: u32,
-            _: &crate::provider::deadline::GuestDeadline,
+            _: &acyclic_machines::deadline::GuestDeadline,
         ) -> Result<FileRead, ProviderError> {
             Err(ProviderError::Unsupported("no files".into()))
         }
@@ -600,7 +600,7 @@ async fn deadline_during_implicit_wake_never_strands_the_machine()
             _: FileAccess,
             _: Vec<u8>,
             _: bool,
-            _: &crate::provider::deadline::GuestDeadline,
+            _: &acyclic_machines::deadline::GuestDeadline,
         ) -> Result<FileWrite, ProviderError> {
             Err(ProviderError::Unsupported("no files".into()))
         }
@@ -616,7 +616,7 @@ async fn deadline_during_implicit_wake_never_strands_the_machine()
     let mut observation = enrollment(machine);
     observation.contract.suspension = SuspensionPolicy::AfterIdle(Duration::from_secs(3_600));
     let gate = Arc::new(tokio::sync::Notify::new());
-    let local = crate::provider::admitted::AdmittedMachine::open(
+    let local = acyclic_machines::admitted::AdmittedMachine::open(
         GatedWake { gate: gate.clone() },
         observation,
         Arc::new(MemoryStream::default()),

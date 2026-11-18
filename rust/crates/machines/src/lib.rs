@@ -89,6 +89,9 @@ pub use contract::*;
 mod provider;
 #[doc(hidden)]
 pub use provider::events;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub use provider::{admitted, deadline};
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use provider::journal_codec::codec_fuzz;
 #[cfg(feature = "test-support")]
@@ -103,9 +106,6 @@ pub mod http_codec;
 /// Original-operation result publication and credited immutable reads.
 pub mod results;
 
-/// Native process execution over the same public output stream.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod local;
 
 pub mod grpc;
 mod obs;

@@ -1,6 +1,6 @@
 //! Host process and file primitives for one source-admitted workspace.
 use super::*;
-use crate::provider::admitted::{AdmittedMachine, NativeMachine};
+use acyclic_machines::admitted::{AdmittedMachine, NativeMachine};
 use acyclic_native_runtime::{CaptureWakes, ProcessControl, ProcessInput, ProcessOutput};
 use acyclic_stream::{StreamPath, StreamProvider};
 use std::io;
@@ -244,7 +244,7 @@ impl NativeMachine for LocalBackend {
         &self,
         access: FileAccess,
         limit: u32,
-        deadline: &crate::provider::deadline::GuestDeadline,
+        deadline: &acyclic_machines::deadline::GuestDeadline,
     ) -> Result<FileRead, ProviderError> {
         if limit == 0 {
             return Err(ProviderError::Invalid(
@@ -270,7 +270,7 @@ impl NativeMachine for LocalBackend {
         access: FileAccess,
         data: Vec<u8>,
         truncate: bool,
-        deadline: &crate::provider::deadline::GuestDeadline,
+        deadline: &acyclic_machines::deadline::GuestDeadline,
     ) -> Result<FileWrite, ProviderError> {
         access.validate_range(data.len())?;
         if truncate && access.offset != 0 {

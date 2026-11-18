@@ -1,6 +1,6 @@
 //! Native positional transfer and its original observation/retirement boundary.
 use super::*;
-use crate::provider::deadline::GuestDeadline;
+use acyclic_machines::deadline::GuestDeadline;
 use futures::FutureExt;
 use std::fs::{File, OpenOptions};
 

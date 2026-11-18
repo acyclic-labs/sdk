@@ -166,6 +166,7 @@ rust_test(
         "//rust/crates/inference:tree",
         "//rust/crates/machines-conformance:tree",
         "//rust/crates/machines-daytona:tree",
+        "//rust/crates/machines-local:tree",
         "//rust/crates/machines-simulation:tree",
         "//rust/crates/machines-wasm:tree",
         "//rust/crates/machines:tree",
