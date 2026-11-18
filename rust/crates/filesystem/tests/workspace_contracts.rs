@@ -1,3 +1,5 @@
+//! Public contracts for workspace generations and conditional mutations.
+
 #[macro_use]
 #[path = "support/unbounded.rs"]
 mod unbounded;

@@ -1,3 +1,5 @@
+//! Public wire contracts for workspace context and merge publication records.
+
 mod compat_wire {
     mod tests {
         use acyclic_fs::compat_wire::*;

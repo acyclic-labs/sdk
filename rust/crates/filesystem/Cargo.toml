@@ -17,6 +17,12 @@ categories = ["filesystem", "data-structures"]
 [package.metadata.bazel]
 mounts-fuse = true
 share-separate-deps = true
+build-script-inputs = [
+    "src/native_mount/darwin_mount_bridge.c",
+    "src/native_mount/darwin_mount_retirement.c",
+    "src/native_mount/darwin_mount/tests/retirement_model.c",
+    "vendor/darwinfuse",
+]
 
 [package.metadata.bazel.platform-sources]
 "@platforms//os:linux" = ["src/native_mount/fuse/**/*.rs"]

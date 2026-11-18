@@ -518,14 +518,13 @@ const repositorySources = [...members].some(id => readsRepository(packages.get(i
 const sourcesRule = repositorySources.length
   ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
   : "";
-// Files a build script reads beyond its package, from [package.metadata.bazel]
-// build-script-data = ["relative/path", ...]: each path names one tracked file or every tracked
-// file under a directory, relative to the package. A path that names nothing fails generation.
-function scriptData(p) {
-  return (p.metadata?.bazel?.["build-script-data"] ?? []).flatMap(relative => {
+// Build script paths name tracked files or directories relative to the package.
+// build-script-inputs replaces the package-wide defaults. build-script-data adds inputs.
+function scriptData(p, key) {
+  return (p.metadata?.bazel?.[key] ?? []).flatMap(relative => {
     const named = path.posix.normalize(path.posix.join(dir(p), relative));
     const files = tracked.filter(file => file === named || file.startsWith(`${named}/`)).sort();
-    if (!files.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} build-script-data names ${relative}, which holds no tracked file`);
+    if (!files.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} ${key} names ${relative}, which holds no tracked file`);
     return files.map(file => (ownerOf(file) === dir(p) ? within(dir(p), file) : fileLabel(file)));
   });
 }
@@ -790,15 +789,14 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     );
   };
   if (script) {
-    // A build script compiles from its own module closure and runs over every package file.
-    // Its non-Rust package files are already in the compile_data glob.
-    const extra = extras(script, file => !file.endsWith(".rs") && !TEST_DIRS.test(file));
+    const defaultInputs = p.metadata?.bazel?.["build-script-inputs"] === undefined;
+    const extra = extras(script, file => defaultInputs && !file.endsWith(".rs") && !TEST_DIRS.test(file));
     rules.push(["cargo_build_script", [
       ["name", q(`build_script${suffix}`)],
       ["crate_root", q(local(script.src_path))],
       ["srcs", list(extra.srcs)],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list(extra.data))],
-      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p)]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
+      ["compile_data", plus(defaultInputs ? glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]) : undefined, list(extra.data))],
+      ["data", plus(defaultInputs ? glob(["**"], ["BUILD.bazel", ...NOT_LIB]) : undefined, list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p, "build-script-inputs"), ...scriptData(p, "build-script-data")]), requiredEntry(scriptEnv,p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script).filter(([k]) => k !== "clippy_config"),
