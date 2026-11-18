@@ -259,7 +259,7 @@ impl HttpObjects {
         .await
     }
 
-    async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {
+    async fn bytes(&self, mut response: Response) -> Result<Bytes, Error> {
         if self.maximum.is_some_and(|maximum| {
             response
                 .content_length()
@@ -267,17 +267,28 @@ impl HttpObjects {
         }) {
             return Err(wire::ErrorCode::QuotaExceeded.into());
         }
-        let mut bytes = Vec::new();
+        let mut first = Bytes::new();
+        let mut joined = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
+            let used = first.len() + joined.len();
             if self
                 .maximum
-                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(bytes.len()))
+                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(used))
             {
                 return Err(wire::ErrorCode::QuotaExceeded.into());
             }
-            bytes.extend_from_slice(&chunk);
+            if used == 0 {
+                first = chunk;
+            } else {
+                joined.extend_from_slice(&std::mem::take(&mut first));
+                joined.extend_from_slice(&chunk);
+            }
         }
-        Ok(bytes)
+        Ok(if joined.is_empty() {
+            first
+        } else {
+            joined.into()
+        })
     }
 
     async fn failure(&self, response: Response) -> Error {
