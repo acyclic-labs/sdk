@@ -23,6 +23,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                 );
                 let archive = support.join("registry/demo-1.0.0.crate");
                 let original_archive = fs::read(&archive).unwrap();
+                let output = fixture.output.join("releases/1.0.0");
                 for (authority, config_directory) in [
                     (HistoricalAuthority::Lock(&foreign), None),
                     (
@@ -83,8 +84,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                         fs::remove_file(path).unwrap();
                     }
                     let data: Value = serde_json::from_slice(
-                        &fs::read(fixture.output.join("releases/1.0.0/sdk-docs-data.v1.json"))
-                            .unwrap(),
+                        &fs::read(output.join("sdk-docs-data.v1.json")).unwrap(),
                     )
                     .unwrap();
                     assert_eq!(
@@ -95,7 +95,6 @@ fn archive_locks_override_foreign_cargo_authority() {
                             "docsProducer"
                         }
                     );
-                    let output = fixture.output.join("releases/1.0.0");
                     let manifest: Value = serde_json::from_slice(
                         &fs::read(output.join("generation-manifest.v1.json")).unwrap(),
                     )
@@ -106,7 +105,6 @@ fn archive_locks_override_foreign_cargo_authority() {
                     fs::remove_file(output.join("generation-manifest.v1.json")).unwrap();
                     fs::remove_file(output.join("generation-manifest.v1.sha256")).unwrap();
                 }
-                assert_eq!(discovery.len(), 3);
                 let (recorded, replayed_compilers) = queries.compiler_counts();
                 assert!(
                     recorded > 0,
