@@ -12,5 +12,5 @@ mod output;
 mod private_file;
 mod seeded_runtime;
 mod signing_custody;
-#[path = "positional/mod.rs"]
+#[path = "runtime_api/mod.rs"]
 mod tests;
