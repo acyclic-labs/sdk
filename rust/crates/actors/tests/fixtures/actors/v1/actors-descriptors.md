@@ -40,7 +40,7 @@ contract test compares the two compiler outputs without discarding options.
 by the pinned Rust/protoc pipeline:
 
 ```
-cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT
+bazel run //rust/crates/proto-codegen:sdk-proto-codegen -- descriptors "$PWD" "$PWD/target/actors-descriptors" actors
 ```
 
 `actors-buf-v1.bin` is independently captured from the pinned `@bufbuild/buf`
@@ -48,7 +48,8 @@ cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT
 
 ```
 node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-buf.bin
-cargo run --locked -p sdk-proto-codegen -- canonicalize actors actors-buf.bin rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
+bazel run //rust/crates/proto-codegen:sdk-proto-codegen -- canonicalize actors \
+  "$PWD/actors-buf.bin" "$PWD/rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin"
 ```
 
 Keep the Buf image's file metadata (extension 8042). Exporting with
