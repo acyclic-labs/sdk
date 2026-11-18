@@ -23,10 +23,11 @@ export function validateChildCursor({ parent, after, hierarchyVersion }: Pick<Ch
 /** Checks the existing canonical path boundary and the selected direct parent. */
 export function checkedChild(child: StreamChild | undefined, parent?: string): StreamChild {
   try {
-    if (child === undefined) throw new Error("missing child");
-    const { path } = child;
-    validatePathValue(path);
-    if (!isDirectChild(path, parent)) throw new Error("non-direct child");
-    return { path };
-  } catch { throw new StreamError("invalid_response", "invalid child discovery response"); }
+    const path = child?.path;
+    if (path !== undefined) {
+      validatePathValue(path);
+      if (isDirectChild(path, parent)) return { path };
+    }
+  } catch { /* Malformed paths use the same refusal as an invalid parent. */ }
+  throw new StreamError("invalid_response", "invalid child discovery response");
 }
