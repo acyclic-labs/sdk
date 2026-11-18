@@ -549,7 +549,9 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/host-platform:acyclic_host_platform",
+        "//rust/crates/native-lines:acyclic_native_lines",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
         "//rust/crates/test-support:acyclic_test_support",
@@ -575,7 +577,6 @@ rust_test(
         "@sdk_crates//subtle-2.6.1",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tokio-util-0.7.20",
         "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-core-0.1.36",
         "@sdk_crates//tracing-subscriber-0.3.23",
@@ -583,7 +584,9 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/host-platform:acyclic_host_platform",
+        "//rust/crates/native-lines:acyclic_native_lines",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
         "//rust/crates/test-support:acyclic_test_support",
@@ -608,7 +611,6 @@ rust_test(
         "@sdk_crates//subtle-2.6.1",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tokio-util-0.7.20",
         "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-core-0.1.36",
         "@sdk_crates//tracing-subscriber-0.3.23",
@@ -616,7 +618,9 @@ rust_test(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/executable-search:acyclic_executable_search",
         "//rust/crates/host-platform:acyclic_host_platform",
+        "//rust/crates/native-lines:acyclic_native_lines",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-identity:acyclic_process_identity",
         "//rust/crates/test-support:acyclic_test_support",
@@ -641,7 +645,6 @@ rust_test(
         "@sdk_crates//subtle-2.6.1",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//tokio-util-0.7.20",
         "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-core-0.1.36",
         "@sdk_crates//tracing-subscriber-0.3.23",
