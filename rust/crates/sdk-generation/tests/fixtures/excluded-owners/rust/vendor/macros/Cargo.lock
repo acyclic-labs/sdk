@@ -1,0 +1,10 @@
+version = 3
+
+[[package]]
+name = "demo-macros"
+version = "1.0.0"
+dependencies = ["macro-dev-helper"]
+
+[[package]]
+name = "macro-dev-helper"
+version = "1.0.0"

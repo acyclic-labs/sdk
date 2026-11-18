@@ -2,23 +2,6 @@ use super::*;
 use sdk_docs::rustdoc_profiles::{self as profiles, ProfileSpec};
 
 pub(super) fn assert_catalog_matches(fixture: &Fixture, data: &sdk_docs::DocsData) {
-    fn equal(actual: &Value, expected: &Value, path: String) {
-        match (actual, expected) {
-            (Value::Object(a), Value::Object(b)) => {
-                assert_eq!(a.len(), b.len(), "catalog {path} keys");
-                for (key, value) in a {
-                    equal(value, &b[key], format!("{path}/{key}"));
-                }
-            }
-            (Value::Array(a), Value::Array(b)) => {
-                assert_eq!(a.len(), b.len(), "catalog {path} length");
-                for (index, (a, b)) in a.iter().zip(b).enumerate() {
-                    equal(a, b, format!("{path}/{index}"));
-                }
-            }
-            _ => assert_eq!(actual, expected, "catalog {path}"),
-        }
-    }
     let previous: Value = serde_json::from_slice(
         &fs::read(
             fixture
@@ -28,35 +11,25 @@ pub(super) fn assert_catalog_matches(fixture: &Fixture, data: &sdk_docs::DocsDat
         .unwrap(),
     )
     .unwrap();
-    equal(
-        &serde_json::to_value(data).unwrap(),
-        &previous,
-        String::new(),
-    );
+    assert_eq!(serde_json::to_value(data).unwrap(), previous);
 }
 
 pub(super) fn copy_tree(source: &Path, destination: &Path) {
-    copy_tree_inner(source, destination, false);
+    copy_tree_inner(source, destination, CopyMode::Private);
 }
 
 pub(super) fn copy_profile_output(source: &Path, destination: &Path) {
-    fs::create_dir_all(destination).unwrap();
-    for entry in fs::read_dir(source).unwrap() {
-        let entry = entry.unwrap();
-        let target = destination.join(entry.file_name());
-        if entry.file_name() == ".profile-build" {
-            // Compilers have finished, and drift/project only read these files.
-            // Mutable receipts, manifests and retained sources stay private.
-            copy_tree_inner(&entry.path(), &target, true);
-        } else if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), target).unwrap();
-        }
-    }
+    copy_tree_inner(source, destination, CopyMode::ProfileRoot);
 }
 
-fn copy_tree_inner(source: &Path, destination: &Path, immutable: bool) {
+#[derive(Clone, Copy)]
+enum CopyMode {
+    Private,
+    ProfileRoot,
+    Immutable,
+}
+
+fn copy_tree_inner(source: &Path, destination: &Path, mode: CopyMode) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();
@@ -67,8 +40,15 @@ fn copy_tree_inner(source: &Path, destination: &Path, immutable: bool) {
             // Git objects are immutable; refs, index and configuration stay private.
             copy_git_objects(&entry.path(), &target);
         } else if entry.file_type().unwrap().is_dir() {
-            copy_tree_inner(&entry.path(), &target, immutable);
-        } else if immutable {
+            let child_mode = match mode {
+                CopyMode::ProfileRoot if entry.file_name() == ".profile-build" => {
+                    CopyMode::Immutable
+                }
+                CopyMode::ProfileRoot => CopyMode::Private,
+                other => other,
+            };
+            copy_tree_inner(&entry.path(), &target, child_mode);
+        } else if matches!(mode, CopyMode::Immutable) {
             fs::hard_link(entry.path(), target).unwrap();
         } else {
             fs::copy(entry.path(), target).unwrap();
@@ -77,21 +57,12 @@ fn copy_tree_inner(source: &Path, destination: &Path, immutable: bool) {
 }
 
 pub(super) fn copy_historical_fixture(template: &(Fixture, PathBuf)) -> (Fixture, PathBuf) {
-    let directory = fixture_directory();
-    let root = directory.path().join("source");
-    let output = directory.path().join("output");
-    copy_tree(&template.0.root, &root);
-    copy_tree(&template.0.output, &output);
-    let support = output.join("test-support");
-    (
-        Fixture {
-            directory,
-            root,
-            rustdoc: output.join(".rustdoc"),
-            output,
-        },
-        support,
-    )
+    let fixture = copy_fixture(&template.0);
+    copy_tree(&template.0.output, &fixture.output);
+    let support = fixture
+        .output
+        .join(template.1.strip_prefix(&template.0.output).unwrap());
+    (fixture, support)
 }
 
 pub(super) fn copy_git_objects(source: &Path, destination: &Path) {

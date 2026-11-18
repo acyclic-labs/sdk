@@ -1,9 +1,9 @@
 use super::*;
 
-static PACKAGE: cache::Mutex<Option<cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)>>> =
-    cache::Mutex::new(None);
+type Package = (Fixture, BTreeMap<String, Vec<u8>>);
+static PACKAGE: cache::Mutex<Option<cache::Arc<Package>>> = cache::Mutex::new(None);
 
-fn shared_package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
+fn shared_package() -> cache::Arc<Package> {
     let cargo = runtime::cargo();
     cache::get_or_try_init(&PACKAGE, || {
         let (fixture, support) = historical_source_fixture(None);
@@ -57,21 +57,10 @@ pub(super) fn include_sources(package: &Path) {
 
 pub(super) fn source_fixture() -> (Fixture, PathBuf) {
     let template = shared_package();
-    let directory = fixture_directory();
-    let root = directory.path().join("source");
-    let output = directory.path().join("output");
-    super::replay::copy_tree(&template.0.root, &root);
-    let support = output.join("test-support");
+    let fixture = copy_fixture(&template.0);
+    let support = fixture.output.join("test-support");
     fs::create_dir_all(support.join("registry")).unwrap();
-    (
-        Fixture {
-            directory,
-            root,
-            rustdoc: output.join(".rustdoc"),
-            output,
-        },
-        support,
-    )
+    (fixture, support)
 }
 
 pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) -> PathBuf {

@@ -49,21 +49,6 @@ unsafe impl GlobalAlloc for Spy {
     }
 }
 
-// The former implementation omitted both fast paths. Keep the real trait
-// defaults as the negative control, rather than inventing measurement overhead.
-struct MissingFastPaths(CountingAllocator<Spy>);
-// SAFETY: allocation provenance and layout are forwarded unchanged.
-unsafe impl GlobalAlloc for MissingFastPaths {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: forward the caller's valid allocation layout.
-        unsafe { self.0.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: forward the allocation's original pointer and layout.
-        unsafe { self.0.dealloc(pointer, layout) };
-    }
-}
-
 fn exercise(
     allocator: &impl GlobalAlloc,
     before: usize,
@@ -101,25 +86,20 @@ fn exercise(
 }
 
 proptest! {
-    // Delegation preserves requested bytes/alignment and the retained prefix;
-    // successful accounting is identical to the old allocate-copy-free path.
+    // Delegation preserves requested bytes/alignment, the retained prefix,
+    // and the exact accounting of the original and replacement allocations.
     #[test]
     fn native_fast_paths_preserve_bytes_alignment_and_all_counts(
         before in 1usize..4097, after in 1usize..8193, power in 0u32..7,
     ) {
         let (actual, calls) = exercise(&CountingAllocator(Spy), before, after, 1usize << power);
-        let (former, broken_calls) = exercise(&MissingFastPaths(CountingAllocator(Spy)), before, after, 1usize << power);
-        prop_assert_eq!(actual, former);
         prop_assert_eq!(actual.count_total, 2);
         prop_assert_eq!(actual.count_current, 0);
         prop_assert_eq!(actual.count_max, 2);
         prop_assert_eq!(actual.bytes_total, (before + after) as u64);
         prop_assert_eq!(actual.bytes_current, 0);
         prop_assert_eq!(actual.bytes_max, (before + after) as u64);
-        let native = |calls| calls == [0, 1, 1, 1];
-        prop_assert!(native(calls));
-        prop_assert!(!native(broken_calls), "old trait defaults escaped delegation checks");
-        prop_assert_eq!(broken_calls, [2, 0, 0, 2]);
+        prop_assert_eq!(calls, [0, 1, 1, 1]);
     }
 }
 

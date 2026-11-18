@@ -1,4 +1,7 @@
 use super::*;
+#[path = "../support/rustdoc_paths.rs"]
+mod rustdoc_paths;
+
 use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
@@ -13,9 +16,11 @@ use std::{
 #[derive(Default, Clone)]
 pub(super) struct Queries(Rc<State>);
 
+type Replay = (Output, Vec<(PathBuf, Vec<u8>)>);
+
 #[derive(Default)]
 struct State {
-    outputs: RefCell<BTreeMap<Key, (Output, Vec<(PathBuf, Vec<u8>)>)>>,
+    outputs: RefCell<BTreeMap<Key, Replay>>,
     executed: Cell<usize>,
     replayed: Cell<usize>,
     replayed_compilers: Cell<usize>,
@@ -112,7 +117,260 @@ pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
     if ACTIVE.get() {
         return operation();
     }
-    sdk_docs::with_command_executor(|command| command.output(), operation)
+    sdk_docs::with_command_executor(execute_command, operation)
+}
+
+fn execute_command(command: &mut Command) -> std::io::Result<Output> {
+    if let Some(output) = declared_rustdoc(command)? {
+        return Ok(output);
+    }
+    command.output()
+}
+
+// The action's metadata names every source and Cargo flag in its key. Reuse
+// its output only for byte-identical source and the same complete profile.
+fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
+    let args = command.get_args().collect::<Vec<_>>();
+    let value = |name: &str| {
+        args.windows(2)
+            .find(|pair| pair[0] == name)
+            .map(|pair| pair[1])
+    };
+    if args.first().and_then(|arg| arg.to_str()) != Some("rustdoc")
+        || !args.iter().any(|arg| *arg == "--lib")
+    {
+        return Ok(None);
+    }
+    let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
+        return Ok(None);
+    };
+    let Some(manifest) = manifest_path.to_str() else {
+        return Ok(None);
+    };
+    let Some(package) = value("--package").and_then(|arg| arg.to_str()) else {
+        return Ok(None);
+    };
+    let Some(target) = value("--target").and_then(|arg| arg.to_str()) else {
+        return Ok(None);
+    };
+    let environment = command.get_envs().collect::<BTreeMap<_, _>>();
+    let rustflags = if cfg!(windows) {
+        "-C\u{1f}prefer-dynamic"
+    } else {
+        ""
+    };
+    if environment
+        .get(std::ffi::OsStr::new("CARGO_ENCODED_RUSTFLAGS"))
+        .copied()
+        .flatten()
+        .and_then(|v| v.to_str())
+        != Some(rustflags)
+    {
+        return Ok(None);
+    }
+    if command.get_envs().any(|(key, value)| {
+        key == "CARGO_HOME"
+            && value.is_some_and(|home| {
+                let home = Path::new(home);
+                home.join("config").exists() || home.join("config.toml").exists()
+            })
+    }) {
+        return Ok(None);
+    }
+    let directory = acyclic_test_support::source_path("rust/proofs/sdk-rustdoc-fixtures");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Ok(None);
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".fixture.json")
+        {
+            continue;
+        }
+        let metadata: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+        if metadata["package"].as_str() != Some(package) {
+            continue;
+        }
+        let toolchain = metadata["toolchain"].as_str().unwrap();
+        if environment
+            .get(std::ffi::OsStr::new("RUSTUP_TOOLCHAIN"))
+            .copied()
+            .flatten()
+            .and_then(|value| value.to_str())
+            != Some(format!("{toolchain}-{target}").as_str())
+        {
+            continue;
+        }
+        let declared_manifest = Path::new(metadata["manifest_path"].as_str().unwrap());
+        let mut root = manifest_path;
+        for _ in declared_manifest.components() {
+            let Some(parent) = root.parent() else {
+                return Ok(None);
+            };
+            root = parent;
+        }
+        if root.join(declared_manifest) != manifest_path
+            || root
+                .ancestors()
+                .any(|ancestor| ancestor.join(".cargo").exists())
+        {
+            continue;
+        }
+        let mut expected_args = vec![
+            "rustdoc",
+            "--locked",
+            "--manifest-path",
+            manifest,
+            "--package",
+            package,
+            "--lib",
+            "--target",
+            target,
+        ];
+        expected_args.extend(
+            metadata["cargo_flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|flag| flag.as_str().unwrap()),
+        );
+        let selected_lock = metadata["selected_lock"].as_str().unwrap();
+        let config = if selected_lock.is_empty() {
+            None
+        } else {
+            let Ok(lock) = root.join(selected_lock).canonicalize() else {
+                continue;
+            };
+            Some(format!(
+                "resolver.lockfile-path={}",
+                serde_json::to_string(lock.to_str().unwrap())?
+            ))
+        };
+        if let Some(config) = &config {
+            expected_args.extend(["--config", config.as_str()]);
+        }
+        expected_args.extend(["--", "-Z", "unstable-options", "--output-format", "json"]);
+        if args
+            .iter()
+            .map(|arg| arg.to_str())
+            .collect::<Option<Vec<_>>>()
+            .as_deref()
+            != Some(expected_args.as_slice())
+        {
+            continue;
+        }
+        let sources = metadata["sources"].as_array().unwrap();
+        let artifacts = metadata["artifacts"].as_str().unwrap();
+        let mut relative_sources = Vec::new();
+        let mut matches = true;
+        for source in sources {
+            let relative = source["relative"].as_str().unwrap();
+            let source = source["file"].as_str().unwrap();
+            let expected = fs::read(acyclic_test_support::source_path(source))?;
+            if fs::read(root.join(relative)).ok().as_deref() != Some(expected.as_slice()) {
+                matches = false;
+                break;
+            }
+            if Path::new(relative)
+                .file_name()
+                .is_some_and(|name| name == "Cargo.toml")
+            {
+                let build = Path::new(relative).parent().unwrap().join("build.rs");
+                if root.join(&build).exists()
+                    && (artifacts.is_empty()
+                        || !sources.iter().any(|source| {
+                            source["relative"].as_str().map(Path::new) == Some(build.as_path())
+                        }))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if relative.ends_with(".rs") {
+                relative_sources.push(Path::new(relative));
+            }
+        }
+        if !matches {
+            continue;
+        }
+        let output_path = metadata["output"].as_str().unwrap();
+        let mut json: Value =
+            serde_json::from_slice(&fs::read(acyclic_test_support::source_path(output_path))?)?;
+        if json["target"]["triple"].as_str() != Some(target) {
+            continue;
+        }
+        let target_dir = command
+            .get_envs()
+            .find(|(key, _)| *key == "CARGO_TARGET_DIR")
+            .and_then(|(_, value)| value)
+            .map(Path::new)
+            .unwrap();
+        let mut referenced = std::collections::BTreeSet::new();
+        let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
+        let owner = metadata["owner_path"].as_str().unwrap();
+        let library = Path::new("src/lib.rs");
+        let owner_library = Path::new(owner).join(library);
+        rustdoc_paths::visit(&mut json, |kind, path| {
+            if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
+                let relative = PathBuf::from(relative);
+                *path = artifact_target
+                    .join(&relative)
+                    .to_string_lossy()
+                    .into_owned();
+                referenced.insert(relative);
+            } else if matches!(kind, rustdoc_paths::Kind::Source) {
+                let filename = Path::new(path);
+                if let Some(source) = relative_sources.iter().find(|source| {
+                    filename.ends_with(source)
+                        || filename == library && **source == owner_library.as_path()
+                }) {
+                    *path = root.join(source).to_string_lossy().into_owned();
+                }
+            }
+        });
+        if !referenced.is_empty() {
+            let artifacts = acyclic_test_support::source_path(artifacts);
+            for relative in referenced {
+                let destination = artifact_target.join(&relative);
+                let source = artifacts.join(relative);
+                if destination.exists() {
+                    if fs::read(&destination)? != fs::read(&source)? {
+                        return Err(std::io::Error::other(format!(
+                            "Rustdoc fixture artifacts disagree at {}",
+                            destination.display()
+                        )));
+                    }
+                } else {
+                    fs::create_dir_all(destination.parent().unwrap())?;
+                    fs::copy(source, destination)?;
+                }
+            }
+        }
+        let output_dir = if metadata["proc_macro"].as_bool() == Some(true) {
+            target_dir.join("doc")
+        } else {
+            target_dir.join(target).join("doc")
+        };
+        let output = output_dir.join(format!(
+            "{}.json",
+            metadata["library_name"].as_str().unwrap()
+        ));
+        fs::create_dir_all(output.parent().unwrap())?;
+        fs::write(output, serde_json::to_vec(&json)?)?;
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        return Ok(Some(Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }));
+    }
+    Ok(None)
 }
 
 impl Queries {
@@ -142,7 +400,7 @@ impl Queries {
                     }
                     return Ok(output.clone());
                 }
-                let output = command.output()?;
+                let output = execute_command(command)?;
                 state.executed.set(state.executed.get() + 1);
                 let artifacts = if output.status.success() {
                     compiler_outputs(command)?

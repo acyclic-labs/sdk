@@ -206,30 +206,34 @@ fn feature_profile_source() -> Fixture {
     fs::create_dir_all(root.join("release")).unwrap();
     fs::write(
         root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"rust/crates/demo\"]\nresolver = \"2\"\n",
+        include_str!("fixtures/feature-profile/Cargo.toml"),
     )
     .unwrap();
     fs::write(
         root.join("rust-toolchain.toml"),
-        "[toolchain]\nchannel = \"1.98.1\"\nprofile = \"minimal\"\n",
+        include_str!("fixtures/feature-profile/rust-toolchain.toml"),
     )
     .unwrap();
-    fs::write(root.join("release/cargo-crates.json"), "[\"demo\"]\n").unwrap();
+    fs::write(
+        root.join("release/cargo-crates.json"),
+        include_str!("fixtures/feature-profile/release/cargo-crates.json"),
+    )
+    .unwrap();
     fs::write(
         root.join("rust/crates/demo/Cargo.toml"),
-        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[features]\ndefault = [\"base\"]\nbase = []\nextra = []\n",
+        include_str!("fixtures/feature-profile/rust/crates/demo/Cargo.toml"),
     )
     .unwrap();
     fs::write(
         root.join("rust/crates/demo/src/lib.rs"),
-        "pub struct Always;\n\n#[cfg(feature = \"base\")]\npub fn base_only() {}\n\n#[cfg(feature = \"default\")]\npub fn default_only() {}\n\n#[cfg(not(feature = \"extra\"))]\npub fn overloaded(value: u64) -> u64 { value }\n\n#[cfg(feature = \"extra\")]\npub fn overloaded(value: &str) -> usize { value.len() }\n\n#[cfg(feature = \"extra\")]\npub struct FeatureOnly;\n",
+        include_str!("fixtures/feature-profile/rust/crates/demo/src/lib.rs"),
     )
     .unwrap();
     // This dependency-free lockfile is the exact lock input for the fixture;
     // no network or workspace checkout is involved in the producer run.
     fs::write(
         root.join("Cargo.lock"),
-        "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+        include_str!("fixtures/feature-profile/Cargo.lock"),
     )
     .unwrap();
     let output = directory.path().join("output");
@@ -455,64 +459,53 @@ fn run_generate(
     ))
 }
 
-fn generated_span_fixture_pair() -> (Fixture, Fixture) {
-    let first = fixture(false);
-    let generated_relative = "target/generated/wire.rs";
-    let generated = first.root.join(generated_relative);
-    fs::create_dir_all(generated.parent().unwrap()).unwrap();
-    fs::write(&generated, b"pub struct Wire;\n").unwrap();
-
-    let receipt_path = first.rustdoc.join("demo_docs.json");
-    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
-    receipt["index"]["0"]["span"] = json!({
-        "filename": generated.canonicalize().unwrap().to_string_lossy(),
-        "begin": [1, 0],
-        "end": [1, 16]
-    });
-    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
-
-    let directory = fixture_directory();
-    let second_root = directory.path().join("source");
+fn clone_source(source: &Path, destination: &Path) {
     let clone = Command::new(runtime::git())
-        .args([
-            "clone",
-            "--quiet",
-            first.root.to_str().unwrap(),
-            second_root.to_str().unwrap(),
-        ])
+        .args(["clone", "--quiet"])
+        .arg(source)
+        .arg(destination)
         .output()
         .unwrap();
     assert!(
         clone.status.success(),
         "git clone failed: {}",
-        String::from_utf8_lossy(&clone.stderr)
+        output_message(&clone)
     );
+}
+
+fn generated_span_fixture_pair() -> (Fixture, Fixture) {
+    fn place_span(root: &Path, receipt: &mut Value) {
+        let generated = root.join("target/generated/wire.rs");
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        fs::write(&generated, b"pub struct Wire;\n").unwrap();
+        receipt["index"]["0"]["span"] = json!({
+            "filename": generated.canonicalize().unwrap().to_string_lossy(),
+            "begin": [1, 0],
+            "end": [1, 16]
+        });
+    }
+    let first = fixture(false);
+
+    let receipt_path = first.rustdoc.join("demo_docs.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    place_span(&first.root, &mut receipt);
+    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+
+    let directory = fixture_directory();
+    let second_root = directory.path().join("source");
+    clone_source(&first.root, &second_root);
     fs::create_dir_all(second_root.join("rustdoc")).unwrap();
-    fs::copy(
-        first.rustdoc.join("demo_docs.json"),
-        second_root.join("rustdoc/demo_docs.json"),
-    )
-    .unwrap();
     fs::copy(
         first.rustdoc.join("demo_docs.source.sha256"),
         second_root.join("rustdoc/demo_docs.source.sha256"),
     )
     .unwrap();
-    let second_generated = second_root.join(generated_relative);
-    fs::create_dir_all(second_generated.parent().unwrap()).unwrap();
-    fs::write(&second_generated, b"pub struct Wire;\n").unwrap();
-    let second_receipt = second_root.join("rustdoc/demo_docs.json");
-    let mut second_json: Value =
-        serde_json::from_slice(&fs::read(&second_receipt).unwrap()).unwrap();
-    second_json["index"]["0"]["span"] = json!({
-        "filename": second_generated
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy(),
-        "begin": [1, 0],
-        "end": [1, 16]
-    });
-    fs::write(&second_receipt, serde_json::to_vec(&second_json).unwrap()).unwrap();
+    place_span(&second_root, &mut receipt);
+    fs::write(
+        second_root.join("rustdoc/demo_docs.json"),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
 
     let second = Fixture {
         directory,

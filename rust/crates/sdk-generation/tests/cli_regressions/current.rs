@@ -80,7 +80,7 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
         "test edit did not change {relative}"
     );
 
-    let drift = run_drift(&fixture);
+    let drift = run_drift(fixture);
     assert!(!drift.status.success());
     let drift_message = output_message(&drift);
     assert!(
@@ -111,7 +111,7 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
 
     fs::write(&source, &original).unwrap();
     assert_eq!(hash_file(&source), original_hash);
-    let drift = run_drift(&fixture);
+    let drift = run_drift(fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));
 
     let refreshed_output = fixture
@@ -458,7 +458,9 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
     let feature = "native-execution-observation-".repeat(8);
     let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
     let original = fs::read_to_string(&manifest).unwrap();
-    fs::write(&manifest, format!("{original}\n{feature} = []\n")).unwrap();
+    let declared = include_str!("../fixtures/feature-profile/rust/crates/demo/long-features.toml");
+    assert_eq!(declared, format!("{original}\n{feature} = []\n"));
+    fs::write(&manifest, declared).unwrap();
     git(&fixture.root, &["add", "."]);
     git(
         &fixture.root,
@@ -715,40 +717,43 @@ fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims
 fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     runtime::time_control();
     let fixture = feature_profile_fixture();
-    fs::create_dir_all(fixture.root.join("rust/crates/helper/src")).unwrap();
-    fs::write(
-        fixture.root.join("rust/crates/helper/Cargo.toml"),
-        "[package]\nname = \"relocation-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
-    )
-    .unwrap();
-    fs::write(
-        fixture.root.join("rust/crates/helper/src/lib.rs"),
-        "pub struct Witness;\n",
-    )
-    .unwrap();
-    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
-    let mut contents = fs::read_to_string(&manifest).unwrap();
-    contents.push_str("\n[dependencies]\nrelocation-helper = { path = \"../helper\" }\n");
-    fs::write(manifest, contents).unwrap();
-    // Cargo may infer in-root path dependencies as workspace members. Declare
-    // both inventories explicitly so membership discovery cannot change coverage.
-    fs::write(
-        fixture.root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"rust/crates/demo\", \"rust/crates/helper\"]\nresolver = \"2\"\n",
-    )
-    .unwrap();
+    for (relative, source) in [
+        (
+            "Cargo.toml",
+            include_str!("../fixtures/relocation/Cargo.toml"),
+        ),
+        (
+            "Cargo.lock",
+            include_str!("../fixtures/relocation/Cargo.lock"),
+        ),
+        (
+            "rust/crates/demo/Cargo.toml",
+            include_str!("../fixtures/relocation/rust/crates/demo/Cargo.toml"),
+        ),
+        (
+            "rust/crates/demo/build.rs",
+            include_str!("../fixtures/relocation/rust/crates/demo/build.rs"),
+        ),
+        (
+            "rust/crates/demo/src/lib.rs",
+            include_str!("../fixtures/relocation/rust/crates/demo/src/lib.rs"),
+        ),
+        (
+            "rust/crates/helper/Cargo.toml",
+            include_str!("../fixtures/relocation/rust/crates/helper/Cargo.toml"),
+        ),
+        (
+            "rust/crates/helper/src/lib.rs",
+            include_str!("../fixtures/relocation/rust/crates/helper/src/lib.rs"),
+        ),
+    ] {
+        let path = fixture.root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
+    }
     fs::write(
         fixture.root.join("release/cargo-crates.json"),
         "[\"demo\", \"relocation-helper\"]\n",
-    )
-    .unwrap();
-    fs::write(fixture.root.join("Cargo.lock"),
-        "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = [\"relocation-helper\"]\n\n[[package]]\nname = \"relocation-helper\"\nversion = \"1.0.0\"\n").unwrap();
-    fs::write(fixture.root.join("rust/crates/demo/build.rs"),
-        "fn main() { std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), \"pub struct GeneratedWire;\\n\").unwrap(); }\n").unwrap();
-    fs::write(
-        fixture.root.join("rust/crates/demo/src/lib.rs"),
-        "include!(concat!(env!(\"OUT_DIR\"), \"/wire.rs\"));\npub fn dependency_witness() -> relocation_helper::Witness { relocation_helper::Witness }\n",
     )
     .unwrap();
     git(&fixture.root, &["add", "."]);
@@ -764,16 +769,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let directory = fixture_directory();
     let relocated_root = directory.path().join("source");
     let relocated_output = directory.path().join("output");
-    assert!(Command::new(runtime::git())
-        .args([
-            "clone",
-            "--quiet",
-            fixture.root.to_str().unwrap(),
-            relocated_root.to_str().unwrap()
-        ])
-        .status()
-        .unwrap()
-        .success());
+    clone_source(&fixture.root, &relocated_root);
     let relocated = Fixture {
         directory,
         root: relocated_root,

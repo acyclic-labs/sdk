@@ -1,0 +1,10 @@
+version = 3
+
+[[package]]
+name = "demo"
+version = "1.0.0"
+dependencies = ["relocation-helper"]
+
+[[package]]
+name = "relocation-helper"
+version = "1.0.0"

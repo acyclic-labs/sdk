@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust/crates/demo"]
+resolver = "2"
