@@ -82,18 +82,24 @@ fn archive_locks_override_foreign_cargo_authority() {
                         assert_eq!(fs::read_to_string(&path).unwrap(), config);
                         fs::remove_file(path).unwrap();
                     }
-                    let data: Value = serde_json::from_slice(
+                    use sdk_docs::historical::{CapturedSource, ResolutionLock};
+                    let data: sdk_docs::DocsData = serde_json::from_slice(
                         &fs::read(output.join("sdk-docs-data.v1.json")).unwrap(),
                     )
                     .unwrap();
-                    assert_eq!(
-                        data["source"]["capturedSource"]["archives"][0]["resolutionLock"]["kind"],
-                        if published {
-                            "published"
-                        } else {
-                            "docsProducer"
-                        }
-                    );
+                    let Some(CapturedSource::RegistryArchives { archives }) =
+                        data.source.captured_source
+                    else {
+                        panic!("the historical catalog must retain registry archive authority");
+                    };
+                    let [archive] = archives.as_slice() else {
+                        panic!("the fixture must admit exactly one registry archive");
+                    };
+                    assert!(matches!(
+                        (&archive.resolution_lock, published),
+                        (ResolutionLock::Published { .. }, true)
+                            | (ResolutionLock::DocsProducer { .. }, false)
+                    ));
                     #[derive(serde::Deserialize)]
                     #[serde(rename_all = "camelCase")]
                     struct DiscoveryManifest {
