@@ -293,8 +293,7 @@ pub(super) fn measured_decode_reader<T: DeserializeOwned>(
             ..crate::WorkCounters::UNCHARGED
         },
     )?;
-    let decode =
-        MaterializationDecode::new(work, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?);
+    let decode = MaterializationDecode::new(work)?;
     let mut reader = DecodeReader {
         inner: reader,
         failure: None,

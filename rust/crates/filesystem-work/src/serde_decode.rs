@@ -36,13 +36,14 @@ pub struct MaterializationDecode<'a, W: DecodeWork> {
 }
 
 impl<'a, W: DecodeWork> MaterializationDecode<'a, W> {
-    /// Starts a funded decode using the caller's existing allocation owner.
-    pub fn new(work: &'a W, allocation: W::Allocation) -> Self {
-        Self {
+    /// Starts a funded decode by claiming custody on this work owner.
+    pub fn new(work: &'a W) -> Result<Self, W::Error> {
+        let allocation = work.claim(0, 0)?;
+        Ok(Self {
             work,
             allocation: std::cell::RefCell::new(allocation),
             failure: std::cell::RefCell::new(None),
-        }
+        })
     }
 
     /// Decodes one value with admission before destination allocation.

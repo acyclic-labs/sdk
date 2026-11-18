@@ -60,7 +60,7 @@ impl KernelAccounting<'_> {
     {
         self.check()?;
         let work = OriginalDecodeWork(RefCell::new(self));
-        let decode = MaterializationDecode::new(&work, work.claim(0, 0)?);
+        let decode = MaterializationDecode::new(&work)?;
         let result = decode.deserialize(deserializer);
         if let Some(error) = decode.take_failure() {
             return Err(error.into());
