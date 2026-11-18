@@ -9,7 +9,6 @@ fn archive_locks_override_foreign_cargo_authority() {
                 let (fixture, support) = registry_archive_fixture(false, published, None, true);
                 // These controls differ only in Cargo authority. Keep the
                 // captured source and compiler output immutable across runs.
-                let mut discovery = Vec::new();
                 let queries = commands::Queries::default();
                 let directory = support.join("automatic-config");
                 let foreign = support.join("foreign-automatic");
@@ -24,7 +23,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                 let archive = support.join("registry/demo-1.0.0.crate");
                 let original_archive = fs::read(&archive).unwrap();
                 let output = fixture.output.join("releases/1.0.0");
-                for (authority, config_directory) in [
+                let [_, cargo_home_frontier, working_directory_frontier] = [
                     (HistoricalAuthority::Lock(&foreign), None),
                     (
                         HistoricalAuthority::CargoHome(&directory),
@@ -34,7 +33,8 @@ fn archive_locks_override_foreign_cargo_authority() {
                         HistoricalAuthority::WorkingDirectory(&directory),
                         Some(directory.join(".cargo")),
                     ),
-                ] {
+                ]
+                .map(|(authority, config_directory)| {
                     if let Some(config_directory) = &config_directory {
                         fs::create_dir_all(&config_directory).unwrap();
                         fs::write(config_directory.join("config.toml"), &config).unwrap();
@@ -95,16 +95,17 @@ fn archive_locks_override_foreign_cargo_authority() {
                             "docsProducer"
                         }
                     );
-                    let manifest: Value = serde_json::from_slice(
+                    let mut manifest: Value = serde_json::from_slice(
                         &fs::read(output.join("generation-manifest.v1.json")).unwrap(),
                     )
                     .unwrap();
-                    discovery.push(manifest["registryCorpus"]["frontier"].clone());
+                    let frontier = manifest["registryCorpus"]["frontier"].take();
                     // Each case gets a new admission: its discovery context differs.
                     // Retain the exact source, receipts and compiler directory only.
                     fs::remove_file(output.join("generation-manifest.v1.json")).unwrap();
                     fs::remove_file(output.join("generation-manifest.v1.sha256")).unwrap();
-                }
+                    frontier
+                });
                 let (recorded, replayed_compilers) = queries.compiler_counts();
                 assert!(
                     recorded > 0,
@@ -121,7 +122,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                     "both real recording and policy replay must run"
                 );
                 assert_ne!(
-                    discovery[1], discovery[2],
+                    cargo_home_frontier, working_directory_frontier,
                     "both automatic-config authorities must execute"
                 );
             });
