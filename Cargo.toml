@@ -154,8 +154,6 @@ default-members = [
   "rust/crates/filesystem-base",
   "rust/crates/filesystem-format",
   "rust/crates/filesystem-merge",
-  "rust/crates/filesystem-s3-http",
-  "rust/crates/filesystem-s3-http-fixture",
   "rust/crates/filesystem-wire",
   "rust/crates/filesystem-work",
   "rust/crates/filesystem/fuzz",
