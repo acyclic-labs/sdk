@@ -61,6 +61,10 @@ required-features = ["browser"]
 name = "wire_contracts"
 path = "tests/wire_contracts.rs"
 
+[[test]]
+name = "workspace_contracts"
+path = "tests/workspace_contracts.rs"
+
 [[bench]]
 name = "lease_paths"
 harness = false

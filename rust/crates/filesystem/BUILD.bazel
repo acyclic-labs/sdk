@@ -280,6 +280,7 @@ rust_library(
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
         "tests/support/unbounded.rs",
+        "tests/support/workspace.rs",
     ] + select({
         "@platforms//os:linux": glob(["src/native_mount/fuse/**/*.rs"], allow_empty = True),
         "@platforms//os:macos": glob(["src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs"], allow_empty = True),
@@ -1254,6 +1255,60 @@ isolated_test(
     binary = ":wire_contracts_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::wire_contracts",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "workspace_contracts_cases",
+    crate_root = "tests/workspace_contracts.rs",
+    srcs = [
+        "tests/support/unbounded.rs",
+        "tests/support/workspace.rs",
+        "tests/workspace/tests/conditions.rs",
+        "tests/workspace/tests/generation.rs",
+        "tests/workspace_contracts.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = SEPARATE_DEPS,
+    proc_macro_deps = SEPARATE_PROC_MACRO_DEPS,
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "workspace_contracts",
+    binary = ":workspace_contracts_cases",
+    id = "acyclic-fs::workspace_contracts",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "workspace_contracts_full-cloud",
+    binary = ":workspace_contracts_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::workspace_contracts",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
