@@ -276,7 +276,7 @@ fn real_format_60_fixture_is_accepted_when_requested() {
 }
 
 #[test]
-fn real_binding_rustdoc_retains_binding_ownership_when_requested() {
+fn real_binding_rustdoc_preserves_documentation_and_ownership_when_requested() {
     let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
         return;
     };
@@ -296,32 +296,21 @@ fn real_binding_rustdoc_retains_binding_ownership_when_requested() {
     assert!(items.iter().all(|item| {
         item.rustdoc_package == "acyclic-fs-napi" && item.published_owner == "acyclic-fs"
     }));
-    assert!(items.iter().any(|item| item.docs_present));
-}
-
-#[test]
-fn real_binding_top_level_exports_are_documented_when_requested() {
-    let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
-        return;
-    };
-    let owner = ApiOwner {
-        published_package: "acyclic-fs".into(),
-        rustdoc_package: "acyclic-fs-napi".into(),
-        kind: ApiOwnerKind::NapiBinding,
-    };
-    let items = extract_owned_api(
-        path,
-        &owner,
-        ProfileId("binding-host-default".into()),
-        &owner.rustdoc_package.replace('-', "_"),
-    )
-    .unwrap();
     let top_level = items
         .iter()
         .filter(|item| item.key.path.matches("::").count() == 1)
         .collect::<Vec<_>>();
     assert!(!top_level.is_empty());
     assert!(top_level.iter().all(|item| item.docs_present));
+
+    // These types belong to the binding crate. A projection through the
+    // published core owner would lose the binding namespace entirely.
+    assert!(items.iter().any(|item| {
+        item.key.kind == "struct"
+            && item.key.path.starts_with("acyclic_fs_napi::Native")
+            && item.rustdoc_package == "acyclic-fs-napi"
+            && item.published_owner == "acyclic-fs"
+    }));
 }
 
 #[test]
@@ -353,34 +342,6 @@ fn real_wasm_binding_rustdoc_retains_browser_owned_api_when_requested() {
     assert!(items
         .iter()
         .any(|item| { item.key.path.contains("Browser") || item.key.path.contains("browser") }));
-}
-
-#[test]
-fn real_binding_projection_keeps_binding_only_types_when_requested() {
-    let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
-        return;
-    };
-    let owner = ApiOwner {
-        published_package: "acyclic-fs".into(),
-        rustdoc_package: "acyclic-fs-napi".into(),
-        kind: ApiOwnerKind::NapiBinding,
-    };
-    let items = extract_owned_api(
-        path,
-        &owner,
-        ProfileId("binding-host-default".into()),
-        &owner.rustdoc_package.replace('-', "_"),
-    )
-    .unwrap();
-
-    // These types belong to the binding crate. A projection through the
-    // published core owner would lose the binding namespace entirely.
-    assert!(items.iter().any(|item| {
-        item.key.kind == "struct"
-            && item.key.path.starts_with("acyclic_fs_napi::Native")
-            && item.rustdoc_package == "acyclic-fs-napi"
-            && item.published_owner == "acyclic-fs"
-    }));
 }
 
 #[test]
