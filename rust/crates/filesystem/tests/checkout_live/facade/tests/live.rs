@@ -10,8 +10,9 @@ use acyclic_stream::OwnedBytes;
 
 use super::B;
 use super::checkout_fixture::{config, path, writable_pinned};
+use super::checkout_serialized::serialized_config;
 use super::fixtures::{TestResult, create, fixture, open_checkout};
-use super::live_fixture::{serialized_config, writable_live};
+use super::live_fixture::writable_live;
 use super::volume_commit::commit;
 use super::volume_read::read;
 
