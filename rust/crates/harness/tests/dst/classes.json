@@ -1,6 +1,6 @@
 {
  "version": 1,
- "uncovered": 2393,
+ "uncovered": 2334,
  "classes": [
   {
    "id": "A1",
@@ -378,11 +378,6 @@
      "reopen",
      "length_continuation",
      "retry_after"
-    ],
-    "dialect": [
-     "chat_completions",
-     "responses",
-     "messages"
     ]
    }
   },
