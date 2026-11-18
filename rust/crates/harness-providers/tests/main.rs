@@ -15,7 +15,8 @@ mod sync;
 mod sync;
 mod verification_models;
 
-type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+mod integration_helpers;
+use integration_helpers::TestResult;
 #[path = "../../harness/tests/support/expected_outcome.rs"]
 mod expected_outcome;
 #[path = "../../harness/tests/e2e/local_workspace.rs"]
@@ -24,8 +25,6 @@ mod local_workspace;
 mod matchers;
 #[path = "integration/mcp_identity.rs"]
 mod mcp_identity;
-#[path = "integration/prefix_cache.rs"]
-mod prefix_cache;
 #[path = "../../harness/tests/support/progress_guard.rs"]
 mod progress_guard;
 #[path = "../../harness/tests/support/progress_registry.rs"]

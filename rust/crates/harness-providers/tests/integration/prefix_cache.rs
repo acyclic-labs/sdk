@@ -299,7 +299,7 @@ fn executors(
         |_| false,
         extra
             .iter()
-            .map(|name| super::providers::echo_tool(name))
+            .map(|name| crate::integration_helpers::echo_tool(name))
             .collect(),
     )?;
     let limits = Limits::default();

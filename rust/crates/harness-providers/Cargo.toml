@@ -95,3 +95,7 @@ path = "tests/main.rs"
 [[test]]
 name = "live-cache"
 path = "tests/live_cache.rs"
+
+[[test]]
+name = "prefix-cache"
+path = "tests/prefix_cache_cases.rs"

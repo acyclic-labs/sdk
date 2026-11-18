@@ -35,7 +35,7 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
         let tools = acyclic_harness_core::tools::registry(
             &[],
             |_| false,
-            vec![super::super::providers::echo_tool("cached.echo")],
+            vec![crate::integration_helpers::echo_tool("cached.echo")],
         )?;
         let limits = Limits::default();
         let mut manifest = ContextManifest::new(Default::default(), Vec::new(), &tools)?;

@@ -1,5 +1,7 @@
 use super::{
-    TestResult, local_workspace, matchers,
+    TestResult,
+    integration_helpers::echo_tool,
+    local_workspace, matchers,
     provider_case::ProviderCase,
     provider_http::{Recorded, resolve},
 };
@@ -185,48 +187,6 @@ pub(super) async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> Tes
 }
 
 /// A registered tool returning its arguments, named like an installed MCP tool.
-pub(super) fn echo_tool(name: &str) -> acyclic_harness_core::tool::Tool {
-    use acyclic_harness_core::tool::{
-        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult,
-    };
-    struct Echo;
-    impl ToolExecutor for Echo {
-        fn execute<'a>(
-            &'a self,
-            invocation: ToolInvocation,
-            _: Option<acyclic_harness_core::runtime::ToolContext>,
-        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<ToolResult>>
-        {
-            Box::pin(async move {
-                Ok(ToolResult {
-                    value: invocation.arguments,
-                })
-            })
-        }
-        fn reconcile<'a>(
-            &'a self,
-            _: ToolInvocation,
-            _: Option<acyclic_harness_core::runtime::ToolContext>,
-        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<Option<ToolResult>>>
-        {
-            Box::pin(async { Ok(None) })
-        }
-    }
-    let schema = serde_json::json!({"type":"object"});
-    Tool {
-        hook_names: &[],
-        definition: ToolDefinition {
-            name: name.into(),
-            revision: "1".into(),
-            description: "Echo".into(),
-            input_schema: schema.clone(),
-            output_schema: schema.clone(),
-            projection_schema: acyclic_harness_core::tool::json_projection_schema(schema),
-        },
-        executor: Arc::new(Echo),
-        projection: Arc::new(JsonToolProjection),
-    }
-}
 
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
