@@ -144,7 +144,7 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
                         },
                         acyclic_stream::CommitMutation::Append {
                             path,
-                            records: vec![record.into()],
+                            records: vec![acyclic_stream::OwnedBytes::from(record).into()],
                         },
                     ],
                 )],
@@ -178,7 +178,7 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
             .multipart_stream_provider()
             .append(acyclic_stream::AppendRequest {
                 path: self.multipart_path(upload_id)?,
-                records: vec![record.into()],
+                records: vec![acyclic_stream::OwnedBytes::from(record).into()],
                 if_tail: Some(expected_tail),
                 idempotency_key,
             })
