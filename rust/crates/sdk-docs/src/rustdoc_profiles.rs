@@ -345,19 +345,19 @@ pub fn browser_profile_for_package(
 
 fn feature_closure(features: &BTreeMap<String, Vec<String>>, root: &str) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
-    let mut pending = vec![root.to_owned()];
+    let mut pending = vec![root];
     while let Some(feature) = pending.pop() {
-        if !result.insert(feature.clone()) {
+        if !result.insert(feature.to_owned()) {
             continue;
         }
-        if let Some(dependencies) = features.get(&feature) {
+        if let Some(dependencies) = features.get(feature) {
             for dependency in dependencies {
                 let local = dependency.strip_prefix("?").unwrap_or(dependency);
                 if !local.starts_with("dep:")
                     && !local.contains('/')
                     && features.contains_key(local)
                 {
-                    pending.push(local.to_owned());
+                    pending.push(local);
                 }
             }
         }
