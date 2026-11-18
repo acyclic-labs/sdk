@@ -10,9 +10,10 @@ readme = "README.md"
 
 [features]
 model-checking = ["dep:loom"]
-test-support = ["acyclic-auth/test-support", "acyclic-objects/test-support"]
+test-support = ["acyclic-actors-call/test-support", "acyclic-auth/test-support", "acyclic-objects/test-support"]
 
 [dependencies]
+acyclic-actors-call = { version = "=0.2.0", path = "../actors-call" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc-metadata"] }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }

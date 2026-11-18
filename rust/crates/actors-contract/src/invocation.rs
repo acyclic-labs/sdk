@@ -73,8 +73,8 @@ impl Invocation {
     }
 
     /// The shared call journal, bound to this exact target and operation.
-    pub fn call(&self, state: &StreamPath) -> Result<crate::call::CallPath, crate::call::Error> {
-        crate::call::CallPath::new(
+    pub fn call(&self, state: &StreamPath) -> Result<acyclic_actors_call::call::CallPath, acyclic_actors_call::call::Error> {
+        acyclic_actors_call::call::CallPath::new(
             &self.caller,
             &acyclic_auth::encode_component(&self.identity(state.as_str())),
         )

@@ -73,6 +73,7 @@ rust_library(
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/objects:acyclic_objects",
@@ -206,6 +207,7 @@ rust_library(
     deps = [
         ":build_script_wasm",
     ] + [
+        "//rust/crates/actors-call:acyclic_actors_call_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/grpc-observability:acyclic_grpc_observability_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",

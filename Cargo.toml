@@ -9,6 +9,7 @@ members = [
   "plugin/identity",
   "rust/codec-fuzz",
   "rust/crates/actors",
+  "rust/crates/actors-call",
   "rust/crates/actors-contract",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",

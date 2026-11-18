@@ -19,6 +19,7 @@ test = false
 conformance = ["acyclic-stream/conformance"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking", "acyclic-actors-contract/model-checking"]
 test-support = [
+    "acyclic-actors-call/test-support",
     "acyclic-actors-contract/test-support",
     "acyclic-auth/test-support",
     "acyclic-grpc-observability/test-support",
@@ -27,6 +28,7 @@ test-support = [
     "acyclic-stream/test-support"]
 
 [dependencies]
+acyclic-actors-call = { version = "=0.2.0", path = "../actors-call" }
 acyclic-actors-contract = { version = "=0.2.0", path = "../actors-contract" }
 acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }

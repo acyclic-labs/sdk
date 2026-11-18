@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors-call",
  "acyclic-actors-contract",
  "acyclic-auth",
  "acyclic-contract-derive",
@@ -65,9 +66,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-actors-call"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "prost",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "acyclic-actors-contract"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors-call",
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",

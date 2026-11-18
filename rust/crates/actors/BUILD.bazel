@@ -40,6 +40,7 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -157,6 +158,7 @@ rust_binary(
     deps = [
         ":acyclic_actors",
     ] + [
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -237,6 +239,7 @@ rust_test(
         ":acyclic_actors",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -331,6 +334,7 @@ rust_binary(
         ":acyclic_actors",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -401,6 +405,7 @@ rust_binary(
         ":acyclic_actors",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -471,6 +476,7 @@ rust_binary(
         ":acyclic_actors",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -540,6 +546,7 @@ rust_binary(
         ":acyclic_actors",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -609,6 +616,7 @@ rust_binary(
         ":acyclic_actors",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-call:acyclic_actors_call",
         "//rust/crates/actors-contract:acyclic_actors_contract",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -676,6 +684,7 @@ rust_library(
     lint_config = ":lints",
     target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
+        "//rust/crates/actors-call:acyclic_actors_call_wasm",
         "//rust/crates/actors-contract:acyclic_actors_contract_wasm",
         "//rust/crates/auth:acyclic_auth_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",

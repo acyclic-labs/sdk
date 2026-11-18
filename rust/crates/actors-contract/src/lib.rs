@@ -28,8 +28,12 @@ pub use contract::{
 pub mod contract;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
+/// The committed inbox invocation settled on the caller's call journal.
+pub mod invocation;
 /// Deployment versions, cohort selection, call provenance and durable handoff.
 pub mod live_update;
+/// Actor sockets v1: session channel frames and inbox socket events.
+pub mod sockets;
 
 /// Rust-owned Actors v1 wire types and schema metadata.
 #[allow(

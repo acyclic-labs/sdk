@@ -18,6 +18,7 @@
   "acyclic-stream",
   "acyclic-stream-trust",
   "acyclic-objects",
+  "acyclic-actors-call",
   "acyclic-actors-contract",
   "acyclic-actors",
   "acyclic-machines",

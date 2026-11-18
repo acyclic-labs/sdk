@@ -1,0 +1,26 @@
+[package]
+name = "acyclic-actors-call"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Actors caller-owned call journal and per-agent spend escrow"
+readme = "README.md"
+
+[features]
+test-support = ["acyclic-stream/test-support"]
+
+[dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+bytes = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance", "test-support"] }
+futures.workspace = true
+prost.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

@@ -23,7 +23,7 @@ pub use acyclic_actors_contract::wire;
 pub use acyclic_actors_contract::{FILE_DESCRIPTOR_SET, HTTP_ROUTES};
 
 /// The one invocation protocol: a caller-owned call journal.
-pub mod call;
+pub use acyclic_actors_call::call;
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 
@@ -31,12 +31,12 @@ pub mod client;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 /// Per-agent spend balances staged in the original actor step transaction.
-pub mod escrow;
+pub use acyclic_actors_call::escrow;
 /// Event-owned hosting of an arbitrary Handler over injected storage.
 pub mod hosting;
 mod identity;
 /// Inbox invocation protocol shared by native and hosted actors.
-pub mod invocation;
+pub use acyclic_actors_contract::invocation;
 /// Provider-backed actor storage and the single-node `local::Runtime`.
 pub mod local;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.
@@ -44,7 +44,7 @@ pub mod namespace;
 /// Reusable fenced reservations over the actor's original checkpoint/alarm.
 pub mod reservation;
 /// Actor sockets v1: session channel frames and inbox socket events.
-pub mod sockets;
+pub use acyclic_actors_contract::sockets;
 
 /// Native gRPC client for the canonical Actors v1 service.
 #[cfg(not(target_arch = "wasm32"))]
