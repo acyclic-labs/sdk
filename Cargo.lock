@@ -720,6 +720,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-fs-work",
  "acyclic-harness",
+ "acyclic-harness-core",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",

@@ -1,6 +1,6 @@
 use super::TestResult;
 use acyclic_fs::{Fs, LocalAuthorityBackend, LocalObjectBackend, LocalOptions};
-use acyclic_harness::{
+use acyclic_harness_core::{
     AgentId, Capabilities, IdempotencyKey,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
@@ -32,7 +32,7 @@ pub(super) async fn seed(
     AuthorityRoot,
 )> {
     acyclic_native_runtime::initialize_native_io_services()?;
-    let provider = acyclic_harness::resources::ProviderRef::new(
+    let provider = acyclic_harness_core::resources::ProviderRef::new(
         "diff-e2e".into(),
         "filesystem".into(),
         "2".into(),
