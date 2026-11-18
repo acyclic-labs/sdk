@@ -66,7 +66,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     provider: &P,
     path: acyclic_stream::StreamPath,
     limits: FilesystemS3Limits,
-) -> MultipartDecodeResult<MultipartSnapshot> {
+) -> MultipartStorageResult<MultipartSnapshot> {
     let mut work = crate::WorkCounters {
         backend_read_operations: 1,
         ..crate::WorkCounters::default()
@@ -74,16 +74,16 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     let tail = provider
         .tail(path.clone())
         .await
-        .map_err(MultipartDecodeError::Stream)?;
+        .map_err(MultipartStorageError::Stream)?;
     if tail == 0 {
-        return Err(MultipartDecodeError::Malformed);
+        return Err(MultipartStorageError::Malformed);
     }
     let mut replay: Option<MultipartReplay> = None;
     let mut from = 0_u64;
     while from < tail {
         let remaining = tail - from;
         let limit = u32::try_from(remaining.min(acyclic_stream::MAX_ITEMS as u64))
-            .map_err(|_| MultipartDecodeError::InconsistentStream)?;
+            .map_err(|_| MultipartStorageError::InconsistentStream)?;
         let mut page = provider
             .read(acyclic_stream::ReadRequest {
                 key: None,
@@ -93,29 +93,29 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
                 at_least: Default::default(),
             })
             .await
-            .map_err(MultipartDecodeError::Stream)?;
+            .map_err(MultipartStorageError::Stream)?;
         work.backend_read_operations = work
             .backend_read_operations
             .checked_add(1)
-            .ok_or(MultipartDecodeError::InconsistentStream)?;
+            .ok_or(MultipartStorageError::InconsistentStream)?;
         let mut received = 0_u64;
         while let Some(record) = page.next().await {
-            let record = record.map_err(MultipartDecodeError::Stream)?;
+            let record = record.map_err(MultipartStorageError::Stream)?;
             if received >= u64::from(limit) || record.sequence != from + received {
-                return Err(MultipartDecodeError::InconsistentStream);
+                return Err(MultipartStorageError::InconsistentStream);
             }
             work.authority_records_read = work
                 .authority_records_read
                 .checked_add(1)
-                .ok_or(MultipartDecodeError::InconsistentStream)?;
+                .ok_or(MultipartStorageError::InconsistentStream)?;
             work.authority_bytes_read = work
                 .authority_bytes_read
                 .checked_add(record.value.len() as u64)
-                .ok_or(MultipartDecodeError::InconsistentStream)?;
+                .ok_or(MultipartStorageError::InconsistentStream)?;
             work.items_examined = work
                 .items_examined
                 .checked_add(1)
-                .ok_or(MultipartDecodeError::InconsistentStream)?;
+                .ok_or(MultipartStorageError::InconsistentStream)?;
             if let Some(replay) = &mut replay {
                 replay.push(&record.value)?;
             } else {
@@ -124,20 +124,26 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
             received += 1;
         }
         if received == 0 {
-            return Err(MultipartDecodeError::InconsistentStream);
+            return Err(MultipartStorageError::InconsistentStream);
         }
         from = from
             .checked_add(received)
-            .ok_or(MultipartDecodeError::InconsistentStream)?;
+            .ok_or(MultipartStorageError::InconsistentStream)?;
     }
-    let mut snapshot = replay.ok_or(MultipartDecodeError::NoSuchUpload)?.snapshot;
+    let mut snapshot = replay.ok_or(MultipartStorageError::NoSuchUpload)?.snapshot;
     snapshot.work = work;
     Ok(snapshot)
 }
 
 /// Persisted multipart refusal, projected only at the S3 service boundary.
 #[derive(Debug, thiserror::Error)]
-enum MultipartDecodeError {
+pub enum MultipartStorageError {
+    #[error("multipart limits are invalid")]
+    InvalidLimits,
+    #[error("multipart retention was cancelled")]
+    Cancelled,
+    #[error("multipart retention exceeded its budget")]
+    BudgetExceeded,
     #[error("multipart upload does not exist")]
     NoSuchUpload,
     #[error("multipart record is malformed")]
@@ -150,21 +156,21 @@ enum MultipartDecodeError {
     InconsistentStream,
 }
 
-type MultipartDecodeResult<T = ()> = Result<T, MultipartDecodeError>;
+type MultipartStorageResult<T = ()> = Result<T, MultipartStorageError>;
 
 /// Decodes and validates the leading `created` record of a multipart record stream, returning the upload's key and its negotiated part bounds.
 fn decode_multipart_header(
     created: &acyclic_stream::OwnedBytes,
     limits: FilesystemS3Limits,
-) -> MultipartDecodeResult<(String, Option<u32>, Option<u64>, u64)> {
+) -> MultipartStorageResult<(String, Option<u32>, Option<u64>, u64)> {
     let mut cursor = RecordCursor::new(created);
     cursor.header(1)?;
     let key_length = cursor.u32()?;
     if key_length == 0 {
-        return Err(MultipartDecodeError::Malformed);
+        return Err(MultipartStorageError::Malformed);
     }
     let key = std::str::from_utf8(cursor.take(key_length as usize)?)
-        .map_err(|_| MultipartDecodeError::Malformed)?
+        .map_err(|_| MultipartStorageError::Malformed)?
         .to_owned();
     let maximum_parts = std::num::NonZeroU32::new(cursor.u32()?).map(std::num::NonZeroU32::get);
     let maximum_part_bytes =
@@ -179,7 +185,7 @@ fn decode_multipart_header(
             .is_some_and(|maximum| maximum_part_bytes.is_none_or(|saved| saved > maximum))
         || maximum_part_bytes.is_some_and(|maximum| minimum_part_bytes > maximum)
     {
-        return Err(MultipartDecodeError::Malformed);
+        return Err(MultipartStorageError::Malformed);
     }
     Ok((key, maximum_parts, maximum_part_bytes, minimum_part_bytes))
 }
@@ -197,7 +203,7 @@ impl MultipartReplay {
         created: &acyclic_stream::OwnedBytes,
         tail: u64,
         limits: FilesystemS3Limits,
-    ) -> MultipartDecodeResult<Self> {
+    ) -> MultipartStorageResult<Self> {
         let (key, maximum_parts, maximum_part_bytes, minimum_part_bytes) =
             decode_multipart_header(created, limits)?;
         Ok(Self {
@@ -217,7 +223,7 @@ impl MultipartReplay {
         })
     }
 
-    fn push(&mut self, record: &acyclic_stream::OwnedBytes) -> MultipartDecodeResult<()> {
+    fn push(&mut self, record: &acyclic_stream::OwnedBytes) -> MultipartStorageResult<()> {
         let MultipartSnapshot {
             parts,
             operations,
@@ -227,7 +233,7 @@ impl MultipartReplay {
         let mut cursor = RecordCursor::new(record);
         let tag = cursor.any_header()?;
         if terminal.is_some() && tag != 4 {
-            return Err(MultipartDecodeError::Malformed);
+            return Err(MultipartStorageError::Malformed);
         }
         match tag {
             2 => {
@@ -245,13 +251,13 @@ impl MultipartReplay {
                         .maximum_part_bytes
                         .is_some_and(|maximum| logical_bytes > maximum)
                 {
-                    return Err(MultipartDecodeError::Malformed);
+                    return Err(MultipartStorageError::Malformed);
                 }
                 let etag = format!("\"{}\"", hex::encode(etag_digest));
                 if let Some((prior_number, prior_etag)) = operations.get(&operation)
                     && (*prior_number != part_number || prior_etag != &etag)
                 {
-                    return Err(MultipartDecodeError::Malformed);
+                    return Err(MultipartStorageError::Malformed);
                 }
                 operations.insert(operation, (part_number, etag.clone()));
                 parts.insert(
@@ -265,14 +271,14 @@ impl MultipartReplay {
             3 => {
                 let count = cursor.u32()?;
                 if count == 0 || self.maximum_parts.is_some_and(|maximum| count > maximum) {
-                    return Err(MultipartDecodeError::Malformed);
+                    return Err(MultipartStorageError::Malformed);
                 }
                 if usize::try_from(count)
                     .ok()
                     .and_then(|count| count.checked_mul(36))
                     != Some(cursor.remaining_len())
                 {
-                    return Err(MultipartDecodeError::Malformed);
+                    return Err(MultipartStorageError::Malformed);
                 }
                 let mut selected = Vec::with_capacity(count as usize);
                 for _ in 0..count {
@@ -287,10 +293,10 @@ impl MultipartReplay {
             4 => {
                 let generation =
                     crate::GenerationId::from_bytes(cursor.take(record.len().saturating_sub(2))?)
-                        .ok_or(MultipartDecodeError::Malformed)?;
+                        .ok_or(MultipartStorageError::Malformed)?;
                 cursor.finish()?;
                 if !matches!(terminal, Some(MultipartTerminal::Completing(_))) {
-                    return Err(MultipartDecodeError::Malformed);
+                    return Err(MultipartStorageError::Malformed);
                 }
                 *terminal = Some(MultipartTerminal::Completed(generation));
             }
@@ -298,7 +304,7 @@ impl MultipartReplay {
                 cursor.finish()?;
                 *terminal = Some(MultipartTerminal::Aborted);
             }
-            _ => return Err(MultipartDecodeError::Malformed),
+            _ => return Err(MultipartStorageError::Malformed),
         }
         Ok(())
     }
@@ -309,9 +315,9 @@ fn decode_multipart(
     records: Vec<acyclic_stream::OwnedBytes>,
     tail: u64,
     limits: FilesystemS3Limits,
-) -> MultipartDecodeResult<MultipartSnapshot> {
+) -> MultipartStorageResult<MultipartSnapshot> {
     let mut records = records.into_iter();
-    let created = records.next().ok_or(MultipartDecodeError::NoSuchUpload)?;
+    let created = records.next().ok_or(MultipartStorageError::NoSuchUpload)?;
     let mut replay = MultipartReplay::new(&created, tail, limits)?;
     for record in records {
         replay.push(&record)?;
@@ -329,81 +335,81 @@ impl<'a> RecordCursor<'a> {
         Self { bytes, offset: 0 }
     }
 
-    fn take(&mut self, count: usize) -> MultipartDecodeResult<&'a [u8]> {
+    fn take(&mut self, count: usize) -> MultipartStorageResult<&'a [u8]> {
         let end = self
             .offset
             .checked_add(count)
-            .ok_or(MultipartDecodeError::Malformed)?;
+            .ok_or(MultipartStorageError::Malformed)?;
         let value = self
             .bytes
             .get(self.offset..end)
-            .ok_or(MultipartDecodeError::Malformed)?;
+            .ok_or(MultipartStorageError::Malformed)?;
         self.offset = end;
         Ok(value)
     }
 
-    fn object(&mut self) -> MultipartDecodeResult<ObjectId> {
+    fn object(&mut self) -> MultipartStorageResult<ObjectId> {
         let (object, remaining) = ObjectId::from_prefix(
             self.bytes
                 .get(self.offset..)
-                .ok_or(MultipartDecodeError::Malformed)?,
+                .ok_or(MultipartStorageError::Malformed)?,
         )
-        .map_err(|_| MultipartDecodeError::Malformed)?;
+        .map_err(|_| MultipartStorageError::Malformed)?;
         self.offset = self.bytes.len() - remaining.len();
         Ok(object)
     }
 
-    fn u8(&mut self) -> MultipartDecodeResult<u8> {
+    fn u8(&mut self) -> MultipartStorageResult<u8> {
         self.take(1)?
             .first()
             .copied()
-            .ok_or(MultipartDecodeError::Malformed)
+            .ok_or(MultipartStorageError::Malformed)
     }
 
-    fn u32(&mut self) -> MultipartDecodeResult<u32> {
+    fn u32(&mut self) -> MultipartStorageResult<u32> {
         Ok(u32::from_le_bytes(
             self.take(4)?
                 .try_into()
-                .map_err(|_| MultipartDecodeError::Malformed)?,
+                .map_err(|_| MultipartStorageError::Malformed)?,
         ))
     }
 
-    fn u64(&mut self) -> MultipartDecodeResult<u64> {
+    fn u64(&mut self) -> MultipartStorageResult<u64> {
         Ok(u64::from_le_bytes(
             self.take(8)?
                 .try_into()
-                .map_err(|_| MultipartDecodeError::Malformed)?,
+                .map_err(|_| MultipartStorageError::Malformed)?,
         ))
     }
 
-    fn array32(&mut self) -> MultipartDecodeResult<[u8; 32]> {
+    fn array32(&mut self) -> MultipartStorageResult<[u8; 32]> {
         self.take(32)?
             .try_into()
-            .map_err(|_| MultipartDecodeError::Malformed)
+            .map_err(|_| MultipartStorageError::Malformed)
     }
 
-    fn array16(&mut self) -> MultipartDecodeResult<[u8; 16]> {
+    fn array16(&mut self) -> MultipartStorageResult<[u8; 16]> {
         self.take(16)?
             .try_into()
-            .map_err(|_| MultipartDecodeError::Malformed)
+            .map_err(|_| MultipartStorageError::Malformed)
     }
 
-    fn any_header(&mut self) -> MultipartDecodeResult<u8> {
+    fn any_header(&mut self) -> MultipartStorageResult<u8> {
         let version = self
             .bytes
             .get(self.offset)
             .copied()
-            .ok_or(MultipartDecodeError::UnsupportedVersion(0))?;
+            .ok_or(MultipartStorageError::UnsupportedVersion(0))?;
         if version != MULTIPART_RECORD_VERSION {
-            return Err(MultipartDecodeError::UnsupportedVersion(version));
+            return Err(MultipartStorageError::UnsupportedVersion(version));
         }
         self.u8()?;
         self.u8()
     }
 
-    fn header(&mut self, tag: u8) -> MultipartDecodeResult {
+    fn header(&mut self, tag: u8) -> MultipartStorageResult {
         if self.any_header()? != tag {
-            return Err(MultipartDecodeError::Malformed);
+            return Err(MultipartStorageError::Malformed);
         }
         Ok(())
     }
@@ -412,9 +418,9 @@ impl<'a> RecordCursor<'a> {
         self.bytes.len() - self.offset
     }
 
-    fn finish(&self) -> MultipartDecodeResult {
+    fn finish(&self) -> MultipartStorageResult {
         if self.remaining_len() != 0 {
-            return Err(MultipartDecodeError::Malformed);
+            return Err(MultipartStorageError::Malformed);
         }
         Ok(())
     }
@@ -435,12 +441,12 @@ mod multipart_proofs {
         if length == 0 || input[0] != MULTIPART_RECORD_VERSION {
             assert!(matches!(
                 result,
-                Err(MultipartDecodeError::UnsupportedVersion(found))
+                Err(MultipartStorageError::UnsupportedVersion(found))
                     if found == if length == 0 { 0 } else { input[0] }
             ));
             assert_eq!(cursor.offset, 0);
         } else if length == 1 {
-            assert!(matches!(result, Err(MultipartDecodeError::Malformed)));
+            assert!(matches!(result, Err(MultipartStorageError::Malformed)));
             assert_eq!(cursor.offset, 1);
         } else {
             assert_eq!(result.unwrap(), input[1]);

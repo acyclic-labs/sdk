@@ -76,29 +76,29 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
     for version in [0, 2, u8::MAX] {
         let mut header = RecordCursor::new(std::slice::from_ref(&version));
         assert!(
-            matches!(header.any_header(), Err(MultipartDecodeError::UnsupportedVersion(found)) if found == version)
+            matches!(header.any_header(), Err(MultipartStorageError::UnsupportedVersion(found)) if found == version)
         );
         assert_eq!(
             header.offset, 0,
             "unsupported version must not consume a payload field"
         );
-        let error: s3s::S3Error = MultipartDecodeError::UnsupportedVersion(version).into();
+        let error: s3s::S3Error = MultipartStorageError::UnsupportedVersion(version).into();
         assert_eq!(error.code(), &s3s::S3ErrorCode::NotImplemented);
         let record = Bytes::copy_from_slice(&[version]).into();
         assert!(matches!(
             decode_multipart(vec![record], 1, FilesystemS3Limits::default()),
-            Err(MultipartDecodeError::UnsupportedVersion(found)) if found == version
+            Err(MultipartStorageError::UnsupportedVersion(found)) if found == version
         ));
     }
     let mut missing = RecordCursor::new(&[]);
     assert!(matches!(
         missing.any_header(),
-        Err(MultipartDecodeError::UnsupportedVersion(0))
+        Err(MultipartStorageError::UnsupportedVersion(0))
     ));
     let mut truncated = RecordCursor::new(&[MULTIPART_RECORD_VERSION]);
     assert!(matches!(
         truncated.any_header(),
-        Err(MultipartDecodeError::Malformed)
+        Err(MultipartStorageError::Malformed)
     ));
     // The declared count cannot allocate beyond the actual fixed-width entries,
     // even when the caller configured the widest representable part bound.
@@ -116,9 +116,9 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
             2,
             limits
         ),
-        Err(MultipartDecodeError::Malformed)
+        Err(MultipartStorageError::Malformed)
     ));
-    let malformed: s3s::S3Error = MultipartDecodeError::Malformed.into();
+    let malformed: s3s::S3Error = MultipartStorageError::Malformed.into();
     assert_eq!(malformed.code(), &s3s::S3ErrorCode::InvalidRequest);
     Ok(())
 }

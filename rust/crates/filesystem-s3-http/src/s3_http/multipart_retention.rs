@@ -6,27 +6,28 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
     retention_limits: S3MultipartRetentionLimits,
     budget: crate::WorkBudget,
     cancellation: &CancellationToken,
-) -> S3Result<crate::OperationReceipt<Vec<ObjectId>>> {
+) -> MultipartStorageResult<crate::OperationReceipt<Vec<ObjectId>>> {
     let protocol_limits = protocol_limits
         .validate()
-        .map_err(|_| s3s::s3_error!(InvalidArgument))?;
+        .map_err(|_| MultipartStorageError::InvalidLimits)?;
     let retention_limits = retention_limits
         .validate()
-        .map_err(|_| s3s::s3_error!(InvalidArgument))?;
+        .map_err(|_| MultipartStorageError::InvalidLimits)?;
     cancellation
         .check()
-        .map_err(|_| s3s::s3_error!(RequestTimeout))?;
+        .map_err(|_| MultipartStorageError::Cancelled)?;
     let (roots, mut work) =
         discover_s3_multipart_roots(provider, protocol_limits, retention_limits).await?;
-    work.verify(budget).map_err(|_| s3s::s3_error!(SlowDown))?;
+    work.verify(budget)
+        .map_err(|_| MultipartStorageError::BudgetExceeded)?;
     let mut retained = BTreeMap::new();
     for staged in roots {
         cancellation
             .check()
-            .map_err(|_| s3s::s3_error!(RequestTimeout))?;
+            .map_err(|_| MultipartStorageError::Cancelled)?;
         let remaining = work
             .remaining(budget)
-            .map_err(|_| s3s::s3_error!(SlowDown))?;
+            .map_err(|_| MultipartStorageError::BudgetExceeded)?;
         let (closure, nested) = crate::kernel::prove_blob_closure_async(
             objects,
             staged.root(),
@@ -42,15 +43,15 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
             cancellation,
         )
         .await
-        .map_err(|_| s3s::s3_error!(InternalError))?;
+        .map_err(|_| MultipartStorageError::InconsistentStream)?;
         work = work
             .checked_add(nested)
-            .map_err(|_| s3s::s3_error!(InternalError))?;
+            .map_err(|_| MultipartStorageError::InconsistentStream)?;
         if retention_limits
             .maximum_object_bytes
             .is_some_and(|maximum| work.object_bytes_read > maximum)
         {
-            return Err(s3s::s3_error!(SlowDown));
+            return Err(MultipartStorageError::BudgetExceeded);
         }
         for object in closure {
             retained.insert(object, ());
@@ -59,10 +60,11 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
             .maximum_objects
             .is_some_and(|maximum| retained.len() as u64 > maximum)
         {
-            return Err(s3s::s3_error!(SlowDown));
+            return Err(MultipartStorageError::BudgetExceeded);
         }
     }
-    work.verify(budget).map_err(|_| s3s::s3_error!(SlowDown))?;
+    work.verify(budget)
+        .map_err(|_| MultipartStorageError::BudgetExceeded)?;
     Ok(crate::OperationReceipt {
         value: retained.into_keys().collect(),
         work,
@@ -77,36 +79,36 @@ async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
     upload_paths: &mut BTreeMap<String, acyclic_stream::StreamPath>,
     examined: &mut u64,
     work: &mut crate::WorkCounters,
-) -> S3Result<()> {
+) -> MultipartStorageResult<()> {
     let suffix = registry
         .as_str()
         .strip_prefix("fs/s3-multipart/registry/")
-        .ok_or_else(|| s3s::s3_error!(InternalError))?;
+        .ok_or(MultipartStorageError::InconsistentStream)?;
     if suffix.len() != 2 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(s3s::s3_error!(InternalError));
+        return Err(MultipartStorageError::InconsistentStream);
     }
     let tail = provider
         .tail(registry.clone())
         .await
-        .map_err(|error| stream_read_error(&error))?;
+        .map_err(MultipartStorageError::Stream)?;
     work.backend_read_operations = work
         .backend_read_operations
         .checked_add(1)
-        .ok_or_else(|| s3s::s3_error!(InternalError))?;
+        .ok_or(MultipartStorageError::InconsistentStream)?;
     let mut from = 0_u64;
     while from < tail {
         let available = retention_limits
             .maximum_uploads
             .map_or(tail - from, |maximum| maximum.saturating_sub(*examined));
         if available == 0 {
-            return Err(s3s::s3_error!(SlowDown));
+            return Err(MultipartStorageError::BudgetExceeded);
         }
         let limit = u32::try_from(
             (tail - from)
                 .min(available)
                 .min(acyclic_stream::MAX_ITEMS as u64),
         )
-        .map_err(|_| s3s::s3_error!(InternalError))?;
+        .map_err(|_| MultipartStorageError::InconsistentStream)?;
         let mut records = provider
             .read(acyclic_stream::ReadRequest {
                 key: None,
@@ -116,45 +118,45 @@ async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
                 at_least: Default::default(),
             })
             .await
-            .map_err(|error| stream_read_error(&error))?;
+            .map_err(MultipartStorageError::Stream)?;
         work.backend_read_operations = work
             .backend_read_operations
             .checked_add(1)
-            .ok_or_else(|| s3s::s3_error!(InternalError))?;
+            .ok_or(MultipartStorageError::InconsistentStream)?;
         let before = *examined;
         while let Some(record) = records.next().await {
-            let record = record.map_err(|error| stream_read_error(&error))?;
+            let record = record.map_err(MultipartStorageError::Stream)?;
             if record.sequence != from + (*examined - before) {
-                return Err(s3s::s3_error!(InternalError));
+                return Err(MultipartStorageError::InconsistentStream);
             }
-            let path =
-                std::str::from_utf8(&record.value).map_err(|_| s3s::s3_error!(InternalError))?;
-            let path =
-                acyclic_stream::StreamPath::new(path).map_err(|_| s3s::s3_error!(InternalError))?;
+            let path = std::str::from_utf8(&record.value)
+                .map_err(|_| MultipartStorageError::InconsistentStream)?;
+            let path = acyclic_stream::StreamPath::new(path)
+                .map_err(|_| MultipartStorageError::InconsistentStream)?;
             validate_multipart_stream_path(&path)?;
             upload_paths.insert(path.as_str().to_owned(), path);
             work.authority_records_read = work
                 .authority_records_read
                 .checked_add(1)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+                .ok_or(MultipartStorageError::InconsistentStream)?;
             work.authority_bytes_read = work
                 .authority_bytes_read
                 .checked_add(record.value.len() as u64)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+                .ok_or(MultipartStorageError::InconsistentStream)?;
             work.items_examined = work
                 .items_examined
                 .checked_add(1)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+                .ok_or(MultipartStorageError::InconsistentStream)?;
             *examined = examined
                 .checked_add(1)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+                .ok_or(MultipartStorageError::InconsistentStream)?;
         }
         if *examined == before {
-            return Err(s3s::s3_error!(InternalError));
+            return Err(MultipartStorageError::InconsistentStream);
         }
         from = from
             .checked_add(*examined - before)
-            .ok_or_else(|| s3s::s3_error!(InternalError))?;
+            .ok_or(MultipartStorageError::InconsistentStream)?;
     }
     Ok(())
 }
@@ -163,9 +165,9 @@ async fn discover_s3_multipart_roots<P: acyclic_stream::StreamProvider>(
     provider: &P,
     protocol_limits: FilesystemS3Limits,
     retention_limits: S3MultipartRetentionLimits,
-) -> S3Result<(Vec<StagedContent>, crate::WorkCounters)> {
+) -> MultipartStorageResult<(Vec<StagedContent>, crate::WorkCounters)> {
     let root = acyclic_stream::StreamPath::new("fs/s3-multipart/registry")
-        .map_err(|_| s3s::s3_error!(InternalError))?;
+        .map_err(|_| MultipartStorageError::InconsistentStream)?;
     let (registries, mut work) =
         bounded_children(provider, root, 256, "fs/s3-multipart/registry/").await?;
     let mut upload_paths = BTreeMap::new();
@@ -186,7 +188,7 @@ async fn discover_s3_multipart_roots<P: acyclic_stream::StreamProvider>(
         let snapshot = read_multipart_snapshot(provider, upload, protocol_limits).await?;
         work = work
             .checked_add(snapshot.work)
-            .map_err(|_| s3s::s3_error!(InternalError))?;
+            .map_err(|_| MultipartStorageError::InconsistentStream)?;
         if matches!(
             snapshot.terminal,
             Some(MultipartTerminal::Completed(_) | MultipartTerminal::Aborted)
@@ -200,25 +202,25 @@ async fn discover_s3_multipart_roots<P: acyclic_stream::StreamProvider>(
     Ok((roots.into_values().collect(), work))
 }
 
-fn validate_multipart_stream_path(path: &acyclic_stream::StreamPath) -> S3Result {
+fn validate_multipart_stream_path(path: &acyclic_stream::StreamPath) -> MultipartStorageResult {
     let suffix = path
         .as_str()
         .strip_prefix("fs/s3-multipart/")
-        .ok_or_else(|| s3s::s3_error!(InternalError))?;
+        .ok_or(MultipartStorageError::InconsistentStream)?;
     let mut segments = suffix.split('/');
     let workspace = segments
         .next()
-        .ok_or_else(|| s3s::s3_error!(InternalError))?;
+        .ok_or(MultipartStorageError::InconsistentStream)?;
     let upload = segments
         .next()
-        .ok_or_else(|| s3s::s3_error!(InternalError))?;
+        .ok_or(MultipartStorageError::InconsistentStream)?;
     if segments.next().is_some()
         || workspace.len() != 32
         || upload.len() != 32
         || !workspace.bytes().all(|byte| byte.is_ascii_hexdigit())
         || !upload.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        return Err(s3s::s3_error!(InternalError));
+        return Err(MultipartStorageError::InconsistentStream);
     }
     Ok(())
 }
@@ -228,10 +230,10 @@ async fn bounded_children<P: acyclic_stream::StreamProvider>(
     parent: acyclic_stream::StreamPath,
     maximum: u32,
     exact_prefix: &str,
-) -> S3Result<(Vec<acyclic_stream::StreamPath>, crate::WorkCounters)> {
+) -> MultipartStorageResult<(Vec<acyclic_stream::StreamPath>, crate::WorkCounters)> {
     let limit = maximum
         .checked_add(1)
-        .ok_or_else(|| s3s::s3_error!(InvalidArgument))?;
+        .ok_or(MultipartStorageError::InvalidLimits)?;
     let page = provider
         .children_page(acyclic_stream::ChildrenPageRequest {
             offset: 0,
@@ -242,18 +244,18 @@ async fn bounded_children<P: acyclic_stream::StreamProvider>(
             hierarchy_version: None,
         })
         .await
-        .map_err(|error| stream_read_error(&error))?;
+        .map_err(MultipartStorageError::Stream)?;
     let mut children = Vec::new();
     for child in page.children {
         let path = child.path;
         match path.as_str().strip_prefix(exact_prefix) {
             Some(remainder) if !remainder.contains('/') => {}
-            _ => return Err(s3s::s3_error!(InternalError)),
+            _ => return Err(MultipartStorageError::InconsistentStream),
         }
         children.push(path);
     }
     if children.len() > maximum as usize {
-        return Err(s3s::s3_error!(SlowDown));
+        return Err(MultipartStorageError::BudgetExceeded);
     }
     let child_count = children.len() as u64;
     Ok((

@@ -170,14 +170,17 @@ fn validate_completed_parts(
     Ok(())
 }
 
-impl From<MultipartDecodeError> for s3s::S3Error {
-    fn from(error: MultipartDecodeError) -> Self {
+impl From<MultipartStorageError> for s3s::S3Error {
+    fn from(error: MultipartStorageError) -> Self {
         match error {
-            MultipartDecodeError::NoSuchUpload => s3s::s3_error!(NoSuchUpload),
-            MultipartDecodeError::Malformed => s3s::s3_error!(InvalidRequest),
-            MultipartDecodeError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),
-            MultipartDecodeError::Stream(error) => stream_read_error(&error),
-            MultipartDecodeError::InconsistentStream => s3s::s3_error!(InternalError),
+            MultipartStorageError::InvalidLimits => s3s::s3_error!(InvalidArgument),
+            MultipartStorageError::Cancelled => s3s::s3_error!(RequestTimeout),
+            MultipartStorageError::BudgetExceeded => s3s::s3_error!(SlowDown),
+            MultipartStorageError::NoSuchUpload => s3s::s3_error!(NoSuchUpload),
+            MultipartStorageError::Malformed => s3s::s3_error!(InvalidRequest),
+            MultipartStorageError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),
+            MultipartStorageError::Stream(error) => stream_read_error(&error),
+            MultipartStorageError::InconsistentStream => s3s::s3_error!(InternalError),
         }
     }
 }
