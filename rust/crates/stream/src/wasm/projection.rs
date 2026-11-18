@@ -17,13 +17,12 @@ pub fn grpc_error_code(code: i32, message: &str) -> String {
 #[wasm_bindgen(js_name = grpcStatusError)]
 pub fn grpc_status_error(code: i32, message: &str, metadata: Vec<String>) -> JsValue {
     let mut headers = ::http::HeaderMap::new();
-    for pair in metadata.chunks_exact(2) {
-        if let [name, value] = pair
-            && let (Ok(name), Ok(value)) = (
-                ::http::HeaderName::from_bytes(name.as_bytes()),
-                ::http::HeaderValue::from_str(value),
-            )
-        {
+    let mut metadata = metadata.into_iter();
+    while let (Some(name), Some(value)) = (metadata.next(), metadata.next()) {
+        if let (Ok(name), Ok(value)) = (
+            ::http::HeaderName::from_bytes(name.as_bytes()),
+            ::http::HeaderValue::from_str(&value),
+        ) {
             headers.append(name, value);
         }
     }
@@ -98,11 +97,11 @@ pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), Js
 pub fn decode_http_response(
     route: &str,
     response_json: &str,
-    followed: Option<String>,
+    followed: Option<&str>,
 ) -> Result<JsValue, JsValue> {
     let value: Value = serde_json::from_str(response_json)
         .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
-    http::decode(route, &value, followed.as_deref()).map_err(JsValue::from_str)
+    http::decode(route, &value, followed).map_err(JsValue::from_str)
 }
 
 /// Decode one unary memory-provider response from canonical protobuf bytes

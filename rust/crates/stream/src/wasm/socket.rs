@@ -208,7 +208,7 @@ impl Transport for Endpoint {
                             Either::Left(Some(frame)) => {
                                 // Admission occurs at consumption, before copying
                                 // or decoding the queued browser buffer.
-                                let frame = decode_frame(frame)?;
+                                let frame = decode_frame(&frame)?;
                                 return Ok(Some((
                                     frame.into(),
                                     (guard, receiver, source, incoming, changed),
@@ -247,8 +247,8 @@ impl Transport for Endpoint {
         })
     }
 }
-fn decode_frame(data: js_sys::ArrayBuffer) -> Result<wire::SessionFrame, StreamError> {
-    let bytes = Uint8Array::new(&data);
+fn decode_frame(data: &js_sys::ArrayBuffer) -> Result<wire::SessionFrame, StreamError> {
+    let bytes = Uint8Array::new(data);
     wire_codec::session::decode_frame(&bytes.to_vec())
 }
 

@@ -228,29 +228,27 @@ pub(super) struct Observer<'a> {
     pub(super) before: Option<Before>,
 }
 impl crate::replicated::ReplayObserver for Observer<'_> {
-    fn observe<'a>(
+    async fn observe<'a>(
         &'a mut self,
         provider: &'a MemoryStream,
         command: &'a WriteRequest,
         after: bool,
-    ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
-        async move {
-            if after {
-                if let Some(before) = self.before.take() {
-                    before
-                        .collect(provider, self.changed, &self.stream.inner.publications)
-                        .await?;
-                    self.announced = self.cursor + 1;
-                }
-                self.cursor += 1;
-            } else {
-                self.before = if self.cursor >= self.announced {
-                    Some(Before::capture(provider, command, &self.stream.inner.publications).await?)
-                } else {
-                    None
-                };
+    ) -> Result<(), StreamError> {
+        if after {
+            if let Some(before) = self.before.take() {
+                before
+                    .collect(provider, self.changed, &self.stream.inner.publications)
+                    .await?;
+                self.announced = self.cursor + 1;
             }
-            Ok(())
+            self.cursor += 1;
+        } else {
+            self.before = if self.cursor >= self.announced {
+                Some(Before::capture(provider, command, &self.stream.inner.publications).await?)
+            } else {
+                None
+            };
         }
+        Ok(())
     }
 }
