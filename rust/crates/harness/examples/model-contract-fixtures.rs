@@ -1,6 +1,6 @@
 //! Canonical model exchange fixtures emitted by the actual Rust serializers.
-#![allow(missing_docs, reason = "contract example binary, not public API")]
-use acyclic_harness::{
+
+use acyclic_harness_core::{
     Error, Result,
     conversation::Limits,
     model::{
@@ -28,7 +28,7 @@ fn main() -> Result<()> {
             ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall(
-                    acyclic_harness::model::ToolCall::new(
+                    acyclic_harness_core::model::ToolCall::new(
                         "call-1".into(),
                         "echo".into(),
                         json!("é"),
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
             description: "Echo".into(),
             input_schema: json!({"type":"string"}),
             output_schema: json!({"type":"string"}),
-            projection_schema: acyclic_harness::tool::json_projection_schema(
+            projection_schema: acyclic_harness_core::tool::json_projection_schema(
                 json!({"type":"string"}),
             ),
         }],
