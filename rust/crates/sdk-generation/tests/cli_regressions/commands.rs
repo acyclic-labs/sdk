@@ -439,10 +439,6 @@ impl Queries {
             self.0.replayed_compilers.get(),
         )
     }
-
-    pub(super) fn counts(&self) -> (usize, usize) {
-        (self.0.executed.get(), self.0.replayed.get())
-    }
 }
 
 impl Drop for State {
