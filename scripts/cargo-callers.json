@@ -11,7 +11,6 @@
   "rust/codec-fuzz/capture-controls.mjs",
   "rust/codec-fuzz/mutations/resource-codecs.py",
   "rust/crates/auth/fuzz/negative-control.py",
-  "rust/crates/auth/tests/negative-controls/authorization_guards.py",
   "rust/crates/collections/tests/prefix-control.py",
   "rust/crates/filesystem/benches/workspace_name_pair.py",
   "rust/crates/filesystem/fuzz/qualify_git_markers.py",

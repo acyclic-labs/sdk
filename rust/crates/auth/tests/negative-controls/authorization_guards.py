@@ -16,17 +16,17 @@ PROPERTY = ("noncanonical_resources_and_audiences_never_match" if MODE == "reque
 CONTROLS = ([("request_resource_guard", "NonCanonicalResource"),
              ("request_audience_guard", "NonCanonicalAudience")] if MODE == "request"
             else [("dns_numeric_guard", "!admit(name)")])
-COMMAND = ["cargo", "test", "--locked", "--all-features", "-p", "acyclic-auth",
-           "--test", "main", f"request_hardening::{PROPERTY}",
-           "--", "--exact", "--nocapture"]
+TARGET = "//rust/crates/auth:main_cases"
+CASE = f"request_hardening::{PROPERTY}"
 PATHS = [SOURCE, TEST, HELPER]
 if MODE == "socket-work":
     TEST = SOURCE.parent / "socket/tests.rs"
     PATHS = [SOURCE, TEST]
     CONTROLS = [("socket_validation_work", "left: 32")]
-    COMMAND = ["cargo", "test", "--locked", "--all-features", "-p", "acyclic-auth",
-               "--lib", "socket::tests::destination_validation_is_once_per_grant_not_once_per_rule",
-               "--", "--exact", "--nocapture"]
+    TARGET = "//rust/crates/auth:acyclic_auth_test_cases"
+    CASE = "socket::tests::destination_validation_is_once_per_grant_not_once_per_rule"
+
+COMMAND = ["bazel", "run", TARGET, "--", CASE, "--exact", "--nocapture"]
 
 
 def refuse(step):
