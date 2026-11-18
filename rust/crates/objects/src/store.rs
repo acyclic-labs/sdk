@@ -1899,18 +1899,19 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                     limit,
                 )
                 .await?;
-                let full = keys.len() == limit;
-                let mut last = None;
-                for (key, _) in keys {
+                let mut next = None;
+                for (position, (key, _)) in keys.into_iter().enumerate() {
                     let digest = self.digest_from_key(&key)?;
-                    last = Some(digest);
+                    if position + 1 == limit {
+                        next = Some(digest);
+                    }
                     if self.blob(&digest).await?.is_some() {
                         digests.push(digest);
                     }
                 }
                 Ok(Page {
                     digests,
-                    next: last.filter(|_| full),
+                    next,
                     revision: served,
                 })
             }
