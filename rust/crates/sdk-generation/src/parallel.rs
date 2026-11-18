@@ -21,9 +21,9 @@ where
 {
     let workers = match std::env::var("ACYCLIC_SDK_JOBS") {
         Ok(value) => value.parse().ok().filter(|value| (1..=MAX_WORKERS).contains(value))
-            .unwrap_or_else(|| panic!("STEP_FAILED owner-worker-budget: ACYCLIC_SDK_JOBS must be 1..=32; recovery: env -u ACYCLIC_SDK_JOBS cargo run --locked -p sdk-generation -- --help")),
+            .unwrap_or_else(|| panic!("STEP_FAILED owner-worker-budget: ACYCLIC_SDK_JOBS must be 1..=32; recovery: env -u ACYCLIC_SDK_JOBS bazel run //rust/crates/sdk-generation:sdk-generation -- --help")),
         Err(std::env::VarError::NotPresent) => DEFAULT_WORKERS,
-        Err(_) => panic!("STEP_FAILED owner-worker-budget: non-Unicode ACYCLIC_SDK_JOBS; recovery: env -u ACYCLIC_SDK_JOBS cargo run --locked -p sdk-generation -- --help"),
+        Err(_) => panic!("STEP_FAILED owner-worker-budget: non-Unicode ACYCLIC_SDK_JOBS; recovery: env -u ACYCLIC_SDK_JOBS bazel run //rust/crates/sdk-generation:sdk-generation -- --help"),
     };
     map_with_workers(inputs, workers, operation)
 }

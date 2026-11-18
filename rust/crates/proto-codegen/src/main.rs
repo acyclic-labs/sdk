@@ -16,7 +16,7 @@ fn main() -> io::Result<()> {
         let args = std::env::args().skip(1).collect::<Vec<_>>();
         let step = args.first().map_or("mode selection", String::as_str);
         let recovery = format!(
-            "cargo run --locked -p sdk-proto-codegen -- {}",
+            "bazel run //rust/crates/proto-codegen:sdk-proto-codegen -- {}",
             args.iter()
                 .map(|arg| quote(arg))
                 .collect::<Vec<_>>()
@@ -49,7 +49,7 @@ fn run() -> io::Result<()> {
         let args = std::env::args().skip(2).collect::<Vec<_>>();
         let [root, output, selected @ ..] = args.as_slice() else {
             return Err(io::Error::other(
-                "descriptors expects source root, output directory and optional family; recovery: cargo run -p sdk-proto-codegen -- descriptors . target/descriptors actors",
+                "descriptors expects source root, output directory and optional family; recovery: bazel run //rust/crates/proto-codegen:sdk-proto-codegen -- descriptors <absolute-source-root> <absolute-output-directory> actors",
             ));
         };
         if selected.len() > 1
@@ -60,7 +60,7 @@ fn run() -> io::Result<()> {
             })
         {
             return Err(io::Error::other(
-                "unknown descriptor family; recovery: cargo run -p sdk-proto-codegen -- descriptors . target/descriptors actors",
+                "unknown descriptor family; recovery: bazel run //rust/crates/proto-codegen:sdk-proto-codegen -- descriptors <absolute-source-root> <absolute-output-directory> actors",
             ));
         }
         let root = std::path::Path::new(root);
