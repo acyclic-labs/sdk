@@ -327,7 +327,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         if json["target"]["triple"].as_str() != Some(target) {
             continue;
         }
-        let mut json = (*json).clone();
+        let mut json = Rc::unwrap_or_clone(json);
         let target_dir = Path::new(env("CARGO_TARGET_DIR").unwrap());
         let mut referenced = BTreeMap::new();
         let artifact_target = target_dir.join(output_path.file_stem().unwrap());
