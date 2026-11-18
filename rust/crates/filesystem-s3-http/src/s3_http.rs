@@ -18,6 +18,7 @@ use acyclic_fs::s3_multipart::{
     MultipartPart, MultipartSnapshot, MultipartStorageError, MultipartTerminal,
     StreamBackedAuthority, encode_multipart_aborted, encode_multipart_completed,
     encode_multipart_completing, encode_multipart_created, encode_multipart_part,
+    multipart_cas_operation,
 };
 #[cfg(any(test, feature = "test-support"))]
 use acyclic_fs::s3_multipart::{MultipartStorageResult, decode_multipart};
@@ -28,6 +29,7 @@ use acyclic_fs::{
 use acyclic_fs_format::s3_limits::FilesystemS3Limits;
 #[cfg(test)]
 use acyclic_fs_format::s3_limits::S3MultipartRetentionLimits;
+#[cfg(test)]
 use acyclic_stream::StreamProviderExt as _;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -57,7 +59,6 @@ use subtle::ConstantTimeEq;
 const IDEMPOTENCY_HEADER: &str = "x-acyclic-idempotency-key";
 const SDK_INVOCATION_HEADER: &str = "amz-sdk-invocation-id";
 const SESSION_TOKEN_HEADER: &str = "x-amz-security-token";
-const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
 
 /// One authenticated credential resolved to one exact workspace.
 #[derive(Clone)]

@@ -31,14 +31,33 @@ impl<P: crate::distributed::AuthorityProvider> StreamBackedAuthority for StreamA
     }
 }
 
+const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
+
+/// Derives the retry identity for a conditional upload record.
+pub fn multipart_cas_operation(
+    upload_id: &str,
+    phase: &[u8],
+    operation: IdempotencyKey,
+    expected_tail: u64,
+) -> MultipartStorageResult<acyclic_stream::IdempotencyKey> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(MULTIPART_DOMAIN);
+    hasher.update(phase);
+    hasher.update(upload_id.as_bytes());
+    hasher.update(&operation.into_bytes());
+    hasher.update(&expected_tail.to_le_bytes());
+    acyclic_stream::IdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
+        .map_err(|_| MultipartStorageError::Malformed)
+}
+
 impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
     /// Returns the canonical Stream provider that stores multipart upload records.
-    pub fn multipart_stream_provider(&self) -> Arc<A::Stream> {
+    fn multipart_stream_provider(&self) -> Arc<A::Stream> {
         self.volume.fs.authority().stream_provider()
     }
 
     /// Returns the upload record path under this workspace's multipart namespace.
-    pub fn multipart_path(
+    fn multipart_path(
         &self,
         upload_id: &str,
     ) -> MultipartStorageResult<acyclic_stream::StreamPath> {
@@ -51,6 +70,86 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
             upload_id.to_ascii_lowercase()
         ))
         .map_err(|_| MultipartStorageError::Malformed)
+    }
+
+    /// Derives the upload ID from this workspace and operation.
+    pub fn multipart_upload_id(&self, operation: IdempotencyKey) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(MULTIPART_DOMAIN);
+        hasher.update(b"upload-id\0");
+        hasher.update(&self.id().into_bytes());
+        hasher.update(&operation.into_bytes());
+        hex::encode(&hasher.finalize().as_bytes()[..16])
+    }
+
+    fn multipart_registry_path(
+        upload_id: &str,
+    ) -> MultipartStorageResult<acyclic_stream::StreamPath> {
+        let shard = upload_id
+            .get(..2)
+            .filter(|value| value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or(MultipartStorageError::Malformed)?;
+        acyclic_stream::StreamPath::new(format!(
+            "fs/s3-multipart/registry/{}",
+            shard.to_ascii_lowercase()
+        ))
+        .map_err(|_| MultipartStorageError::Malformed)
+    }
+
+    /// Atomically creates the upload stream and its registry entry.
+    pub async fn create_multipart_record(
+        &self,
+        upload_id: &str,
+        record: Bytes,
+        operation: IdempotencyKey,
+    ) -> MultipartStorageResult<bool> {
+        let path = self.multipart_path(upload_id)?;
+        let provider = self.multipart_stream_provider();
+        let registry = Self::multipart_registry_path(upload_id)?;
+        let (registry_condition, registry_tail) = match provider.tail(registry.clone()).await {
+            Ok(tail) => (
+                acyclic_stream::CommitCondition::Tail {
+                    path: registry.clone(),
+                    expected: tail,
+                },
+                tail,
+            ),
+            Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => (
+                acyclic_stream::CommitCondition::Absent {
+                    path: registry.clone(),
+                },
+                0,
+            ),
+            Err(error) => return Err(MultipartStorageError::Stream(error)),
+        };
+        let attempt = multipart_cas_operation(upload_id, b"create\0", operation, registry_tail)?;
+        let outcome = provider
+            .commit(acyclic_stream::CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    vec![
+                        registry_condition,
+                        acyclic_stream::CommitCondition::Absent { path: path.clone() },
+                    ],
+                    vec![
+                        acyclic_stream::CommitMutation::Append {
+                            path: registry,
+                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
+                        },
+                        acyclic_stream::CommitMutation::Append {
+                            path,
+                            records: vec![record.into()],
+                        },
+                    ],
+                )],
+                idempotency_key: attempt,
+            })
+            .await
+            .map_err(MultipartStorageError::StreamWrite)?;
+        Ok(matches!(
+            outcome,
+            acyclic_stream::CommitOutcome::Committed(_)
+        ))
     }
 
     /// Appends an upload record at the observed tail in this workspace.

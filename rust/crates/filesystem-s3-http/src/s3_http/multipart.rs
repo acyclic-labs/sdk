@@ -12,43 +12,6 @@ where
     A: StreamBackedAuthority,
     O: AsyncObjectStore,
 {
-    fn multipart_upload_id(workspace: &Workspace<A, O>, operation: IdempotencyKey) -> String {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(MULTIPART_DOMAIN);
-        hasher.update(b"upload-id\0");
-        hasher.update(&workspace.id().into_bytes());
-        hasher.update(&operation.into_bytes());
-        hex::encode(&hasher.finalize().as_bytes()[..16])
-    }
-
-    fn multipart_registry_path(upload_id: &str) -> S3Result<acyclic_stream::StreamPath> {
-        let shard = upload_id
-            .get(..2)
-            .filter(|value| value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or_else(|| s3s::s3_error!(InvalidRequest))?;
-        acyclic_stream::StreamPath::new(format!(
-            "fs/s3-multipart/registry/{}",
-            shard.to_ascii_lowercase()
-        ))
-        .map_err(|_| s3s::s3_error!(InvalidRequest))
-    }
-
-    fn multipart_cas_operation(
-        upload_id: &str,
-        phase: &[u8],
-        operation: IdempotencyKey,
-        expected_tail: u64,
-    ) -> S3Result<acyclic_stream::IdempotencyKey> {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(MULTIPART_DOMAIN);
-        hasher.update(phase);
-        hasher.update(upload_id.as_bytes());
-        hasher.update(&operation.into_bytes());
-        hasher.update(&expected_tail.to_le_bytes());
-        acyclic_stream::IdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
-            .map_err(|_| s3s::s3_error!(InvalidRequest))
-    }
-
     async fn multipart_snapshot(
         &self,
         workspace: &Workspace<A, O>,
@@ -103,12 +66,13 @@ where
                         upload_id,
                         snapshot.tail,
                         encode_multipart_completing(requested).map_err(multipart_storage_error)?,
-                        Self::multipart_cas_operation(
+                        multipart_cas_operation(
                             upload_id,
                             b"complete-intent\0",
                             operation,
                             snapshot.tail,
-                        )?,
+                        )
+                        .map_err(multipart_storage_error)?,
                     )
                     .await?
                 {
@@ -144,12 +108,13 @@ where
                         upload_id,
                         latest.tail,
                         encode_multipart_completed(generation),
-                        Self::multipart_cas_operation(
+                        multipart_cas_operation(
                             upload_id,
                             b"complete-terminal\0",
                             operation,
                             latest.tail,
-                        )?,
+                        )
+                        .map_err(multipart_storage_error)?,
                     )
                     .await?
                 {
