@@ -340,7 +340,7 @@ impl Blobs for HttpObjects {
             let body = body.into_bytes();
             let reply: wire::PutResponse = self
                 .call(
-                    "blobs/put",
+                    crate::ObjectsMethod::PutBlob.http_route(),
                     &wire::PutBlobRequest {
                         digest: Some(digest.into()),
                         body: bytes::Bytes::from_owner(body.clone()),
@@ -394,8 +394,9 @@ impl Blobs for HttpObjects {
             results.extend(
                 crate::operation::admit(self.context.as_ref(), async {
                     let (request, expected) = convert::put_blobs(chunk);
-                    let reply: wire::PutBlobsResponse =
-                        self.call("blobs/put-batch", &request).await?;
+                    let reply: wire::PutBlobsResponse = self
+                        .call(crate::ObjectsMethod::PutBlobs.http_route(), &request)
+                        .await?;
                     convert::verified_puts(reply, &expected, None)
                 })
                 .await
@@ -411,7 +412,7 @@ impl Blobs for HttpObjects {
             let length = manifest.length()?;
             let reply: wire::PutResponse = self
                 .call(
-                    "blobs/put-manifest",
+                    crate::ObjectsMethod::PutManifest.http_route(),
                     &wire::PutManifestRequest {
                         manifest: Some(convert::manifest(&manifest)),
                     },
@@ -431,7 +432,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::GetBlobResponse = self
                 .call(
-                    "blobs/get",
+                    crate::ObjectsMethod::GetBlob.http_route(),
                     &wire::GetBlobRequest {
                         digest: Some(digest.into()),
                         range: Some(convert::range(range)),
@@ -448,7 +449,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::BlobInfo = self
                 .call(
-                    "blobs/head",
+                    crate::ObjectsMethod::HeadBlob.http_route(),
                     &wire::HeadBlobRequest {
                         digest: Some(digest.into()),
                     },
@@ -463,7 +464,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::DeleteBlobResponse = self
                 .call(
-                    "blobs/delete",
+                    crate::ObjectsMethod::DeleteBlob.http_route(),
                     &wire::DeleteBlobRequest {
                         digest: Some(digest.into()),
                     },
@@ -478,7 +479,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::ListBlobsResponse = self
                 .call(
-                    "blobs/list",
+                    crate::ObjectsMethod::ListBlobs.http_route(),
                     &wire::ListBlobsRequest {
                         after: after.map(Into::into),
                         limit,
@@ -499,7 +500,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::RetainResponse = self
                 .call(
-                    "blobs/retain",
+                    crate::ObjectsMethod::Retain.http_route(),
                     &wire::RetainRequest {
                         root: root.as_bytes().to_vec(),
                         references: convert::wire_digests(&references),
@@ -515,7 +516,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::ReleaseResponse = self
                 .call(
-                    "blobs/release",
+                    crate::ObjectsMethod::Release.http_route(),
                     &wire::ReleaseRequest {
                         root: root.as_bytes().to_vec(),
                     },
@@ -538,7 +539,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::RetainResponse = self
                 .call(
-                    "blobs/retain-fenced",
+                    crate::ObjectsMethod::RetainFenced.http_route(),
                     &wire::RetainFencedRequest {
                         root: root.as_bytes().to_vec(),
                         references: convert::wire_digests(&references),
@@ -555,7 +556,7 @@ impl Blobs for HttpObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply: wire::ReleaseResponse = self
                 .call(
-                    "blobs/release-terminal",
+                    crate::ObjectsMethod::ReleaseTerminal.http_route(),
                     &wire::ReleaseTerminalRequest {
                         root: root.as_bytes().to_vec(),
                         fence,
@@ -572,8 +573,12 @@ impl Blobs for HttpObjects {
 
     async fn collect(&self) -> Result<Collection, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::CollectResponse =
-                self.call("blobs/collect", &wire::CollectRequest {}).await?;
+            let reply: wire::CollectResponse = self
+                .call(
+                    crate::ObjectsMethod::Collect.http_route(),
+                    &wire::CollectRequest {},
+                )
+                .await?;
             Ok(convert::collection(&reply))
         })
         .await
@@ -581,8 +586,12 @@ impl Blobs for HttpObjects {
 
     async fn usage(&self) -> Result<Usage, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::UsageResponse =
-                self.call("blobs/usage", &wire::UsageRequest {}).await?;
+            let reply: wire::UsageResponse = self
+                .call(
+                    crate::ObjectsMethod::Usage.http_route(),
+                    &wire::UsageRequest {},
+                )
+                .await?;
             Ok(convert::usage(&reply))
         })
         .await

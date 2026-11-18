@@ -101,35 +101,4 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-objects-v1.bin"));
 
-/// Canonical HTTP route, input message, and output message inventory, relative to `/v1/objects/`.
-pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
-    ("blobs/put", "PutBlobRequest", "PutResponse"),
-    ("blobs/put-batch", "PutBlobsRequest", "PutBlobsResponse"),
-    ("blobs/put-manifest", "PutManifestRequest", "PutResponse"),
-    ("blobs/get", "GetBlobRequest", "GetBlobResponse"),
-    ("blobs/head", "HeadBlobRequest", "BlobInfo"),
-    ("blobs/delete", "DeleteBlobRequest", "DeleteBlobResponse"),
-    ("blobs/list", "ListBlobsRequest", "ListBlobsResponse"),
-    ("blobs/retain", "RetainRequest", "RetainResponse"),
-    ("blobs/release", "ReleaseRequest", "ReleaseResponse"),
-    (
-        "blobs/retain-fenced",
-        "RetainFencedRequest",
-        "RetainResponse",
-    ),
-    (
-        "blobs/release-terminal",
-        "ReleaseTerminalRequest",
-        "ReleaseResponse",
-    ),
-    ("blobs/collect", "CollectRequest", "CollectResponse"),
-    ("blobs/usage", "UsageRequest", "UsageResponse"),
-];
-
-/// Streaming routes, with one canonical Protobuf length-delimited message per
-/// frame. The first frame opens the observation before verification starts.
-pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[(
-    "blobs/availability",
-    "AvailabilityRequest",
-    "AvailabilityCursor",
-)];
+pub use route::{HTTP_ROUTES, HTTP_STREAM_ROUTES};
