@@ -72,7 +72,7 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     let name = "native-original-name";
     *authority.replay_minimum.lock().unwrap() =
-        Some(original.live_allocation_bytes() + name.len() as u64 + header);
+        Some(original.live_allocation_bytes().unwrap() + name.len() as u64 + header);
     let created = fs
         .create_workspace_with_operation::<_, (), WorkspaceError>(
             name,
@@ -88,7 +88,7 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
         .await?;
     assert_eq!(created.workspace().name().as_str(), name);
     assert!(authority.replay_minimum.lock().unwrap().is_none());
-    original.receipt().verify(budget)?;
+    original.receipt().unwrap().verify(budget)?;
 
     // The String may be admitted, but its shared header must be admitted too
     // before any durable observation or publication is dispatched.
@@ -112,7 +112,7 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
             ..
         })
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     assert!(authority.replay_minimum.lock().unwrap().is_some());
 
     cancellation.cancel();
@@ -122,7 +122,7 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
         .err()
         .ok_or("cancelled identity reached authority storage")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
     assert!(authority.replay_minimum.lock().unwrap().is_some());
     Ok(())
 }
@@ -258,7 +258,7 @@ fn run(
         .unwrap()
         .map(|name| name.as_str().to_owned())
         .map_err(|error| format!("{error:?}"));
-    (output, accounting.spent(), trace, heap)
+    (output, accounting.spent().unwrap(), trace, heap)
 }
 
 fn compare(
@@ -372,8 +372,8 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
     let cancellation = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    let baseline = original.live_allocation_bytes();
-    let before = original.receipt();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let before = original.receipt().unwrap();
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -400,9 +400,9 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
         return Err("physical allocation bound");
     }
     assert_eq!(value.as_ref().unwrap().as_str(), name);
-    assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + bytes);
     assert_eq!(
-        original.receipt(),
+        original.receipt().unwrap(),
         before
             .checked_add(crate::WorkCounters {
                 items_examined: length as u64,
@@ -414,18 +414,18 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
             .unwrap()
     );
     let mut alias = None;
-    let before_clone = original.receipt();
+    let before_clone = original.receipt().unwrap();
     let cloned = measure(|| alias = value.as_ref().cloned());
     assert_eq!(cloned, AllocationInfo::default());
-    assert_eq!(original.receipt(), before_clone);
+    assert_eq!(original.receipt().unwrap(), before_clone);
     let first_drop = measure(|| drop(value.take()));
     assert_eq!(first_drop, AllocationInfo::default());
-    assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + bytes);
     let freed = measure(|| drop(alias.take()));
     assert_eq!(freed.count_total, 0);
     assert_eq!(freed.count_current, -3);
     assert_eq!(freed.bytes_current, -(bytes as i64));
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -446,7 +446,7 @@ fn ascii_names_have_exact_physical_storage_and_a_temporary_allocation_is_detecte
         let heap =
             measure(|| assert!(WorkspaceName::is_canonical(&text, &mut accounting).unwrap()));
         assert_eq!(heap.count_total, 0);
-        assert_eq!(accounting.spent().items_examined, length as u64);
+        assert_eq!(accounting.spent().unwrap().items_examined, length as u64);
     }
     assert_eq!(physical_bound(7, true), Err("physical allocation bound"));
 }
@@ -564,8 +564,8 @@ fn complete_name_observation(
     let name = output.unwrap().unwrap();
     let observation = (
         name.as_str().to_owned(),
-        accounting.spent(),
-        work.live_allocation_bytes(),
+        accounting.spent().unwrap(),
+        work.live_allocation_bytes().unwrap(),
         heap,
     );
     drop(name);

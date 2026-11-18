@@ -177,9 +177,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation,
         )
         .await
-        .map_err(|failure| {
-            OperationFailure::new(map_transfer_error(failure.error), *failure.work)
-        })?;
+        .map_err(|failure| failure.map_error(map_transfer_error))?;
         let mut work = proof.work;
         let mut allocations = AllocationLedger::default();
         let mut accounting = KernelAccounting::borrowed_standalone(

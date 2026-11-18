@@ -96,18 +96,22 @@ pub(super) fn compare<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits) -> 
 
 /// Compare success, failure and one input-selected refusal with the independent parser.
 /// Fuzzing selects one prefix rather than performing quadratic work per input.
-pub(crate) fn check<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits, prefix: usize) {
-    let _ = check_record(bytes);
+pub(crate) fn check<const ORDER: bool>(
+    bytes: &[u8],
+    limits: DecodeLimits,
+    prefix: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = check_record(bytes)?;
     let (complete, tape) = observed::<false, true>(bytes, limits, usize::MAX);
-    compare_observed::<ORDER>(bytes, limits, usize::MAX, &complete, &tape).unwrap();
+    compare_observed::<ORDER>(bytes, limits, usize::MAX, &complete, &tape)?;
     let denied = prefix % (tape.len() + 1);
-    compare_observed::<ORDER>(bytes, limits, denied, &complete, &tape).unwrap();
+    compare_observed::<ORDER>(bytes, limits, denied, &complete, &tape)?;
 
     // Shape decoding checks framing, not record semantics or ordering. Exercise
     // arbitrary bytes, but require agreement only for fully validated pages.
     let shape = file_table_page_decode_shape(bytes, limits);
     let Ok(page) = complete else {
-        return;
+        return Ok(());
     };
     let (kind, items) = match &page {
         FileTablePage::Leaf(records) => {
@@ -116,58 +120,57 @@ pub(crate) fn check<const ORDER: bool>(bytes: &[u8], limits: DecodeLimits, prefi
                     *record,
                     |_| Ok::<_, crate::FsError>(()),
                     |_| CanonicalDecodeError::AllocationFailed.into(),
-                )
-                .unwrap();
-                assert_eq!(
-                    check_record(&encoded),
-                    Ok(*record),
-                    "standalone record differs from the fully validated page"
-                );
+                )?;
+                if !(&(check_record(&encoded)?) == &(Ok(*record))) {
+                    return Err("standalone record differs from the fully validated page".into());
+                };
                 let index = prefix % encoded.len();
                 encoded[index] ^= 1;
-                let _ = check_record(&encoded);
+                let _ = check_record(&encoded)?;
                 encoded[index] ^= 1;
-                assert!(
-                    check_record(&encoded[..index]).is_err(),
-                    "standalone record admitted a truncated frame"
-                );
+                if !(check_record(&encoded[..index])?.is_err()) {
+                    return Err("standalone record admitted a truncated frame".into());
+                };
                 encoded.push(0);
-                assert!(
-                    check_record(&encoded).is_err(),
-                    "standalone record admitted trailing bytes"
-                );
+                if !(check_record(&encoded)?.is_err()) {
+                    return Err("standalone record admitted trailing bytes".into());
+                };
             }
             (DecodedPageKind::Leaf, records.len())
         }
         FileTablePage::Internal(children) => (DecodedPageKind::Internal, children.len()),
     };
-    assert_eq!(
-        shape.unwrap(),
-        DecodedPageShape {
+    if !(&(shape?)
+        == &(DecodedPageShape {
             kind,
             items,
             nested_bytes: 0,
-        },
-        "shape differs from the fully validated page"
-    );
-    assert!(
-        file_table_page_decode_shape(&bytes[..prefix % bytes.len()], limits).is_err(),
-        "shape admitted a truncated frame"
-    );
+        }))
+    {
+        return Err("shape differs from the fully validated page".into());
+    };
+    if !(file_table_page_decode_shape(&bytes[..prefix % bytes.len()], limits).is_err()) {
+        return Err("shape admitted a truncated frame".into());
+    };
     let mut trailing = bytes.to_vec();
     trailing.push(0);
-    assert!(
-        file_table_page_decode_shape(&trailing, limits).is_err(),
-        "shape admitted trailing bytes"
-    );
+    if !(file_table_page_decode_shape(&trailing, limits).is_err()) {
+        return Err("shape admitted trailing bytes".into());
+    };
+    Ok(())
 }
 
-fn check_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDecodeError> {
+fn check_record(
+    bytes: &[u8],
+) -> Result<Result<FileRecord, CanonicalDecodeError>, Box<dyn std::error::Error>> {
     let result = decode_file_record(bytes);
-    assert_eq!(
-        result,
-        reference::standalone_record(bytes),
-        "standalone record result differs from the independent parser"
-    );
-    result
+    if !(&(result) == &(reference::standalone_record(bytes))) {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static(
+                "standalone record result differs from the independent parser",
+            ),
+        )
+        .into());
+    };
+    Ok(result)
 }

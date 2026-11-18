@@ -96,7 +96,7 @@ fn funded(
 
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     {
         let io = PreparationIo::from_native_work(&work).unwrap();
         let measured = c::decode_attachment_manifest(original, bytes, None, Some(&io));
@@ -106,7 +106,7 @@ fn funded(
             _ => panic!("funded and ordinary attachment admission disagree"),
         }
     }
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 
     // Cancellation uses the original ledger event; no body is awaited or retried.
     {
@@ -119,7 +119,7 @@ fn funded(
             ErrorCode::Cancelled,
         );
     }
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     if ordinary.is_ok() {
         let cancellation = CancellationToken::new();
         let budget = WorkBudget {
@@ -127,11 +127,11 @@ fn funded(
             ..WorkBudget::UNBOUNDED
         };
         let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         {
             let io = PreparationIo::from_native_work(&work).unwrap();
             assert!(c::decode_attachment_manifest(original, bytes, None, Some(&io)).is_err());
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     }
 }

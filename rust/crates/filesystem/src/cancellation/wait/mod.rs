@@ -4,6 +4,8 @@ pub(super) struct WaitMeter<'a> {
     pub(super) allocations: &'a mut crate::kernel::allocation::AllocationLedger,
     pub(super) work: &'a mut crate::WorkCounters,
     pub(super) budget: crate::WorkBudget,
+    pub(super) registration: crate::WorkCounters,
+    pub(super) cleanup: crate::WorkCounters,
 }
 
 /// Future returned by [`CancellationToken::cancelled`].
@@ -11,6 +13,12 @@ pub struct Cancelled<'a> {
     pub(super) token: CancellationToken,
     pub(super) waiter: Option<Arc<CancellationWaiter>>,
     pub(super) meter: Option<WaitMeter<'a>>,
+}
+
+struct PreparedWaiter {
+    allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
+    #[cfg(not(target_arch = "wasm32"))]
+    cleanup: Option<crate::materializer::NativeWorkReservation>,
 }
 
 #[derive(Debug, Error)]
@@ -52,8 +60,104 @@ impl Cancelled<'_> {
         #[cfg(not(target_arch = "wasm32"))] original: Option<&crate::NativeMaterializationWork>,
         #[cfg(target_arch = "wasm32")] _original: Option<&()>,
     ) -> Result<(), CancellationWaitError> {
+        let mut meter = self.meter.take();
+        let registered = self.register_with(
+            &mut meter,
+            |meter, bytes| {
+                #[cfg(not(target_arch = "wasm32"))]
+                let (native_allocation, cleanup) = if let Some(original) = original {
+                    original.admit(crate::WorkCounters {
+                        allocation_operations: 1,
+                        items_examined: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    })?;
+                    original.admit_retained(bytes)?;
+                    let cleanup = original.reserve_work(crate::WorkCounters {
+                        items_examined: 3,
+                        ..crate::WorkCounters::UNCHARGED
+                    })?;
+                    (
+                        Some(original.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?),
+                        Some(cleanup),
+                    )
+                } else {
+                    (None, None)
+                };
+                let mut allocation = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(native) = native_allocation {
+                    allocation = Some(
+                        crate::kernel::allocation::retained::RetainedAllocation::native(native),
+                    );
+                }
+                if let Some(meter) = meter {
+                    let peak = meter
+                        .allocations
+                        .live_bytes()
+                        .checked_add(bytes)
+                        .ok_or(crate::WorkError::Overflow)?;
+                    meter.work.admit(
+                        &crate::WorkCounters {
+                            allocation_operations: 1,
+                            peak_allocation_bytes: peak,
+                            items_examined: 2,
+                            ..crate::WorkCounters::UNCHARGED
+                        },
+                        &meter.budget,
+                    )?;
+                    meter
+                        .allocations
+                        .claim_bytes(bytes, 1, meter.work, meter.budget)
+                        .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+                    match meter.allocations.retain(bytes, meter.work, meter.budget) {
+                        Ok(retained) => allocation = Some(retained),
+                        Err(error) => {
+                            meter
+                                .allocations
+                                .release(bytes)
+                                .map_err(|cause| cause.into_work_or(crate::WorkError::Overflow))?;
+                            return Err(error.into());
+                        }
+                    }
+                    let mut registration = *meter.work;
+                    registration.charge_items(1, &meter.budget)?;
+                    let mut cleanup = registration;
+                    cleanup.charge_items(1, &meter.budget)?;
+                    meter.registration = registration;
+                    meter.cleanup = cleanup;
+                }
+                Ok::<_, CancellationWaitError>(PreparedWaiter {
+                    allocation,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    cleanup,
+                })
+            },
+            |meter| {
+                if let Some(meter) = meter {
+                    *meter.work = meter.registration;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = original {
+                    original.record_admitted(crate::WorkCounters {
+                        items_examined: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    })?;
+                }
+                Ok(())
+            },
+        );
+        self.meter = meter;
+        registered.map(|_| ())
+    }
+
+    fn register_with<E, S>(
+        &mut self,
+        state: &mut S,
+        prepare: impl FnOnce(&mut S, u64) -> Result<PreparedWaiter, E>,
+        finish: impl FnOnce(&mut S) -> Result<(), E>,
+    ) -> Result<bool, E> {
         if self.waiter.is_some() || self.token.is_cancelled() {
-            return Ok(());
+            return Ok(false);
         }
         let mut head = self
             .token
@@ -62,7 +166,7 @@ impl Cancelled<'_> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if self.token.is_cancelled() {
-            return Ok(());
+            return Ok(false);
         }
         let bytes = const {
             match crate::arc_layout::allocation_bytes(
@@ -72,90 +176,29 @@ impl Cancelled<'_> {
                 Err(_) => panic!("cancellation waiter Arc layout overflow"),
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let (native_allocation, cleanup) = if let Some(original) = original {
-            original.admit(crate::WorkCounters {
-                allocation_operations: 1,
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
-            original.admit_retained(bytes)?;
-            let cleanup = original.reserve_work(crate::WorkCounters {
-                items_examined: 3,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
-            (
-                Some(original.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?),
-                Some(cleanup),
-            )
-        } else {
-            (None, None)
-        };
-        let mut allocation = None;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(native) = native_allocation {
-            allocation =
-                Some(crate::kernel::allocation::retained::RetainedAllocation::native(native));
-        }
-        if let Some(meter) = &mut self.meter {
-            let peak = meter
-                .allocations
-                .live_bytes()
-                .checked_add(bytes)
-                .ok_or(crate::WorkError::Overflow)?;
-            meter.work.admit(
-                &crate::WorkCounters {
-                    allocation_operations: 1,
-                    peak_allocation_bytes: peak,
-                    items_examined: 2,
-                    ..crate::WorkCounters::UNCHARGED
-                },
-                &meter.budget,
-            )?;
-            meter
-                .allocations
-                .claim_bytes(bytes, 1, meter.work, meter.budget)
-                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-            match meter.allocations.retain(bytes, meter.work, meter.budget) {
-                Ok(retained) => allocation = Some(retained),
-                Err(error) => {
-                    meter
-                        .allocations
-                        .release(bytes)
-                        .map_err(|cause| cause.into_work_or(crate::WorkError::Overflow))?;
-                    return Err(error.into());
-                }
-            }
-        }
+        let prepared = prepare(state, bytes)?;
         let next = head.upgrade();
         let waiter = Arc::new(CancellationWaiter {
-            links: Mutex::new(Some((Weak::new(), head.clone()))),
+            links: Mutex::new(WaiterLinks {
+                previous: Weak::new(),
+                next: head.clone(),
+                linked: true,
+            }),
             #[cfg(not(target_arch = "wasm32"))]
-            cleanup: Mutex::new(cleanup),
-            _allocation: allocation,
+            cleanup: Mutex::new(prepared.cleanup),
+            _allocation: prepared.allocation,
             ..CancellationWaiter::default()
         });
         if let Some(next) = &next {
             next.links
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-                .expect("active head")
-                .0 = Arc::downgrade(&waiter);
+                .previous = Arc::downgrade(&waiter);
         }
         *head = Arc::downgrade(&waiter);
         self.waiter = Some(waiter);
-        if let Some(meter) = &mut self.meter {
-            meter.work.charge_items(1, &meter.budget)?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = original {
-            original.record_admitted(crate::WorkCounters {
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
-        }
-        Ok(())
+        finish(state)?;
+        Ok(true)
     }
 }
 
@@ -211,6 +254,9 @@ impl Cancelled<'static> {
             },
             &budget,
         )?;
+        let mut cleanup = *work;
+        cleanup.charge_items(self.cleanup_items(), &budget)?;
+        let registration = *work;
         let future = Cancelled {
             token: self.token.clone(),
             waiter: self.waiter.take(),
@@ -218,6 +264,8 @@ impl Cancelled<'static> {
                 allocations,
                 work,
                 budget,
+                registration,
+                cleanup,
             }),
         };
         drop(future);
@@ -232,8 +280,21 @@ impl Future for Cancelled<'_> {
         if this.token.is_cancelled() {
             return Poll::Ready(());
         }
-        this.register(None)
-            .expect("unbounded cancellation registration");
+        let registered = this.register_with(
+            &mut (),
+            |_, _| {
+                Ok::<_, std::convert::Infallible>(PreparedWaiter {
+                    allocation: None,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    cleanup: None,
+                })
+            },
+            |_| Ok(()),
+        );
+        match registered {
+            Ok(_) => {}
+            Err(never) => match never {},
+        }
         let Some(waiter) = &this.waiter else {
             return Poll::Ready(());
         };
@@ -284,9 +345,7 @@ impl Drop for Cancelled<'_> {
                         .links
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .as_mut()
-                        .expect("active predecessor")
-                        .1 = next.clone();
+                        .next = next.clone();
                 } else {
                     *head = next.clone();
                 }
@@ -294,9 +353,7 @@ impl Drop for Cancelled<'_> {
                     next.links
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .as_mut()
-                        .expect("active successor")
-                        .0 = previous;
+                        .previous = previous;
                 }
             }
         }
@@ -317,10 +374,7 @@ impl Drop for Cancelled<'_> {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(meter) = &mut self.meter {
-            meter
-                .work
-                .charge_items(1, &meter.budget)
-                .expect("admitted unregister");
+            *meter.work = meter.cleanup;
         }
         // Keep the last node lease until arbitrary waker destruction completes.
         let destruction = catch_unwind(AssertUnwindSafe(|| drop(waker)));

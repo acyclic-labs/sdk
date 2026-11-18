@@ -85,7 +85,7 @@ pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
         cancellation,
     )
     .await
-    .map_err(|error| OperationFailure::new(project_extent_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(project_extent_error(error), accounting.spent()))
 }
 
 #[allow(
@@ -155,7 +155,7 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
     Ok(ExtentMutationReceipt {
         root: result?,
         logical_bytes: final_size,
-        work: accounting.spent(),
+        work: accounting.spent()?,
     })
 }
 
@@ -724,7 +724,7 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     let result = {
         let mut object_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = store.put_hashed(hashed, &mut object_work).await;
-        object_work.spent().verify(object_work.budget)?;
+        object_work.spent()?.verify(object_work.budget)?;
         result
     };
     retire_allocation(allocation, bytes, accounting)?;

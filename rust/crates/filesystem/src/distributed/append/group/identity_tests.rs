@@ -122,7 +122,7 @@ async fn authority_conflict_recovery_rejects_a_lost_record_identity_without_a_pr
             expected: anchor.record_commit_id,
             actual: CHANGED,
         }];
-        let reads = work.spent().backend_read_operations;
+        let reads = work.spent().unwrap().backend_read_operations;
         let recovered = store
             .recover_conflict_head(authority, anchor, &conflicts, &mut work, |_, _, _| Ok(()))
             .await;
@@ -134,7 +134,7 @@ async fn authority_conflict_recovery_rejects_a_lost_record_identity_without_a_pr
             "recovery reused an authority cursor after losing its record identity"
         );
         assert_eq!(
-            work.spent().backend_read_operations,
+            work.spent().unwrap().backend_read_operations,
             reads,
             "identity rejection performed a head probe"
         );

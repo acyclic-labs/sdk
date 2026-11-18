@@ -16,17 +16,17 @@ fn prepared_iterator_retains_vector_custody_until_its_backing_retires() {
     let mut change = Change::new(&work).unwrap();
     change.put((RecordKey::ChildIndex, None).into()).unwrap();
     let prepared = PreparedChange::new(change, Some(&work)).unwrap();
-    let live = work.live_allocation_bytes();
+    let live = work.live_allocation_bytes().unwrap();
     assert!(live > crate::NativeMaterializationWork::accounting_state_bytes());
     let mut records = prepared.into_records();
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
     drop(records.next().unwrap());
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
     assert!(records.next().is_none());
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
     drop(records);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
 }
@@ -40,11 +40,11 @@ fn negative_control_discarding_iterator_custody_is_detected() {
     let mut records = PreparedChange::new(change, Some(&work))
         .unwrap()
         .into_records();
-    let live = work.live_allocation_bytes();
+    let live = work.live_allocation_bytes().unwrap();
     drop(records._allocation.take());
     assert_eq!(records.records.as_slice().len(), 1);
     assert!(
-        work.live_allocation_bytes() < live,
+        work.live_allocation_bytes().unwrap() < live,
         "dropping the ticket while the vector remains live must fail the custody check"
     );
 }
@@ -70,11 +70,11 @@ fn retained_backing_borrows_without_transfer_and_rejects_unfunded_growth() {
     let mut held = None;
     reserve_retained_slots(&mut values, 2, Some(&original), &mut held).unwrap();
     values.extend([11_u64, 13]);
-    let original_live = original.live_allocation_bytes();
-    let borrowed_before = borrower.receipt();
+    let original_live = original.live_allocation_bytes().unwrap();
+    let borrowed_before = borrower.receipt().unwrap();
     reserve_retained_slots(&mut values, 2, Some(&borrower), &mut held).unwrap();
-    assert_eq!(borrower.receipt(), borrowed_before);
-    assert_eq!(original.live_allocation_bytes(), original_live);
+    assert_eq!(borrower.receipt().unwrap(), borrowed_before);
+    assert_eq!(original.live_allocation_bytes().unwrap(), original_live);
     assert!(
         held.as_ref()
             .unwrap()
@@ -84,12 +84,12 @@ fn retained_backing_borrows_without_transfer_and_rejects_unfunded_growth() {
     assert!(reserve_retained_slots(&mut values, 3, Some(&borrower), &mut held).is_err());
     assert_eq!(values, [11, 13]);
     assert_eq!(values.capacity(), 2);
-    assert_eq!(borrower.receipt(), borrowed_before);
-    assert_eq!(original.live_allocation_bytes(), original_live);
+    assert_eq!(borrower.receipt().unwrap(), borrowed_before);
+    assert_eq!(original.live_allocation_bytes().unwrap(), original_live);
     drop(values);
     drop(held);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
 }
@@ -131,16 +131,16 @@ fn refused_payload_adoption_keeps_the_pending_record_and_queue() {
     let funded = crate::NativeMaterializationWork::new(finite_budget(), &cancellation).unwrap();
     residents.adopt_native(&funded).unwrap();
     assert_eq!(residents.pending, None);
-    let before = funded.receipt();
+    let before = funded.receipt().unwrap();
     residents.adopt_native(&funded).unwrap();
-    assert_eq!(funded.receipt(), before);
+    assert_eq!(funded.receipt().unwrap(), before);
     drop(residents);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     assert_eq!(
-        funded.live_allocation_bytes(),
+        funded.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
 }
@@ -260,19 +260,19 @@ fn ordinary_cache_reservations_do_not_inherit_cancelled_native_work() {
     let original = crate::NativeMaterializationWork::new(finite_budget(), &cancellation).unwrap();
     let mut residents = Residents::default();
     residents.reserve(4, Some(&original)).unwrap();
-    let retained = original.live_allocation_bytes();
-    let receipt = original.receipt();
+    let retained = original.live_allocation_bytes().unwrap();
+    let receipt = original.receipt().unwrap();
     cancellation.cancel();
     residents.reserve(0, None).unwrap();
     residents.reserve(1, None).unwrap();
-    assert_eq!(original.live_allocation_bytes(), retained);
-    assert_eq!(original.receipt(), receipt);
+    assert_eq!(original.live_allocation_bytes().unwrap(), retained);
+    assert_eq!(original.receipt().unwrap(), receipt);
     assert!(residents.reserve(0, Some(&original)).is_err());
     residents.reserve(64, None).unwrap();
     assert!(residents.allocation.is_none());
     assert!(residents.index.allocation.is_none());
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     let next_token = crate::CancellationToken::new();

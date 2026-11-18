@@ -124,7 +124,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
         let funded = &source;
         let mut accounting = funded.accounting(&cancellation);
         let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         let (producer, completion) = tokio::sync::oneshot::channel();
         *authority.observation.lock().unwrap() = Some(Observation {
             skip_heads: 0,
@@ -149,9 +149,9 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
             accounting.standalone_parts().unwrap().0.live_bytes(),
             baseline
         );
-        assert!(accounting.spent().bytes_hashed > before.bytes_hashed);
-        assert!(accounting.spent().items_examined > before.items_examined);
-        assert_eq!(accounting.spent().backend_write_operations, 0);
+        assert!(accounting.spent().unwrap().bytes_hashed > before.bytes_hashed);
+        assert!(accounting.spent().unwrap().items_examined > before.items_examined);
+        assert_eq!(accounting.spent().unwrap().backend_write_operations, 0);
     }
     Ok(())
 }

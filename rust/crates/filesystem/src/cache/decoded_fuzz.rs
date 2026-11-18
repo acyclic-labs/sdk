@@ -10,42 +10,42 @@ fn metadata(id: u8) -> FileMetadata {
     }
 }
 
-fn key(id: u8) -> DecodedCacheKey {
-    DecodedCacheKey::new::<FileMetadata>(
-        crate::kernel::file_metadata_id(metadata(id)).unwrap(),
+fn key(id: u8) -> Result<DecodedCacheKey, Box<dyn std::error::Error>> {
+    Ok(DecodedCacheKey::new::<FileMetadata>(
+        crate::kernel::file_metadata_id(metadata(id))?,
         DecodeLimits {
             maximum_page_items: 2 + u32::from(id % 2),
             ..Default::default()
         },
-    )
+    ))
 }
 
-fn value(id: u8) -> DecodedCacheValue {
+fn value(id: u8) -> Result<DecodedCacheValue, Box<dyn std::error::Error>> {
     let bytes = crate::kernel::encode_file_metadata(
         metadata(id),
         |_| Ok::<_, CanonicalDecodeError>(()),
         |_| CanonicalDecodeError::AllocationFailed,
-    )
-    .unwrap();
-    let decoded = crate::kernel::decode_file_metadata(&bytes, DecodeLimits::default(), &mut |_| {
-        Ok::<_, CanonicalDecodeError>(())
-    })
-    .unwrap();
-    assert_eq!(decoded, metadata(id));
-    DecodedCacheValue {
+    )?;
+    let decoded =
+        crate::kernel::decode_file_metadata(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, CanonicalDecodeError>(())
+        })?;
+    if !(&(decoded) == &(metadata(id))) {
+        return Err("filesystem oracle invariant failed".into());
+    };
+    Ok(DecodedCacheValue {
         value: Arc::new(decoded),
         logical_bytes: bytes.len() as u64,
         #[cfg(not(target_arch = "wasm32"))]
         native_custody: None,
-    }
+    })
 }
 
-fn assert_value(value: &DecodedCacheValue, id: u8) {
-    assert_eq!(
-        value.value.downcast_ref::<FileMetadata>(),
-        Some(&metadata(id)),
-        "decoded cache identity"
-    );
+fn assert_value(value: &DecodedCacheValue, id: u8) -> Result<(), Box<dyn std::error::Error>> {
+    if !(&(value.value.downcast_ref::<FileMetadata>()) == &(Some(&metadata(id)))) {
+        return Err("decoded cache identity".into());
+    };
+    Ok(())
 }
 
 fn touch(lru: &mut Vec<u8>, id: u8) -> bool {
@@ -60,19 +60,19 @@ fn touch(lru: &mut Vec<u8>, id: u8) -> bool {
 
 /// Checks arbitrary cache operations; returns a semantic branch mask for corpus qualification.
 /// Bytes select entry/byte capacity, followed by (operation, identity) pairs.
-pub fn check(input: &[u8]) -> u8 {
+pub fn check(input: &[u8]) -> Result<u8, Box<dyn std::error::Error>> {
     check_inner::<0>(input)
 }
 
-pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> u8 {
+pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> Result<u8, Box<dyn std::error::Error>> {
     let Some((&entries, rest)) = input.split_first() else {
-        return 0;
+        return Ok(0);
     };
     let Some((&bytes, ops)) = rest.split_first() else {
-        return 0;
+        return Ok(0);
     };
     let entries = 1 + u32::from(entries % 4);
-    let length = value(0).logical_bytes;
+    let length = value(0)?.logical_bytes;
     let bytes = 1 + u64::from(bytes) % (length * 4);
     let store = CachedObjectStore::new(
         crate::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
@@ -80,8 +80,7 @@ pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> u8 {
             maximum_entries: entries,
             maximum_bytes: bytes,
         },
-    )
-    .unwrap();
+    )?;
     // Independent input-identity LRU; it never reads implementation keys or clocks.
     let mut lru = Vec::new();
     let mut epoch = 0u64;
@@ -94,22 +93,26 @@ pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> u8 {
             op @ (0 | 1 | 3) => {
                 let expected = touch(&mut lru, id);
                 let lookup = if FAULT == 1 {
-                    match store.decoded_get_matching::<false>(key(id)).unwrap() {
+                    match store.decoded_get_matching::<false>(key(id)?)? {
                         Some(value) => DecodedCacheLookup::Hit(value),
-                        None => store.decoded_cache_lookup(key(id)).unwrap(),
+                        None => store.decoded_cache_lookup(key(id)?)?,
                     }
                 } else {
-                    store.decoded_cache_lookup(key(id)).unwrap()
+                    store.decoded_cache_lookup(key(id)?)?
                 };
                 match lookup {
                     DecodedCacheLookup::Hit(value) => {
                         coverage |= 1;
-                        assert!(expected, "decoded cache unexpected hit");
-                        assert_value(&value, id);
+                        if !(expected) {
+                            return Err("decoded cache unexpected hit".into());
+                        };
+                        assert_value(&value, id)?;
                     }
                     DecodedCacheLookup::Miss(miss) => {
                         coverage |= 2;
-                        assert!(!expected, "decoded cache lost resident identity");
+                        if !(!expected) {
+                            return Err("decoded cache lost resident identity".into());
+                        };
                         if op == 0 {
                             completing = Some((id, epoch, miss));
                         } else if op == 3 {
@@ -120,7 +123,7 @@ pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> u8 {
                 }
             }
             2 => {
-                store.clear().unwrap();
+                store.clear()?;
                 lru.clear();
                 epoch += 1;
                 coverage |= 8;
@@ -132,27 +135,33 @@ pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> u8 {
         if let Some((id, issued, miss)) = completing {
             let expected = issued == epoch && length <= bytes;
             let admission = if FAULT == 2 {
-                store
-                    .decoded_admit_bounded::<false>(key(id), store.shared.fill_epoch(), value(id))
-                    .unwrap()
+                store.decoded_admit_bounded::<false>(
+                    key(id)?,
+                    store.shared.fill_epoch(),
+                    value(id)?,
+                )?
             } else if FAULT == 3 {
-                store
-                    .decoded_admit_bounded::<true>(key(id), store.shared.fill_epoch(), value(id))
-                    .unwrap()
+                store.decoded_admit_bounded::<true>(
+                    key(id)?,
+                    store.shared.fill_epoch(),
+                    value(id)?,
+                )?
             } else {
-                miss.admit(value(id)).unwrap()
+                miss.admit(value(id)?)?
             };
             let actual = match admission {
                 DecodedCacheAdmission::Shared(value) => {
-                    assert_value(&value, id);
+                    assert_value(&value, id)?;
                     true
                 }
                 DecodedCacheAdmission::Uncached(value) => {
-                    assert_value(&value, id);
+                    assert_value(&value, id)?;
                     false
                 }
             };
-            assert_eq!(actual, expected, "decoded cache original miss disposition");
+            if !(&(actual) == &(expected)) {
+                return Err("decoded cache original miss disposition".into());
+            };
             if issued != epoch {
                 coverage |= 16;
             } else if length > bytes {
@@ -167,12 +176,12 @@ pub(super) fn check_inner<const FAULT: u8>(input: &[u8]) -> u8 {
                 lru.push(id);
             }
         }
-        let stats = store.stats().unwrap();
-        assert_eq!(
-            (stats.resident_entries, stats.resident_bytes),
-            (lru.len() as u64, lru.len() as u64 * length),
-            "decoded cache residency"
-        );
+        let stats = store.stats()?;
+        if !(&((stats.resident_entries, stats.resident_bytes))
+            == &((lru.len() as u64, lru.len() as u64 * length)))
+        {
+            return Err("decoded cache residency".into());
+        };
     }
-    coverage
+    Ok(coverage)
 }

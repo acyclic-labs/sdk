@@ -114,10 +114,10 @@ async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), B
                 .read("/entry", length as u64, &work, &cancellation)
                 .await?;
             assert_eq!(native.as_ref(), bytes.as_ref());
-            assert_eq!(work.receipt().output_bytes, length as u64);
+            assert_eq!(work.receipt().unwrap().output_bytes, length as u64);
             drop(native);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes().unwrap(),
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
             );
         }

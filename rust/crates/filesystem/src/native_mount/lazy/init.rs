@@ -171,10 +171,7 @@ where
     ) -> Result<NativeMountSourceWatchOwner, NativeMountError> {
         let (budget, prior_live) = if original.is_none() {
             carrier
-                .with_work(|work| {
-                    work.remaining()
-                        .map(|budget| (budget, work.live_allocation_bytes()))
-                })
+                .with_work(|work| Ok((work.remaining()?, work.live_allocation_bytes()?)))
                 .map_err(NativeMountError::Demand)?
         } else {
             (WorkBudget::UNBOUNDED, 0)
@@ -202,7 +199,12 @@ where
                     Ok(())
                 }
                 Err(failure) => {
-                    let _ = carrier.with_work(|work| work.merge(*failure.work, prior_live));
+                    match failure.work {
+                        Ok(completed) => carrier
+                            .with_work(|work| work.merge(*completed, prior_live))
+                            .map_err(NativeMountError::Demand)?,
+                        Err(_) => carrier.with_work(|work| work.poison_native_original_work()),
+                    }
                     Err(failure.error)
                 }
             }

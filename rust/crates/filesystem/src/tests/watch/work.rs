@@ -213,7 +213,7 @@ fn ordinary_watch_retains_preparation_custody_through_shutdown()
         .as_ref()
         .ok_or("ordinary constructor lost native birth custody")?
         .clone();
-    assert_eq!(birth.receipt(), opened.work);
+    assert_eq!(birth.receipt().unwrap(), opened.work);
     assert!(opened.work.backend_read_operations >= 2);
     watch.accept_lazy_baseline_with_native_work(&birth)?;
     cancellation.cancel();
@@ -294,7 +294,7 @@ fn watch_open_rejects_denied_cancelled_and_missing_roots() -> Result<(), Box<dyn
                 failure.error,
                 NativeWatchError::Work(_) | NativeWatchError::Cancelled(_)
             ));
-            assert_eq!(*failure.work, WorkCounters::default());
+            assert_eq!(*failure.work().unwrap(), WorkCounters::default());
         }
     }
     let failure = NativeWatch::open_with_profile_measured(
@@ -653,7 +653,7 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
             panic!("native producer must remain owned after rejected cleanup");
         };
         assert!(!source.is_stopped());
-        let before = birth.receipt();
+        let before = birth.receipt().unwrap();
         // Even an invalidated watch examines incoming native events, but it
         // need not return queued changes. Withhold its remaining examination
         // credit after registration, leaving birth-paid retirement intact.
@@ -697,12 +697,12 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
                 "terminal source data bypassed dependent cleanup admission: {result:?}"
             );
             assert!(watch.held_root.root.is_some());
-            assert_eq!(refused.receipt().backend_write_operations, 0);
+            assert_eq!(refused.receipt().unwrap().backend_write_operations, 0);
         }
         let current =
             crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(|(error, _)| error)?;
-        let current_before = current.receipt();
+        let current_before = current.receipt().unwrap();
         let result = watch.shutdown_with_native_work(&current);
         if fail_delivery && !cancel_birth {
             assert!(
@@ -719,10 +719,12 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
         assert!(source.is_stopped());
         #[cfg(windows)]
         assert_eq!(watch.windows_registered(), 0);
-        assert!(birth.receipt().backend_write_operations > before.backend_write_operations);
+        assert!(
+            birth.receipt().unwrap().backend_write_operations > before.backend_write_operations
+        );
         // Only the held root close belongs to the fresh invocation. Platform
         // watch retirement consumes credits accepted before those watches began.
-        let receipt = current.receipt();
+        let receipt = current.receipt().unwrap();
         assert_eq!(receipt.backend_write_operations, 1);
         assert_eq!(
             receipt.allocation_operations,
@@ -752,7 +754,7 @@ fn overlapping_native_watches_charge_only_occupied_queue_storage()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let options = crate::watch::NativeWatchOptions {
         recursive: false,
         ..crate::watch::NativeWatchOptions::new(crate::VolumeLimits::default())
@@ -769,7 +771,7 @@ fn overlapping_native_watches_charge_only_occupied_queue_storage()
         options,
         &work,
     )?;
-    let occupied = work.live_allocation_bytes();
+    let occupied = work.live_allocation_bytes().unwrap();
     assert!(
         occupied > baseline,
         "live producer resources remain charged"
@@ -780,6 +782,6 @@ fn overlapping_native_watches_charge_only_occupied_queue_storage()
     assert!(second.shutdown_with_native_work(&work)?);
     drop(first);
     drop(second);
-    assert!(work.live_allocation_bytes() < occupied);
+    assert!(work.live_allocation_bytes().unwrap() < occupied);
     Ok(())
 }

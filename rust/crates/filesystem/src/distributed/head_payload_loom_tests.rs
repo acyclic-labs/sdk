@@ -386,7 +386,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
                 // Deliberate broken variant of the same production function.
                 ready(|| store.head_payload_checked::<false>(ID, 32, &mut work))
             };
-            work.spent().verify(BUDGET).unwrap();
+            work.spent().unwrap().verify(BUDGET).unwrap();
             (result, completed_at_entry)
         };
         let (result, completed_at_entry) = if cut.is_some() {

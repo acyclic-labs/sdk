@@ -115,10 +115,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 cancellation,
             )
             .await;
-        let work = accounting.spent();
-        let result = result.map(|(mut page, allocation)| {
-            page.work = work;
-            (page, allocation)
+        let result = result.and_then(|(mut page, allocation)| {
+            page.work = accounting.spent()?;
+            Ok((page, allocation))
         });
         budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
@@ -325,9 +324,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     .sum::<u64>()
         });
         readonly_cleanup_standalone(accounting, before, retained)?;
-        result.map(|(mut page, allocation)| {
-            page.work = accounting.spent();
-            (page, allocation)
+        result.and_then(|(mut page, allocation)| {
+            page.work = accounting.spent()?;
+            Ok((page, allocation))
         })
     }
 }

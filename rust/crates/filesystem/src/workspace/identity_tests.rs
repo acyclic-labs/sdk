@@ -97,8 +97,8 @@ proptest! {
         let after = outcome(after);
         if let Ok(output) = &after { prop_assert_eq!(*output, expected); }
         prop_assert_eq!(after, before);
-        prop_assert_eq!(accounting[1].spent(), accounting[0].spent());
-        prop_assert_eq!(roots[1].live_allocation_bytes(), roots[0].live_allocation_bytes());
+        prop_assert_eq!(accounting[1].spent().unwrap(), accounting[0].spent().unwrap());
+        prop_assert_eq!(roots[1].live_allocation_bytes().unwrap(), roots[0].live_allocation_bytes().unwrap());
         let credit = work[1].state(|state| (state.budget.bytes_copied, state.budget.bytes_hashed, state.original_budget()));
         prop_assert_eq!(credit.0, credit.2.bytes_copied);
         prop_assert_eq!(credit.1, credit.2.bytes_hashed);
@@ -128,7 +128,7 @@ fn exact_identity_copy_and_hash_allowances_succeed_one_byte_less_has_no_effect()
             for _ in 0..depth {
                 work = work.native_volume_work(limit).unwrap();
             }
-            let before = root.receipt();
+            let before = root.receipt().unwrap();
             let result = WorkspaceId::derive([1; 16], &name, &&work, &cancellation);
             assert_eq!(result.is_err(), denied);
             let expected = before
@@ -138,7 +138,7 @@ fn exact_identity_copy_and_hash_allowances_succeed_one_byte_less_has_no_effect()
                     ..crate::WorkCounters::UNCHARGED
                 })
                 .unwrap();
-            assert_eq!(root.receipt(), expected);
+            assert_eq!(root.receipt().unwrap(), expected);
         }
     }
 }

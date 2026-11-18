@@ -6,7 +6,9 @@ fn check_type<T: DeserializeOwned + Serialize>(
     work: &crate::NativeMaterializationWork,
     minimum_retained: fn(&T) -> u64,
 ) -> bool {
-    let baseline = work.live_allocation_bytes();
+    let Ok(baseline) = work.live_allocation_bytes() else {
+        return false;
+    };
     let cancellation = crate::CancellationToken::new();
     let mut original =
         crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
@@ -22,11 +24,10 @@ fn check_type<T: DeserializeOwned + Serialize>(
     {
         return false;
     }
-    let original_baseline = original
-        .standalone_parts()
-        .expect("ordinary decode uses the caller's standalone ledger")
-        .0
-        .live_bytes();
+    let Some((ledger, _, _, _)) = original.standalone_parts() else {
+        return false;
+    };
+    let original_baseline = ledger.live_bytes();
     let agrees = (|| {
         let ordinary = serde_json::from_slice::<T>(bytes);
         let funded =
@@ -37,30 +38,29 @@ fn check_type<T: DeserializeOwned + Serialize>(
             (Err(_), Err(_), Err(_)) => return true,
             _ => return false,
         };
-        assert!(
-            retained
-                .allocation
-                .standalone_ledger()
-                .zip(earlier.standalone_ledger())
-                .is_some_and(|(output, original)| std::sync::Arc::ptr_eq(output, original)),
-            "metadata decoder replaced original accounting ledger; recovery: cargo run --example capture",
-        );
+        if !(retained
+            .allocation
+            .standalone_ledger()
+            .zip(earlier.standalone_ledger())
+            .is_some_and(|(output, original)| std::sync::Arc::ptr_eq(output, original)))
+        {
+            return false;
+        };
         let minimum = minimum_retained(&ordinary);
-        let native_bytes = work.live_allocation_bytes() - baseline;
-        let original_bytes = original
-            .standalone_parts()
-            .expect("ordinary decode retains the original standalone ledger")
-            .0
-            .live_bytes()
-            - original_baseline;
-        assert!(
-            native_bytes >= minimum && original_bytes >= minimum,
-            "metadata decoder omitted owned byte payload funding; recovery: cargo run --example capture",
-        );
-        assert_eq!(
-            native_bytes, original_bytes,
-            "metadata adapters disagree on retained payload funding; recovery: cargo run --example capture",
-        );
+        let Ok(live) = work.live_allocation_bytes() else {
+            return false;
+        };
+        let native_bytes = live - baseline;
+        let Some((ledger, _, _, _)) = original.standalone_parts() else {
+            return false;
+        };
+        let original_bytes = ledger.live_bytes() - original_baseline;
+        if !(native_bytes >= minimum && original_bytes >= minimum) {
+            return false;
+        };
+        if !(&(native_bytes) == &(original_bytes)) {
+            return false;
+        };
         // Keep the returned tuple intact: its value retires before allocation custody.
         let Ok(encoded) = serde_json::to_vec(&decoded.0) else {
             return false;
@@ -79,21 +79,22 @@ fn check_type<T: DeserializeOwned + Serialize>(
         };
         serde_json::to_vec(&repeated.0).is_ok_and(|bytes| bytes == encoded)
     })();
-    let before_cancel = original.spent();
+    let Ok(before_cancel) = original.spent() else {
+        return false;
+    };
     cancellation.cancel();
-    assert!(
-        matches!(
-            crate::kernel::serde_decode::from_slice::<T>(bytes, &mut original),
-            Err(crate::kernel::serde_decode::MetadataDecodeError::Work(
-                crate::FsError::Cancelled(_)
-            )),
-        ),
-        "metadata decode preserves original cancellation; recovery: cargo run --example capture",
-    );
+    if !(matches!(
+        crate::kernel::serde_decode::from_slice::<T>(bytes, &mut original),
+        Err(crate::kernel::serde_decode::MetadataDecodeError::Work(
+            crate::FsError::Cancelled(_)
+        )),
+    )) {
+        return false;
+    };
     agrees
-        && original.spent() == before_cancel
-        && original.spent().bytes_hashed == 5
-        && work.live_allocation_bytes() == baseline
+        && original.spent() == Ok(before_cancel)
+        && original.spent().is_ok_and(|spent| spent.bytes_hashed == 5)
+        && work.live_allocation_bytes() == Ok(baseline)
         && original
             .standalone_parts()
             .is_some_and(|(ledger, _, _, _)| ledger.live_bytes() == original_baseline)
@@ -129,7 +130,15 @@ impl std::io::Read for LostReader<'_> {
 }
 
 /// Exercise every core-state payload through the same funded visitor as recovery.
-pub fn check(bytes: &[u8]) -> bool {
+pub fn check(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    if check_inner(bytes) {
+        Ok(())
+    } else {
+        Err("filesystem oracle invariant failed".into())
+    }
+}
+
+fn check_inner(bytes: &[u8]) -> bool {
     let cancellation = crate::CancellationToken::new();
     let Ok(work) =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
@@ -137,11 +146,7 @@ pub fn check(bytes: &[u8]) -> bool {
         return false;
     };
     macro_rules! check {
-        ($($kind:ty),+ $(,)?) => { $(assert!(
-            check_type::<$kind>(bytes, &work, |_| 0),
-            "funded JSON admission/custody for {}; recovery: cargo run --example capture",
-            stringify!($kind),
-        );)+ };
+        ($($kind:ty),+ $(,)?) => { $(if !(check_type::<$kind>(bytes, &work, |_| 0)) { return false; };)+ };
     }
     check!(
         RecordKey,
@@ -164,10 +169,9 @@ pub fn check(bytes: &[u8]) -> bool {
         Option<WorkspaceLineageRecord>,
         Option<LazyWorkspaceState>
     );
-    assert!(
-        check_type::<bytes::Bytes>(bytes, &work, |value| value.len() as u64),
-        "funded byte-buffer admission/custody; recovery: cargo run --example capture",
-    );
+    if !(check_type::<bytes::Bytes>(bytes, &work, |value| value.len() as u64)) {
+        return false;
+    };
     let mut offset = 0;
     while offset < bytes.len() {
         let before = offset;
@@ -180,7 +184,9 @@ pub fn check(bytes: &[u8]) -> bool {
     }
     for length in [0, bytes.len() / 2] {
         let reads = std::cell::Cell::new(0);
-        let baseline = work.live_allocation_bytes();
+        let Ok(baseline) = work.live_allocation_bytes() else {
+            return false;
+        };
         let reader = LostReader {
             input: &bytes[..length],
             reads: &reads,
@@ -189,35 +195,27 @@ pub fn check(bytes: &[u8]) -> bool {
         let error_kind = match result {
             Err(LocalCoreStateStoreError::Io(error)) => {
                 if error.kind() == std::io::ErrorKind::BrokenPipe {
-                    assert!(
-                        error
-                            .get_ref()
-                            .is_some_and(|cause| cause.is::<ReaderLost>()),
-                        "reader refusal retains original cause; recovery: cargo run --example capture",
-                    );
+                    if !(error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<ReaderLost>()))
+                    {
+                        return false;
+                    };
                 }
                 Some(error.kind())
             }
             Err(LocalCoreStateStoreError::Json(error)) => error.io_error_kind(),
-            result => panic!(
-                "reader refusal at {length} bytes: {:?}; recovery: cargo run --example capture",
-                result.as_ref().err(),
-            ),
+            _ => return false,
         };
-        assert!(
-            length != 0 || error_kind == Some(std::io::ErrorKind::BrokenPipe),
-            "reader error category at {length} bytes: {error_kind:?}; recovery: cargo run --example capture",
-        );
-        assert!(
-            reads.get() > 0 && reads.get() <= length + 1,
-            "reader progress at {length} bytes: {} reads; recovery: cargo run --example capture",
-            reads.get(),
-        );
-        assert_eq!(
-            work.live_allocation_bytes(),
-            baseline,
-            "reader refusal releases custody; recovery: cargo run --example capture",
-        );
+        if !(length != 0 || error_kind == Some(std::io::ErrorKind::BrokenPipe)) {
+            return false;
+        };
+        if !(reads.get() > 0 && reads.get() <= length + 1) {
+            return false;
+        };
+        if !(&(work.live_allocation_bytes()) == &(Ok(baseline))) {
+            return false;
+        };
     }
     true
 }
@@ -298,9 +296,10 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
 
 #[cfg(test)]
 #[test]
-fn production_metadata_corpus_preserves_original_decode_custody() {
+fn production_metadata_corpus_preserves_original_decode_custody() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     for (name, bytes) in seeds().expect("production metadata writers must encode") {
-        assert!(check(&bytes), "metadata corpus {name}");
+        check(&bytes).unwrap_or_else(|error| panic!("metadata corpus {name}: {error}"));
     }
+    Ok(())
 }

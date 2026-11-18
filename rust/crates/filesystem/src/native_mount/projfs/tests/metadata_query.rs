@@ -85,9 +85,9 @@ fn only_handle_opening_fallbacks_register_metadata_probes() -> Result<(), Box<dy
             } else {
                 reads.min(1)
             };
-            prop_assert_eq!(limited.receipt().backend_read_operations, charged);
+            prop_assert_eq!(limited.receipt().unwrap().backend_read_operations, charged);
             prop_assert_eq!(
-                limited.receipt().items_examined,
+                limited.receipt().unwrap().items_examined,
                 if reads == 0 { 0 } else { path.len() as u64 }
             );
             // Also pin the production wrapper: an eager registration there must
@@ -139,10 +139,10 @@ fn name_query_matches_held_stat_and_records_one_read() -> Result<(), Box<dyn std
     std::fs::write(temporary.path().join("éclair"), b"unicode contents")?;
     for path in ["leaf", "LEAF", "alias", "éclair"] {
         let wide: Vec<_> = path.encode_utf16().collect();
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         let actual =
             query_metadata(&root, &wide, &mut &work, || ())?.ok_or("name query fell back")?;
-        let after = work.receipt();
+        let after = work.receipt().unwrap();
         assert_eq!(
             after.backend_read_operations - before.backend_read_operations,
             1
@@ -182,10 +182,10 @@ fn name_query_keeps_other_paths_on_the_original_validator() -> Result<(), Box<dy
         "nested\\éclair",
     ] {
         let wide: Vec<_> = path.encode_utf16().collect();
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         assert!(query_metadata(&root, &wide, &mut &work, || ())?.is_none());
         assert_eq!(
-            work.receipt().backend_read_operations,
+            work.receipt().unwrap().backend_read_operations,
             before.backend_read_operations
         );
     }
@@ -207,13 +207,13 @@ fn name_query_respects_cancellation_and_read_budget() -> Result<(), Box<dyn std:
     let limited =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     assert!(query_metadata(&root, &path, &mut &limited, || ()).is_err());
-    assert_eq!(limited.receipt().backend_read_operations, 0);
+    assert_eq!(limited.receipt().unwrap().backend_read_operations, 0);
     let cancellable =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
     cancellation.cancel();
     assert!(query_metadata(&root, &path, &mut &cancellable, || ()).is_err());
-    assert_eq!(cancellable.receipt().backend_read_operations, 0);
+    assert_eq!(cancellable.receipt().unwrap().backend_read_operations, 0);
     Ok(())
 }
 
@@ -265,15 +265,15 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
         let actual =
             query_metadata(&root, &wide, &mut &limited, || ())?.ok_or("tagged leaf fell back")?;
         assert_eq!(actual.raw.ReparseTag, tag, "{path}: {actual:?}");
-        assert_eq!(limited.receipt().backend_read_operations, 1);
-        assert_eq!(limited.receipt().items_examined, wide.len() as u64);
+        assert_eq!(limited.receipt().unwrap().backend_read_operations, 1);
+        assert_eq!(limited.receipt().unwrap().items_examined, wide.len() as u64);
         let expected = root.stat(&wide, &mut &work)?;
         assert_eq!(actual.raw.FileId, expected.raw.FileId);
     }
     let wide: Vec<_> = "junction\\outside".encode_utf16().collect();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     assert!(query_metadata(&root, &wide, &mut &work, || ())?.is_none());
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt().unwrap(), before);
     let path = MountPath::root().child(
         "junction"
             .encode_utf16()
@@ -316,7 +316,7 @@ fn fallback_preserves_the_original_tight_budget() -> Result<(), Box<dyn std::err
         let wide: Vec<_> = path.encode_utf16().collect();
         let baseline = work()?;
         let expected = root.stat(&wide, &mut &baseline);
-        let receipt = baseline.receipt();
+        let receipt = baseline.receipt().unwrap();
         let limited = crate::NativeMaterializationWork::new(
             crate::WorkBudget {
                 items_examined: receipt.items_examined,
@@ -338,7 +338,7 @@ fn fallback_preserves_the_original_tight_budget() -> Result<(), Box<dyn std::err
         }
         // A two-read budget selects the held-leaf fallback before any query;
         // a missing leaf needs only its one failed open or name query.
-        assert_eq!(limited.receipt(), receipt);
+        assert_eq!(limited.receipt().unwrap(), receipt);
     }
     Ok(())
 }
@@ -384,8 +384,11 @@ fn failed_queries_record_attempts_and_reuse_validation() -> Result<(), Box<dyn s
                 reads >= 2,
                 "{unsupported:?}, {reads}: {result:?}"
             );
-            assert_eq!(limited.receipt().backend_read_operations, reads.min(3));
-            assert_eq!(limited.receipt().items_examined, path.len() as u64);
+            assert_eq!(
+                limited.receipt().unwrap().backend_read_operations,
+                reads.min(3)
+            );
+            assert_eq!(limited.receipt().unwrap().items_examined, path.len() as u64);
         }
     }
     for code in [2, 5, 32] {
@@ -402,8 +405,8 @@ fn failed_queries_record_attempts_and_reuse_validation() -> Result<(), Box<dyn s
         assert!(
             matches!(error, crate::NativeTreeMaterializationError::Io(error) if error.raw_os_error() == Some(code))
         );
-        assert_eq!(limited.receipt().backend_read_operations, 1);
-        assert_eq!(limited.receipt().items_examined, path.len() as u64);
+        assert_eq!(limited.receipt().unwrap().backend_read_operations, 1);
+        assert_eq!(limited.receipt().unwrap().items_examined, path.len() as u64);
     }
     Ok(())
 }
@@ -433,7 +436,7 @@ fn name_query_reuses_prepaid_validation_items() -> Result<(), Box<dyn std::error
     )?;
     let recheck = limited.recheck_admitted();
     assert!(query_metadata(&root, &path, &mut &recheck, || ())?.is_some());
-    assert_eq!(limited.receipt().items_examined, path.len() as u64);
-    assert_eq!(limited.receipt().backend_read_operations, 1);
+    assert_eq!(limited.receipt().unwrap().items_examined, path.len() as u64);
+    assert_eq!(limited.receipt().unwrap().backend_read_operations, 1);
     Ok(())
 }

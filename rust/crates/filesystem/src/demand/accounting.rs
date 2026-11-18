@@ -50,7 +50,8 @@ impl DemandWork {
     ) -> R {
         let saved = std::mem::replace(field(self), value);
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         let restore = !super::scope_tests::omit_restore();
         #[cfg(not(all(test, not(loom))))]
         let restore = true;
@@ -141,14 +142,16 @@ impl DemandWork {
             &self.cancellation,
         )
     }
-    pub(crate) fn live_allocation_bytes(&self) -> u64 {
+    pub(crate) fn live_allocation_bytes(&self) -> Result<u64, crate::WorkObservationError> {
         self.roots.live_bytes(self.allocations.live_bytes())
     }
 
-    pub(crate) fn receipt(&mut self) -> WorkCounters {
-        self.reconcile_native_controls()
-            .expect("balanced native retirement");
-        self.work
+    pub(crate) fn receipt(&mut self) -> Result<WorkCounters, crate::WorkObservationError> {
+        if self.roots.poisoned {
+            return Err(crate::WorkObservationError::Poisoned);
+        }
+        self.reconcile_native_controls()?;
+        Ok(self.work)
     }
     pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         let delta = self.item_charge(delta);
@@ -350,7 +353,7 @@ impl DemandWork {
         let mut remaining = self.work.remaining(self.budget)?;
         remaining.peak_allocation_bytes = remaining
             .peak_allocation_bytes
-            .checked_sub(self.live_allocation_bytes())
+            .checked_sub(self.live_allocation_bytes()?)
             .and_then(|bytes| bytes.checked_sub(self.allocations.reserved_bytes()))
             .ok_or(crate::WorkError::Overflow)?;
         let mut remaining = self.resource().map_or(Ok(remaining), |resource| {
@@ -406,7 +409,8 @@ impl DemandWork {
 }
 impl Drop for DemandWork {
     fn drop(&mut self) {
-        self.reconcile_native_controls()
-            .expect("balanced final native retirement");
+        if let Err(error) = self.reconcile_native_controls() {
+            tracing::error!(?error, "native retirement failed during drop");
+        }
     }
 }

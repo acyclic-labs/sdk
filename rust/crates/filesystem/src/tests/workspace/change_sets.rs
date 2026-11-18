@@ -168,7 +168,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
 
     // The owned reader pins these endpoints even after the workspace advances.
     // Its rows keep their own original allocation after the reader is dropped.
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut reader = value!(
         before
             .changed_paths_to(&after, &original, &cancellation)
@@ -178,12 +178,16 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     let mut rows = Vec::new();
     while let Some(preview) = value!(reader.peek().await)? {
         let path_backing = preview.path.components().as_ptr();
-        let work = reader.work();
-        let live = original.live_allocation_bytes();
+        let work = reader.work().unwrap();
+        let live = original.live_allocation_bytes().unwrap();
         let preview = value!(reader.peek().await)?.ok_or("pending row disappeared")?;
         assert_eq!(preview.path.components().as_ptr(), path_backing);
-        assert_eq!(reader.work(), work, "pending row repeated source work");
-        assert_eq!(original.live_allocation_bytes(), live);
+        assert_eq!(
+            reader.work().unwrap(),
+            work,
+            "pending row repeated source work"
+        );
+        assert_eq!(original.live_allocation_bytes().unwrap(), live);
         let row = value!(reader.next().await)?.ok_or("pending row was not consumed")?;
         assert_eq!(row.value().path.components().as_ptr(), path_backing);
         rows.push(row);
@@ -192,9 +196,9 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     for expected in &expected {
         assert!(rows.iter().any(|row| row.value() == expected));
     }
-    assert_eq!(reader.work(), original.journal_work()?);
+    assert_eq!(reader.work().unwrap(), original.journal_work()?);
     drop(reader);
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
     let mut owned_names = rows
         .iter()
         .map(|row| namespace_path_text(&row.value().path))
@@ -212,7 +216,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
         ]
     );
     drop(rows);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     // Cancellation remains the caller's original event across row boundaries;
     // it must refuse before another object read, then retire the same pins.
@@ -220,7 +224,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     let mut reader = value!(before.changed_paths_to(&after, &original, &stopped).await)?;
     let first = value!(reader.next().await)?.ok_or("missing first changed path")?;
     assert!(value!(reader.peek().await)?.is_some());
-    let spent = reader.work();
+    let spent = reader.work().unwrap();
     stopped.cancel();
     let failure = match reader.next().await {
         Err(failure) => failure,
@@ -228,13 +232,13 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(
-        failure.work.backend_read_operations,
+        failure.work.as_deref().unwrap().backend_read_operations,
         spent.backend_read_operations
     );
     drop(reader);
     assert!(!namespace_path_text(&first.value().path)?.is_empty());
     drop(first);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     // Standalone reads use the same producer and retain outputs independently;
     // an explicit zero item budget refuses at the original read boundary.

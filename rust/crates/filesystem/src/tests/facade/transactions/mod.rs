@@ -150,10 +150,13 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
             id
         );
     }
-    let live = original.live_allocation_bytes();
+    let live = original.live_allocation_bytes().unwrap();
     let result_bytes = allocation.bytes();
     drop(result);
-    assert_eq!(original.live_allocation_bytes(), live - result_bytes);
+    assert_eq!(
+        original.live_allocation_bytes().unwrap(),
+        live - result_bytes
+    );
     assert!(
         checkout
             .lookup_no_follow(&first, B, &cancel)
@@ -476,7 +479,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         failure,
         FsError::Object(ObjectStoreError::Corrupt)
     ));
-    original.receipt().verify(B)?;
+    original.receipt().unwrap().verify(B)?;
     assert!(matches!(&input.0[2], AuthoredMutation::Rename {
         source: old_source, destination: old_destination, ..
     } if old_source == &source && old_destination == &destination));

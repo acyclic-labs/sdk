@@ -53,13 +53,13 @@ async fn native_access_projfs_cached_opens_require_current_list_authority()
         let stamp = source.view_stamp_with_meter(&work)?;
         publish_test_access(&source, vec![deny("no-disclosure", &[Action::List], path)])?;
         assert_eq!(source.view_stamp_with_meter(&work)?, stamp);
-        let before = work.receipt().backend_read_operations;
+        let before = work.receipt().unwrap().backend_read_operations;
         assert_eq!(
             notify_path(&runtime, PRJ_NOTIFICATION_FILE_OPENED, path),
             HR_ACCESS_DENIED
         );
         assert_eq!(
-            work.receipt().backend_read_operations,
+            work.receipt().unwrap().backend_read_operations,
             before,
             "denial precedes host probes"
         );
@@ -72,7 +72,7 @@ fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {
     // Persisted policy validation is storage I/O, distinct from the two native
     // metadata probes this regression checks. Measure the shared authorization
     // cost rather than hiding it in an increased host-probe allowance.
-    let before = work.receipt().backend_read_operations;
+    let before = work.receipt().unwrap().backend_read_operations;
     assert!(
         authorize_open(
             runtime.source.as_ref(),
@@ -82,15 +82,15 @@ fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {
         )
         .is_ok()
     );
-    let authorization_reads = work.receipt().backend_read_operations - before;
-    let before = work.receipt().backend_read_operations;
+    let authorization_reads = work.receipt().unwrap().backend_read_operations - before;
+    let before = work.receipt().unwrap().backend_read_operations;
     assert_eq!(notify(runtime, PRJ_NOTIFICATION_FILE_OPENED), HR_OK);
     assert_eq!(
         notify(runtime, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION),
         HR_OK
     );
     assert_eq!(
-        work.receipt().backend_read_operations - before - authorization_reads,
+        work.receipt().unwrap().backend_read_operations - before - authorization_reads,
         2
     );
     assert!(lock_recover(&runtime.metadata_baselines).is_empty());
@@ -359,9 +359,9 @@ async fn cached_read_close_charges_source_validation_to_its_callback_meter()
         .get(&path)
         .copied()
         .ok_or("no cached binding")?;
-    let before = setup.receipt();
+    let before = setup.receipt().unwrap();
     host_windows_metadata(&warm.metadata_root, &path, &setup, None)?;
-    let probe_items = setup.receipt().items_examined - before.items_examined;
+    let probe_items = setup.receipt().unwrap().items_examined - before.items_examined;
     let limits = prop_oneof![Just(probe_items), 0_u64..128, any::<u64>()];
     let mut runner = TestRunner::new(ProptestConfig {
         cases: 32,
@@ -387,7 +387,7 @@ async fn cached_read_close_charges_source_validation_to_its_callback_meter()
             &runtime,
             PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION,
         );
-        let receipt = work.receipt();
+        let receipt = work.receipt().unwrap();
         prop_assert!(receipt.items_examined <= items_examined);
         prop_assert!(receipt.backend_read_operations <= 1);
         if result.is_ok() {

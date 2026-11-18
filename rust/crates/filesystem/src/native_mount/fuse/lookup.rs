@@ -75,7 +75,7 @@ impl FuseProjection {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    let prefix = work.state.lock().work;
+                    let prefix = work.receipt();
                     let _ = self.core.finish::<()>(Err((error, prefix)));
                     confirm_name(confirmed, node.file_id, name, None, work)?;
                 }

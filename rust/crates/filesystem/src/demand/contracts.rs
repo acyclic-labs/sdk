@@ -131,6 +131,15 @@ impl From<crate::FsError> for DemandError {
 /// Demand result with source-work counters on both success and failure.
 pub type DemandResult<T> = Result<OperationReceipt<T>, OperationFailure<DemandError>>;
 
+impl From<crate::WorkObservationError> for DemandError {
+    fn from(error: crate::WorkObservationError) -> Self {
+        match error {
+            crate::WorkObservationError::Poisoned => Self::OriginalWorkPoisoned,
+            crate::WorkObservationError::Work(error) => Self::Work(error),
+        }
+    }
+}
+
 /// One change a source reports outside every view of that source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceChange {
@@ -419,10 +428,7 @@ pub(crate) fn accept_source_result<T>(
     answer: DemandResult<T>,
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<T, DemandError> {
-    let (result, completed) = match answer {
-        Ok(receipt) => (Ok(receipt.value), receipt.work),
-        Err(failure) => (Err(failure.error), *failure.work),
-    };
+    let (result, completed) = accounting.split_receipt(answer)?;
     merge_source_work(completed, accounting)?;
     result
 }
@@ -461,5 +467,27 @@ impl From<crate::native_mount::MountSourceError> for DemandError {
             }
             error => Self::Mount(Box::new(error)),
         }
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use crate::facade::FsWork;
+
+    #[test]
+    fn unavailable_child_receipt_preserves_error_and_invalidates_parent_receipt() {
+        let cancellation = CancellationToken::new();
+        let budget = crate::WorkBudget::UNBOUNDED;
+        let mut accounting = budget.accounting(&cancellation);
+        let answer: DemandResult<()> = Err(crate::OperationFailure::without_receipt(
+            DemandError::StaleVersion,
+            crate::WorkObservationError::Poisoned,
+        ));
+        let result = accept_source_result(answer, &mut accounting);
+        let failure = budget.finish(result, &accounting).unwrap_err();
+        assert!(matches!(failure.error, DemandError::StaleVersion));
+        assert_eq!(failure.work, Err(crate::WorkObservationError::Poisoned));
+        assert!(accounting.remaining().is_err());
     }
 }

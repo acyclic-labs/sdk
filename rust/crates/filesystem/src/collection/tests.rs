@@ -297,8 +297,8 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         &cancellation,
     )
     .map_err(|(cause, _)| cause)?;
-    let baseline = denied.live_allocation_bytes();
-    let before = denied.receipt();
+    let baseline = denied.live_allocation_bytes().unwrap();
+    let before = denied.receipt().unwrap();
     assert!(matches!(
         clone_generation_root_with_accounting(
             &working,
@@ -311,19 +311,19 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
             })
         ))
     ));
-    assert_eq!(denied.live_allocation_bytes(), baseline);
-    assert_eq!(denied.receipt(), before);
+    assert_eq!(denied.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(denied.receipt().unwrap(), before);
 
     let original =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-    let initial_live = original.live_allocation_bytes();
+    let initial_live = original.live_allocation_bytes().unwrap();
     let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
         4096,
         &mut KernelAccounting::native(&original, &cancellation),
     )?;
-    let baseline = original.live_allocation_bytes();
-    let before = original.receipt();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let before = original.receipt().unwrap();
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let owned = clone_generation_root_with_accounting(
             &working,
@@ -331,13 +331,13 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         )
         .expect("original-funded parent copy");
         assert_eq!(owned.0, working);
-        assert!(original.live_allocation_bytes() > baseline);
+        assert!(original.live_allocation_bytes().unwrap() > baseline);
         assert_eq!(
-            original.receipt().allocation_operations,
+            original.receipt().unwrap().allocation_operations,
             before.allocation_operations + 1
         );
         assert_eq!(
-            original.receipt().bytes_copied,
+            original.receipt().unwrap().bytes_copied,
             before.bytes_copied + std::mem::size_of::<crate::GenerationId>() as u64
         );
         std::panic::panic_any("unwind after the completed physical parent copy");
@@ -350,10 +350,10 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
             .copied(),
         Some("unwind after the completed physical parent copy")
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     let cancelled = crate::CancellationToken::new();
     cancelled.cancel();
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     assert!(matches!(
         clone_generation_root_with_accounting(
             &working,
@@ -361,10 +361,10 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         ),
         Err(crate::FsError::Cancelled(_))
     ));
-    assert_eq!(original.receipt(), before);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap(), before);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     drop(held);
-    assert_eq!(original.live_allocation_bytes(), initial_live);
+    assert_eq!(original.live_allocation_bytes().unwrap(), initial_live);
     Ok(())
 }
 
@@ -431,7 +431,7 @@ async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
             .await?,
     );
     // A proof made after the sweep read the store as it is; admission adds no read.
-    let before = accounting.spent();
+    let before = accounting.spent().unwrap();
     drop(
         collection
             .admit(
@@ -448,7 +448,7 @@ async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
             )
             .await?,
     );
-    assert_eq!(accounting.spent(), before);
+    assert_eq!(accounting.spent().unwrap(), before);
     Ok(())
 }
 
@@ -563,14 +563,14 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
         if native {
             continue;
         }
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         let collecting = collection.begin().await;
         drop(
             collection
                 .admit(&objects, scope, |_| false, &mut accounting)
                 .await?,
         );
-        let after = accounting.spent();
+        let after = accounting.spent().unwrap();
         assert_eq!(
             after.backend_read_operations - before.backend_read_operations,
             1
@@ -632,7 +632,7 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
                 })
             ));
         }
-        assert_eq!(denied.spent().object_bytes_read, 0);
+        assert_eq!(denied.spent().unwrap().object_bytes_read, 0);
         let cancelled = crate::CancellationToken::new();
         cancelled.cancel();
         let mut cancelled_work =
@@ -641,14 +641,14 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
         if native {
             cancelled_work = KernelAccounting::native(&original, &cancelled);
         }
-        let before = cancelled_work.spent();
+        let before = cancelled_work.spent().unwrap();
         assert!(matches!(
             collection
                 .admit(&objects, scope, |_| false, &mut cancelled_work)
                 .await,
             Err(crate::FsError::Cancelled(_))
         ));
-        assert_eq!(cancelled_work.spent(), before);
+        assert_eq!(cancelled_work.spent().unwrap(), before);
     }
     Ok(())
 }

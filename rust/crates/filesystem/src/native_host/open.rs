@@ -562,8 +562,8 @@ fn check_prepared_ascii_leaf_inner<const N: usize>(
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| error)?;
-    let before = work.receipt();
-    let live = work.live_allocation_bytes();
+    let before = work.receipt()?;
+    let live = work.live_allocation_bytes()?;
     let result = prepare_ascii_leaf(bytes, &work);
     let prefix = bytes.split_last().and_then(|(&last, prefix)| {
         (last == 0 && !prefix.is_empty() && !matches!(prefix, b"." | b"..")).then_some(prefix)
@@ -584,13 +584,13 @@ fn check_prepared_ascii_leaf_inner<const N: usize>(
     }
     let examined =
         prefix.map_or(0, |prefix| invalid.map_or(prefix.len(), |index| index + 1)) as u64;
-    let after = work.receipt();
+    let after = work.receipt()?;
     assert_eq!(after.items_examined - before.items_examined, examined);
     #[cfg(windows)]
     assert_eq!(after.bytes_encoded - before.bytes_encoded, examined * 2);
     assert_eq!(after.allocation_operations, before.allocation_operations);
     assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.live_allocation_bytes()?, live);
     Ok(())
 }
 
@@ -615,34 +615,34 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| error)?;
-    let live = work.live_allocation_bytes();
-    let before = work.receipt();
+    let live = work.live_allocation_bytes()?;
+    let before = work.receipt()?;
     assert!(matches!(
         work.root_identity(Path::new(name)),
         Err(NativeTreeMaterializationError::InvalidLayout)
     ));
-    let after = work.receipt();
+    let after = work.receipt()?;
     assert_eq!(after.items_examined - before.items_examined, examined);
     assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded);
     assert_eq!(
         after.backend_read_operations,
         before.backend_read_operations
     );
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.live_allocation_bytes()?, live);
     // The demand adapter must keep the same original ledger and exact prefix.
     let mut original = work.clone();
     assert!(matches!(
         HostRoot::open(Path::new(name), &mut original),
         Err(DemandError::InvalidRequest)
     ));
-    let after_demand = work.receipt();
+    let after_demand = work.receipt()?;
     assert_eq!(after_demand.items_examined - after.items_examined, examined);
     assert_eq!(after_demand.bytes_encoded - after.bytes_encoded, encoded);
     assert_eq!(
         after_demand.backend_read_operations,
         after.backend_read_operations
     );
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.live_allocation_bytes()?, live);
     let denied = NativeMaterializationWork::new(
         crate::WorkBudget {
             items_examined: 0,
@@ -655,12 +655,13 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
         denied.root_identity(Path::new(name)),
         Err(NativeTreeMaterializationError::Work(_))
     ));
-    assert_eq!(denied.receipt().items_examined, 0);
-    assert_eq!(denied.receipt().backend_read_operations, 0);
+    assert_eq!(denied.receipt()?.items_examined, 0);
+    assert_eq!(denied.receipt()?.backend_read_operations, 0);
     Ok(())
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod prepared_leaf_tests {
     use super::*;
 
@@ -692,7 +693,7 @@ mod prepared_leaf_tests {
         assert!(file.metadata()?.is_file());
         assert_eq!(work.work.bytes_encoded, 0);
         assert_eq!(work.work.allocation_operations, 0);
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes().unwrap(), 0);
         drop(file);
         // A shared original ledger owns an Arc before the operation starts.
         // Its adapter must likewise add no name allocation or encoding work.
@@ -705,9 +706,15 @@ mod prepared_leaf_tests {
             &mut &preparation,
         )?;
         let after = preparation.receipt();
-        assert_eq!(after.bytes_encoded, before.bytes_encoded);
-        assert_eq!(after.allocation_operations, before.allocation_operations);
-        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(after.unwrap().bytes_encoded, before.unwrap().bytes_encoded);
+        assert_eq!(
+            after.unwrap().allocation_operations,
+            before.unwrap().allocation_operations
+        );
+        assert_eq!(
+            after.unwrap().peak_allocation_bytes,
+            before.unwrap().peak_allocation_bytes
+        );
         assert_eq!(preparation.live_allocation_bytes(), live);
         drop(file);
         remove_ascii_leaf(&root.directory(), &name, &mut work)?;

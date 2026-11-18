@@ -58,7 +58,7 @@ pub async fn clone_extent_range<S: crate::AsyncObjectStore>(
     )
     .await
     .map_err(|error| {
-        OperationFailure::new(
+        OperationFailure::observed(
             super::regular_mutation::project_clone_error(error),
             accounting.spent(),
         )

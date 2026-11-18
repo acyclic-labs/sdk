@@ -200,7 +200,7 @@ pub fn check(bytes: &[u8]) {
             },
         );
     }
-    publication_codec_fuzz::check(bytes);
+    assert!(publication_codec_fuzz::check(bytes).is_ok());
     if let Ok(value) = decode_retention_created(bytes, u64::MAX) {
         refuses_framing(bytes, |input| decode_retention_created(input, u64::MAX));
         assert_eq!(

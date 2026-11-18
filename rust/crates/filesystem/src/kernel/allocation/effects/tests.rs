@@ -33,10 +33,10 @@ proptest! {
             ..WorkCounters::UNCHARGED
         });
         prop_assert_eq!(completed.is_err(), cancelled);
-        prop_assert_eq!(work.receipt().bytes_copied, actual);
+        prop_assert_eq!(work.receipt().unwrap().bytes_copied, actual);
         prop_assert_eq!(work.state(|state| state.budget.bytes_copied), 64 - reserved + actual);
         drop(moved);
         prop_assert_eq!(work.state(|state| state.budget.bytes_copied), 64);
-        prop_assert_eq!(work.receipt().bytes_copied, actual);
+        prop_assert_eq!(work.receipt().unwrap().bytes_copied, actual);
     }
 }

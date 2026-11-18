@@ -52,9 +52,9 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
             .err()
             .ok_or("generation pin exceeded the parent decoding allowance")?;
         assert!(matches!(failure.error, WorkspaceError::Work(_)));
-        assert!(failure.work.backend_read_operations > 0);
-        assert!(failure.work.object_bytes_read > 0);
-        failure.work.verify(partial)?;
+        assert!(failure.work().unwrap().backend_read_operations > 0);
+        assert!(failure.work().unwrap().object_bytes_read > 0);
+        failure.work().unwrap().verify(partial)?;
         let mut denied = budget;
         denied.backend_read_operations = 0;
         let failure = read(denied, CancellationToken::new())
@@ -62,9 +62,9 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
             .err()
             .ok_or("generation pin admitted zero reads")?;
         assert!(matches!(failure.error, WorkspaceError::Work(_)));
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.authority_records_read, 0);
-        assert_eq!(failure.work.object_bytes_read, 0);
+        assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+        assert_eq!(failure.work().unwrap().authority_records_read, 0);
+        assert_eq!(failure.work().unwrap().object_bytes_read, 0);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let failure = read(budget, cancelled)
@@ -72,7 +72,7 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
             .err()
             .ok_or("pre-cancelled generation pin succeeded")?;
         assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     assert_eq!(unbounded!(workspace, head())?.id(), current);
     Ok(())
@@ -113,8 +113,8 @@ async fn named_creation_retains_finite_success_and_spent_exhaustion()
         "{:?}",
         failure.error
     );
-    assert!(failure.work.object_bytes_written > 0);
-    failure.work.verify(limited)?;
+    assert!(failure.work().unwrap().object_bytes_written > 0);
+    failure.work().unwrap().verify(limited)?;
     Ok(())
 }
 
@@ -129,7 +129,7 @@ async fn cancelled_creation_spends_nothing_and_does_not_publish()
         .await;
     let failure = failed.err().ok_or("pre-cancelled creation succeeded")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert!(unbounded!(fs, open_workspace("cancelled-create")).is_err());
     Ok(())
 }
@@ -155,8 +155,8 @@ async fn named_open_retains_cumulative_work_and_original_cancellation()
         .err()
         .ok_or("opening exceeded cumulative authority budget")?;
     assert!(matches!(failure.error, WorkspaceError::Work(_)));
-    assert!(failure.work.authority_records_read > 0);
-    failure.work.verify(exhausted)?;
+    assert!(failure.work().unwrap().authority_records_read > 0);
+    failure.work().unwrap().verify(exhausted)?;
     let mut denied = budget;
     denied.backend_read_operations = 0;
     let failure = fs
@@ -165,9 +165,9 @@ async fn named_open_retains_cumulative_work_and_original_cancellation()
         .err()
         .ok_or("zero backend-read budget admitted open")?;
     assert!(matches!(failure.error, WorkspaceError::Work(_)));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.authority_records_read, 0);
-    assert_eq!(failure.work.object_bytes_read, 0);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().authority_records_read, 0);
+    assert_eq!(failure.work().unwrap().object_bytes_read, 0);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = fs
@@ -176,7 +176,7 @@ async fn named_open_retains_cumulative_work_and_original_cancellation()
         .err()
         .ok_or("pre-cancelled open succeeded")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert_eq!(
         unbounded!(fs, open_workspace("measured-open"))?.id(),
         created.id()
@@ -230,9 +230,9 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
         .err()
         .ok_or("recovery admitted zero backend-read budget")?;
     assert!(matches!(failure.error, WorkspaceError::Work(_)));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.authority_records_read, 0);
-    assert_eq!(failure.work.object_bytes_read, 0);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().authority_records_read, 0);
+    assert_eq!(failure.work().unwrap().object_bytes_read, 0);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = workspace
@@ -241,7 +241,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
         .err()
         .ok_or("pre-cancelled recovery succeeded")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     let absent = workspace
         .operation_generation(
             IdempotencyKey::from_bytes(OperationId::new().into_bytes()),
@@ -437,8 +437,8 @@ mod source_bound_lost_ack {
                 ))
             ))
         ));
-        assert!(failure.work.backend_write_operations > 0);
-        failure.work.verify(budget)?;
+        assert!(failure.work().unwrap().backend_write_operations > 0);
+        failure.work().unwrap().verify(budget)?;
         assert_eq!(fault.committed.load(Ordering::SeqCst), 1);
         let workspace = unbounded!(fs, open_workspace("stream-lost-ack"))?;
         let initial = unbounded!(
@@ -548,7 +548,7 @@ mod source_bound_lost_ack {
                 failure.error,
                 WorkspaceError::Filesystem(acyclic_fs::FsError::CreationRejected)
             ));
-            failure.work.verify(budget)?;
+            failure.work().unwrap().verify(budget)?;
             assert_eq!(
                 lazy.workspace()
                     .head(

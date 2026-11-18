@@ -247,6 +247,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 #[path = "changes_tests.rs"]
 mod tests;

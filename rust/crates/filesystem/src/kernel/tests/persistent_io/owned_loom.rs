@@ -9,9 +9,9 @@ fn handoff_model<const EARLY_RETIREMENT: bool>() {
         // Keep root/resource storage owners until join. The synchronization
         // exercised here is the production crate::sync leaf/resource mutexes
         // and cancellation atomics, rather than Arc reference-count uniqueness.
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let input = page(1, &mut KernelAccounting::native(&resource, &cancellation));
-        let charged = original.receipt();
+        let charged = original.receipt().unwrap();
         let worker_cancellation = cancellation.clone();
         let worker_original = original.clone();
         let worker_resource = resource.clone();
@@ -32,7 +32,8 @@ fn handoff_model<const EARLY_RETIREMENT: bool>() {
                         // production result still retains its decoded buffer.
                         drop(allocation.take());
                     }
-                    let funded = worker_original.live_allocation_bytes() == baseline + bytes;
+                    let funded =
+                        worker_original.live_allocation_bytes().unwrap() == baseline + bytes;
                     drop(page);
                     drop(allocation);
                     funded
@@ -54,9 +55,9 @@ fn handoff_model<const EARLY_RETIREMENT: bool>() {
             worker.join().unwrap(),
             "payload must keep its original funding"
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(
-            original.receipt(),
+            original.receipt().unwrap(),
             charged,
             "handoff/retirement adds no work"
         );

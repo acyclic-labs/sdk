@@ -10,7 +10,8 @@ use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 use std::collections::VecDeque;
 
-#[cfg(all(test, loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 mod model_checking;
 
 pub(crate) type Failure = OperationFailure<Error>;
@@ -435,10 +436,11 @@ where
         data_custody,
     )
     .await;
-    let work = accounting.spent();
-    result
-        .map(|(value, _)| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(project_failure(error), work))
+    crate::performance::finish_measured(
+        result.map(|(value, _)| value).map_err(project_failure),
+        accounting.spent(),
+        |error| Error::Storage(crate::ObjectStoreError::WorkObservation(error)),
+    )
 }
 
 pub(crate) async fn lookup_async_with_accounting<F>(
@@ -702,6 +704,9 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
         crate::FsError::FileRecord(error) => super::file_table::unmap_batch_error(error),
         crate::FsError::Cancelled(_) => Error::Cancelled,
         crate::FsError::Work(error) => Error::Work(error),
+        crate::FsError::WorkObservation(error) => {
+            Error::Storage(crate::ObjectStoreError::WorkObservation(error))
+        }
         crate::FsError::Object(error) => Error::Storage(error),
         crate::FsError::Decode(super::CanonicalDecodeError::AllocationFailed) => {
             Error::AllocationFailed

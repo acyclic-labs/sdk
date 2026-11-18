@@ -218,6 +218,12 @@ impl std::fmt::Debug for NativeMountError {
     }
 }
 
+impl From<crate::WorkObservationError> for NativeMountError {
+    fn from(error: crate::WorkObservationError) -> Self {
+        Self::Materialization(error.into())
+    }
+}
+
 impl From<crate::DemandError> for NativeMountError {
     fn from(error: crate::DemandError) -> Self {
         match error {

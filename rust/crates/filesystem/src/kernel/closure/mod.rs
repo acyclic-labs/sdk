@@ -209,7 +209,7 @@ pub(super) async fn generation_closure<S: crate::AsyncObjectStore>(
     };
     let result = context.prove(generation_root).await;
     let (proof, guard) =
-        result.map_err(|error| OperationFailure::new(closure_error(error), meter.work()))?;
+        result.map_err(|error| OperationFailure::observed(closure_error(error), meter.work()))?;
     drop(guard);
     Ok(proof)
 }
@@ -229,18 +229,21 @@ pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
     let logical_bytes = context
         .prove_blob(root)
         .await
-        .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
+        .map_err(|error| OperationFailure::observed(closure_error(error), context.meter.work()))?;
     if logical_bytes != expected_bytes {
-        return Err(OperationFailure::new(
+        return Err(OperationFailure::observed(
             ClosureError::BlobLengthMismatch,
             context.meter.work(),
         ));
     }
     let (objects, guard) = context
         .take_objects()
-        .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
+        .map_err(|error| OperationFailure::observed(closure_error(error), context.meter.work()))?;
     drop(guard);
-    Ok((objects, context.meter.work()))
+    let work = context.meter.work().map_err(|error| {
+        OperationFailure::without_receipt(closure_error(crate::FsError::from(error)), error)
+    })?;
+    Ok((objects, work))
 }
 
 #[cfg(test)]

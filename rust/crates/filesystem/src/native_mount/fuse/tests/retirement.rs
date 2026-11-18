@@ -92,7 +92,7 @@ fn terminal_worker_retires_destination(
             crate::WorkCounters::UNCHARGED,
         )?,
     }));
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     if physical {
         run_fuse_session((Arc::clone(&core), Arc::clone(&state)));
     }
@@ -155,11 +155,11 @@ fn terminal_worker_retires_destination(
     );
     assert!(!session.stop_with_context(&stop)?);
     assert_eq!(
-        work.receipt().allocation_operations,
+        work.receipt().unwrap().allocation_operations,
         before.allocation_operations
     );
     assert_eq!(
-        work.receipt().peak_allocation_bytes,
+        work.receipt().unwrap().peak_allocation_bytes,
         before.peak_allocation_bytes
     );
     Ok(())
@@ -484,7 +484,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
             .map_err(|_| "retirement state poisoned")?
             .is_retired()
     );
-    let receipt = original.receipt();
+    let receipt = original.receipt().unwrap();
     assert_eq!(receipt.backend_write_operations, 1);
     assert_eq!(receipt.backend_read_operations, 1);
     Ok(())

@@ -228,7 +228,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .await?;
         }
         if let Some(plan) = &mut planned.0 {
-            plan.work = accounting.spent();
+            plan.work = accounting.spent()?;
         }
         Ok(planned)
     }

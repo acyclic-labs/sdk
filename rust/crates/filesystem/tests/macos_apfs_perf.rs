@@ -189,7 +189,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         json!({
             "attach_us": attach_us,
             "exactify_us": exactify_us,
-            "work": work.receipt(),
+            "work": work.receipt().unwrap(),
         })
     );
     if std::env::var_os("ACYCLIC_APFS_BENCH_EXACT_ONLY").is_some() {

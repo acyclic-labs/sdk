@@ -174,7 +174,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         rejected.error.semantic_error(),
         LazyWorkspaceError::StaleSource
     ));
-    rejected.work.verify(budget)?;
+    rejected.work().unwrap().verify(budget)?;
     assert_eq!(
         store
             .load_lazy_workspace(

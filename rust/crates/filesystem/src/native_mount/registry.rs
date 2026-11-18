@@ -139,7 +139,8 @@ pub(super) fn path() -> Result<PathBuf, NativeMountError> {
 pub(super) fn with_directory<T>(
     operation: impl FnOnce(&Path) -> Result<T, NativeMountError>,
 ) -> Result<T, NativeMountError> {
-    #[cfg(all(test, loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
     {
@@ -216,7 +217,8 @@ impl Registry {
     where
         NativeMountError: From<W::Error>,
     {
-        #[cfg(all(test, loom, target_os = "linux"))]
+        #[cfg(test)]
+        #[cfg(all(loom, target_os = "linux"))]
         let admitted = (!super::disconnected::kernel::current()
             .is_some_and(|kernel| kernel.registry_admission_disabled()))
         .then(|| {

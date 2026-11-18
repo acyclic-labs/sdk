@@ -103,11 +103,11 @@ fn model<const BROKEN: bool, const CHECK_EFFECTS: bool>(
             );
         }
         let completed = if phase == 0 {
-            root.receipt().items_examined
+            root.receipt().map(|work| work.items_examined)
         } else {
-            root.receipt().bytes_copied
+            root.receipt().map(|work| work.bytes_copied)
         };
-        assert_eq!(completed, observed, "no name work may lose its charge");
+        assert_eq!(completed, Ok(observed), "no name work may lose its charge");
         let credit = root.state(|state| (state.budget, state.original_budget()));
         assert_eq!(credit.0.items_examined, credit.1.items_examined);
         assert_eq!(credit.0.bytes_copied, credit.1.bytes_copied);

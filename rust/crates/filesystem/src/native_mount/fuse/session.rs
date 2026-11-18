@@ -477,10 +477,12 @@ impl FuseSession {
     }
     pub(in crate::native_mount) fn take_callback_failure(
         &self,
-    ) -> Option<(NativeMountError, WorkCounters)> {
+    ) -> Option<super::core::HandlerFailure> {
         self.core.take_handler_failure()
     }
-    pub(in crate::native_mount) fn completed_callback_work(&self) -> WorkCounters {
+    pub(in crate::native_mount) fn completed_callback_work(
+        &self,
+    ) -> Result<WorkCounters, crate::WorkObservationError> {
         self.core.completed_callback_work()
     }
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {

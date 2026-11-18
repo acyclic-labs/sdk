@@ -110,7 +110,7 @@ pub async fn build_generation_export_manifest_async<S: AsyncObjectStore>(
         true,
     )
     .await
-    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+    .map_err(|failure| failure.map_error(Into::into))?;
     let manifest = GenerationExportManifest {
         volume_id,
         config,
@@ -155,7 +155,7 @@ pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
         true,
     )
     .await
-    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+    .map_err(|failure| failure.map_error(Into::into))?;
     if proof.root.volume_id != manifest.volume_id
         || proof.generation_id != manifest.generation_id
         || proof.objects != manifest.objects
@@ -335,7 +335,7 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     for (offset, body) in bodies.iter().enumerate() {
         cancellation
             .check()
-            .map_err(|error| OperationFailure::new(error.into(), work.spent()))?;
+            .map_err(|error| OperationFailure::observed(error.into(), work.spent()))?;
         #[allow(
             clippy::indexing_slicing,
             reason = "the check above rejects `body_count > maximum_objects` or \
@@ -348,11 +348,16 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
         store
             .put_stored(object_id, body.clone(), &mut work)
             .await
-            .map_err(|error| OperationFailure::new(error.into(), work.spent()))?;
+            .map_err(|error| OperationFailure::observed(error.into(), work.spent()))?;
     }
     Ok(OperationReceipt {
         value: TransferCursor(cursor.0 + body_count),
-        work: work.spent(),
+        work: work.spent().map_err(|observation| {
+            OperationFailure::without_receipt(
+                ObjectStoreError::WorkObservation(observation).into(),
+                observation,
+            )
+        })?,
     })
 }
 

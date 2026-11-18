@@ -129,7 +129,7 @@ fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
         );
         let retired = retired?;
         assert!(callback_failure.is_none());
-        assert!(retired.completed_callback_work().items_examined > 0);
+        assert!(retired.completed_callback_work().unwrap().items_examined > 0);
         match retired.transport {
             Ok(())
             | Err(NativeMountError::Materialization(

@@ -83,7 +83,7 @@ fn posix_profile_names_materialize_through_utf8_on_windows()
 
     for bytes in [vec![0xff], b"left\\right".to_vec(), b"..\\escape".to_vec()] {
         let invalid = LogicalName::new(NameEncoding::PosixBytes, bytes)?;
-        let before = receipt.custody.work().receipt();
+        let before = receipt.custody.work().receipt().unwrap();
         let live = receipt.custody.bytes();
         assert!(matches!(
             materialize_host_path(
@@ -95,7 +95,12 @@ fn posix_profile_names_materialize_through_utf8_on_windows()
         ));
         assert_eq!(receipt.custody.bytes(), live);
         assert_eq!(
-            receipt.custody.work().receipt().allocation_operations,
+            receipt
+                .custody
+                .work()
+                .receipt()
+                .unwrap()
+                .allocation_operations,
             before.allocation_operations
         );
     }

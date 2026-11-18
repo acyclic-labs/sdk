@@ -197,7 +197,7 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
             "ordinary paths did not retire exactly their own backing"
         );
         drop(independent);
-        accounting.spent().verify(budget)?;
+        accounting.spent().unwrap().verify(budget)?;
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -228,24 +228,24 @@ async fn bounded_direct_paths_retain_all_admitted_aliases() -> Result<(), Box<dy
     {
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let birth = original.live_allocation_bytes();
+        let birth = original.live_allocation_bytes().unwrap();
         let mut work = crate::AuthorityWork::native(&original, &cancellation);
         let independent = crate::kernel::Owned::<Vec<u8>>::allocate(73, &mut work.accounting())?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let returned = generation
             .paths_for_file_ids([id], Some(16), &original, &cancellation)
             .await?;
         assert_eq!(returned.entries(), complete.entries());
-        assert!(original.live_allocation_bytes() > baseline);
+        assert!(original.live_allocation_bytes().unwrap() > baseline);
         drop(returned);
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             baseline,
             "paths did not retire exactly their own backing"
         );
         independent.retire(&mut work.accounting())?;
-        assert_eq!(original.live_allocation_bytes(), birth);
-        original.receipt().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), birth);
+        original.receipt().unwrap().verify(budget)?;
     }
     Ok(())
 }

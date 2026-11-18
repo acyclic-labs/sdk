@@ -32,13 +32,13 @@ proptest! {
                 3 => source_work.clone(),
                 _ => original.native_volume_work(resource_budget).unwrap(),
             };
-            let baseline = (original.live_allocation_bytes(), foreign.live_allocation_bytes());
+            let baseline = (original.live_allocation_bytes().unwrap(), foreign.live_allocation_bytes().unwrap());
             let resource_before = destination.resource.as_ref().map(|resource| resource.remaining().unwrap().peak_allocation_bytes);
             let source_resource_before = source_work.resource.as_ref().map(|resource| resource.remaining().unwrap().peak_allocation_bytes);
             let mut source = source_work.claim(source_bytes, 1, WorkCounters::UNCHARGED).unwrap();
             let mut target = destination.claim(target_bytes, 1, WorkCounters::UNCHARGED).unwrap();
-            let receipts = (original.receipt(), foreign.receipt());
-            let live = (original.live_allocation_bytes(), foreign.live_allocation_bytes());
+            let receipts = (original.receipt().unwrap(), foreign.receipt().unwrap());
+            let live = (original.live_allocation_bytes().unwrap(), foreign.live_allocation_bytes().unwrap());
             let resource = destination.resource.as_ref().map(|resource| resource.remaining().unwrap());
             if cancelled { cancel.cancel(); }
             let result = source.transfer_to(&mut target, bytes);
@@ -54,13 +54,13 @@ proptest! {
             } else {
                 (source_bytes, target_bytes)
             });
-            prop_assert_eq!((original.receipt(), foreign.receipt()), receipts);
-            prop_assert_eq!((original.live_allocation_bytes(), foreign.live_allocation_bytes()), live);
+            prop_assert_eq!((original.receipt().unwrap(), foreign.receipt().unwrap()), receipts);
+            prop_assert_eq!((original.live_allocation_bytes().unwrap(), foreign.live_allocation_bytes().unwrap()), live);
             prop_assert_eq!(destination.resource.as_ref().map(|resource| resource.remaining().unwrap()), resource);
             let source_retained = source.bytes();
             drop(source);
             let retained = target.bytes();
-            prop_assert_eq!((original.live_allocation_bytes(), foreign.live_allocation_bytes()), if relation == 2 {
+            prop_assert_eq!((original.live_allocation_bytes().unwrap(), foreign.live_allocation_bytes().unwrap()), if relation == 2 {
                 (baseline.0, baseline.1 + retained)
             } else {
                 (baseline.0 + retained, baseline.1)
@@ -70,7 +70,7 @@ proptest! {
             prop_assert_eq!(source_work.resource.as_ref().map(|resource| resource.remaining().unwrap().peak_allocation_bytes),
                 source_resource_before.map(|capacity| capacity - if relation == 3 { retained } else { 0 }));
             drop(target);
-            prop_assert_eq!((original.live_allocation_bytes(), foreign.live_allocation_bytes()), baseline);
+            prop_assert_eq!((original.live_allocation_bytes().unwrap(), foreign.live_allocation_bytes().unwrap()), baseline);
             prop_assert_eq!(destination.resource.as_ref().map(|resource| resource.remaining().unwrap().peak_allocation_bytes), resource_before);
             prop_assert_eq!(source_work.resource.as_ref().map(|resource| resource.remaining().unwrap().peak_allocation_bytes), source_resource_before);
         }
@@ -89,26 +89,26 @@ proptest! {
         let root = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel).unwrap();
         let mut work = root.clone();
         for _ in 0..depth { work = work.native_volume_work(WorkBudget::UNBOUNDED).unwrap(); }
-        let baseline = root.live_allocation_bytes();
+        let baseline = root.live_allocation_bytes().unwrap();
         let resource_before = work.resource.as_ref().map(|r| r.remaining().unwrap().peak_allocation_bytes);
         let mut allocation = work.claim(bytes, 1, WorkCounters::UNCHARGED).unwrap();
         let mut part = allocation.split_off(split.min(bytes)).unwrap();
-        let receipt = root.receipt();
+        let receipt = root.receipt().unwrap();
         if cancelled { cancel.cancel(); }
         for _ in 0..4 {
             allocation.release(0).unwrap();
             part.release(0).unwrap();
         }
-        prop_assert_eq!(root.receipt(), receipt);
-        prop_assert_eq!(root.live_allocation_bytes(), baseline + bytes);
+        prop_assert_eq!(root.receipt().unwrap(), receipt);
+        prop_assert_eq!(root.live_allocation_bytes().unwrap(), baseline + bytes);
         let retained = allocation.bytes();
         prop_assert!(allocation.release(retained + 1).is_err());
         prop_assert_eq!(allocation.bytes(), retained);
         drop(part);
-        prop_assert_eq!(root.live_allocation_bytes(), baseline + retained);
+        prop_assert_eq!(root.live_allocation_bytes().unwrap(), baseline + retained);
         drop(allocation);
-        prop_assert_eq!(root.live_allocation_bytes(), baseline);
-        prop_assert_eq!(root.receipt(), receipt);
+        prop_assert_eq!(root.live_allocation_bytes().unwrap(), baseline);
+        prop_assert_eq!(root.receipt().unwrap(), receipt);
         prop_assert_eq!(work.resource.as_ref().map(|r| r.remaining().unwrap().peak_allocation_bytes), resource_before);
     }
 }

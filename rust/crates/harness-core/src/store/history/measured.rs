@@ -2,9 +2,7 @@
 use super::HistoryIo;
 use crate::filesystem::PreparationIo;
 use crate::{Error, Result};
-use acyclic_fs::{
-    CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkCounters,
-};
+use acyclic_fs::{CancellationToken, MeasuredResult, OperationReceipt, WorkCounters};
 
 /// Aggregate work with deferred output admission.
 pub struct HistoryWork {
@@ -23,7 +21,9 @@ impl HistoryWork {
         }
     }
     #[cfg(test)]
-    pub(crate) fn receipt(&self) -> WorkCounters {
+    pub(crate) fn receipt(
+        &self,
+    ) -> std::result::Result<WorkCounters, acyclic_fs::WorkObservationError> {
         self.io.receipt()
     }
     /// Checks cancellation before aggregate work.
@@ -41,9 +41,7 @@ impl HistoryWork {
     pub fn finish<T>(mut self, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
         let result = result.and_then(|value| self.return_staged_output().map(|()| value));
         let work = self.io.receipt();
-        result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
+        acyclic_fs::performance::finish_measured(result, work, Error::from)
     }
     /// Transfers the retained native allocation.
     #[cfg(not(target_arch = "wasm32"))]

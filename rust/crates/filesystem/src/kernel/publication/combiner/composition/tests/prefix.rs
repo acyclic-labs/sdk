@@ -83,8 +83,8 @@ async fn check_prefix(native: bool, cancel: bool) -> TestResult {
         .map_err(|(error, _)| error)?;
     let second_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let first_baseline = first_work.live_allocation_bytes();
-    let second_baseline = second_work.live_allocation_bytes();
+    let first_baseline = first_work.live_allocation_bytes().unwrap();
+    let second_baseline = second_work.live_allocation_bytes().unwrap();
     let mut first_accounting = accounting(native, &first_work, &cancellation);
     let mut second_accounting = accounting(native, &second_work, &cancellation);
     let Fixture {
@@ -152,8 +152,8 @@ async fn check_prefix(native: bool, cancel: bool) -> TestResult {
         );
         assert!(futures::poll!(std::pin::pin!(schedule.drained())).is_pending());
         if native {
-            assert!(first_work.live_allocation_bytes() > first_baseline);
-            assert!(second_work.live_allocation_bytes() > second_baseline);
+            assert!(first_work.live_allocation_bytes().unwrap() > first_baseline);
+            assert!(second_work.live_allocation_bytes().unwrap() > second_baseline);
         }
         gate.release.notify_one();
         schedule.drained().await;
@@ -164,8 +164,11 @@ async fn check_prefix(native: bool, cancel: bool) -> TestResult {
         );
         released.released().await;
         if native {
-            assert_eq!(first_work.live_allocation_bytes(), first_baseline);
-            assert_eq!(second_work.live_allocation_bytes(), second_baseline);
+            assert_eq!(first_work.live_allocation_bytes().unwrap(), first_baseline);
+            assert_eq!(
+                second_work.live_allocation_bytes().unwrap(),
+                second_baseline
+            );
         }
         Ok(())
     })

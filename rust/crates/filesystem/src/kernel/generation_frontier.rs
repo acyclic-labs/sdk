@@ -189,7 +189,7 @@ async fn replay_facts<A: AsyncAuthorityStore>(
             &mut work,
         )
         .await;
-    let spent = work.spent();
+    let spent = work.spent()?;
     drop(work);
     let retained = if let Some((allocations, work, budget, _)) = accounting.standalone_parts() {
         *work = work.with_backend(spent, allocations.live_bytes())?;

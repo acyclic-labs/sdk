@@ -54,7 +54,8 @@ impl Scanner {
 #[path = "../../tests/support/git_markers_oracle.rs"]
 mod oracle;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

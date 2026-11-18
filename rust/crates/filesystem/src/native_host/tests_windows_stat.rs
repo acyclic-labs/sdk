@@ -67,7 +67,7 @@ fn source_stat_matches_every_held_field_and_admission_prefix()
             let expected = root
                 .stat(&path, &mut legacy)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
-            let parent_reads = legacy.receipt().backend_read_operations - 2;
+            let parent_reads = legacy.receipt().unwrap().backend_read_operations - 2;
             for limit in (0..=parent_reads + 3).chain([u64::MAX]) {
                 let budget = WorkBudget {
                     backend_read_operations: limit,
@@ -80,10 +80,10 @@ fn source_stat_matches_every_held_field_and_admission_prefix()
                 let (result, receipt) = if native {
                     (
                         root.stat_source(&path, &mut original.clone()),
-                        original.receipt(),
+                        original.receipt().unwrap(),
                     )
                 } else {
-                    (root.stat_source(&path, &mut work), work.receipt())
+                    (root.stat_source(&path, &mut work), work.receipt().unwrap())
                 };
                 prop_assert_eq!(result.is_ok(), limit > parent_reads);
                 let retained = if limit.saturating_sub(parent_reads) == 2 {
@@ -104,7 +104,11 @@ fn source_stat_matches_every_held_field_and_admission_prefix()
             }
             // The retained held-leaf implementation must fail the one-query oracle.
             prop_assert!(
-                admitted(parent_reads + 1, legacy.receipt().backend_read_operations).is_err()
+                admitted(
+                    parent_reads + 1,
+                    legacy.receipt().unwrap().backend_read_operations
+                )
+                .is_err()
             );
             let mut wrong = expected;
             wrong.raw.NumberOfLinks ^= 1;
@@ -171,17 +175,23 @@ fn unsupported_stat_queries_charge_attempts_and_reject_the_refund_control()
                 );
                 if broken {
                     assert!(
-                        admitted(attempted.get(), limited.receipt().backend_read_operations)
-                            .is_err(),
+                        admitted(
+                            attempted.get(),
+                            limited.receipt().unwrap().backend_read_operations
+                        )
+                        .is_err(),
                         "uncharged query escaped detection"
                     );
                 } else {
-                    admitted(reads.min(3), limited.receipt().backend_read_operations)
-                        .map_err(|error| io::Error::other(error.to_string()))?;
+                    admitted(
+                        reads.min(3),
+                        limited.receipt().unwrap().backend_read_operations,
+                    )
+                    .map_err(|error| io::Error::other(error.to_string()))?;
                     assert_eq!(actual.is_ok(), reads >= 3);
                     assert_eq!(attempted.get(), reads.min(3));
                 }
-                limited.receipt().verify(budget)?;
+                limited.receipt().unwrap().verify(budget)?;
             }
         }
     }

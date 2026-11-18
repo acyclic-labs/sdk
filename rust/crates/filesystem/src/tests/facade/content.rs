@@ -322,8 +322,8 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     assert_eq!(stamped.modified_ns, MetadataField::Value(41));
     assert_eq!(stamped.changed_ns, MetadataField::Value(41));
     assert_eq!(stamped.accessed_ns, MetadataField::Value(3));
-    assert!(original.receipt().source_bytes_read >= 26);
-    assert!(original.receipt().bytes_encoded > 0);
+    assert!(original.receipt().unwrap().source_bytes_read >= 26);
+    assert!(original.receipt().unwrap().bytes_encoded > 0);
     assert_eq!(
         checkout
             .read_metadata(destination.file_id, B, &cancellation,)

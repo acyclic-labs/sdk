@@ -19,7 +19,7 @@ async fn generation_diff_is_semantic_and_bounded() -> TestResult {
         .await
         .unwrap_err();
     assert!(matches!(invalid.error, FsError::InvalidDiff));
-    assert_eq!(*invalid.work, WorkCounters::default());
+    assert_eq!(*invalid.work().unwrap(), WorkCounters::default());
     checkout
         .change_content(
             path("changed")?,
@@ -267,7 +267,7 @@ async fn three_way_merge_rejects_guards_and_bounds_file_conflicts() -> TestResul
         .await
         .unwrap_err();
     assert!(matches!(failure.error, FsError::MergeChangeLimit));
-    assert!(failure.work.backend_read_operations > 0);
+    assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
     for maximum in [1, 8] {
         let prepared = ours
             .prepare_merge(generation, Some(8), Some(maximum), B, &cancel)

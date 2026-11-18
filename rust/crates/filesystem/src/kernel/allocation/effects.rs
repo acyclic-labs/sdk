@@ -105,7 +105,8 @@ fn reserve(
         let next = pending
             .checked_add(delta)
             .map_err(crate::NativeTreeMaterializationError::from)?;
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         let broken = broken_reservation();
         #[cfg(not(all(test, loom)))]
         let broken = false;
@@ -143,7 +144,8 @@ fn refund(work: &NativeMaterializationWork, pending: &mut WorkCounters) {
     if *pending == WorkCounters::UNCHARGED {
         return;
     }
-    #[cfg(all(test, loom))]
+    #[cfg(test)]
+    #[cfg(all(loom))]
     if OMIT_REFUND.with(std::cell::Cell::get) {
         return;
     }

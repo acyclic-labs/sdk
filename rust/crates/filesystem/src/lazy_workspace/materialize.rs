@@ -53,13 +53,13 @@ impl<
                     )
                     .await?;
                 crate::Transaction::<A, O>::push_mutation(
-                    mutations.as_mut().expect("pending mutations"),
+                    mutations.as_mut().ok_or(crate::FsError::InvalidDiff)?,
                     mutation,
                     ctx,
                 )?;
                 transaction
                     .apply_authored(
-                        mutations.take().expect("complete mutations"),
+                        mutations.take().ok_or(crate::FsError::InvalidDiff)?,
                         ctx,
                         cancellation(ctx),
                     )
@@ -334,17 +334,21 @@ impl<
                 length,
                 work: None,
                 failure: None,
+                observation_error: None,
             };
-            let content = transaction
+            let staged = transaction
                 .checkout
                 .stage_content_with_accounting(&mut source, length.max(1), ctx, cancellation(ctx))
-                .await
-                .map_err(|error| {
-                    source.failure.take().map_or_else(
-                        || LazyWorkspaceError::from(error),
-                        LazyWorkspaceError::Demand,
-                    )
-                })?;
+                .await;
+            if let Some(observation) = source.observation_error {
+                ctx.invalidate_receipt(observation);
+            }
+            let content = staged.map_err(|error| {
+                source.failure.take().map_or_else(
+                    || LazyWorkspaceError::from(error),
+                    LazyWorkspaceError::Demand,
+                )
+            })?;
             if content.logical_bytes() != length {
                 return Err(DemandError::StaleVersion.into());
             }

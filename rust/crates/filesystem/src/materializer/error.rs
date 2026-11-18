@@ -77,6 +77,14 @@ impl From<crate::DemandError> for NativeTreeMaterializationError {
         }
     }
 }
+impl From<crate::WorkObservationError> for NativeTreeMaterializationError {
+    fn from(error: crate::WorkObservationError) -> Self {
+        match error {
+            crate::WorkObservationError::Poisoned => Self::OriginalWorkPoisoned,
+            crate::WorkObservationError::Work(error) => Self::Work(error),
+        }
+    }
+}
 impl NativeTreeMaterializationError {
     /// Recovers the original typed runtime failure.
     pub fn from_runtime_error(error: std::io::Error) -> Self {

@@ -1,4 +1,5 @@
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 use super::{
     DemandError, DemandWork, NativeMaterializationWork, WorkBudget, ordinary_work, test_root,
 };
@@ -210,9 +211,9 @@ pub(super) fn open_windows_named_with_options<W: NativeHostWork>(
         || {
             let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
             let mut handle = win::HANDLE::default();
-            // SAFETY: the held parent, validated leaf, and outputs remain live for this call.
             #[cfg(test)]
             super::stat_probe::event("NtCreateFile");
+            // SAFETY: the held parent, validated leaf, and outputs remain live for this call.
             let status = unsafe {
                 nt::NtCreateFile(
                     &mut handle,
@@ -261,9 +262,9 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
     work.attempt_io(READ, || {
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
         let mut information = nt::FILE_STAT_INFORMATION::default();
-        // SAFETY: the held handle and fixed-size output remain live for the query.
         #[cfg(test)]
         super::stat_probe::event("NtQueryInformationFile");
+        // SAFETY: the held handle and fixed-size output remain live for the query.
         let status = unsafe {
             nt::NtQueryInformationFile(
                 win::HANDLE(file.as_handle().as_raw_handle()),
@@ -310,9 +311,9 @@ pub(crate) fn stat_windows_name(
     };
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
     let mut information = nt::FILE_STAT_INFORMATION::default();
-    // SAFETY: the held directory, name, and fixed-size output outlive the query.
     #[cfg(test)]
     super::stat_probe::event("NtQueryInformationByName");
+    // SAFETY: the held directory, name, and fixed-size output outlive the query.
     let status = unsafe {
         nt::NtQueryInformationByName(
             &attributes,

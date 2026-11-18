@@ -13,8 +13,8 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let baseline = original.live_allocation_bytes();
+    let before = original.receipt().unwrap();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let denied = (apply_regular_mutation_with_accounting(
         &store,
@@ -36,8 +36,8 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
         denied,
         FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)
     ));
-    assert_eq!(original.receipt(), before);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap(), before);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -60,8 +60,8 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
         return Err("native inline payload promoted unexpectedly".into());
     };
     assert_eq!(data.as_bytes(), b"nat");
-    assert!(original.receipt().backend_read_operations > 0);
-    assert!(original.receipt().bytes_copied >= 3);
+    assert!(original.receipt().unwrap().backend_read_operations > 0);
+    assert!(original.receipt().unwrap().bytes_copied >= 3);
 
     let store = MemoryObjectStore::default();
     let original = crate::NativeMaterializationWork::new(
@@ -90,8 +90,8 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
         denied,
         FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)
     ));
-    assert_eq!(original.receipt().page_writes, 1);
-    assert_eq!(original.receipt().backend_write_operations, 2);
+    assert_eq!(original.receipt().unwrap().page_writes, 1);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 2);
     let chunk = ObjectId {
         storage: None,
         kind: ObjectKind::BlobChunk,
@@ -119,7 +119,7 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
         .as_ref(),
         b"prefix!"
     );
-    let prefix = original.receipt();
+    let prefix = original.receipt().unwrap();
     assert!(matches!(
         original.claim(u64::MAX, 1, crate::WorkCounters::UNCHARGED),
         Err(crate::NativeTreeMaterializationError::Work(
@@ -135,10 +135,10 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
             WorkError::Overflow
         ))
     ));
-    assert_eq!(original.receipt(), prefix);
+    assert_eq!(original.receipt().unwrap(), prefix);
     drop(store);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())

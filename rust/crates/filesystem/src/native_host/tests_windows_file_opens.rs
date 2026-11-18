@@ -41,8 +41,14 @@ fn file_opens_check_kind_and_reparse_during_the_open_for_every_disposition()
                     existing || *creates
                 }
             );
-            assert_eq!(work.receipt().backend_read_operations, u64::from(!*creates));
-            assert_eq!(work.receipt().backend_write_operations, u64::from(*creates));
+            assert_eq!(
+                work.receipt().unwrap().backend_read_operations,
+                u64::from(!*creates)
+            );
+            assert_eq!(
+                work.receipt().unwrap().backend_write_operations,
+                u64::from(*creates)
+            );
             if let Err(DemandError::Io(error)) = &result {
                 assert_eq!(
                     error.kind(),
@@ -116,14 +122,14 @@ fn file_opens_preserve_budget_and_unspent_cancellation_checks()
                 limit == 1
             );
             assert_eq!(
-                work.receipt().backend_read_operations,
+                work.receipt().unwrap().backend_read_operations,
                 if create { 0 } else { limit }
             );
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 if create { limit } else { 0 }
             );
-            work.receipt().verify(budget)?;
+            work.receipt().unwrap().verify(budget)?;
         }
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -143,8 +149,8 @@ fn file_opens_preserve_budget_and_unspent_cancellation_checks()
             )
             .is_err()
         );
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
+        assert_eq!(work.receipt().unwrap().backend_read_operations, 0);
+        assert_eq!(work.receipt().unwrap().backend_write_operations, 0);
     }
     assert_eq!(std::fs::read(temporary.path().join("existing"))?, b"bytes");
     Ok(())
@@ -203,12 +209,12 @@ fn held_full_flush_preserves_file_directory_attempts_and_native_access_errors()
     let file = std::fs::File::create(&path)?;
     let mut work = ordinary_work();
     sync_file_held(&file, &mut work)?;
-    assert_eq!(work.receipt().durability_operations, 1);
+    assert_eq!(work.receipt().unwrap().durability_operations, 1);
     sync_directory_held(&root.directory(), &mut work)?;
-    assert_eq!(work.receipt().durability_operations, 2);
+    assert_eq!(work.receipt().unwrap().durability_operations, 2);
     let readonly = std::fs::File::open(&path)?;
     let result = sync_file_held(&readonly, &mut work);
     assert!(matches!(result, Err(DemandError::Io(error)) if error.raw_os_error() == Some(5)));
-    assert_eq!(work.receipt().durability_operations, 3);
+    assert_eq!(work.receipt().unwrap().durability_operations, 3);
     Ok(())
 }

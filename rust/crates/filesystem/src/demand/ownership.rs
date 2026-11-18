@@ -5,7 +5,8 @@ use crate::NativeMaterializationWork;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[path = "ownership_backing_tests.rs"]
 mod backing_tests;
 #[cfg(not(target_arch = "wasm32"))]
@@ -211,7 +212,8 @@ impl NativeMountAllocationCustody {
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn claimed_bytes() -> u64 {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         if backing_tests::PAYLOAD_ONLY.get() {
             return std::mem::size_of::<MountAllocationCustody>() as u64;
         }

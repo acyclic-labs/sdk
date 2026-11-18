@@ -221,5 +221,6 @@ where
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod tests;

@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) struct PublicationStepFailure<E> {
     pub(super) cause: E,
-    pub(super) work: Option<WorkCounters>,
+    pub(super) work: Result<Option<WorkCounters>, crate::WorkObservationError>,
 }
 
 pub(super) fn accept_backend(
@@ -24,8 +24,10 @@ pub(super) fn accept_step<T, E: From<crate::FsError>>(
             Ok(value)
         }
         Err(failure) => {
-            if let Some(work) = failure.work {
-                let _ = accept_backend(accounting, work);
+            match failure.work {
+                Ok(Some(work)) => accept_backend(accounting, work).map_err(E::from)?,
+                Ok(None) => {}
+                Err(observation) => accounting.invalidate_receipt(observation),
             }
             Err(failure.cause)
         }

@@ -136,7 +136,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 entries: Vec::new(),
                 has_more: false,
                 next_residency: None,
-                work: accounting.spent(),
+                work: accounting.spent()?,
             },
             accounting.claim_owned(0, 0)?,
         )),

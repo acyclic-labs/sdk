@@ -29,7 +29,7 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<OperationReceipt<DirectoryMergeResult>, OperationFailure<MergeGenerationError>> {
+) -> Result<OperationReceipt<DirectoryMergeResult>, crate::OperationFailure<MergeGenerationError>> {
     let maximum_changes = maximum_changes.into();
     let maximum_conflicts = maximum_conflicts.into();
 
@@ -58,10 +58,11 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
         })
     }
     .await;
-    let work = accounting.spent();
-    result
-        .map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(project_merge_error(error), work))
+    crate::performance::finish_measured(
+        result.map_err(project_merge_error),
+        accounting.spent(),
+        |error| project_merge_error(FsError::from(error)),
+    )
 }
 
 #[allow(

@@ -57,8 +57,8 @@ async fn identity_copy_refusal_preserves_prior_planning_work()
             "unexpected nested regular failure: {:?}",
             failure.error
         );
-        assert!(failure.work.items_examined > 0);
-        assert_eq!(failure.work.bytes_copied, 0);
+        assert!(failure.work.as_deref().unwrap().items_examined > 0);
+        assert_eq!(failure.work.as_deref().unwrap().bytes_copied, 0);
     }
     Ok(())
 }
@@ -204,7 +204,7 @@ async fn every_sparse_operation_variant_rejects_before_work_when_sparse_files_ar
             failure.error,
             GenerationMutationError::UnsupportedSparseMutation
         ));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     Ok(())
 }
@@ -229,7 +229,7 @@ async fn empty_generation_batch_and_precancellation_reject_before_work()
         empty.error,
         GenerationMutationError::Plan(MutationPlanError::Empty)
     ));
-    assert_eq!(*empty.work, WorkCounters::default());
+    assert_eq!(*empty.work().unwrap(), WorkCounters::default());
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -250,6 +250,6 @@ async fn empty_generation_batch_and_precancellation_reject_before_work()
         failure.error,
         GenerationMutationError::Path(PathLookupError::Tree(TreeReadError::Cancelled))
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }

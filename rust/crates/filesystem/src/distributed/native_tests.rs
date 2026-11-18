@@ -42,25 +42,25 @@ fn request_cleanup_cannot_retire_a_persistent_owner() -> TestResult {
 fn meter_metadata_is_admitted_once_and_released_with_operation() -> TestResult {
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-    let baseline = original.live_allocation_bytes();
-    let before = original.receipt();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let before = original.receipt().unwrap();
     let mut work = AuthorityWork::native(&original, &cancellation);
     let first = work.native_meter()?;
-    let admitted = original.receipt();
+    let admitted = original.receipt().unwrap();
     assert_eq!(
         admitted.allocation_operations,
         before.allocation_operations + 1
     );
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
     for _ in 0..16 {
         let reused = work.native_meter()?;
         assert!(Arc::ptr_eq(&first, &reused));
-        assert_eq!(original.receipt(), admitted);
+        assert_eq!(original.receipt().unwrap(), admitted);
     }
     drop(first);
     drop(work);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    assert_eq!(original.receipt(), admitted);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(original.receipt().unwrap(), admitted);
     Ok(())
 }
 
@@ -78,15 +78,15 @@ fn rebinding_original_cannot_reuse_another_ledger_or_resource() -> TestResult {
     work.original = Some(&second);
     let rebound = work.native_meter()?;
     assert!(!Arc::ptr_eq(&initial, &rebound));
-    let first_spent = first.receipt();
+    let first_spent = first.receipt().unwrap();
     rebound.record_read(3)?;
-    assert_eq!(first.receipt(), first_spent);
-    assert_eq!(second.receipt().authority_bytes_read, 3);
+    assert_eq!(first.receipt().unwrap(), first_spent);
+    assert_eq!(second.receipt().unwrap().authority_bytes_read, 3);
     work.original = Some(&denied);
-    let before = second.receipt();
+    let before = second.receipt().unwrap();
     assert!(work.native_meter().is_err());
     assert!(work.request_allocation.is_none());
-    assert_eq!(second.receipt(), before);
+    assert_eq!(second.receipt().unwrap(), before);
     work.original = Some(&second);
     let retry = work.native_meter()?;
     assert!(!Arc::ptr_eq(&rebound, &retry));
@@ -106,15 +106,15 @@ fn reused_meter_preserves_authority_bytes_and_resource_checks() -> TestResult {
     first.record_read(3)?;
     let reused = work.native_meter()?;
     assert!(Arc::ptr_eq(&first, &reused));
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     assert!(reused.admit_read(2).is_err());
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
     reused.record_read(1)?;
     let mut expected = before;
     expected.authority_bytes_read += 1;
-    assert_eq!(original.receipt(), expected);
+    assert_eq!(original.receipt().unwrap(), expected);
     assert_eq!(resource.remaining()?.authority_bytes_read, 0);
-    assert_eq!(original.receipt().source_bytes_read, 0);
+    assert_eq!(original.receipt().unwrap().source_bytes_read, 0);
     Ok(())
 }
 
@@ -131,10 +131,10 @@ fn reused_meter_checks_current_original_and_invocation_cancellation() -> TestRes
         } else {
             invocation_cancel.cancel();
         }
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         assert!(work.native_meter().is_err());
         assert!(meter.check().is_err());
-        assert_eq!(original.receipt(), before);
+        assert_eq!(original.receipt().unwrap(), before);
     }
     Ok(())
 }
@@ -152,13 +152,13 @@ fn failed_metadata_admission_keeps_the_operation_retryable() -> TestResult {
     .map_err(|(e, _)| e)?;
     let allowed = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
     let mut work = AuthorityWork::native(&denied, &cancellation);
-    let before = denied.receipt();
+    let before = denied.receipt().unwrap();
     for _ in 0..2 {
         assert!(work.native_meter().is_err());
         assert!(work.request_allocation.is_none());
-        assert_eq!(denied.receipt(), before);
+        assert_eq!(denied.receipt().unwrap(), before);
         assert_eq!(
-            denied.live_allocation_bytes(),
+            denied.live_allocation_bytes().unwrap(),
             NativeMaterializationWork::accounting_state_bytes()
         );
     }
@@ -172,7 +172,7 @@ fn request_capacity_and_cached_meter_share_custody_in_either_order() -> TestResu
     for meter_first in [false, true] {
         let cancellation = CancellationToken::new();
         let original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut work = AuthorityWork::native(&original, &cancellation);
         let first = if meter_first {
             Some(work.native_meter()?)
@@ -185,18 +185,18 @@ fn request_capacity_and_cached_meter_share_custody_in_either_order() -> TestResu
             assert!(Arc::ptr_eq(&first, &meter));
         }
         assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 16);
-        let admitted = original.receipt();
+        let admitted = original.receipt().unwrap();
         assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
-        assert_eq!(original.receipt(), admitted);
+        assert_eq!(original.receipt().unwrap(), admitted);
         let mut retained = None;
         work.retain_request_custody(&mut retained)?;
         assert_eq!(retained.as_ref().unwrap().bytes(), 16);
         assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
         assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
-        assert_eq!(original.receipt(), admitted);
+        assert_eq!(original.receipt().unwrap(), admitted);
 
         let more = work.vec::<u8>(24)?;
-        let grown = original.receipt();
+        let grown = original.receipt().unwrap();
         assert_eq!(
             grown.allocation_operations,
             admitted.allocation_operations + 1
@@ -205,33 +205,33 @@ fn request_capacity_and_cached_meter_share_custody_in_either_order() -> TestResu
         assert_eq!(retained.as_ref().unwrap().bytes(), 40);
         assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
         assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
-        assert_eq!(original.receipt(), grown);
+        assert_eq!(original.receipt().unwrap(), grown);
         work.retain_request_custody(&mut retained)?;
         assert_eq!(retained.as_ref().unwrap().bytes(), 40);
 
         drop(work);
         drop(meter);
-        assert!(original.live_allocation_bytes() >= baseline + 40);
+        assert!(original.live_allocation_bytes().unwrap() >= baseline + 40);
         drop(more);
         drop(bytes);
         drop(retained);
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        assert_eq!(original.receipt(), grown);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        assert_eq!(original.receipt().unwrap(), grown);
     }
 
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
     let other = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-    let baseline = original.live_allocation_bytes();
-    let other_baseline = other.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let other_baseline = other.live_allocation_bytes().unwrap();
     let mut work = AuthorityWork::native(&original, &cancellation);
     let bytes = work.vec::<u8>(16)?;
     let mut retained = None;
     work.retain_request_custody(&mut retained)?;
     let mut foreign = AuthorityWork::native(&other, &cancellation);
     let foreign_bytes = foreign.vec::<u8>(24)?;
-    let live = original.live_allocation_bytes();
-    let foreign_live = other.live_allocation_bytes();
+    let live = original.live_allocation_bytes().unwrap();
+    let foreign_live = other.live_allocation_bytes().unwrap();
     assert!(matches!(
         foreign.retain_request_custody(&mut retained),
         Err(AuthorityStoreError::NativeOriginal(
@@ -240,15 +240,15 @@ fn request_capacity_and_cached_meter_share_custody_in_either_order() -> TestResu
     ));
     assert_eq!(retained.as_ref().unwrap().bytes(), 16);
     assert_eq!(foreign.request_allocation.as_ref().unwrap().bytes(), 24);
-    assert_eq!(original.live_allocation_bytes(), live);
-    assert_eq!(other.live_allocation_bytes(), foreign_live);
+    assert_eq!(original.live_allocation_bytes().unwrap(), live);
+    assert_eq!(other.live_allocation_bytes().unwrap(), foreign_live);
     drop(foreign_bytes);
     drop(foreign);
     drop(bytes);
     drop(work);
     drop(retained);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    assert_eq!(other.live_allocation_bytes(), other_baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(other.live_allocation_bytes().unwrap(), other_baseline);
     Ok(())
 }
 
@@ -261,22 +261,22 @@ fn rebinding_with_live_request_capacity_preserves_both_ledgers() -> TestResult {
         allocation_operations: 0,
         ..BUDGET
     })?;
-    let baseline = first.live_allocation_bytes();
-    let second_baseline = second.live_allocation_bytes();
+    let baseline = first.live_allocation_bytes().unwrap();
+    let second_baseline = second.live_allocation_bytes().unwrap();
     let mut work = AuthorityWork::native(&first, &cancellation);
     let bytes = work.vec::<u8>(16)?;
     let initial = work.native_meter()?;
-    let retained = first.live_allocation_bytes();
+    let retained = first.live_allocation_bytes().unwrap();
     work.original = Some(&denied);
-    let second_spent = second.receipt();
+    let second_spent = second.receipt().unwrap();
     assert!(work.native_meter().is_err());
-    assert_eq!(first.live_allocation_bytes(), retained);
+    assert_eq!(first.live_allocation_bytes().unwrap(), retained);
     assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 16);
-    assert_eq!(second.receipt(), second_spent);
+    assert_eq!(second.receipt().unwrap(), second_spent);
     work.original = Some(&second);
     let rebound = work.native_meter()?;
     assert!(!Arc::ptr_eq(&initial, &rebound));
-    assert_eq!(first.live_allocation_bytes(), retained);
+    assert_eq!(first.live_allocation_bytes().unwrap(), retained);
     assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 16);
     assert!(
         work.request_allocation
@@ -285,18 +285,18 @@ fn rebinding_with_live_request_capacity_preserves_both_ledgers() -> TestResult {
             .work()
             .shares_ledger(&first)
     );
-    let first_spent = first.receipt();
+    let first_spent = first.receipt().unwrap();
     rebound.record_read(3)?;
-    assert_eq!(first.receipt(), first_spent);
-    assert_eq!(second.receipt().authority_bytes_read, 3);
+    assert_eq!(first.receipt().unwrap(), first_spent);
+    assert_eq!(second.receipt().unwrap().authority_bytes_read, 3);
     drop(rebound);
-    assert_eq!(second.live_allocation_bytes(), second_baseline);
+    assert_eq!(second.live_allocation_bytes().unwrap(), second_baseline);
     work.original = Some(&first);
     assert!(Arc::ptr_eq(&initial, &work.native_meter()?));
     drop(bytes);
     drop(initial);
     drop(work);
-    assert_eq!(first.live_allocation_bytes(), baseline);
+    assert_eq!(first.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -323,19 +323,22 @@ fn empty_meter_cache_does_not_restrict_rebound_request_funding() -> TestResult {
     let cancellation = CancellationToken::new();
     let first = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
     let second = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-    let baseline = first.live_allocation_bytes();
-    let second_baseline = second.live_allocation_bytes();
+    let baseline = first.live_allocation_bytes().unwrap();
+    let second_baseline = second.live_allocation_bytes().unwrap();
     let mut work = AuthorityWork::native(&first, &cancellation);
     drop(work.native_meter()?);
-    assert!(first.live_allocation_bytes() > baseline);
+    assert!(first.live_allocation_bytes().unwrap() > baseline);
     work.original = Some(&second);
     let bytes = work.vec::<u8>(16)?;
-    assert_eq!(first.live_allocation_bytes(), baseline);
-    assert_eq!(second.live_allocation_bytes(), second_baseline + 16);
+    assert_eq!(first.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(
+        second.live_allocation_bytes().unwrap(),
+        second_baseline + 16
+    );
     drop(work.native_meter()?);
     assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 16);
     drop(bytes);
     drop(work);
-    assert_eq!(second.live_allocation_bytes(), second_baseline);
+    assert_eq!(second.live_allocation_bytes().unwrap(), second_baseline);
     Ok(())
 }

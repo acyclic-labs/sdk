@@ -274,6 +274,9 @@ pub enum RebaseError<E: std::error::Error> {
     /// Work exceeded or overflowed the admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+    /// The exact work receipt could not be observed.
+    #[error(transparent)]
+    WorkObservation(#[from] crate::WorkObservationError),
     /// A bounded conflict result could not be allocated.
     #[error("safe rebase conflict allocation failed")]
     AllocationFailed,

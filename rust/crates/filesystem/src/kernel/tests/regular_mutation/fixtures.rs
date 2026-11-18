@@ -74,7 +74,9 @@ async fn clone_range(
         &cancellation,
     )
     .await
-    .map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
+    .map_err(|error| {
+        OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

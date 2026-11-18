@@ -85,7 +85,7 @@ async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::e
         .err()
         .ok_or("pre-cancelled asynchronous extent planning unexpectedly succeeded")?;
     assert!(matches!(failure.error, ExtentReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -161,7 +161,7 @@ async fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admissi
         failure.error,
         ExtentReadError::Storage(ObjectStoreError::Corrupt)
     ));
-    assert!(failure.work.peak_allocation_bytes > 0);
+    assert!(failure.work.as_deref().unwrap().peak_allocation_bytes > 0);
     Ok(())
 }
 
@@ -407,7 +407,7 @@ async fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
         .err()
         .ok_or("seek beyond EOF succeeded")?;
     assert!(matches!(invalid.error, ExtentReadError::InvalidRange));
-    assert_eq!(*invalid.work, WorkCounters::default());
+    assert_eq!(*invalid.work().unwrap(), WorkCounters::default());
 
     Ok(())
 }
@@ -492,8 +492,8 @@ async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std:
     .err()
     .ok_or("one-span bound unexpectedly admitted two spans")?;
     assert!(matches!(failure.error, ExtentReadError::TooManySpans));
-    assert_eq!(failure.work.page_reads, 1);
-    assert_eq!(failure.work.items_returned, 1);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 1);
+    assert_eq!(failure.work.as_deref().unwrap().items_returned, 1);
 
     let before_work = plan_extent_range(
         &store,
@@ -517,7 +517,7 @@ async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std:
         before_work.error,
         ExtentReadError::InvalidSpanLimit
     ));
-    assert_eq!(*before_work.work, WorkCounters::default());
+    assert_eq!(*before_work.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -591,7 +591,7 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
         range_error(overflow),
         ExtentReadError::Work(WorkError::Overflow)
     ));
-    assert_eq!(accounting.spent(), prospective);
+    assert_eq!(accounting.spent().unwrap(), prospective);
     Ok(())
 }
 
@@ -664,8 +664,8 @@ async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
             maximum: observed_maximum,
         }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum
     ));
-    assert_eq!(failure.work.backend_read_operations, 1);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 1);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -740,7 +740,7 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
             std::mem::discriminant(&failure.error),
             std::mem::discriminant(&expected)
         );
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let cancellation = CancellationToken::new();
@@ -761,7 +761,7 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
     .err()
     .ok_or("pre-cancelled sparse seek succeeded")?;
     assert!(matches!(failure.error, ExtentReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -824,7 +824,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
     ));
     // Children carry no end of their own: the leaf under the forged
     // parent is what disagrees.
-    assert_eq!(failure.work.page_reads, 3);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 3);
     Ok(())
 }
 
@@ -871,7 +871,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     .err()
     .ok_or("forged child bounds succeeded")?;
     assert!(matches!(bounds.error, ExtentReadError::ChildBoundsMismatch));
-    assert_eq!(bounds.work.page_reads, 2);
+    assert_eq!(bounds.work().unwrap().page_reads, 2);
 
     let height = plan_extent_range(
         &store,
@@ -888,7 +888,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     .err()
     .ok_or("height-limited internal traversal succeeded")?;
     assert!(matches!(height.error, ExtentReadError::HeightExceeded));
-    assert_eq!(height.work.page_reads, 1);
+    assert_eq!(height.work().unwrap().page_reads, 1);
 
     let alias_root = put_page(
         &store,
@@ -914,7 +914,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     .err()
     .ok_or("aliased extent page succeeded")?;
     assert!(matches!(alias.error, ExtentReadError::Cycle));
-    assert_eq!(alias.work.page_reads, 2);
+    assert_eq!(alias.work().unwrap().page_reads, 2);
 
     Ok(())
 }

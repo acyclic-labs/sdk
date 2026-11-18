@@ -66,10 +66,10 @@ async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
         failure.error,
         PathLookupError::Tree(TreeReadError::ChildBoundsMismatch)
     ));
-    assert!(failure.work.backend_read_operations > 0);
-    assert!(failure.work.page_reads > 0);
-    assert!(failure.work.items_examined > 0);
-    assert!(failure.work.peak_allocation_bytes > 0);
+    assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
+    assert!(failure.work.as_deref().unwrap().page_reads > 0);
+    assert!(failure.work.as_deref().unwrap().items_examined > 0);
+    assert!(failure.work.as_deref().unwrap().peak_allocation_bytes > 0);
     Ok(())
 }
 
@@ -378,6 +378,6 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
     .err()
     .ok_or("non-directory descent succeeded")?;
     assert!(matches!(failure.error, PathLookupError::NotDirectory));
-    assert!(failure.work.backend_read_operations > 0);
+    assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
     Ok(())
 }

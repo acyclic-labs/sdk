@@ -31,8 +31,10 @@ impl<T> Custody<T> {
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, T> {
-        self.lock_with_wait(None)
-            .expect("unconditional custody cannot be cancelled")
+        match self.acquire(std::future::pending::<std::convert::Infallible>(), || None) {
+            Ok(guard) => guard,
+            Err(never) => match never {},
+        }
     }
 
     /// Cancellation only abandons acquisition; it never revokes held custody.
@@ -41,8 +43,28 @@ impl<T> Custody<T> {
         &self,
         wait: Option<&CancellationToken>,
     ) -> Result<MutexGuard<'_, T>, DemandError> {
-        if wait.is_some_and(CancellationToken::is_cancelled) {
-            return Err(DemandError::Cancelled);
+        let cancelled = async {
+            match wait {
+                Some(wait) => {
+                    wait.cancelled().await;
+                    DemandError::Cancelled
+                }
+                None => std::future::pending().await,
+            }
+        };
+        self.acquire(cancelled, || {
+            wait.is_some_and(CancellationToken::is_cancelled)
+                .then_some(DemandError::Cancelled)
+        })
+    }
+
+    fn acquire<E>(
+        &self,
+        cancelled: impl Future<Output = E>,
+        check: impl FnOnce() -> Option<E>,
+    ) -> Result<MutexGuard<'_, T>, E> {
+        if let Some(error) = check() {
+            return Err(error);
         }
         if let Some(guard) = self.try_lock() {
             return Ok(guard);
@@ -54,15 +76,10 @@ impl<T> Custody<T> {
         let waker = Waker::from(Arc::clone(&wake));
         let mut context = Context::from_waker(&waker);
         let mut acquire = std::pin::pin!(tokio::task::coop::unconstrained(self.0.lock()));
-        let mut cancelled = std::pin::pin!(async {
-            match wait {
-                Some(wait) => wait.cancelled().await,
-                None => std::future::pending().await,
-            }
-        });
+        let mut cancelled = std::pin::pin!(cancelled);
         loop {
-            if cancelled.as_mut().poll(&mut context).is_ready() {
-                return Err(DemandError::Cancelled);
+            if let Poll::Ready(error) = cancelled.as_mut().poll(&mut context) {
+                return Err(error);
             }
             if let Poll::Ready(guard) = acquire.as_mut().poll(&mut context) {
                 return Ok(guard);

@@ -58,7 +58,7 @@ pub fn junction(alias: &std::path::Path, target: &std::path::Path) -> io::Result
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
-    crate::initialize_test_native_io();
+    acyclic_native_runtime::initialize_native_io_services()?;
     let target = std::fs::canonicalize(target)?;
     let print: Vec<u16> = target.as_os_str().encode_wide().collect();
     let suffix = print.strip_prefix(&[92, 92, 63, 92]).ok_or_else(|| {

@@ -112,16 +112,19 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         .put(object_id, bytes.clone(), &mut work)
         .await
         .map_err(js_error)?;
-    assert_eq!(work.spent().object_bytes_written, bytes.len() as u64);
+    assert_eq!(
+        work.spent().unwrap().object_bytes_written,
+        bytes.len() as u64
+    );
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     store
         .put(object_id, bytes.clone(), &mut work)
         .await
         .map_err(js_error)?;
-    assert_eq!(work.spent().object_bytes_written, 0);
-    assert_eq!(work.spent().object_bytes_read, bytes.len() as u64);
+    assert_eq!(work.spent().unwrap().object_bytes_written, 0);
+    assert_eq!(work.spent().unwrap().object_bytes_read, bytes.len() as u64);
     let below_retry_peak = WorkBudget {
-        peak_allocation_bytes: work.spent().peak_allocation_bytes - 1,
+        peak_allocation_bytes: work.spent().unwrap().peak_allocation_bytes - 1,
         ..WorkBudget::UNBOUNDED
     };
     let mut work = acyclic_fs::AuthorityWork::new(below_retry_peak, &cancellation);
@@ -137,7 +140,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         .read(object_id, 1_024, &mut work)
         .await
         .map_err(js_error)?;
-    let read_peak = work.spent().peak_allocation_bytes;
+    let read_peak = work.spent().unwrap().peak_allocation_bytes;
     assert_eq!(read.bytes, bytes);
     let associated = ObjectId {
         storage: Some(acyclic_fs::ObjectStorage {
@@ -216,13 +219,13 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         .put_many_hashed(&initial, &mut work)
         .await
         .map_err(js_error)?;
-    assert_eq!(work.spent().bytes_hashed, 0);
-    assert_eq!(work.spent().object_probes, 2);
-    assert_eq!(work.spent().backend_read_operations, 2);
-    assert_eq!(work.spent().backend_write_operations, 2);
-    assert_eq!(work.spent().durability_operations, 1);
+    assert_eq!(work.spent().unwrap().bytes_hashed, 0);
+    assert_eq!(work.spent().unwrap().object_probes, 2);
+    assert_eq!(work.spent().unwrap().backend_read_operations, 2);
+    assert_eq!(work.spent().unwrap().backend_write_operations, 2);
+    assert_eq!(work.spent().unwrap().durability_operations, 1);
     assert_eq!(
-        work.spent().object_bytes_written,
+        work.spent().unwrap().object_bytes_written,
         (first.bytes.len() + second.bytes.len()) as u64
     );
     let third = blob_write(b"third batch object");
@@ -231,8 +234,14 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         .put_many(&[first.clone(), third.clone()], &mut work)
         .await
         .map_err(js_error)?;
-    assert_eq!(work.spent().object_bytes_written, third.bytes.len() as u64);
-    assert_eq!(work.spent().object_bytes_read, first.bytes.len() as u64);
+    assert_eq!(
+        work.spent().unwrap().object_bytes_written,
+        third.bytes.len() as u64
+    );
+    assert_eq!(
+        work.spent().unwrap().object_bytes_read,
+        first.bytes.len() as u64
+    );
     // Raw and authenticated submissions share the transaction and byte checks;
     // authenticated bytes only discard their redundant input hash.
     let originals = [first.clone(), second.clone(), third.clone(), first.clone()];
@@ -255,7 +264,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         .put_many_hashed(&authenticated, &mut authenticated_work)
         .await
         .map_err(js_error)?;
-    let mut expected = raw_work.spent();
+    let mut expected = raw_work.spent().unwrap();
     assert_eq!(
         expected.bytes_hashed,
         originals
@@ -264,7 +273,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
             .sum::<u64>()
     );
     expected.bytes_hashed = 0;
-    assert_eq!(authenticated_work.spent(), expected);
+    assert_eq!(authenticated_work.spent().unwrap(), expected);
     let mut scalar_work = acyclic_fs::AuthorityWork::new(
         WorkBudget {
             bytes_hashed: 0,
@@ -276,7 +285,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         .put_hashed(authenticated[0].clone(), &mut scalar_work)
         .await
         .map_err(js_error)?;
-    assert_eq!(scalar_work.spent().bytes_hashed, 0);
+    assert_eq!(scalar_work.spent().unwrap().bytes_hashed, 0);
     let requests =
         [first.clone(), second.clone(), third.clone()].map(|write| acyclic_fs::ObjectReadRequest {
             object_id: write.object_id,
@@ -299,7 +308,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         ]
     );
     let below_peak = WorkBudget {
-        peak_allocation_bytes: work.spent().peak_allocation_bytes - 1,
+        peak_allocation_bytes: work.spent().unwrap().peak_allocation_bytes - 1,
         ..WorkBudget::UNBOUNDED
     };
     let mut work = acyclic_fs::AuthorityWork::new(below_peak, &cancellation);
@@ -331,7 +340,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let metadata_bytes =
         output_bytes + (repeated.len() * size_of::<(ObjectId, web_sys::Blob, u64)>()) as u64;
     assert!(
-        work.spent().peak_allocation_bytes
+        work.spent().unwrap().peak_allocation_bytes
             >= metadata_bytes + first.bytes.len() as u64 * repeated.len() as u64,
         "batch metadata and payloads were not admitted together"
     );
@@ -353,7 +362,7 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         reopened.read_many(&requests, &mut work).await,
         Err(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(work.spent(), WorkCounters::default());
+    assert_eq!(work.spent().unwrap(), WorkCounters::default());
     let fourth = blob_write(b"fourth batch object");
     // Every required existing-member check precedes any durable new member.
     for originals in [
@@ -374,8 +383,8 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
                 ..
             }))
         ));
-        assert_eq!(work.spent().backend_write_operations, 0);
-        assert_eq!(work.spent().durability_operations, 0);
+        assert_eq!(work.spent().unwrap().backend_write_operations, 0);
+        assert_eq!(work.spent().unwrap().durability_operations, 0);
         let mut read = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         assert!(
             matches!(
@@ -521,7 +530,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             .0,
         vec![first_commit.clone(), second_commit.clone()]
     );
-    let retained_peak = replay_work.spent().peak_allocation_bytes;
+    let retained_peak = replay_work.spent().unwrap().peak_allocation_bytes;
     assert!(
         retained_peak
             >= 2 * size_of::<DurableCommit>() as u64
@@ -615,7 +624,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         store.fence(authority, next, &mut bounded).await,
         Err(AuthorityStoreError::Work(_))
     ));
-    assert_eq!(bounded.spent().durability_operations, 1);
+    assert_eq!(bounded.spent().unwrap().durability_operations, 1);
     assert_eq!(
         store.head(authority, &mut work).await.map_err(js_error)?,
         next

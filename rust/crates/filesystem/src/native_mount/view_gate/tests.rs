@@ -58,7 +58,7 @@ async fn measured_reentrant_reads_do_not_wait_for_queued_writer() -> Result<(), 
     let before = work.work.items_examined;
     work.record(WorkCounters::UNCHARGED)
         .expect("two actual callback releases");
-    let receipt = work.receipt();
+    let receipt = work.receipt().unwrap();
     assert_eq!(receipt.items_examined, before + 2);
     Ok(())
 }
@@ -132,13 +132,13 @@ async fn shared_original_read_and_write_gate_preserve_custody_and_tokens() {
     let meter =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .expect("original native work");
-    let baseline = meter.live_allocation_bytes();
+    let baseline = meter.live_allocation_bytes().unwrap();
     let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&meter);
     let lease = gate
         .read_for_callback_with_carrier(CallbackOwner(1), None, &mut carrier, &cancellation, None)
         .await
         .expect("original shared read");
-    let before = meter.receipt().items_examined;
+    let before = meter.receipt().unwrap().items_examined;
     let mut denied = DemandWork::new(
         WorkBudget {
             peak_allocation_bytes: 0,
@@ -171,13 +171,13 @@ async fn shared_original_read_and_write_gate_preserve_custody_and_tokens() {
     meter
         .with_original_leaf(|work| work.record(WorkCounters::default()))
         .expect("physical original cleanup");
-    assert!(meter.receipt().items_examined > before);
+    assert!(meter.receipt().unwrap().items_examined > before);
     assert_eq!(
         meter.with_original_leaf(|work| work.budget.items_examined),
         crate::performance::BOUNDARY_BUDGET.items_examined
     );
     assert_eq!(
-        meter.live_allocation_bytes(),
+        meter.live_allocation_bytes().unwrap(),
         baseline,
         "read ownership retained historical credit"
     );

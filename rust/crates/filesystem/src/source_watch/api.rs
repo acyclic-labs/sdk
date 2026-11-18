@@ -51,7 +51,8 @@ impl NativeSourceWatch {
     }
 
     /// Observes the production driver's terminal publication.
-    #[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     pub(crate) fn observe_retirement(&self, complete: std::sync::mpsc::Sender<()>) {
         let previous = self
             .delivery()
@@ -95,7 +96,8 @@ impl NativeSourceWatch {
     }
 
     /// Injects a terminal failure into this actual producer's original delivery.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux"))]
     pub(crate) fn inject_delivery_failure(&self, error: DemandError) {
         let mut work = self.delivery().callback_work();
         self.delivery().failed_with_work(error, &mut work);

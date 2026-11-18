@@ -91,10 +91,10 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
         }
         // Each pass consumes an input per step. Reinstating insertion shifts
         // or copying duplicate path payloads violates these output-only costs.
-        prop_assert!(after.items_examined - before.items_examined <= 4 * (host.len() + checkout.len()) as u64);
-        prop_assert_eq!(after.backend_read_operations, before.backend_read_operations);
-        prop_assert_eq!(after.allocation_operations - before.allocation_operations, 2 * u64::from(!expected.is_empty()));
-        prop_assert_eq!(after.bytes_copied - before.bytes_copied,
+        prop_assert!(after.unwrap().items_examined - before.unwrap().items_examined <= 4 * (host.len() + checkout.len()) as u64);
+        prop_assert_eq!(after.unwrap().backend_read_operations, before.unwrap().backend_read_operations);
+        prop_assert_eq!(after.unwrap().allocation_operations - before.unwrap().allocation_operations, 2 * u64::from(!expected.is_empty()));
+        prop_assert_eq!(after.unwrap().bytes_copied - before.unwrap().bytes_copied,
             (expected.len() * (std::mem::size_of::<NamespacePath>() + std::mem::size_of::<Option<HostStat>>())) as u64);
         drop((paths, observations, scope));
         prop_assert_eq!(original.live_allocation_bytes(), baseline);
@@ -107,7 +107,7 @@ fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
                 observed, paths, Some(expected.len() - 1), &scope.native,
             ), Err(CaptureError::InvalidOptions)));
             // The exact cardinality refusal precedes either output allocation.
-            prop_assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+            prop_assert_eq!(original.receipt().unwrap().allocation_operations, before.unwrap().allocation_operations);
             drop(scope);
             prop_assert_eq!(original.live_allocation_bytes(), baseline);
         }

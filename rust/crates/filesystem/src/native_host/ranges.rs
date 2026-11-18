@@ -299,7 +299,8 @@ fn fill_windows_ranges<W: SourceDemandReadWork>(
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(all(unix))]
 mod range_capability_tests {
     use super::*;
     use proptest::prelude::*;
@@ -334,7 +335,7 @@ mod range_capability_tests {
             drop(ranges);
             work.release(allocation).unwrap();
             prop_assert_eq!(work.work.allocation_operations,1);
-            prop_assert_eq!(work.live_allocation_bytes(),0);
+            prop_assert_eq!(work.live_allocation_bytes().unwrap(),0);
         }
 
         #[test]
@@ -367,7 +368,7 @@ mod range_capability_tests {
             drop(ranges);
             work.release(allocation).unwrap();
             prop_assert_eq!(work.work.allocation_operations,1);
-            prop_assert_eq!(work.live_allocation_bytes(),0);
+            prop_assert_eq!(work.live_allocation_bytes().unwrap(),0);
         }
     }
 
@@ -387,7 +388,7 @@ mod range_capability_tests {
             let mut work = NativeMaterializationWork::new(budget, &stop)
                 .map_err(|(error, _)| error)
                 .unwrap();
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes().unwrap();
             let (mut ranges, mut allocation) = buffer::<HostDataRange, _>(0, &mut work).unwrap();
             let result = fill_unix_ranges_with(
                 (0, 2 * count),
@@ -411,11 +412,11 @@ mod range_capability_tests {
                 assert_eq!(range.offset, 2 * index as u64 + 1);
                 assert_eq!(range.length, 1);
             }
-            assert_eq!(work.receipt().backend_read_operations, 2 * count);
+            assert_eq!(work.receipt().unwrap().backend_read_operations, 2 * count);
             drop(ranges);
             work.release(allocation).unwrap();
-            assert_eq!(work.live_allocation_bytes(), baseline);
-            work.receipt().verify(budget).unwrap();
+            assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+            work.receipt().unwrap().verify(budget).unwrap();
         }
     }
 

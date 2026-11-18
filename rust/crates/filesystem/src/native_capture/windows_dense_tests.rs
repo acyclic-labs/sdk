@@ -62,7 +62,7 @@ async fn capture(
             &cancellation,
         )
         .unwrap();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     PROBE.set(probe);
     let _reset = Reset;
     let result = capture_subtrees_with_native_work(

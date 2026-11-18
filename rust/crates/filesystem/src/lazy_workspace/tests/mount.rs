@@ -961,7 +961,7 @@ async fn parent_read_work(published: bool, read: ParentRead, repeat: bool) -> Wo
                 .await
                 .unwrap();
         }
-        spent = ctx.spent();
+        spent = ctx.spent().unwrap();
     }
     spent
 }

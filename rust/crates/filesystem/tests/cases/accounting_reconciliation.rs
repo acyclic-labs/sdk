@@ -33,13 +33,13 @@ async fn unchanged_checkout_charges_and_cross_thread_retirement_remain_exact()
         items_examined: 1,
         ..WorkCounters::UNCHARGED
     };
-    let mut expected = work.receipt();
+    let mut expected = work.receipt().unwrap();
     for _ in 0..64 {
         work.charge(delta)?;
         expected.items_examined += 1;
-        assert_eq!(work.receipt(), expected);
+        assert_eq!(work.receipt().unwrap(), expected);
     }
-    let retained = work.live_allocation_bytes();
+    let retained = work.live_allocation_bytes().unwrap();
     let checkout = checkouts.pop().ok_or("missing retained checkout")?;
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let retiring = std::sync::Arc::clone(&barrier);
@@ -56,21 +56,21 @@ async fn unchanged_checkout_charges_and_cross_thread_retirement_remain_exact()
         .join()
         .map_err(|_| std::io::Error::other("checkout retirement panicked"))?;
     work.charge(WorkCounters::UNCHARGED)?;
-    assert!(work.live_allocation_bytes() < retained);
-    assert_eq!(work.receipt(), expected);
+    assert!(work.live_allocation_bytes().unwrap() < retained);
+    assert_eq!(work.receipt().unwrap(), expected);
     drop(checkouts);
     work.charge(WorkCounters::UNCHARGED)?;
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
-    assert_eq!(work.receipt(), expected);
+    assert_eq!(work.receipt().unwrap(), expected);
     let mut budget = BOUNDARY_BUDGET;
     budget.items_examined = 0;
     let denied =
         NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     assert!(denied.charge(delta).is_err());
-    assert_eq!(denied.receipt().items_examined, 0);
+    assert_eq!(denied.receipt().unwrap().items_examined, 0);
     cancellation.cancel();
     assert!(work.charge(delta).is_err());
     Ok(())

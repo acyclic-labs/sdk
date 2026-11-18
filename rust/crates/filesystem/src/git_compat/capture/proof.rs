@@ -72,7 +72,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> GitCapture
                 }))
             }
             .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            GitCaptureAuthenticationError::Capture(GitCaptureError::Workspace(error.into()))
+        })
     }
 }
 

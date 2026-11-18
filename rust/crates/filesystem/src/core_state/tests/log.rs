@@ -172,13 +172,13 @@ fn checkpoint_batches_family_barriers_before_discarding_the_wal() {
         log.commit(&namespace, change).unwrap();
         let wal = namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap().current;
         assert!(std::fs::metadata(&wal).unwrap().len() > 0);
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         log.checkpoint(&namespace).unwrap();
         if native {
             // Eleven record-file barriers, six family directories and their
             // one shared namespace parent. Apple also drains the device once.
             assert_eq!(
-                work.receipt().durability_operations - before.durability_operations,
+                work.receipt().unwrap().durability_operations - before.durability_operations,
                 keys.len() as u64 + 7 + u64::from(cfg!(target_os = "macos")),
                 "checkpoint flushed the same family repeatedly"
             );
@@ -193,7 +193,10 @@ fn checkpoint_batches_family_barriers_before_discarding_the_wal() {
             let path = key.paths(&namespace).unwrap().current;
             assert_eq!(std::fs::read(path).unwrap(), b"null");
         }
-        work.receipt().verify(native::finite_budget()).unwrap();
+        work.receipt()
+            .unwrap()
+            .verify(native::finite_budget())
+            .unwrap();
     }
 }
 
@@ -220,9 +223,9 @@ fn checkpoint_reuses_each_native_family_parent_for_all_records() {
                 .unwrap();
         }
         log.commit(&namespace, change).unwrap();
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         log.checkpoint(&namespace).unwrap();
-        let after = work.receipt();
+        let after = work.receipt().unwrap();
         drop(log);
         let reopened = CoreLog::open(&namespace, Arc::default()).unwrap();
         assert!(reopened.dirty.is_empty());
@@ -238,7 +241,10 @@ fn checkpoint_reuses_each_native_family_parent_for_all_records() {
                 b"null"
             );
         }
-        work.receipt().verify(native::finite_budget()).unwrap();
+        work.receipt()
+            .unwrap()
+            .verify(native::finite_budget())
+            .unwrap();
         crate::WorkCounters {
             backend_read_operations: after.backend_read_operations - before.backend_read_operations,
             durability_operations: after.durability_operations - before.durability_operations,

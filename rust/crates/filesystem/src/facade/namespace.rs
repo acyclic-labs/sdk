@@ -62,10 +62,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let result = self
             .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, true)
             .await;
-        let work = accounting.spent();
-        let result = result.map(|(mut lookup, _allocation)| {
-            lookup.work = work;
-            lookup
+        let result = result.and_then(|(mut lookup, _allocation)| {
+            lookup.work = accounting.spent()?;
+            Ok(lookup)
         });
         budget.finish(result, &accounting)
     }
@@ -184,9 +183,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             Ok::<_, FsError>(lookup)
         });
         readonly_cleanup_standalone(accounting, before, 0)?;
-        result.map(|(mut lookup, allocation)| {
-            lookup.work = accounting.spent();
-            (lookup, allocation)
+        result.and_then(|(mut lookup, allocation)| {
+            lookup.work = accounting.spent()?;
+            Ok((lookup, allocation))
         })
     }
 
@@ -252,9 +251,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             Ok((lookup, accounting.claim_owned(0, 0)?))
         });
         readonly_cleanup_standalone(accounting, before, 0)?;
-        result.map(|(mut lookup, allocation)| {
-            lookup.work = accounting.spent();
-            (lookup, allocation)
+        result.and_then(|(mut lookup, allocation)| {
+            lookup.work = accounting.spent()?;
+            Ok((lookup, allocation))
         })
     }
 
@@ -318,10 +317,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 cancellation,
             )
             .await;
-        let work = accounting.spent();
-        let result = result.map(|(mut lookup, allocation)| {
-            lookup.work = work;
-            (lookup, allocation)
+        let result = result.and_then(|(mut lookup, allocation)| {
+            lookup.work = accounting.spent()?;
+            Ok((lookup, allocation))
         });
         budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
@@ -418,7 +416,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 let lookup = PathBatchLookup {
                     entries,
                     retained_allocation_bytes: bytes,
-                    work: accounting.spent(),
+                    work: accounting.spent()?,
                 };
                 drop(observed);
                 return Ok((lookup, output_allocation));
@@ -462,9 +460,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             (lookup.entries.capacity() * size_of::<crate::kernel::PathBatchEntry>()) as u64
         });
         readonly_cleanup_standalone(accounting, before, retained)?;
-        result.map(|(mut lookup, allocation)| {
-            lookup.work = accounting.spent();
-            (lookup, allocation)
+        result.and_then(|(mut lookup, allocation)| {
+            lookup.work = accounting.spent()?;
+            Ok((lookup, allocation))
         })
     }
     pub(super) async fn lookup_content_record<F: ContentFile>(

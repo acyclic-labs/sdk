@@ -457,7 +457,7 @@ where
     ordered.retire(context.accounting)?;
     Ok(OperationReceipt {
         value: root,
-        work: context.accounting.spent(),
+        work: context.accounting.spent()?,
     })
 }
 
@@ -1230,7 +1230,7 @@ where
         let result = {
             let mut work = crate::async_storage::AuthorityFrame::borrow(self.accounting)?;
             let result = crate::AsyncObjectStore::put_hashed(self.store, hashed, &mut work).await;
-            work.spent().verify(work.budget)?;
+            work.spent()?.verify(work.budget)?;
             result
         };
         encoded.retire(self.accounting)?;

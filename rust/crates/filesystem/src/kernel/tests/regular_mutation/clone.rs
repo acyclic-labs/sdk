@@ -135,7 +135,9 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
             cancellation,
         )
         .await
-        .map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
+        .map_err(|error| {
+            OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
+        })
     })
     .await
     .err()
@@ -148,7 +150,7 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
             maximum: 3,
         })
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -167,7 +169,9 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
             cancellation,
         )
         .await
-        .map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
+        .map_err(|error| {
+            OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
+        })
     })
     .await
     .err()
@@ -176,7 +180,7 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
         failure.error,
         RegularMutationError::Storage(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -223,7 +227,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
             failure.error,
             RegularMutationError::Storage(ObjectStoreError::Cancelled)
         ));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let typed = |kind| ObjectId {
@@ -255,7 +259,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
         .err()
         .ok_or("non-regular payload mutation succeeded")?;
         assert!(matches!(failure.error, RegularMutationError::NotRegular));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let source_failure = clone_range(&store, FilePayload::Empty, 0, inline, 0, 1)
@@ -266,7 +270,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
         source_failure.error,
         RegularMutationError::NotRegular
     ));
-    assert_eq!(*source_failure.work, WorkCounters::default());
+    assert_eq!(*source_failure.work().unwrap(), WorkCounters::default());
     let destination_failure = clone_range(&store, inline, 0, FilePayload::Empty, 0, 1)
         .await
         .err()
@@ -275,7 +279,10 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
         destination_failure.error,
         RegularMutationError::NotRegular
     ));
-    assert_eq!(*destination_failure.work, WorkCounters::default());
+    assert_eq!(
+        *destination_failure.work().unwrap(),
+        WorkCounters::default()
+    );
 
     let range_failure = apply(
         &store,
@@ -294,7 +301,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
         range_failure.error,
         RegularMutationError::BlobRead(BlobReadError::InvalidRange)
     ));
-    assert!(range_failure.work.backend_read_operations > 0);
+    assert!(range_failure.work().unwrap().backend_read_operations > 0);
 
     let baseline = apply(
         &store,
@@ -358,8 +365,8 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
             },
             _ => return Err("unknown budget counter".into()),
         }
-        assert!(failure.work.bytes_copied <= budget.bytes_copied);
-        assert!(failure.work.object_bytes_read <= budget.object_bytes_read);
+        assert!(failure.work.as_deref().unwrap().bytes_copied <= budget.bytes_copied);
+        assert!(failure.work.as_deref().unwrap().object_bytes_read <= budget.object_bytes_read);
     }
     Ok(())
 }

@@ -434,7 +434,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         lookup: PathBatchLookup {
                             entries,
                             retained_allocation_bytes,
-                            work: accounting.spent(),
+                            work: accounting.spent()?,
                         },
                         dependencies,
                     },
@@ -464,8 +464,8 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
         };
         cleanup_standalone(accounting, initial_scratch, retained)?;
     }
-    result.map(|mut result| {
-        result.0.lookup.work = accounting.spent();
-        result
+    result.and_then(|mut result| {
+        result.0.lookup.work = accounting.spent()?;
+        Ok(result)
     })
 }

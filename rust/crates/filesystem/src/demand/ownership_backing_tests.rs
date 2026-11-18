@@ -32,8 +32,8 @@ fn exact_backing_mode(mode: u8) {
             .recheck_admitted(),
         _ => original.clone(),
     };
-    let baseline = original.live_allocation_bytes();
-    let mut expected = original.receipt();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let mut expected = original.receipt().unwrap();
     let mut custody = None;
     let heap = measure(|| {
         custody = Some(NativeMountAllocationCustody::new(&mut view).unwrap());
@@ -53,25 +53,25 @@ fn exact_backing_mode(mode: u8) {
         }
     );
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         baseline + bytes,
         "full mount backing funded"
     );
     expected.allocation_operations += 2;
     expected.peak_allocation_bytes = expected.peak_allocation_bytes.max(baseline + bytes);
-    assert_eq!(original.receipt(), expected);
-    let spent = original.receipt();
+    assert_eq!(original.receipt().unwrap(), expected);
+    let spent = original.receipt().unwrap();
     let mut clone = None;
     assert_eq!(
         measure(|| clone = Some(custody.as_ref().unwrap().clone())),
         AllocationInfo::default()
     );
     drop(custody);
-    assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + bytes);
     drop(clone);
     original.charge(WorkCounters::UNCHARGED).unwrap();
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    assert_eq!(original.receipt(), spent);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(original.receipt().unwrap(), spent);
 }
 
 fn exact_backing() {
@@ -97,7 +97,7 @@ fn final_backing(expose_weak: bool) {
         &crate::CancellationToken::new(),
     )
     .unwrap();
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut weak = None;
     let heap = measure(|| {
         let (value, bytes) = original
@@ -114,7 +114,7 @@ fn final_backing(expose_weak: bool) {
         original.charge(WorkCounters::UNCHARGED).unwrap();
     });
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         baseline + heap.bytes_current as u64,
         "all surviving mount backing remains funded"
     );
@@ -142,7 +142,7 @@ fn header_limit() {
     };
     let mut original =
         NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).unwrap();
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let mut result = None;
     assert_eq!(
         measure(|| result = Some(NativeMountAllocationCustody::new(&mut original))),
@@ -156,7 +156,7 @@ fn header_limit() {
             ..
         }))
     ));
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
 }
 
 #[test]

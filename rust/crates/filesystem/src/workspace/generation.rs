@@ -171,7 +171,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
                     from: self.clone(),
                     to: to.clone(),
                     changes,
-                    work: accounting.spent(),
+                    work: accounting.spent()?,
                 },
                 allocation,
             ))

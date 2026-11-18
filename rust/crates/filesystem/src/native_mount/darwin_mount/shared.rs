@@ -258,13 +258,20 @@ impl SharedViews {
         }
     }
 
-    pub(super) fn record_failure(&self, cause: NativeMountError, work: WorkCounters) -> i32 {
+    pub(super) fn record_failure(
+        &self,
+        cause: NativeMountError,
+        work: Result<WorkCounters, crate::WorkObservationError>,
+    ) -> i32 {
         let status = callback_errno(&cause);
-        if fatal(&cause) {
+        if fatal(&cause) || work.is_err() {
             let mut state = self
                 .handler_failure
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            if let Err(error) = work {
+                state.observation_error = Some(error);
+            }
             if state.first_fatal.is_none() {
                 state.first_fatal = Some((Some(cause), work));
             }

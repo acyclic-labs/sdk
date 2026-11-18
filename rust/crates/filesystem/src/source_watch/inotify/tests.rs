@@ -284,7 +284,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     // Startup leaves a retired gauge in the owner's admission registry; its
     // compaction is owner housekeeping that the next owner charge settles.
     original.lock().reconcile_cancellation_registry()?;
-    let owner_before = original.lock().receipt();
+    let owner_before = original.lock().receipt().unwrap();
     let retained_before = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
 
     let stop = CancellationToken::new();
@@ -295,7 +295,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
         watch.admit_with_work(Path::new("a/b/c"), &mut cancelled),
         Err(DemandError::Cancelled)
     ));
-    assert_eq!(original.lock().receipt(), owner_before);
+    assert_eq!(original.lock().receipt().unwrap(), owner_before);
     let mut denied = DemandWork::new(
         WorkBudget {
             backend_read_operations: 0,
@@ -308,7 +308,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
             .admit_with_work(Path::new("a/b/c"), &mut denied)
             .is_err()
     );
-    assert_eq!(original.lock().receipt(), owner_before);
+    assert_eq!(original.lock().receipt().unwrap(), owner_before);
 
     // Neither incoming ledger contains the watch owner's custody gauge.
     let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
@@ -318,7 +318,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
     {
         let mut state = original.lock();
-        state.budget.allocation_operations = state.receipt().allocation_operations;
+        state.budget.allocation_operations = state.receipt().unwrap().allocation_operations;
     }
     assert!(matches!(
         watch.admit_with_work(Path::new("a/b/c"), &mut caller),
@@ -333,8 +333,8 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     );
     original.lock().budget = ORIGINAL_BUDGET;
     assert!(watch.admit_with_work(Path::new("a/b/c"), &mut caller)?);
-    let owner_after = original.lock().receipt();
-    let caller_after = incoming.lock().receipt();
+    let owner_after = original.lock().receipt().unwrap();
+    let caller_after = incoming.lock().receipt().unwrap();
     assert!(owner_after.allocation_operations > owner_before.allocation_operations);
     assert_eq!(
         owner_after.backend_read_operations,
@@ -343,15 +343,15 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     assert_eq!(owner_after.bytes_copied, owner_before.bytes_copied);
     assert!(caller_after.backend_read_operations > 0);
     assert!(caller_after.bytes_copied > 0);
-    assert_eq!(incoming.lock().live_allocation_bytes(), 0);
+    assert_eq!(incoming.lock().live_allocation_bytes().unwrap(), 0);
     assert!(watch.shared.retained_variable_bytes.load(Ordering::Acquire) > retained_before);
     watch.unadmit_with_work(Path::new("a"), &mut caller)?;
 
     let mut ordinary = DemandWork::new(ORIGINAL_BUDGET, &CancellationToken::new());
     assert!(watch.admit_with_work(Path::new("a/b/c"), &mut ordinary)?);
-    assert!(ordinary.receipt().backend_read_operations > 0);
-    assert!(ordinary.receipt().bytes_copied > 0);
-    assert_eq!(ordinary.live_allocation_bytes(), 0);
+    assert!(ordinary.receipt().unwrap().backend_read_operations > 0);
+    assert!(ordinary.receipt().unwrap().bytes_copied > 0);
+    assert_eq!(ordinary.live_allocation_bytes().unwrap(), 0);
     watch.unadmit_with_work(Path::new("a"), &mut ordinary)?;
     drop(paused);
     watch.stop_accepted_cleanup()?;
@@ -424,7 +424,7 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
     // Block the background consumer before producing events. The public fence
     // must perform this drain with the unrelated invocation's work context.
     watch.shared.reading().blocked = true;
-    let owner_before = original.lock().receipt();
+    let owner_before = original.lock().receipt().unwrap();
     std::fs::rename(root.path().join("before"), root.path().join("after"))?;
     let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
         ORIGINAL_BUDGET,
@@ -432,10 +432,13 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
     )));
     let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
     assert!(watch.fence_events_with_work(&mut caller)?);
-    assert!(original.lock().receipt().allocation_operations > owner_before.allocation_operations);
-    assert!(incoming.lock().receipt().source_bytes_read > 0);
-    assert!(incoming.lock().receipt().bytes_copied > 0);
-    assert_eq!(incoming.lock().live_allocation_bytes(), 0);
+    assert!(
+        original.lock().receipt().unwrap().allocation_operations
+            > owner_before.allocation_operations
+    );
+    assert!(incoming.lock().receipt().unwrap().source_bytes_read > 0);
+    assert!(incoming.lock().receipt().unwrap().bytes_copied > 0);
+    assert_eq!(incoming.lock().live_allocation_bytes().unwrap(), 0);
     assert!(watch.shared.reading().cleanup.is_empty());
     watch.stop_accepted_cleanup()?;
     assert!(watch.shared.physically_cleared());
@@ -460,7 +463,7 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
         watch.admit_with_work(Path::new("a/b"), &mut work),
         Err(DemandError::Work(WorkError::BudgetExceeded { .. }))
     ));
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
 
     assert!(
         watch
@@ -488,7 +491,7 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
         &cancellation,
     );
     assert!(watch.admit_with_work(Path::new("a/b"), &mut work)?);
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
 
     Ok(())
 }
@@ -597,7 +600,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
 
     let paused = watch.paused();
     cancellation.cancel();
-    let prefix = original.lock().receipt();
+    let prefix = original.lock().receipt().unwrap();
 
     let wait = CancellationToken::new();
     wait.cancel();
@@ -619,7 +622,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
         !watch.shared.reading.owed.load(Ordering::SeqCst),
         "cancelled acquisition must hand back the owed service"
     );
-    assert_eq!(original.lock().receipt(), prefix);
+    assert_eq!(original.lock().receipt().unwrap(), prefix);
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
     assert!(!watch.is_stopped());
 
@@ -635,7 +638,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
     watch.shared.cleanup.lock().writes = writes;
     assert!(matches!(denied, Err(DemandError::NativeWorkUnavailable)));
-    assert_eq!(original.lock().receipt(), prefix);
+    assert_eq!(original.lock().receipt().unwrap(), prefix);
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
     assert!(!watch.is_stopped());
 
@@ -662,14 +665,14 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     );
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
-    let terminal = original.lock().receipt();
+    let terminal = original.lock().receipt().unwrap();
     assert_eq!(
         terminal.backend_read_operations, prefix.backend_read_operations,
         "retiring shared delivery performs no backend read"
     );
 
     watch.stop_with_cleanup_wait(&wait)?;
-    assert_eq!(original.lock().receipt(), terminal);
+    assert_eq!(original.lock().receipt().unwrap(), terminal);
     drop(watch);
 
     Ok(())
@@ -856,7 +859,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
             // Startup's temporary failure custody has retired. Reconcile its gauge
             // through the same budget projection used by the next native call.
             state.remaining()?;
-            state.live_allocation_bytes()
+            state.live_allocation_bytes().unwrap()
                 - watch.shared.retained_variable_bytes.load(Ordering::Acquire)
         };
         std::fs::write(root.path().join("reported"), b"changed")?;
@@ -887,10 +890,10 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
                 "cleanup must return the original callback refusal"
             );
         }
-        let terminal_receipt = original.lock().receipt();
+        let terminal_receipt = original.lock().receipt().unwrap();
         watch.stop_accepted_cleanup()?;
         assert_eq!(
-            original.lock().receipt(),
+            original.lock().receipt().unwrap(),
             terminal_receipt,
             "observing the saved failure cannot repeat native cleanup"
         );
@@ -904,11 +907,11 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         assert!(!watch.delivery().is_exact());
         let mut state = original.lock();
         assert_eq!(
-            state.receipt().items_returned,
+            state.receipt().unwrap().items_returned,
             1,
             "the panicked sink is never re-entered"
         );
-        assert_eq!(state.live_allocation_bytes(), retained_control);
+        assert_eq!(state.live_allocation_bytes().unwrap(), retained_control);
 
         drop(state);
         drop(watch);
@@ -992,16 +995,16 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
     for descriptor in [&watch.shared.inotify, &watch.shared.root] {
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
-    let prefix = original.lock().receipt();
+    let prefix = original.lock().receipt().unwrap();
     assert!(matches!(
         watch.delivery().take_failure(&mut work),
         Ok(()) | Err(DemandError::Cancelled)
     ));
-    assert_eq!(original.lock().receipt(), prefix);
+    assert_eq!(original.lock().receipt().unwrap(), prefix);
     watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
 
-    assert_eq!(original.lock().receipt().items_returned, 1);
+    assert_eq!(original.lock().receipt().unwrap().items_returned, 1);
     drop(watch);
 
     Ok(())
@@ -1362,7 +1365,7 @@ fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_onc
         }));
     });
     let held = watch.shared.held_descriptors();
-    let before = original.lock().receipt();
+    let before = original.lock().receipt().unwrap();
     let stopped = watch.stop_accepted_cleanup();
     BEFORE_UNSUBSCRIBE_RECORD.with(|hook| assert!(hook.borrow().is_none(), "hook not reached"));
     if let Ok(late) = late_rx.try_recv() {
@@ -1370,7 +1373,7 @@ fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_onc
     }
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
-    let terminal = original.lock().receipt();
+    let terminal = original.lock().receipt().unwrap();
     stopped?;
     assert_eq!(
         terminal.backend_write_operations - before.backend_write_operations,
@@ -1378,7 +1381,7 @@ fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_onc
         "close the held descriptors and unsubscribe exactly once"
     );
     watch.stop_accepted_cleanup()?;
-    assert_eq!(original.lock().receipt(), terminal);
+    assert_eq!(original.lock().receipt().unwrap(), terminal);
     drop(watch);
     Ok(())
 }

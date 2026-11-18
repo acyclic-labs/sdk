@@ -5,28 +5,41 @@ use std::sync::Arc;
 /// Accepted staging whose completion has not been acknowledged durably.
 #[derive(Debug)]
 pub struct NativeStageUncertainty<E> {
-    cause: Box<Option<E>>,
+    cause: Box<E>,
     _allocation: NativeAllocation,
 }
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeStageReservation<E> {
+    cause: Box<std::mem::MaybeUninit<E>>,
+    allocation: NativeAllocation,
+}
+
 impl<E> NativeStageUncertainty<E> {
     #[cfg(not(target_arch = "wasm32"))]
-    fn new(work: &NativeMaterializationWork) -> Result<Self, NativeTreeMaterializationError> {
-        let bytes = std::mem::size_of::<Option<E>>() as u64;
+    fn reserve(
+        work: &NativeMaterializationWork,
+    ) -> Result<NativeStageReservation<E>, NativeTreeMaterializationError> {
+        let bytes = std::mem::size_of::<E>() as u64;
         let allocation =
             work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
-        Ok(Self {
-            cause: Box::new(None),
-            _allocation: allocation,
+        Ok(NativeStageReservation {
+            cause: Box::new_uninit(),
+            allocation,
         })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fail(mut self, error: E) -> Self {
-        *self.cause = Some(error);
-        self
     }
     /// Original staging failure.
     pub fn cause(&self) -> &E {
-        self.cause.as_ref().as_ref().expect("staging failure")
+        &self.cause
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<E> NativeStageReservation<E> {
+    fn fail(self, error: E) -> NativeStageUncertainty<E> {
+        NativeStageUncertainty {
+            cause: Box::write(self.cause, error),
+            _allocation: self.allocation,
+        }
     }
 }
 
@@ -81,7 +94,7 @@ impl<S: MaterializationJournalStore>
         }
         self.check_plan(&journal.plan).map_err(E::from)?;
         self.check_custody(&journal).map_err(E::from)?;
-        let failure = NativeStageUncertainty::new(work)
+        let failure = NativeStageUncertainty::reserve(work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
         let reader = generation
             .workspace()

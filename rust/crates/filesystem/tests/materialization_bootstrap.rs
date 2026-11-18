@@ -116,7 +116,7 @@ async fn materialize_in_fresh_process(mode: &str) -> Result<(), Box<dyn std::err
         std::fs::read(output.path().join("file"))?,
         b"cold materialization"
     );
-    work.receipt().verify(BUDGET)?;
+    work.receipt()?.verify(BUDGET)?;
     Ok(())
 }
 

@@ -37,12 +37,12 @@ fn authority_paths_span_inline_scratch_and_preserve_the_stream_path_boundary()
                 generation,
             )?;
             assert_eq!(path.as_str().len(), length);
-            assert_eq!(work.spent().bytes_encoded, length as u64);
+            assert_eq!(work.spent().unwrap().bytes_encoded, length as u64);
             assert_eq!(
-                work.spent().bytes_copied,
+                work.spent().unwrap().bytes_copied,
                 (b"fs/authorities/".len() + suffix.len() + length) as u64
             );
-            assert_eq!(work.spent().allocation_operations, 1);
+            assert_eq!(work.spent().unwrap().allocation_operations, 1);
         }
         for length in [acyclic_stream::MAX_PATH_BYTES + 1, 131_073] {
             let suffix = "x".repeat(length - fixed);
@@ -115,6 +115,6 @@ proptest::proptest! {
             (Err(actual), Err(old)) => proptest::prop_assert_eq!(actual.to_string(), old.to_string()),
             (actual, old) => proptest::prop_assert!(false, "actual={actual:?}, old={old:?}"),
         }
-        proptest::prop_assert_eq!(work.spent(), old.spent());
+        proptest::prop_assert_eq!(work.spent().unwrap(), old.spent().unwrap());
     }
 }

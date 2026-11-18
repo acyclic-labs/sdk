@@ -51,17 +51,51 @@ pub struct OperationReceipt<T> {
 pub struct OperationFailure<E> {
     /// Stable semantic/backend failure.
     pub error: E,
-    /// Exact work performed before the failure became known.
-    pub work: Box<WorkCounters>,
+    /// Exact work performed before the failure, or why it cannot be observed.
+    pub work: Result<Box<WorkCounters>, WorkObservationError>,
 }
 
 impl<E> OperationFailure<E> {
+    /// Returns the exact work receipt, or the observation error.
+    pub fn work(&self) -> Result<&WorkCounters, WorkObservationError> {
+        self.work.as_deref().map_err(|error| *error)
+    }
+
     /// Constructs a failure with an exact work receipt.
     #[must_use]
     pub fn new(error: E, work: WorkCounters) -> Self {
         Self {
             error,
-            work: Box::new(work),
+            work: Ok(Box::new(work)),
+        }
+    }
+
+    /// Retains an operation error when its work receipt cannot be observed.
+    #[must_use]
+    pub fn without_receipt(error: E, observation: WorkObservationError) -> Self {
+        Self {
+            error,
+            work: Err(observation),
+        }
+    }
+
+    /// Retains an operation error with the result of observing its work.
+    #[must_use]
+    pub fn observed(error: E, work: Result<WorkCounters, WorkObservationError>) -> Self {
+        Self {
+            error,
+            work: work.map(Box::new),
+        }
+    }
+
+    /// Returns the observation failure when the exact work receipt is unavailable.
+    pub fn into_error(self) -> E
+    where
+        E: From<WorkObservationError>,
+    {
+        match self.work {
+            Ok(_) => self.error,
+            Err(observation) => observation.into(),
         }
     }
 
@@ -84,19 +118,41 @@ impl<E> OperationFailure<E> {
         self,
         prior: WorkCounters,
         map_error: impl FnOnce(E) -> T,
-    ) -> OperationFailure<T>
-    where
-        T: From<WorkError>,
-    {
-        match prior.checked_add(*self.work) {
+    ) -> OperationFailure<T> {
+        let work = match self.work {
+            Ok(work) => work,
+            Err(observation) => {
+                return OperationFailure::without_receipt(map_error(self.error), observation);
+            }
+        };
+        match prior.checked_add(*work) {
             Ok(combined) => OperationFailure::new(map_error(self.error), combined),
-            Err(error) => OperationFailure::new(error.into(), prior),
+            Err(error) => OperationFailure::without_receipt(map_error(self.error), error.into()),
         }
     }
 }
 
 /// Success or failure where failure always preserves spent work.
 pub type MeasuredResult<T, E> = Result<T, OperationFailure<E>>;
+
+/// Attaches an observed receipt without replacing a prior operation failure.
+pub fn finish_measured<T, E>(
+    result: Result<T, E>,
+    work: Result<WorkCounters, WorkObservationError>,
+    observation_error: impl FnOnce(WorkObservationError) -> E,
+) -> MeasuredResult<OperationReceipt<T>, E> {
+    match (result, work) {
+        (Ok(value), Ok(work)) => Ok(OperationReceipt { value, work }),
+        (Err(error), Ok(work)) => Err(OperationFailure::new(error, work)),
+        (Err(error), Err(observation)) => {
+            Err(OperationFailure::without_receipt(error, observation))
+        }
+        (Ok(_), Err(observation)) => Err(OperationFailure::without_receipt(
+            observation_error(observation),
+            observation,
+        )),
+    }
+}
 
 /// Exact backend and memory work performed by one filesystem operation.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -658,6 +714,17 @@ impl WorkCounters {
 
 /// Hard upper bounds admitted before one operation begins.
 pub type WorkBudget = WorkCounters;
+
+/// Why an exact accounting observation could not be produced.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum WorkObservationError {
+    /// A previous reconciliation left the original ledger unusable.
+    #[error("original work accounting is poisoned")]
+    Poisoned,
+    /// Reconciliation could not represent or admit its deferred work.
+    #[error(transparent)]
+    Work(#[from] WorkError),
+}
 
 fn add(left: u64, right: u64) -> Result<u64, WorkError> {
     left.checked_add(right).ok_or(WorkError::Overflow)

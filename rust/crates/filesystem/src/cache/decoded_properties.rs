@@ -5,7 +5,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn decoded_histories_preserve_original_misses(input in prop::collection::vec(any::<u8>(), 0..128)) {
-        check(&input);
+        check(&input).expect("decoded cache oracle");
     }
 }
 
@@ -18,25 +18,21 @@ fn decoded_corpus_and_negative_controls_cover_every_transition() {
         include_bytes!("../../fuzz/corpus/decoded_cache/overlapping-fill"),
         include_bytes!("../../fuzz/corpus/decoded_cache/oversized"),
     ];
-    let coverage = corpus
-        .iter()
-        .fold(0, |coverage, input| coverage | check(input));
+    let coverage = corpus.iter().fold(0, |coverage, input| {
+        coverage | check(input).expect("decoded cache oracle")
+    });
     assert_eq!(
         coverage, 0xff,
         "retained corpus must reach every oracle branch"
     );
     for (fault, input) in [(1, corpus[0]), (2, corpus[1]), (3, corpus[2])] {
-        let failure = std::panic::catch_unwind(|| match fault {
+        let failure = match fault {
             1 => check_inner::<1>(input),
             2 => check_inner::<2>(input),
             _ => check_inner::<3>(input),
-        })
+        }
         .expect_err("planted cache defect survived the unchanged oracle");
-        let message = failure
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| failure.downcast_ref::<&str>().copied())
-            .unwrap_or("");
+        let message = failure.to_string();
         assert!(message.contains("decoded cache"), "{message}");
     }
 }

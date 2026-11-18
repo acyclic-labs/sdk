@@ -242,7 +242,7 @@ mod tests {
                 merge_condition(&mut conditions, candidate, &mut work)
             };
             assert_eq!(
-                work.spent().items_examined,
+                work.spent().unwrap().items_examined,
                 allowance,
                 "policy comparison prefix was not charged"
             );

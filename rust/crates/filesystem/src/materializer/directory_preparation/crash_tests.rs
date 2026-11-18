@@ -261,7 +261,7 @@ async fn publish(root: &Path, cut: Option<u64>, prepare: bool) -> TestResult<u64
         || std::future::ready(Ok(())),
     )
     .await
-    .map_err(|(error, _)| error)?;
+    .map_err(|failure| failure.error)?;
     let writes = work
         .state
         .lock()

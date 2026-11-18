@@ -13,9 +13,14 @@ pub struct NativeMountSession {
     pub(super) destination_guard: Option<MountDestinationGuard>,
     pub(super) measured_cleanup_failed: bool,
     pub(super) namespace_detach_confirmed: bool,
-    pub(super) completed_future_callback_work: crate::WorkCounters,
-    pub(super) retired_callback_failure:
-        std::sync::Mutex<Option<(NativeMountError, crate::WorkCounters)>>,
+    pub(super) completed_future_callback_work:
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    pub(super) retired_callback_failure: std::sync::Mutex<
+        Option<(
+            NativeMountError,
+            Result<crate::WorkCounters, crate::WorkObservationError>,
+        )>,
+    >,
     // SDK namespace DATA can outlive physical retirement without retaining
     // a source, context, root handle, or provider callback.
     #[cfg(windows)]
@@ -46,7 +51,7 @@ impl NativeMountSession {
             terminal_failures: retirement::TerminalFailures::default(),
             measured_cleanup_failed: false,
             namespace_detach_confirmed: false,
-            completed_future_callback_work: crate::WorkCounters::UNCHARGED,
+            completed_future_callback_work: Ok(crate::WorkCounters::UNCHARGED),
             retired_callback_failure: std::sync::Mutex::new(None),
             #[cfg(windows)]
             namespace_outcome: None,
@@ -140,7 +145,12 @@ impl NativeMountSession {
     }
 
     /// Moves the first retained fatal SDK callback failure and its actual completed request work.
-    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+    pub fn take_callback_failure(
+        &self,
+    ) -> Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )> {
         let retained = self
             .retired_callback_failure
             .lock()
@@ -156,7 +166,9 @@ impl NativeMountSession {
 
     /// Completed future SDK request work, including ordinary errno answers.
     #[must_use]
-    pub fn completed_callback_work(&self) -> crate::WorkCounters {
+    pub fn completed_callback_work(
+        &self,
+    ) -> Result<crate::WorkCounters, crate::WorkObservationError> {
         self.driver
             .as_ref()
             .map_or(self.completed_future_callback_work, |driver| {
@@ -164,7 +176,7 @@ impl NativeMountSession {
                     driver,
                     session,
                     session.completed_callback_work(),
-                    crate::WorkCounters::UNCHARGED
+                    Ok(crate::WorkCounters::UNCHARGED)
                 )
             })
     }
@@ -372,7 +384,7 @@ impl NativeMountSession {
                     &*driver,
                     session,
                     session.completed_callback_work(),
-                    crate::WorkCounters::UNCHARGED
+                    Ok(crate::WorkCounters::UNCHARGED)
                 );
                 *self
                     .retired_callback_failure

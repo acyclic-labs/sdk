@@ -20,7 +20,7 @@ async fn file_comparison_keeps_its_read_buffer_out_of_the_caller_frame()
     let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let root = HostRoot::open(temporary.path(), &mut &work)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let comparison = host_holds_generation_file(&root, "file", &generation, &work);
     let bytes = std::mem::size_of_val(&comparison);
     eprintln!("file comparison future: {bytes} bytes");
@@ -37,7 +37,7 @@ async fn file_comparison_keeps_its_read_buffer_out_of_the_caller_frame()
     // owner before checking that both the comparison frame and reads are gone.
     drop(generation);
     drop(workspace);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -270,7 +270,8 @@ async fn host_name_has_binding<O: crate::AsyncObjectStore>(
     Ok(false)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(all(unix))]
 mod tests {
     use super::*;
 
@@ -390,7 +391,7 @@ mod tests {
             ),
             "{result:?}"
         );
-        assert_eq!(original.receipt().bytes_encoded, 0);
+        assert_eq!(original.receipt().unwrap().bytes_encoded, 0);
         assert_eq!(std::fs::read(directory.path().join("known"))?, b"physical");
 
         let original =
@@ -400,11 +401,14 @@ mod tests {
         assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
         assert_eq!(original.live_allocation_bytes(), retained);
         assert_eq!(
-            original.receipt().items_returned,
+            original.receipt().unwrap().items_returned,
             0,
             "membership must not enumerate unrelated authored children"
         );
-        assert_eq!(original.receipt().bytes_encoded, 2 * "known".len() as u64);
+        assert_eq!(
+            original.receipt().unwrap().bytes_encoded,
+            2 * "known".len() as u64
+        );
         use std::os::unix::ffi::OsStrExt as _;
         // Native volumes may require valid Unicode. Keep the unrepresentable
         // byte-name control at the encoding boundary before any host I/O.
@@ -461,7 +465,7 @@ mod tests {
         .map_err(|(error, _)| error)?;
         let root = HostRoot::open(directory.path(), &mut &original)?;
         assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
-        assert_eq!(original.receipt().bytes_encoded, 0);
+        assert_eq!(original.receipt().unwrap().bytes_encoded, 0);
 
         let stopped = crate::CancellationToken::new();
         let stopped_work =
@@ -571,7 +575,7 @@ mod tests {
                 || std::future::ready(Ok(())),
             )
             .await
-            .map_err(|(error, _)| error)?;
+            .map_err(|failure| failure.into_error())?;
             assert_eq!(result.value.phase, MaterializationPhase::Applied);
             assert!(!retired.join("known").exists());
             if foreign {

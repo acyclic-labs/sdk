@@ -233,7 +233,7 @@ async fn append_segments_retain_the_original_native_work() -> Result<(), Box<dyn
             .await?,
         TransactionCommit::Committed(_)
     ));
-    assert!(original.receipt().items_examined > 0);
+    assert!(original.receipt().unwrap().items_examined > 0);
     assert_eq!(
         unbounded!(workspace, read("/log", 32))?.as_ref(),
         b"prefixsuffix"

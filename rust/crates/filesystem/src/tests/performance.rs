@@ -59,8 +59,6 @@ fn budget_intersection_preserves_every_declared_allowance() -> Result<(), serde_
 enum OuterError {
     #[error("inner")]
     Inner,
-    #[error(transparent)]
-    Work(#[from] WorkError),
 }
 
 #[test]
@@ -79,9 +77,11 @@ fn nested_failure_accounting_never_substitutes_a_sentinel_receipt() {
         },
         |()| OuterError::Inner,
     );
-    assert_eq!(mapped.error, OuterError::Work(WorkError::Overflow));
-    assert_eq!(mapped.work.page_reads, u64::MAX);
-    assert_ne!(*mapped.work, WorkCounters::UNBOUNDED);
+    assert_eq!(mapped.error, OuterError::Inner);
+    assert_eq!(
+        mapped.work(),
+        Err(crate::WorkObservationError::Work(WorkError::Overflow))
+    );
 }
 
 /// Every counter of [`WorkCounters`], as mutable references in declaration

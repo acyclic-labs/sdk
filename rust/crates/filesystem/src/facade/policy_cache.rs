@@ -222,7 +222,9 @@ impl PolicyCache {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 mod loom_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod tests;

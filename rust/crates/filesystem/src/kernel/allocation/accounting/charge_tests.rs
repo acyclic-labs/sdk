@@ -97,8 +97,8 @@ proptest! {
             prop_assert_eq!(old_heap, AllocationInfo::default());
             prop_assert_eq!(new_heap, AllocationInfo::default(), "kernel charge allocated physical heap storage");
             prop_assert_eq!(status(new), status(old));
-            prop_assert_eq!(roots[1].receipt(), roots[0].receipt());
-            prop_assert_eq!(roots[1].live_allocation_bytes(), roots[0].live_allocation_bytes());
+            prop_assert_eq!(roots[1].receipt().unwrap(), roots[0].receipt().unwrap());
+            prop_assert_eq!(roots[1].live_allocation_bytes().unwrap(), roots[0].live_allocation_bytes().unwrap());
         }
     }
 }

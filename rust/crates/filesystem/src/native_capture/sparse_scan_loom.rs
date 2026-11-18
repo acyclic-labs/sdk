@@ -18,7 +18,7 @@ fn model(run: impl Fn() + Send + Sync + 'static) {
 }
 
 #[test]
-fn block_scan_and_competing_admission_share_the_real_leaf() {
+fn block_scan_and_competing_admission_share_the_real_leaf() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     model(|| {
         let root = NativeMaterializationWork::new(limits(1), &CancellationToken::new()).unwrap();
@@ -31,13 +31,14 @@ fn block_scan_and_competing_admission_share_the_real_leaf() {
         });
         let (scanned, admitted) = (scanner.join().unwrap(), writer.join().unwrap());
         assert_eq!(usize::from(scanned) + usize::from(admitted), 1);
-        assert_eq!(root.receipt().items_examined, 1);
+        assert_eq!(root.receipt().map(|work| work.items_examined), Ok(1));
         assert_eq!(root.remaining().unwrap().items_examined, 0);
     });
+    Ok(())
 }
 
 #[test]
-fn model_rejects_split_admission_and_recording() {
+fn model_rejects_split_admission_and_recording() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let detected = std::panic::catch_unwind(|| {
         model(|| {
@@ -57,9 +58,10 @@ fn model_rejects_split_admission_and_recording() {
             for thread in threads {
                 thread.join().unwrap();
             }
-            let spent = root.receipt().items_examined;
+            let spent = root.receipt().map(|work| work.items_examined);
+            assert!(spent.is_ok());
             assert_eq!(
-                spent.min(1),
+                spent.map(|value| value.min(1)),
                 spent,
                 "split admission overspent the item budget"
             );
@@ -68,10 +70,11 @@ fn model_rejects_split_admission_and_recording() {
     let failure = detected.expect_err("the model must reject split admission");
     let message = failure.downcast_ref::<String>().expect("assertion message");
     assert!(message.contains("split admission overspent"), "{message}");
+    Ok(())
 }
 
 #[test]
-fn cancellation_preserves_completed_items_and_returns_unused_credit() {
+fn cancellation_preserves_completed_items_and_returns_unused_credit() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let exercise = |leak_reservation| {
         model(move || {
@@ -94,20 +97,25 @@ fn cancellation_preserves_completed_items_and_returns_unused_credit() {
             let canceller = loom::thread::spawn(move || cancellation.cancel());
             scanner.join().unwrap();
             canceller.join().unwrap();
-            let spent = root.receipt().items_examined;
+            let spent = root.receipt().map(|work| work.items_examined);
             let remaining = root
                 .with_original_leaf(|work| work.remaining())
                 .unwrap()
                 .items_examined;
             assert!(
-                spent == 0 || spent == 2,
+                spent.is_ok_and(|spent| spent == 0 || spent == 2),
                 "a block is either unstarted or fully scanned"
             );
-            assert_eq!(spent + remaining, 2, "reserved item conservation");
+            assert_eq!(
+                spent.map(|spent| spent + remaining),
+                Ok(2),
+                "reserved item conservation"
+            );
         })
     };
     exercise(false);
     let failure = std::panic::catch_unwind(|| exercise(true)).expect_err("leaked credit must fail");
     let message = failure.downcast_ref::<String>().expect("assertion message");
     assert!(message.contains("reserved item conservation"), "{message}");
+    Ok(())
 }

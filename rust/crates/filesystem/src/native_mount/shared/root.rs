@@ -414,7 +414,8 @@ mod issuance_tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux"))]
 pub(super) mod tests {
     use super::*;
 

@@ -181,13 +181,9 @@ pub async fn seek_extent<S: AsyncObjectStore>(
 ) -> Result<OperationReceipt<Option<u64>>, ExtentReadFailure> {
     let mut accounting = KernelAccounting::standalone(request.budget, cancellation);
     let result = seek_extent_with_accounting(store, request, &mut accounting, cancellation).await;
-    match result {
-        Ok(value) => Ok(OperationReceipt {
-            value,
-            work: accounting.spent(),
-        }),
-        Err(error) => Err(failed(range_error(error), accounting.spent())),
-    }
+    crate::performance::finish_measured(result.map_err(range_error), accounting.spent(), |error| {
+        range_error(FsError::from(error))
+    })
 }
 
 pub(crate) async fn seek_extent_with_accounting<S: AsyncObjectStore>(
@@ -510,7 +506,7 @@ impl<T, P: Fn(ExtentSlice) -> T> RangeMachine<T, P> {
         }
         let plan = ExtentPlan {
             spans: std::mem::take(&mut self.spans),
-            work: accounting.spent(),
+            work: accounting.spent()?,
             retained_allocation_bytes: self.spans_capacity.logical_bytes(),
             next_residency: self.successor_page.map(|(_, hint)| hint),
         };
@@ -718,8 +714,11 @@ impl From<AllocationError> for ExtentReadError {
 /// Sparse extent-plan failure retaining exact spent work.
 pub type ExtentReadFailure = OperationFailure<ExtentReadError>;
 
-fn failed(error: ExtentReadError, work: WorkCounters) -> ExtentReadFailure {
-    OperationFailure::new(error, work)
+fn failed(
+    error: ExtentReadError,
+    work: Result<WorkCounters, crate::WorkObservationError>,
+) -> ExtentReadFailure {
+    OperationFailure::observed(error, work)
 }
 
 #[cfg(test)]

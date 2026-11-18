@@ -276,16 +276,19 @@ mod tests {
         assert_eq!(values.capacity(), 2);
         values.extend([11_u64, 13]);
         let before = work.receipt();
-        let live = work.live_allocation_bytes();
+        let live = work.live_allocation_bytes().unwrap();
         let error = reserve(&mut values, 3, &work, &mut held)
             .expect_err("delta-only funding would wrongly accept");
         assert!(matches!(error, NativeError::Work(_)));
         assert_eq!(values, [11, 13]);
         assert_eq!(values.capacity(), 2);
         assert_eq!(work.receipt(), before);
-        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.live_allocation_bytes().unwrap(), live);
         drop(values);
         drop(held);
-        assert_eq!(work.live_allocation_bytes(), Work::accounting_state_bytes());
+        assert_eq!(
+            work.live_allocation_bytes().unwrap(),
+            Work::accounting_state_bytes()
+        );
     }
 }

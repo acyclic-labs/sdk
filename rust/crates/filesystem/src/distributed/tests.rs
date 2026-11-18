@@ -41,7 +41,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
                 work as *mut AuthorityWork<'_> as usize, self.original,
                 "authority forwarding replaced the original frame"
             );
-            assert!(work.spent().items_examined >= self.prior_items);
+            assert!(work.spent().unwrap().items_examined >= self.prior_items);
             assert!(work.allocations.live_bytes() >= self.prior_live);
             if !self.entered {
                 self.seal_scratch = work.allocations.scratch_bytes();
@@ -92,7 +92,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         let (producer, completion) = tokio::sync::oneshot::channel();
         let mut guard = Guard {
             original: &mut work as *mut AuthorityWork<'_> as usize,
-            prior_items: work.spent().items_examined,
+            prior_items: work.spent().unwrap().items_examined,
             prior_live: work.allocations.live_bytes(),
             seal_scratch: 0,
             retained: None,
@@ -137,7 +137,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         }
         drop(operation);
         assert!(guard.entered);
-        assert!(work.spent().items_examined >= guard.prior_items + 2);
+        assert!(work.spent().unwrap().items_examined >= guard.prior_items + 2);
         let before = work.allocations.live_bytes();
         if !native {
             assert!(
@@ -197,11 +197,15 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
     );
     assert_eq!(work.allocations.scratch_bytes(), 29);
     let baseline = work.allocations.live_bytes();
-    work.budget.peak_allocation_bytes = work.spent().peak_allocation_bytes.max(baseline + 8192);
+    work.budget.peak_allocation_bytes = work
+        .spent()
+        .unwrap()
+        .peak_allocation_bytes
+        .max(baseline + 8192);
     for _ in 0..32 {
         // The epoch and record heads are admitted together. Insufficient
         // credit must refuse the whole cut before either record is read.
-        let before = work.spent().authority_records_read;
+        let before = work.spent().unwrap().authority_records_read;
         work.budget.authority_records_read = before + 1;
         assert!(matches!(
             store.policy_cut(authority, &mut work).await,
@@ -212,7 +216,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
                 }
             ))
         ));
-        assert_eq!(work.spent().authority_records_read, before);
+        assert_eq!(work.spent().unwrap().authority_records_read, before);
         assert_eq!(
             work.allocations.scratch_bytes(),
             29,
@@ -220,7 +224,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         );
         work.budget.authority_records_read = BUDGET.authority_records_read;
         store.policy_cut(authority, &mut work).await?;
-        assert_eq!(work.spent().authority_records_read, before + 2);
+        assert_eq!(work.spent().unwrap().authority_records_read, before + 2);
         assert_eq!(work.allocations.scratch_bytes(), 29);
         let head = store.head(authority, &mut work).await?;
         assert_eq!(head.sequence, Sequence::new(1));
@@ -273,7 +277,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         // own physical-retirement property. This finite frame repeats reads.
         assert_eq!(work.allocations.live_bytes(), baseline);
     }
-    assert!(work.spent().authority_records_read >= 32 * 2);
+    assert!(work.spent().unwrap().authority_records_read >= 32 * 2);
     let before_retirement = work.allocations.live_bytes();
     assert!(before_retirement >= 29 + 73);
     drop(retained);
@@ -306,25 +310,25 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
                     earlier.capacity() as u64,
                     "quotation leaked native request credit"
                 );
-                let live = original.live_allocation_bytes();
+                let live = original.live_allocation_bytes().unwrap();
                 assert_eq!(*baseline.get_or_insert(live), live);
             }
         }
-        let before = original.live_allocation_bytes();
+        let before = original.live_allocation_bytes().unwrap();
         drop(retained);
-        assert_eq!(original.live_allocation_bytes(), before - 73);
+        assert_eq!(original.live_allocation_bytes().unwrap(), before - 73);
         drop(earlier);
         work.release_request()?;
         // Withdrawal after real preparation must also retire temporary request
         // capacity without consulting the now-cancelled admission.
-        let before = original.live_allocation_bytes();
+        let before = original.live_allocation_bytes().unwrap();
         {
             let mut scope = work.scope()?;
             let values = scope.vec::<u8>(31)?;
             cancellation.cancel();
             drop(values);
         }
-        assert_eq!(original.live_allocation_bytes(), before);
+        assert_eq!(original.live_allocation_bytes().unwrap(), before);
     }
     Ok(())
 }
@@ -363,26 +367,26 @@ fn native_read_meter_rejects_missing_original_funding_before_work()
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
     let mut ordinary = AuthorityWork::new(BUDGET, &cancellation);
-    let before = ordinary.spent();
+    let before = ordinary.spent().unwrap();
     assert!(matches!(
         ordinary.native_meter(),
         Err(AuthorityStoreError::NativeOriginalUnsupported)
     ));
-    assert_eq!(ordinary.spent(), before);
+    assert_eq!(ordinary.spent().unwrap(), before);
 
     let original =
         crate::NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut native = AuthorityWork::native(&original, &cancellation);
     let bytes = native.bytes(b"retained native bytes")?;
     let alias = bytes.clone();
     drop(native);
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
     drop(bytes);
     assert_eq!(alias.as_ref(), b"retained native bytes");
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
     drop(alias);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -500,7 +504,7 @@ async fn original_owner_rejection_limits_and_cancellation_preserve_the_head() ->
     let ledger = original.clone();
     let reject = move |work: &crate::NativeMaterializationWork| {
         assert!(work.shares_ledger(&ledger));
-        assert!(work.receipt().bytes_hashed > 0);
+        assert!(work.receipt().unwrap().bytes_hashed > 0);
         std::future::ready(Err(AuthorityStoreError::Retired))
     };
     for committed in [false, true] {
@@ -615,7 +619,7 @@ async fn original_custom_provider_never_falls_back_to_ordinary_io() -> TestResul
     }
     assert!(!spy.reads.load(SeqCst));
     assert!(!spy.writes.load(SeqCst));
-    original.receipt().verify(BUDGET)?;
+    original.receipt().unwrap().verify(BUDGET)?;
     Ok(())
 }
 
@@ -756,7 +760,7 @@ async fn reservations_exclude_writers_and_recover_the_original_head() -> TestRes
         queried.publication_reservation(id, op, &mut work).await?,
         Some(reservation)
     );
-    assert!(work.spent().bytes_hashed > 0);
+    assert!(work.spent().unwrap().bytes_hashed > 0);
     assert!(!spy.writes.load(SeqCst));
     for hash_denied in [false, true] {
         let mut budget = WorkBudget::UNBOUNDED;
@@ -774,7 +778,7 @@ async fn reservations_exclude_writers_and_recover_the_original_head() -> TestRes
             Err(AuthorityStoreError::Work(_))
         ));
         assert_eq!(spy.reads.load(SeqCst), hash_denied);
-        assert_eq!(bounded.spent().bytes_hashed, 0);
+        assert_eq!(bounded.spent().unwrap().bytes_hashed, 0);
         assert!(!spy.writes.load(SeqCst));
     }
     let mut corrupt = ReleaseSpy::new(stream.clone());

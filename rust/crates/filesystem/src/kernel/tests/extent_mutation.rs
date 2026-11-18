@@ -179,7 +179,7 @@ async fn pre_cancelled_extent_mutation_performs_zero_work() -> Result<(), Box<dy
         failure.error,
         ExtentMutationError::Storage(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -231,8 +231,8 @@ async fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
             maximum: observed_maximum,
         }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum
     ));
-    assert_eq!(failure.work.backend_read_operations, 1);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 1);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -409,9 +409,9 @@ async fn rejected_nonextending_range_performs_no_backend_work()
     .err()
     .ok_or("out-of-range mutation unexpectedly succeeded")?;
     assert!(matches!(failure.error, ExtentMutationError::OutsideFile));
-    assert_eq!(failure.work.items_examined, 1);
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().items_examined, 1);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -446,11 +446,11 @@ async fn invalid_tail_is_rejected_during_allocation_free_admission()
     .err()
     .ok_or("invalid tail unexpectedly succeeded")?;
     assert!(matches!(failure.error, ExtentMutationError::OutsideFile));
-    assert_eq!(failure.work.items_examined, 3);
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.peak_allocation_bytes, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().items_examined, 3);
+    assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().peak_allocation_bytes, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -485,10 +485,10 @@ async fn admission_work_budget_stops_before_allocation_or_backend_access()
             maximum: 1,
         })
     ));
-    assert_eq!(failure.work.items_examined, 1);
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().items_examined, 1);
+    assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -532,9 +532,9 @@ async fn radix_copy_budget_stops_before_unadmitted_copy_or_backend_access()
             maximum: 0,
         })
     ));
-    assert_eq!(failure.work.bytes_copied, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().bytes_copied, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -552,7 +552,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
         },
         &cancellation,
     );
-    let encode_initial_work = encode_limited.spent();
+    let encode_initial_work = encode_limited.spent().unwrap();
     let encode_error = (put_extent_page_with_accounting(
         &store,
         &page,
@@ -568,7 +568,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
             counter: "bytes_encoded", observed, maximum: 0,
         }) if observed == encoded_length
     ));
-    assert_eq!(encode_limited.spent(), encode_initial_work);
+    assert_eq!(encode_limited.spent().unwrap(), encode_initial_work);
 
     let mut hash_limited = KernelAccounting::standalone(
         WorkBudget {
@@ -592,9 +592,9 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
             counter: "bytes_hashed", observed, maximum: 0,
         }) if observed == encoded_length
     ));
-    assert_eq!(hash_limited.spent().bytes_encoded, encoded_length);
-    assert_eq!(hash_limited.spent().bytes_hashed, 0);
-    assert_eq!(hash_limited.spent().backend_write_operations, 0);
+    assert_eq!(hash_limited.spent().unwrap().bytes_encoded, encoded_length);
+    assert_eq!(hash_limited.spent().unwrap().bytes_hashed, 0);
+    assert_eq!(hash_limited.spent().unwrap().backend_write_operations, 0);
 
     let mut byte_limited = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let byte_error = (put_extent_page_with_accounting(
@@ -615,7 +615,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
             observed, maximum: 1,
         }) if observed == encoded_length
     ));
-    assert_eq!(byte_limited.spent().backend_write_operations, 0);
+    assert_eq!(byte_limited.spent().unwrap().backend_write_operations, 0);
 
     Ok(())
 }
@@ -842,8 +842,8 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
             maximum: 0,
         })
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

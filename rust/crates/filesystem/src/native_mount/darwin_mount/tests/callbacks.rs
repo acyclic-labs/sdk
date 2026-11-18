@@ -146,7 +146,7 @@ fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> Te
         }
         let failure = callback_failure(&context);
         assert!(matches!(failure.0, NativeMountError::CallbackDenied { .. }));
-        assert_eq!(failure.1, original.receipt());
+        assert_eq!(failure.1, original.receipt().unwrap());
         assert_eq!(
             context
                 .source
@@ -266,7 +266,7 @@ fn accepted_io_scope_retains_original_work_until_its_last_clone_drops() -> TestR
     let accepted = active.try_clone_for_io()?;
     drop(active);
     assert_eq!(getattr(&context, c"/"), 0);
-    assert!(original.receipt().items_examined > 0);
+    assert!(original.receipt().unwrap().items_examined > 0);
     drop(accepted);
     assert_eq!(getattr(&context, c"/"), -libc::EIO);
     Ok(())

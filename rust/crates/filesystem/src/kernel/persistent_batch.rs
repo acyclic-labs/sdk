@@ -84,13 +84,13 @@ where
         None,
     )
     .await;
-    let work = accounting.spent();
-    result
-        .map(|(mut receipt, _)| {
-            receipt.work = work;
-            receipt
-        })
-        .map_err(|error| failed(project_failure(error), work))
+    crate::performance::finish_measured(
+        result
+            .map(|(receipt, _)| receipt.value)
+            .map_err(project_failure),
+        accounting.spent(),
+        |error| Error::Storage(ObjectStoreError::WorkObservation(error)),
+    )
 }
 
 #[allow(
@@ -180,17 +180,17 @@ where
     }
     .await;
     match result {
-        Ok(()) => machine.finish(accounting).map(
+        Ok(()) => machine.finish(accounting).and_then(
             |Owned {
                  value, allocation, ..
              }| {
-                (
+                Ok((
                     OperationReceipt {
                         value,
-                        work: accounting.spent(),
+                        work: accounting.spent()?,
                     },
                     allocation,
-                )
+                ))
             },
         ),
         Err(error) => {
@@ -545,10 +545,6 @@ fn equal_group<K: Eq>(
         cursor += 1;
     }
     Ok(cursor)
-}
-
-fn failed(error: Error, work: WorkCounters) -> Failure {
-    OperationFailure::new(error, work)
 }
 
 #[cfg(test)]

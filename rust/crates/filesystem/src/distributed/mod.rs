@@ -160,7 +160,8 @@ mod bindings;
 mod changes;
 mod generation_seek;
 mod head_payload;
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 mod head_payload_loom_tests;
 mod lineage;
 mod operations;

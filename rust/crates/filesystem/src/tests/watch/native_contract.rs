@@ -195,9 +195,9 @@ async fn native_arrival_retains_early_batches_and_ends_on_cancel_or_producer_ret
     // The actual producer may deliver before registration or while the OS wait
     // is entered. Both orderings retain the same batch, without a fence write.
     std::fs::write(&file, b"first")?;
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     fixture.watch.changed_with_native_work(&original).await?;
-    let after = original.receipt();
+    let after = original.receipt().unwrap();
     assert_eq!(
         before.backend_read_operations,
         after.backend_read_operations

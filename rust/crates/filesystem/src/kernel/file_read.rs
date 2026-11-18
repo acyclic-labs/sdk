@@ -185,7 +185,7 @@ async fn read_regular_range<S: AsyncObjectStore>(
         return Ok(FileRangeRead {
             bytes: nested.bytes,
             logical_owned_bytes: nested.logical_owned_bytes,
-            work: accounting.spent(),
+            work: accounting.spent()?,
         });
     }
     let mut output = allocate_read_buffer(length, accounting)?;
@@ -260,7 +260,7 @@ fn finish_range_read(
     Ok(FileRangeRead {
         bytes,
         logical_owned_bytes,
-        work: accounting.spent(),
+        work: accounting.spent()?,
     })
 }
 
@@ -425,10 +425,10 @@ pub(crate) async fn read_object_observed<S: AsyncObjectStore>(
         .map_err(crate::ObjectStoreError::from)
         .map_err(read_store_error)?;
     work.read_observation = observation;
-    let before = observation.map(|_| work.spent());
+    let before = observation.map(|_| work.spent()).transpose()?;
     let read = store.read(object, maximum, &mut work).await;
     if let Some((owner, before)) = work.read_observation.take().zip(before) {
-        owner.record_original_work(work.spent().checked_sub_cumulative(&before)?)?;
+        owner.record_original_work(work.spent()?.checked_sub_cumulative(&before)?)?;
     }
     let read = read.map_err(read_store_error)?;
     let bytes = read.retention.owned_bytes();
@@ -651,8 +651,11 @@ pub enum FileRangeReadError {
     Context(Box<FsError>),
 }
 
-fn failed(error: FileRangeReadError, work: WorkCounters) -> FileRangeReadFailure {
-    OperationFailure::new(error, work)
+fn failed(
+    error: FileRangeReadError,
+    work: Result<WorkCounters, crate::WorkObservationError>,
+) -> FileRangeReadFailure {
+    OperationFailure::observed(error, work)
 }
 
 #[cfg(test)]

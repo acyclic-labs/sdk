@@ -169,7 +169,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         let mut run = |old, old_append: bool| {
             let _copy = CopyLeaves(CLONE_LEAVES.replace(old));
             let _append = old_append.then(super::path_error_tests::OldAppend::enter);
-            let live_before = setup.live_allocation_bytes();
+            let live_before = setup.live_allocation_bytes().unwrap();
             let scope = CaptureWorkScope::new(&setup).unwrap();
             let start = path("/");
             let mut paths = Vec::new();
@@ -202,7 +202,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
             assert_eq!(paths, expected_paths);
             drop(paths);
             drop(scope);
-            assert_eq!(setup.live_allocation_bytes(), live_before);
+            assert_eq!(setup.live_allocation_bytes().unwrap(), live_before);
             measured
         };
         // Warm the host adapter, executor and authenticated checkout records.
@@ -322,8 +322,8 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                     let outcome = {
                         // The checkout's proof custody belongs to its original ledger.
                         let meter = setup.clone();
-                        let before = meter.receipt();
-                        let live_before = meter.live_allocation_bytes();
+                        let before = meter.receipt().unwrap();
+                        let live_before = meter.live_allocation_bytes().unwrap();
                         let scope = CaptureWorkScope::new(&meter).unwrap();
                         let mut paths = Vec::new();
                         let mut failure = None;
@@ -368,7 +368,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                                 failure = Some(error.to_string());
                             }
                         }
-                        let mut receipt = meter.receipt();
+                        let mut receipt = meter.receipt().unwrap();
                         receipt.allocation_operations -= before.allocation_operations;
                         receipt.source_path_components -= before.source_path_components;
                         receipt.source_bytes_read -= before.source_bytes_read;
@@ -376,7 +376,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                         let output = paths.iter().map(|(p, ())| p.clone()).collect::<Vec<_>>();
                         drop(paths);
                         drop(scope);
-                        assert_eq!(meter.live_allocation_bytes(), live_before);
+                        assert_eq!(meter.live_allocation_bytes().unwrap(), live_before);
                         (failure, output, receipt)
                     };
                     prop_assert_eq!(

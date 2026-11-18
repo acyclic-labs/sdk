@@ -48,7 +48,8 @@ use host_walk::*;
 #[cfg(test)]
 mod host_observation_tests;
 mod inline_reuse;
-#[cfg(all(test, any(windows, target_os = "linux")))]
+#[cfg(test)]
+#[cfg(all(any(windows, target_os = "linux")))]
 mod inline_reuse_tests;
 mod reconcile;
 mod relocate;
@@ -67,7 +68,8 @@ use stage::*;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod held_root_tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux"))]
 mod immutable_publication_tests;
 mod metadata;
 #[cfg(test)]

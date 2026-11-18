@@ -472,7 +472,7 @@ mod original {
         assert!(watch.is_stopped());
         assert_retired(&watch.shared);
         // The native suffix was paid from the birth's reserved cleanup credit.
-        assert_eq!(foreign.receipt(), WorkCounters::UNCHARGED);
+        assert_eq!(foreign.receipt().unwrap(), WorkCounters::UNCHARGED);
         no_growth(&origin, before, budget);
         origin.with_original_leaf(|work| assert!(work.take_native_io_failure().is_none()));
         Ok(())
@@ -489,7 +489,7 @@ mod original {
         let retired = observe_retirement(&completion);
         let reads = completion.lock_reads();
         let before = birth.with_original_leaf(|work| work.work);
-        let live = birth.with_original_leaf(|work| work.live_allocation_bytes());
+        let live = birth.with_original_leaf(|work| work.live_allocation_bytes().unwrap());
         cancellation.cancel();
         birth.with_original_leaf(DemandWork::poison_native_original_work);
         drop(reads);
@@ -501,8 +501,8 @@ mod original {
         wait_retired(&completion);
         no_growth(&birth, before, budget);
         birth.with_original_leaf(|work| {
-            assert!(work.live_allocation_bytes() > 0);
-            assert!(work.live_allocation_bytes() < live);
+            assert!(work.live_allocation_bytes().unwrap() > 0);
+            assert!(work.live_allocation_bytes().unwrap() < live);
             assert!(matches!(
                 work.take_native_io_failure(),
                 Some(DemandError::OriginalWorkPoisoned)
@@ -667,7 +667,7 @@ mod original {
         wait_retired(&completion);
         birth.with_original_leaf(|work| {
             assert_eq!(work.budget, budget);
-            assert!(work.live_allocation_bytes() > 0);
+            assert!(work.live_allocation_bytes().unwrap() > 0);
         });
         drop(completion);
         assert!(completed.recv().is_err(), "original watch payload retired");

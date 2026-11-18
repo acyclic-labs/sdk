@@ -86,7 +86,7 @@ async fn creation_lookup_is_readonly_exact_and_bounded() -> Result<(), Box<dyn E
             .await
             .err()
             .ok_or("mismatched creation accepted")?;
-        failure.work.verify(budget)?;
+        failure.work.as_deref().unwrap().verify(budget)?;
         assert!(matches!(
             failure.error,
             WorkspaceError::Filesystem(FsError::CreationRejected)
@@ -107,7 +107,7 @@ async fn creation_lookup_is_readonly_exact_and_bounded() -> Result<(), Box<dyn E
         .await
         .err()
         .ok_or("read budget ignored")?;
-    failure.work.verify(denied)?;
+    failure.work.as_deref().unwrap().verify(denied)?;
     assert_eq!(unbounded!(workspace, head())?.id(), head.id());
     Ok(())
 }
@@ -143,8 +143,15 @@ async fn owner_errors_and_cancellation_do_not_publish_or_discard_candidate()
             .err()
             .ok_or("denied owner published")?;
         assert!(matches!(failure.error, OwnerError::Denied(observed) if observed == ticket));
-        assert!(failure.work.backend_read_operations >= callback_work.backend_read_operations);
-        failure.work.verify(selected_transaction_budget())?;
+        assert!(
+            failure.work.as_deref().unwrap().backend_read_operations
+                >= callback_work.backend_read_operations
+        );
+        failure
+            .work
+            .as_deref()
+            .unwrap()
+            .verify(selected_transaction_budget())?;
         assert_eq!(unbounded!(workspace, head())?.id(), head.id());
     }
     assert!(matches!(
@@ -229,7 +236,10 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
             "create={create}: {result:?}"
         );
         assert!(unbounded!(fs, open_workspace("denied")).is_err());
-        original.receipt().verify(selected_transaction_budget())?;
+        original
+            .receipt()
+            .unwrap()
+            .verify(selected_transaction_budget())?;
     }
     Ok(())
 }

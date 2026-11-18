@@ -348,7 +348,7 @@ fn rejected_opens_reclaim_original_handles_and_credit() -> Result<(), Box<dyn st
                     // First access can fund a source/cache page. Subsequent
                     // rejected opens must return the original allocation credit.
                     if !old_delivery && opcode == 14 {
-                        let bytes = work.live_allocation_bytes();
+                        let bytes = work.live_allocation_bytes().unwrap();
                         assert_eq!(
                             *reclaimed_bytes.get_or_insert(bytes),
                             bytes,

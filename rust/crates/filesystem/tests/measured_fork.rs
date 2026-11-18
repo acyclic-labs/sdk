@@ -149,7 +149,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
         Ok(_) => return Err("precancelled fork unexpectedly succeeded".into()),
     };
     assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*cancelled.work, WorkCounters::default());
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
     assert!(unbounded!(fs, open_workspace("cancel-child")).is_err());
     assert_eq!(unbounded!(parent, head())?.id(), pinned.id());
     let other = unbounded!(fs, create_workspace("foreign-source"))?;
@@ -173,8 +173,8 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
         Ok(_) => return Err("foreign fork unexpectedly succeeded".into()),
     };
     assert!(matches!(foreign.error, WorkspaceError::ForeignGeneration));
-    assert_eq!(foreign.work.backend_read_operations, 0);
-    assert_eq!(foreign.work.backend_write_operations, 0);
+    assert_eq!(foreign.work().unwrap().backend_read_operations, 0);
+    assert_eq!(foreign.work().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

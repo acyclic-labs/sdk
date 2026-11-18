@@ -188,6 +188,12 @@ impl From<crate::LocalCoreStateStoreError> for MaterializeError {
     }
 }
 
+impl From<crate::WorkObservationError> for MaterializeError {
+    fn from(error: crate::WorkObservationError) -> Self {
+        Self::from(crate::FsError::from(error))
+    }
+}
+
 impl From<crate::FsError> for MaterializeError {
     fn from(error: crate::FsError) -> Self {
         match error {

@@ -166,23 +166,23 @@ mod tests {
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&work)?;
         let encoded = io.encode(&"q".repeat(128 * 1024), u64::MAX, false)?;
         let original = encoded.as_ptr();
-        let copied = work.receipt().bytes_copied;
+        let copied = work.receipt()?.bytes_copied;
         let mut shared = None;
         let physical = acyclic_test_support::measure(|| {
             shared = Some(encoded.mutation_bytes(Some(&io)));
         });
         let shared = shared.expect("staging ran")?;
-        assert_eq!(work.receipt().bytes_copied, copied);
+        assert_eq!(work.receipt()?.bytes_copied, copied);
         assert_eq!(physical.count_total, 0);
         assert_eq!(shared.as_ptr(), original);
         drop(encoded);
         assert!(shared.matches_meter(&work.runtime_meter()));
         assert_eq!(shared.len(), 128 * 1024 + 2);
-        assert!(work.live_allocation_bytes() > baseline);
+        assert!(work.live_allocation_bytes()? > baseline);
 
         let foreign = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(borrowed.as_ref(), shared.as_ref());
         assert_ne!(borrowed.as_ptr(), shared.as_ptr());
         assert!(borrowed.matches_meter(&work.runtime_meter()));
-        assert_eq!(work.receipt().bytes_copied, copied + shared.len() as u64);
+        assert_eq!(work.receipt()?.bytes_copied, copied + shared.len() as u64);
         drop(borrowed);
         cancellation.cancel();
         assert_eq!(
@@ -213,7 +213,7 @@ mod tests {
         );
         drop(shared);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         Ok(())
     }
 }

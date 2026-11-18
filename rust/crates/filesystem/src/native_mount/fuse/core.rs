@@ -11,8 +11,14 @@ pub(in crate::native_mount) use crate::native_mount::callback_errno;
 #[derive(Default)]
 pub(super) struct FuseHandlerReports {
     pub(super) completed_future_request_work: WorkCounters,
-    pub(super) first_fatal: Option<(NativeMountError, WorkCounters)>,
+    pub(super) observation_error: Option<crate::WorkObservationError>,
+    pub(super) first_fatal: Option<HandlerFailure>,
 }
+
+pub(super) type HandlerFailure = (
+    NativeMountError,
+    Result<WorkCounters, crate::WorkObservationError>,
+);
 
 pub(super) struct StateGuard<'a> {
     state: Option<RankedGuard<'a, ProjectionState>>,
@@ -51,7 +57,8 @@ impl StateGuard<'_> {
         {
             wake.wake();
         }
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
@@ -74,7 +81,8 @@ impl Drop for StateGuard<'_> {
             .get()
             .filter(|_| state.invalidation_wanted());
         drop(state);
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         let notify = !invalidation::model_checking::omit_guard_notification();
         #[cfg(not(all(test, loom)))]
         let notify = true;
@@ -84,7 +92,8 @@ impl Drop for StateGuard<'_> {
         if let Some(wake) = wake {
             wake.wake();
         }
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         invalidation::model_checking::after_guard_drop();
     }
 }
@@ -94,7 +103,8 @@ pub(super) use crate::native_mount::shared::metering::source_original as fuse_na
 pub(super) struct ProjectionCore {
     #[cfg(test)]
     pub(super) write_pause: std::sync::Mutex<tests::write_gate::PauseSlot>,
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(all(not(loom)))]
     pub(super) publication_test: std::sync::Mutex<tests::owner::PublicationTest>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
@@ -171,7 +181,8 @@ impl ProjectionCore {
         Ok(Arc::new(Self {
             #[cfg(test)]
             write_pause: std::sync::Mutex::new(tests::write_gate::PauseSlot::default()),
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(all(not(loom)))]
             publication_test: std::sync::Mutex::new(tests::owner::PublicationTest::default()),
             source,
             clock: super::super::clock::Clock::capture(),
@@ -231,7 +242,7 @@ impl ProjectionCore {
         self.names.write().map_err(|_| libc::EIO)
     }
 
-    pub(super) fn take_handler_failure(&self) -> Option<(NativeMountError, WorkCounters)> {
+    pub(super) fn take_handler_failure(&self) -> Option<HandlerFailure> {
         self.handler_error
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -239,14 +250,20 @@ impl ProjectionCore {
             .take()
     }
 
-    pub(super) fn completed_callback_work(&self) -> WorkCounters {
-        self.handler_error
+    pub(super) fn completed_callback_work(
+        &self,
+    ) -> Result<WorkCounters, crate::WorkObservationError> {
+        let reports = self
+            .handler_error
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .completed_future_request_work
+            .unwrap_or_else(PoisonError::into_inner);
+        match reports.observation_error {
+            Some(error) => Err(error),
+            None => Ok(reports.completed_future_request_work),
+        }
     }
 
-    pub(super) fn retain_handler_failure(&self, failure: (NativeMountError, WorkCounters)) {
+    pub(super) fn retain_handler_failure(&self, failure: HandlerFailure) {
         // Pair terminal publication with the invalidation wait's mutex so a failure
         // between its predicate check and atomic wait cannot lose its notification.
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -254,6 +271,9 @@ impl ProjectionCore {
             .handler_error
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if let Err(error) = failure.1 {
+            reports.observation_error = Some(error);
+        }
         if reports.first_fatal.is_none() {
             tracing::error!(
                 errno = callback_errno(&failure.0),
@@ -269,7 +289,8 @@ impl ProjectionCore {
         let queued = std::mem::take(&mut state.invalidation.deferred);
         drop(state);
         drop(queued);
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         if invalidation::model_checking::omit_terminal_notification() {
             return;
         }
@@ -299,14 +320,14 @@ impl ProjectionCore {
     pub(super) fn request<T>(
         &self,
         callback: impl FnOnce(&Work) -> Result<T, NativeMountError>,
-    ) -> Result<T, (NativeMountError, WorkCounters)> {
+    ) -> Result<T, HandlerFailure> {
         let _origin = self.origin.enter();
         let meter = self.callback_meter().map_err(|cause| {
             (
                 cause,
                 self.source_original_work
                     .as_ref()
-                    .map_or(WorkCounters::UNCHARGED, |work| work.state.lock().work),
+                    .map_or(Ok(WorkCounters::UNCHARGED), |work| work.receipt()),
             )
         })?;
         let run = |work: &Work| {
@@ -315,17 +336,27 @@ impl ProjectionCore {
         };
         if let Some(meter) = meter {
             return run_native_mount_handler_on_meter(&meter, run)
-                .map_err(|cause| (cause, meter.state.lock().work));
+                .map_err(|cause| (cause, meter.receipt()));
         }
         let (budget, cancellation) = {
             let work = self._allocation.work().state.lock();
             (work.budget, work.cancellation().clone())
         };
         let result = run_native_mount_handler(budget, &cancellation, run)
-            .map_err(|(error, work)| (error, *work));
+            .map_err(|failure| (failure.error, failure.work.map(|work| *work)));
         let prefix = match &result {
-            Ok(receipt) => receipt.work,
+            Ok(receipt) => Ok(receipt.work),
             Err(failure) => failure.1,
+        };
+        let prefix = match prefix {
+            Ok(prefix) => prefix,
+            Err(error) => {
+                self.handler_error
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .observation_error = Some(error);
+                return result.map(|receipt| receipt.value);
+            }
         };
         let recorded = self
             .handler_error
@@ -334,18 +365,15 @@ impl ProjectionCore {
             .completed_future_request_work
             .try_add_assign(&prefix);
         if let Err(error) = recorded {
-            self.retain_handler_failure((error.into(), prefix));
+            self.retain_handler_failure((error.into(), Err(error.into())));
         }
         result.map(|receipt| receipt.value)
     }
 
-    pub(super) fn finish<T>(
-        &self,
-        result: Result<T, (NativeMountError, WorkCounters)>,
-    ) -> Result<T, i32> {
+    pub(super) fn finish<T>(&self, result: Result<T, HandlerFailure>) -> Result<T, i32> {
         result.map_err(|failure| {
             let errno = callback_errno(&failure.0);
-            if crate::native_mount::shared::outcome::stops_mount(&failure.0) {
+            if failure.1.is_err() || crate::native_mount::shared::outcome::stops_mount(&failure.0) {
                 self.retain_handler_failure(failure);
             }
             errno

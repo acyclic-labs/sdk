@@ -165,7 +165,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 "authority epoch path is missing its record",
             ))?;
         let epoch = work.decode_epoch(&epoch_record.value, EPOCH_DOMAIN)?;
-        #[cfg(all(test, loom, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom, loom))]
         let epoch = super::head_payload_loom_tests::observed_epoch(epoch);
         let record = (
             record_head

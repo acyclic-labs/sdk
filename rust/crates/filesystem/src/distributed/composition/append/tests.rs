@@ -49,7 +49,7 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
             return Err("original append group was refused".into());
         };
         assert_eq!(publication.request().idempotency_key, original_key);
-        assert_eq!(work.spent().backend_write_operations, 0);
+        assert_eq!(work.spent().unwrap().backend_write_operations, 0);
         store.seal(&mut publication, &mut work)?;
         let exact_request = publication.request().clone();
         let before = provider.requests();
@@ -175,7 +175,7 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
             split.submit(split_caller, &mut split_work).await?,
             FilesystemCommitOutcome::Committed(_)
         ));
-        assert_eq!(split_work.spent().backend_write_operations, 2);
+        assert_eq!(split_work.spent().unwrap().backend_write_operations, 2);
     }
 
     // Rejection and cancellation must not leave a publishable prefix, alter
@@ -195,7 +195,7 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
     ));
     assert_eq!(publication.request(), &original);
     assert!(publication.authorities().is_empty());
-    assert_eq!(work.spent().backend_write_operations, 0);
+    assert_eq!(work.spent().unwrap().backend_write_operations, 0);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let mut cancelled_work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);

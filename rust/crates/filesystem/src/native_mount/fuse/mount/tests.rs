@@ -118,12 +118,12 @@ fn helper_spawn_and_socket_custody() -> io::Result<()> {
         for length in [0, 1, 5, 32] {
             let mut input = vec![count];
             input.resize(length + 1, b'x');
-            reply_check::check(&input);
+            reply_check::check(&input)?;
         }
     }
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(64))
         .run(&proptest::collection::vec(any::<u8>(), 0..40), |input| {
-            reply_check::check(&input);
+            reply_check::check(&input)?;
             Ok(())
         })
         .expect("descriptor roundtrip/custody property");

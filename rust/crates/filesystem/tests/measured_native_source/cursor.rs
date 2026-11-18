@@ -39,8 +39,8 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
         .err()
         .ok_or("cursor advanced beyond its source-item allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.source_entries_visited, 0);
-    failure.work.verify(limited)?;
+    assert_eq!(failure.work().unwrap().source_entries_visited, 0);
+    failure.work().unwrap().verify(limited)?;
     let mut names = first
         .value
         .entries
@@ -136,10 +136,10 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
         .err()
         .ok_or("filter advanced native cursor without projection allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.source_entries_visited, 0);
-    assert_eq!(failure.work.allocation_operations, 0);
-    failure.work.verify(denied)?;
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().source_entries_visited, 0);
+    assert_eq!(failure.work().unwrap().allocation_operations, 0);
+    failure.work().unwrap().verify(denied)?;
     let mut next = source
         .list_page(source.reference(), &root, Some(cursor), 8, budget, &token)
         .await?;
@@ -314,9 +314,9 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         } else {
             assert!(matches!(failure.error, DemandError::Work(_)));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.allocation_operations, 0);
-        failure.work.verify(remaining)?;
+        assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+        assert_eq!(failure.work().unwrap().allocation_operations, 0);
+        failure.work().unwrap().verify(remaining)?;
         // The original source receipt remains observable after late projection failure.
         assert!(page.work.backend_read_operations > 0);
         let mut cleanup_budget = page.work.remaining(budget)?;
@@ -334,7 +334,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         aborted.work.verify(cleanup_budget)?;
         let retained = page
             .work
-            .checked_add(*failure.work)?
+            .checked_add(*failure.work().unwrap())?
             .checked_add(aborted.work)?;
         retained.verify(budget)?;
         let mut retry = source
@@ -402,8 +402,8 @@ async fn native_filter_admission_precedes_request_transport_custody() -> TestRes
         };
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &token)
             .map_err(|(error, _)| error)?;
-        let before = work.receipt();
-        let live = work.live_allocation_bytes();
+        let before = work.receipt().unwrap();
+        let live = work.live_allocation_bytes().unwrap();
         let failure = source
             .list_page(source.reference(), &root, None, maximum, &work, &token)
             .await
@@ -414,8 +414,8 @@ async fn native_filter_admission_precedes_request_transport_custody() -> TestRes
         } else {
             assert!(matches!(failure, DemandError::InvalidRequest));
         }
-        assert_eq!(work.receipt(), before);
-        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.receipt().unwrap(), before);
+        assert_eq!(work.live_allocation_bytes().unwrap(), live);
     }
     Ok(())
 }
@@ -438,28 +438,28 @@ async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix(
         .err()
         .ok_or("path copy was not denied")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.bytes_copied, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
-    failure.work.verify(budget)?;
+    assert_eq!(failure.work().unwrap().bytes_copied, 0);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().backend_write_operations, 0);
+    failure.work().unwrap().verify(budget)?;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
-    let before = work.receipt();
-    let live = work.live_allocation_bytes();
+    let before = work.receipt().unwrap();
+    let live = work.live_allocation_bytes().unwrap();
     let failure = source
         .list_page(source.reference(), &path, None, 1, &work, &token)
         .await
         .err()
         .ok_or("native path copy was not denied")?;
     assert!(matches!(failure, DemandError::Work(_)));
-    assert_eq!(work.live_allocation_bytes(), live);
-    assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
+    assert_eq!(work.receipt().unwrap().bytes_copied, before.bytes_copied);
     assert_eq!(
-        work.receipt().backend_read_operations,
+        work.receipt().unwrap().backend_read_operations,
         before.backend_read_operations
     );
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         before.backend_write_operations
     );
     Ok(())
@@ -480,7 +480,7 @@ async fn request_semantic_denial_preserves_an_existing_original_ledger_failure()
             // An unmatched cleanup acknowledgement poisons the production meter.
             work.runtime_meter()
                 .cancel_reserved_operations(acyclic_native_runtime::NativeOperationKind::Read, 1);
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             if cancelled {
                 token.cancel();
             }
@@ -490,7 +490,7 @@ async fn request_semantic_denial_preserves_an_existing_original_ledger_failure()
                 .err()
                 .ok_or("poisoned request was admitted")?;
             assert!(matches!(failure, DemandError::OriginalWorkPoisoned));
-            assert_eq!(work.receipt(), before);
+            assert_eq!(work.receipt().unwrap(), before);
         }
     }
     Ok(())

@@ -80,7 +80,7 @@ async fn atomic_group_has_one_append_and_distinct_recoverable_receipts() -> Test
         return Err("group was rejected".into());
     };
     assert_eq!(
-        work.spent().backend_write_operations,
+        work.spent().unwrap().backend_write_operations,
         1,
         "group used more than one stream transaction"
     );
@@ -112,7 +112,7 @@ async fn atomic_group_has_one_append_and_distinct_recoverable_receipts() -> Test
             ..
         }
     ));
-    assert_eq!(retry.spent().backend_write_operations, 0);
+    assert_eq!(retry.spent().unwrap().backend_write_operations, 0);
     assert_eq!(store.head(authority, &mut work).await?.sequence.get(), 4);
     Ok(())
 }
@@ -154,7 +154,7 @@ async fn check_rejected_prefix(work: &mut AuthorityWork<'_>) -> TestResult {
             observed,
         } if observed == Head::genesis(Epoch::GENESIS) && actual == observed
     ));
-    assert_eq!(work.spent().backend_write_operations, 0);
+    assert_eq!(work.spent().unwrap().backend_write_operations, 0);
     assert_eq!(
         store.head(authority, work).await?,
         Head::genesis(Epoch::GENESIS)
@@ -192,7 +192,7 @@ async fn duplicate_group_operation_is_rejected_before_publication() -> TestResul
             .await
             .is_err()
     );
-    assert_eq!(work.spent().backend_write_operations, 0);
+    assert_eq!(work.spent().unwrap().backend_write_operations, 0);
     assert_eq!(
         store.head(authority, &mut work).await?,
         Head::genesis(Epoch::GENESIS)

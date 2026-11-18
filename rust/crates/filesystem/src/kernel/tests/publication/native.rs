@@ -86,7 +86,7 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let owner_epoch = std::sync::Arc::new(AtomicU64::new(1));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
@@ -155,8 +155,8 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
         read_head(&authority, request.authority_id).await?,
         request.expected
     );
-    assert_eq!(original.receipt().authority_records_appended, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().authority_records_appended, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -179,7 +179,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
         }
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let owner_calls = calls.clone();
         let mut guard = move |_: &crate::NativeMaterializationWork| {
@@ -214,13 +214,13 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
                 ))
         ));
         if early_allocation {
-            assert_eq!(original.receipt().backend_read_operations, 0);
+            assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
         } else {
-            assert!(original.receipt().backend_read_operations > 0);
+            assert!(original.receipt().unwrap().backend_read_operations > 0);
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(original.receipt().authority_records_appended, 0);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.receipt().unwrap().authority_records_appended, 0);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(
             read_head(&authority, request.authority_id).await?,
             request.expected
@@ -293,7 +293,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         ),
         "unexpected publication failure: {failure:?}"
     );
-    assert_eq!(original.receipt().authority_records_appended, 1);
+    assert_eq!(original.receipt().unwrap().authority_records_appended, 1);
     let reopened = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let resolved = crate::AsyncAuthorityStore::find_operation(
@@ -460,7 +460,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         );
     }
     assert_eq!(seals.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(reopened.receipt().authority_records_appended, 0);
-    assert_eq!(reopened.receipt().backend_write_operations, 0);
+    assert_eq!(reopened.receipt().unwrap().authority_records_appended, 0);
+    assert_eq!(reopened.receipt().unwrap().backend_write_operations, 0);
     Ok(())
 }

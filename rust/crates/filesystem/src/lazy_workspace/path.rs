@@ -28,11 +28,13 @@ impl<
             bytes.retire(ctx)?;
             return Err(error.into());
         }
-        Ok(Owned::new(
-            String::from_utf8(bytes.value).expect("validated UTF-8"),
-            bytes.allocation,
-            bytes.bytes,
-        ))
+        match String::from_utf8(bytes.value) {
+            Ok(path) => Ok(Owned::new(path, bytes.allocation, bytes.bytes)),
+            Err(error) => {
+                Owned::new(error.into_bytes(), bytes.allocation, bytes.bytes).retire(ctx)?;
+                Err(crate::FsError::InvalidDiff.into())
+            }
+        }
     }
     pub(crate) fn namespace_path(
         &self,

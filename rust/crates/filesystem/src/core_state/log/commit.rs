@@ -119,7 +119,10 @@ impl CoreLog {
                 &mut buffer.bytes,
                 65,
                 work,
-                buffer.allocation.as_mut().expect("frame buffer"),
+                buffer
+                    .allocation
+                    .as_mut()
+                    .ok_or(LocalCoreStateStoreError::Integrity)?,
             )?;
             work.charge(crate::WorkCounters {
                 bytes_copied: 65,
@@ -148,7 +151,10 @@ impl CoreLog {
                 &mut buffer.bytes,
                 needed,
                 work,
-                buffer.allocation.as_mut().expect("frame buffer"),
+                buffer
+                    .allocation
+                    .as_mut()
+                    .ok_or(LocalCoreStateStoreError::Integrity)?,
             )?;
             work.charge(crate::WorkCounters {
                 bytes_copied: 65,

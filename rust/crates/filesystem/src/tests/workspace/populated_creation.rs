@@ -140,7 +140,10 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
             "{:?}",
             failure.error
         );
-        assert_eq!(failure.work.authority_records_appended, 0);
+        assert_eq!(
+            failure.work.as_deref().unwrap().authority_records_appended,
+            0
+        );
     }
     assert_eq!(unbounded!(workspace, head())?.id(), created.value.id());
     Ok(())

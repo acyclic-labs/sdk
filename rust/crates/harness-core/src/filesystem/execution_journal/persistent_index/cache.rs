@@ -236,7 +236,7 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let native_baseline = work.live_allocation_bytes();
+        let native_baseline = work.live_allocation_bytes()?;
         #[cfg(target_arch = "wasm32")]
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -252,7 +252,7 @@ mod tests {
         let mut scratch = None;
         let mut settled = Settled::default();
         for update in 0..1_000_u32 {
-            let before = io.receipt();
+            let before = io.receipt()?;
             let mut writer = Writer::new(&provider, &path, tail, Some(&io), scratch)?;
             writer.set_cache(cache, Some(&io))?;
             let key = *blake3::hash(&(update % distinct).to_be_bytes()).as_bytes();
@@ -270,7 +270,7 @@ mod tests {
             tail = writer.tail()?;
             scratch = Some(writer.take_scratch());
             drop(writer);
-            let reads = io.receipt().authority_records_read - before.authority_records_read;
+            let reads = io.receipt()?.authority_records_read - before.authority_records_read;
             if distinct == 32 {
                 settled.check(
                     update,
@@ -294,7 +294,7 @@ mod tests {
             io: Some(&io),
             cache: Some(&cache),
         };
-        let before = io.receipt();
+        let before = io.receipt()?;
         for value in 968..1_000_u32 {
             let key = *blake3::hash(&(value % distinct).to_be_bytes()).as_bytes();
             let read = reader.get(root, &key).await?.expect("live cached leaf");
@@ -305,7 +305,7 @@ mod tests {
         }
         if distinct == 32 {
             assert_eq!(
-                io.receipt().authority_records_read - before.authority_records_read,
+                io.receipt()?.authority_records_read - before.authority_records_read,
                 0
             );
         } else {
@@ -320,7 +320,7 @@ mod tests {
             assert!(matches!(read.node(Some(&io))?, Node::Leaf { value, .. }
                 if value == 0_u32.to_be_bytes()));
             assert!(
-                io.receipt().authority_records_read > before.authority_records_read,
+                io.receipt()?.authority_records_read > before.authority_records_read,
                 "historical lookup never exercised a cold authenticated page"
             );
         }
@@ -341,7 +341,7 @@ mod tests {
         #[cfg(not(target_arch = "wasm32"))]
         if _native {
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 native_baseline,
                 "page cache or staging retained original native allocations"
             );
@@ -398,7 +398,7 @@ mod tests {
             if cache.get(hot, Some(&io))?.is_none() {
                 misses += 1;
             }
-            let before = io.receipt();
+            let before = io.receipt()?;
             cache.insert(
                 NodeRef {
                     sequence: sequence.reverse_bits(),
@@ -406,7 +406,7 @@ mod tests {
                 },
                 &bytes,
             )?;
-            let after = io.receipt();
+            let after = io.receipt()?;
             maximum_items = maximum_items.max(after.items_examined - before.items_examined);
             maximum_allocations =
                 maximum_allocations.max(after.allocation_operations - before.allocation_operations);

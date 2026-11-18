@@ -110,7 +110,7 @@ where
 
 fn observe_original_read(work: &mut crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
     assert!(
-        work.spent().bytes_encoded >= 7,
+        work.spent().unwrap().bytes_encoded >= 7,
         "closure read replaced its original frame"
     );
     work.charge(WorkCounters {
@@ -195,7 +195,7 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
         &mut work.accounting(),
     )?;
     assert_eq!(original_live(work), batch_baseline);
-    let before = work.spent();
+    let before = work.spent().unwrap();
     let (proof, guard) = {
         let meter = ProofMeter::from_accounting(work.accounting())?;
         let mut context = ProofContext::new(store, limits(), meter.clone());
@@ -208,10 +208,14 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
         );
         eprintln!("closure caller future: {bytes} bytes");
         let proof = future.await?;
-        assert_eq!(proof.0.work, meter.work());
+        assert_eq!(proof.0.work, meter.work().unwrap());
         proof
     };
-    assert_eq!(proof.work, work.spent(), "outer receipt lost original work");
+    assert_eq!(
+        proof.work,
+        work.spent().unwrap(),
+        "outer receipt lost original work"
+    );
     assert_eq!(
         proof.work.bytes_encoded - before.bytes_encoded,
         7 * (proof.work.object_probes - before.object_probes)
@@ -233,7 +237,7 @@ fn original_live(work: &mut crate::AuthorityWork<'_>) -> u64 {
     let mut accounting = work.accounting();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return original.live_allocation_bytes();
+        return original.live_allocation_bytes().unwrap();
     }
     accounting.standalone_parts().unwrap().0.live_bytes()
 }

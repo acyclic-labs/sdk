@@ -16,6 +16,7 @@ where
         let result = guard.seal(&mut work).await;
         (result, work.spent())
     };
+    let spent = spent.map_err(crate::FsError::from)?;
     if !native {
         ctx.record_completed(spent)?;
     }
@@ -218,20 +219,12 @@ impl<
                                 seal::<_, E>(&mut before, &mut ctx).await
                             }
                             .await;
-                            result
-                                .map(|()| OperationReceipt {
-                                    value: (),
-                                    work: ctx.spent(),
-                                })
-                                .map_err(|error| crate::OperationFailure::new(error, ctx.spent()))
+                            crate::facade::measured(result, &ctx)
                         }
                     },
                 )
                 .await;
-            let (result, spent) = match result {
-                Ok(receipt) => (Ok(receipt.value), receipt.work),
-                Err(failed) => (Err(failed.error), *failed.work),
-            };
+            let (result, spent) = ctx.split_receipt(result)?;
             let (ledger, work, budget, _) = ctx
                 .standalone_parts()
                 .ok_or(LazyWorkspaceError::Concurrent)?;

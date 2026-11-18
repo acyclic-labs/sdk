@@ -43,7 +43,7 @@ async fn object_store_verifies_identity_bounds_and_original_work()
         &mut context.accounting(),
         &cancellation,
     )?;
-    let suspended = context.spent();
+    let suspended = context.spent().unwrap();
     assert!(matches!(
         store.read(object_id, 6, &mut context).await,
         Err(ObjectStoreError::AccountingHandoffActive)
@@ -60,14 +60,14 @@ async fn object_store_verifies_identity_bounds_and_original_work()
         .await,
         Err(ObjectStoreError::AccountingHandoffActive)
     ));
-    assert_eq!(context.spent(), suspended);
+    assert_eq!(context.spent().unwrap(), suspended);
 
     continuation.restore(&mut context.accounting())?;
-    let before_read = context.spent();
+    let before_read = context.spent().unwrap();
     let read = store.read(object_id, 6, &mut context).await?;
     assert_eq!(read.bytes.as_ref(), b"abcdef");
     assert_eq!(read.retention, ObjectReadRetention::Shared);
-    let completed = context.spent();
+    let completed = context.spent().unwrap();
     assert_eq!(completed.object_probes, 1);
     assert_eq!(completed.backend_read_operations, 1);
     assert_eq!(completed.object_bytes_read, 6);
@@ -84,13 +84,13 @@ async fn object_store_verifies_identity_bounds_and_original_work()
         store.read(object_id, 6, &mut context).await,
         Err(ObjectStoreError::Work(WorkError::BudgetExceeded { .. }))
     ));
-    assert_eq!(context.spent(), completed);
+    assert_eq!(context.spent().unwrap(), completed);
 
     let continuation = crate::kernel::allocation::retained::OwnedAccounting::take_branch(
         &mut context.accounting(),
         &cancellation,
     )?;
-    let suspended = context.spent();
+    let suspended = context.spent().unwrap();
     cancellation.cancel();
     assert!(matches!(
         crate::kernel::read_object_with_accounting(
@@ -116,14 +116,14 @@ async fn object_store_verifies_identity_bounds_and_original_work()
         .await,
         Err(FsError::AccountingHandoffActive)
     ));
-    assert_eq!(context.spent(), suspended);
+    assert_eq!(context.spent().unwrap(), suspended);
     continuation.restore(&mut context.accounting())?;
-    let cancelled = context.spent();
+    let cancelled = context.spent().unwrap();
     assert!(matches!(
         store.read(object_id, 6, &mut context).await,
         Err(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(context.spent(), cancelled);
+    assert_eq!(context.spent().unwrap(), cancelled);
     assert_eq!(read.bytes.as_ref(), b"abcdef");
     Ok(())
 }
@@ -202,10 +202,10 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
             assert_eq!(values[1].bytes.as_ref(), b"first");
             assert_eq!(values[2].bytes.as_ref(), b"second");
             assert_eq!(
-                context.spent().peak_allocation_bytes,
+                context.spent().unwrap().peak_allocation_bytes,
                 earlier_bytes + result_bytes
             );
-            assert_eq!(context.spent().backend_read_operations, 3);
+            assert_eq!(context.spent().unwrap().backend_read_operations, 3);
             assert_eq!(
                 context.allocations.live_bytes(),
                 earlier_bytes + result_bytes
@@ -222,8 +222,11 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
                     ..
                 }))
             ));
-            assert_eq!(context.spent().backend_read_operations, 0);
-            assert_eq!(context.spent().peak_allocation_bytes, earlier_bytes);
+            assert_eq!(context.spent().unwrap().backend_read_operations, 0);
+            assert_eq!(
+                context.spent().unwrap().peak_allocation_bytes,
+                earlier_bytes
+            );
         }
         assert_eq!(earlier.value, [7; 31]);
         assert_eq!(context.allocations.live_bytes(), earlier_bytes);

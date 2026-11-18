@@ -18,7 +18,7 @@ fn read_and_invalidate(legacy_inspection: bool) {
             .unwrap();
         // Partial retirement publishes directly to the original aggregate.
         custody.retire(1).unwrap();
-        let expected_items = original.receipt().items_examined + 1;
+        let expected_items = original.receipt().unwrap().items_examined + 1;
         let legacy = Arc::new(custody.clone());
         let weak = Arc::downgrade(&legacy);
         // Custody is now the sole owner of resource metadata. Its destruction
@@ -69,10 +69,10 @@ fn read_and_invalidate(legacy_inspection: bool) {
         invalidation.join().unwrap();
         original.charge(WorkCounters::UNCHARGED).unwrap();
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             NativeMaterializationWork::accounting_state_bytes()
         );
-        let spent = original.receipt();
+        let spent = original.receipt().unwrap();
         assert_eq!(spent.items_examined, expected_items);
         spent.verify(budget).unwrap();
     });

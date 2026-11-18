@@ -99,7 +99,7 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
         .unwrap()
         .unwrap();
     assert_eq!(loaded.0, value);
-    work.receipt().verify(finite_budget()).unwrap();
+    work.receipt().unwrap().verify(finite_budget()).unwrap();
 }
 
 async fn native_lineage_cancellation_owns_physical_completion() {
@@ -128,10 +128,10 @@ async fn native_lineage_cancellation_owns_physical_completion() {
             let mut value = lineage(id);
             value.workspace_name = "native-owned-input".repeat(4096);
             let replacement = paid_lineage(&value, &work, &request_cxl);
-            let funded = work.live_allocation_bytes();
+            let funded = work.live_allocation_bytes().unwrap();
             let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
             let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-            let before = work.receipt().allocation_operations;
+            let before = work.receipt().unwrap().allocation_operations;
             let mut publish = Box::pin(schedule.scope(store.compare_lineage(
                 id,
                 0,
@@ -140,7 +140,7 @@ async fn native_lineage_cancellation_owns_physical_completion() {
                 &request_cxl,
             )));
             assert!(futures::poll!(publish.as_mut()).is_pending());
-            let allocations = work.receipt().allocation_operations - before;
+            let allocations = work.receipt().unwrap().allocation_operations - before;
             let baseline = *shared_allocations.get_or_insert(allocations);
             let mut boundary = boundaries.recv().await.expect("accepted native producer");
             assert_eq!(boundary.name, "native:submitted");
@@ -167,7 +167,7 @@ async fn native_lineage_cancellation_owns_physical_completion() {
                 )))
             );
             drop(publish);
-            let retained = completed || work.live_allocation_bytes() >= funded;
+            let retained = completed || work.live_allocation_bytes().unwrap() >= funded;
             let mut drained = std::pin::pin!(schedule.drained());
             let pending = futures::poll!(drained.as_mut()).is_pending();
             // Drain even a planted failure before asserting; the negative
@@ -198,9 +198,9 @@ async fn native_lineage_cancellation_owns_physical_completion() {
                 baseline + u64::from(token != "shared"),
                 "native cancellation must register once per distinct token"
             );
-            assert!(work.receipt().items_examined >= 17);
-            assert!(work.receipt().bytes_copied >= 23);
-            work.receipt().verify(finite_budget()).unwrap();
+            assert!(work.receipt().unwrap().items_examined >= 17);
+            assert!(work.receipt().unwrap().bytes_copied >= 23);
+            work.receipt().unwrap().verify(finite_budget()).unwrap();
             drop(store);
             let cxl = crate::CancellationToken::new();
             let fresh = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
@@ -225,7 +225,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     let other = original.native_volume_work(finite_budget()).unwrap();
     let store = LocalCoreStateStore::new(directory.path().join("not-created"));
     let foreign = paid_lineage(&lineage(id), &other, &cxl);
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let error = store
         .compare_lineage(id, 0, foreign, &work, &cxl)
         .await
@@ -236,7 +236,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
             crate::LazyWorkspaceError::NativeLedgerMismatch
         ))
     ));
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt().unwrap(), before);
     let forged = (
         lineage(id),
         work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap(),
@@ -251,7 +251,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     ));
     assert!(!store.root().exists());
     cxl.cancel();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let error = store.load_lineage(id, &work, &cxl).await.unwrap_err();
     assert!(matches!(
         error.0,
@@ -259,7 +259,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
             crate::LazyWorkspaceError::Cancelled
         ))
     ));
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt().unwrap(), before);
     assert!(!store.root().exists());
 }
 
@@ -289,7 +289,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
             crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
         ))
     ));
-    assert_eq!(tight.receipt().source_bytes_read, 7);
+    assert_eq!(tight.receipt().unwrap().source_bytes_read, 7);
     let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
     let work = original.native_volume_work(finite_budget()).unwrap();
     let mut loaded = store.load_context(id, &work, &cxl).await.unwrap().unwrap();
@@ -317,7 +317,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
     assert_eq!(loaded.0.revision, 2);
     assert_eq!(loaded.0.state, WorkspaceContextState::Frozen);
     assert_eq!(loaded.0.roots, value.roots);
-    work.receipt().verify(finite_budget()).unwrap();
+    work.receipt().unwrap().verify(finite_budget()).unwrap();
 }
 
 fn assert_bucket_values(
@@ -480,7 +480,7 @@ async fn context_parent_walk(
         selected.parent_context_id,
     )
     .await;
-    work.receipt().verify(finite_budget()).unwrap();
+    work.receipt().unwrap().verify(finite_budget()).unwrap();
 }
 
 static CONTEXT_PARENT_PREFIX_WRITES: std::sync::atomic::AtomicUsize =
@@ -580,7 +580,7 @@ proptest::proptest! {
             prop_assert_eq!(writer.file.metadata()?.len(), crate::foundation::usize_to_u64(written));
             // A wide allowance must not wrap to zero on a narrow pointer target.
             prop_assert!(bytes.is_empty() || written != 0);
-            let receipt = work.receipt();
+            let receipt = work.receipt().unwrap();
             prop_assert_eq!(receipt.object_bytes_written, crate::foundation::usize_to_u64(written));
             prop_assert_eq!(receipt.bytes_encoded, if encoded { receipt.object_bytes_written } else { 0 });
         }

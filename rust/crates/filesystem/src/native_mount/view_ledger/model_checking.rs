@@ -23,7 +23,7 @@ pub(super) fn hold_map_while_charging(
 }
 
 #[test]
-fn concurrent_reader_and_growth_share_the_original_meter() {
+fn concurrent_reader_and_growth_share_the_original_meter() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let exercise = |broken| {
         loom::model(move || {
@@ -78,10 +78,11 @@ fn concurrent_reader_and_growth_share_the_original_meter() {
         .downcast_ref::<String>()
         .expect("Loom deadlock message");
     assert!(message.contains("deadlock"), "{message}");
+    Ok(())
 }
 
 #[test]
-fn concurrent_records_keep_the_newest_publication() {
+fn concurrent_records_keep_the_newest_publication() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let exercise = |broken| {
         loom::model(move || {
@@ -138,4 +139,5 @@ fn concurrent_records_keep_the_newest_publication() {
         message.contains("newest publication was overwritten"),
         "{message}"
     );
+    Ok(())
 }

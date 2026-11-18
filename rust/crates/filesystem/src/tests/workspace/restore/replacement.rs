@@ -85,7 +85,7 @@ async fn selected_restore_replaces_both_shapes_atomically_and_preserves_outside_
             .await
             .err()
             .ok_or("denied replacement published")?;
-        denied.work.verify(budget)?;
+        denied.work.as_deref().unwrap().verify(budget)?;
         assert_eq!(unbounded!(workspace, head())?.id(), original.id());
         assert_eq!(
             unbounded!(workspace, read(retained_path, 64))?.as_ref(),

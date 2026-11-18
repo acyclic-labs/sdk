@@ -115,7 +115,9 @@ impl Drop for ReadAccounting {
             // ReadOwner destroys its physical state first. Checkout custody
             // publishes retirement there; reconcile that original aggregate
             // now, including its final shared header, without admitting work.
-            work.receipt();
+            if let Err(error) = work.receipt() {
+                tracing::error!(?error, "read accounting retirement failed during drop");
+            }
         }
     }
 }
@@ -696,12 +698,12 @@ mod tests {
             &cancel,
         );
         caller.charge_items(1)?;
-        let before = caller.spent();
+        let before = caller.spent()?;
         let mut reader = ReadOwner::new(caller, || None::<Observe>)?;
         let mut funded = before;
         funded.allocation_operations += 1;
         funded.peak_allocation_bytes = usize_to_u64(size_of::<Option<Observe>>());
-        assert_eq!(reader.borrow().1.spent(), funded);
+        assert_eq!(reader.borrow().1.spent()?, funded);
         reader.borrow().1.charge_items(1)?;
         assert!(matches!(
             reader.borrow().1.charge_items(1),
@@ -715,7 +717,7 @@ mod tests {
             reader.borrow().1.check(),
             Err(crate::FsError::Cancelled(_))
         ));
-        assert_eq!(reader.borrow().1.spent().items_examined, 2);
+        assert_eq!(reader.borrow().1.spent()?.items_examined, 2);
         drop(reader);
 
         // Physical state retires before scratch, while a returned independent
@@ -775,15 +777,18 @@ mod tests {
                 crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &invocation)
                     .map_err(|(error, _)| crate::FsError::from(error))?;
             let caller = KernelAccounting::native(&original, &caller_cancel);
-            let before = original.receipt();
+            let before = original.receipt()?;
             let mut reader = ReadOwner::new(caller, || ())?;
             assert_eq!(
-                original.receipt(),
+                original.receipt()?,
                 before,
                 "an owned native read allocated another invocation"
             );
             reader.borrow().1.charge_items(1)?;
-            assert_eq!(original.receipt().items_examined, before.items_examined + 1);
+            assert_eq!(
+                original.receipt()?.items_examined,
+                before.items_examined + 1
+            );
             if invocation_cancelled {
                 invocation.cancel()
             } else {
@@ -913,7 +918,7 @@ mod tests {
             baseline_scratch
         );
         owned.restore(&mut caller)?;
-        assert_eq!(caller.spent().items_examined, 2);
+        assert_eq!(caller.spent()?.items_examined, 2);
         // Restored scope cleanup remains available after caller cancellation.
         drop(caller.allocation_scope()?);
         assert_eq!(
@@ -1031,7 +1036,7 @@ mod tests {
             .cloned()
             .expect("ordinary accounting");
         retained_bytes_outlive_caller(accounting, &cancel, || {
-            ledger.lock().unwrap().allocations.live_bytes()
+            Ok(ledger.lock().unwrap().allocations.live_bytes())
         })?;
         drop(anchor);
 
@@ -1044,7 +1049,11 @@ mod tests {
             retained_bytes_outlive_caller(
                 KernelAccounting::native(&original, &cancel),
                 &cancel,
-                || original.live_allocation_bytes(),
+                || {
+                    original
+                        .live_allocation_bytes()
+                        .map_err(crate::FsError::from)
+                },
             )?;
         }
         Ok(())
@@ -1053,12 +1062,12 @@ mod tests {
     fn retained_bytes_outlive_caller(
         mut accounting: KernelAccounting<'_>,
         cancel: &crate::CancellationToken,
-        live: impl Fn() -> u64,
+        live: impl Fn() -> Result<u64, crate::FsError>,
     ) -> Result<(), crate::FsError> {
-        let baseline = live();
-        let before = accounting.spent();
+        let baseline = live()?;
+        let before = accounting.spent()?;
         let mut allocation = crate::kernel::RetainedAllocation::claim(4, 1, &mut accounting)?;
-        let admitted = accounting.spent();
+        let admitted = accounting.spent()?;
         let mut tail = allocation.split_off(2)?;
         allocation.absorb(&mut tail)?;
         drop(tail);
@@ -1075,11 +1084,11 @@ mod tests {
         drop(other);
         drop(unrelated);
         assert_eq!(
-            accounting.spent(),
+            accounting.spent()?,
             admitted,
             "ownership transfer added work to the original ledger"
         );
-        assert_eq!(live(), baseline + 4);
+        assert_eq!(live()?, baseline + 4);
 
         let value = allocation.into_value(Vec::from([1, 2, 3, 4]));
         assert_eq!(value.as_slice(), [1, 2, 3, 4]);
@@ -1090,7 +1099,7 @@ mod tests {
             "retained vector capacity was erased"
         );
         let backing = bytes.backing().expect("original vector backing");
-        let funded = live();
+        let funded = live()?;
         let control =
             acyclic_stream::OwnedBytes::vec_owner_allocation_bytes::<((), RetainedAllocation)>()
                 as u64;
@@ -1100,10 +1109,10 @@ mod tests {
             "returned Bytes lost original allocation credit"
         );
         assert_eq!(
-            accounting.spent().allocation_operations,
+            accounting.spent()?.allocation_operations,
             before.allocation_operations + 2
         );
-        let admitted = accounting.spent();
+        let admitted = accounting.spent()?;
         let alias = bytes.slice(1..3);
         assert_eq!(alias.retained_capacity(), Some(4));
         assert_eq!(alias.backing(), Some(backing.clone()));
@@ -1113,7 +1122,7 @@ mod tests {
             .try_into_bytes()
             .expect("the original owner transfers without allocation");
         assert_eq!(
-            accounting.spent(),
+            accounting.spent()?,
             admitted,
             "a returned alias must reuse the original backing"
         );
@@ -1133,42 +1142,50 @@ mod tests {
         drop(accounting);
         drop(bytes);
         assert_eq!(alias.as_ref(), [2, 3]);
-        assert_eq!(live(), funded, "last alias lost original allocation credit");
+        assert_eq!(
+            live()?,
+            funded,
+            "last alias lost original allocation credit"
+        );
         drop(alias);
         assert_eq!(transport.as_ref(), [2, 3]);
-        assert_eq!(live(), funded, "transport lost original allocation credit");
+        assert_eq!(live()?, funded, "transport lost original allocation credit");
         drop(transport);
         assert_eq!(
-            live(),
+            live()?,
             baseline,
             "last alias did not retire original backing"
         );
         Ok(())
     }
 
-    fn check_retained_growth(count: usize, refuse: bool, accounting: &mut KernelAccounting<'_>) {
-        fn live(accounting: &mut KernelAccounting<'_>) -> u64 {
-            match accounting {
+    fn check_retained_growth(
+        count: usize,
+        refuse: bool,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        fn live(accounting: &mut KernelAccounting<'_>) -> Result<u64, crate::FsError> {
+            Ok(match accounting {
                 KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
                 KernelAccounting::BorrowedStandalone { allocations, .. } => {
                     allocations.live_bytes()
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
-            }
+                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes()?,
+            })
         }
         let anchor = RetainedAllocation::claim(0, 0, accounting).unwrap();
-        let baseline = live(accounting);
+        let baseline = live(accounting)?;
         let mut values = Retained::<Vec<u64>>::allocate(count, accounting).unwrap();
         for _ in 0..3 {
             let length = values.len();
             let capacity = values.capacity();
             values.value.extend((length..capacity).map(|n| n as u64));
-            let before = accounting.spent();
-            let funded = live(accounting);
+            let before = accounting.spent()?;
+            let funded = live(accounting)?;
             assert!(values.ensure_for_push(capacity, accounting).is_err());
             assert_eq!(
-                accounting.spent(),
+                accounting.spent()?,
                 before,
                 "capacity refusal performed work"
             );
@@ -1182,12 +1199,12 @@ mod tests {
                     })
                 ));
                 assert_eq!(values.capacity(), capacity);
-                assert_eq!(accounting.spent(), before);
+                assert_eq!(accounting.spent()?, before);
             } else {
                 result.unwrap();
                 let bytes = (values.capacity() * size_of::<u64>()) as u64;
-                assert_eq!(live(accounting), baseline + bytes);
-                let spent = accounting.spent();
+                assert_eq!(live(accounting)?, baseline + bytes);
+                let spent = accounting.spent()?;
                 assert_eq!(
                     spent.allocation_operations,
                     before.allocation_operations + 1
@@ -1205,11 +1222,12 @@ mod tests {
         }
         drop(values);
         assert_eq!(
-            live(accounting),
+            live(accounting)?,
             baseline,
             "growth lost or duplicated credit"
         );
         drop(anchor);
+        Ok(())
     }
 
     proptest! {
@@ -1221,11 +1239,13 @@ mod tests {
                 bytes_copied: if refuse { 0 } else { u64::MAX },
                 ..WorkBudget::UNBOUNDED
             };
-            check_retained_growth(count, refuse, &mut KernelAccounting::standalone(budget, &cancel));
+            check_retained_growth(count, refuse, &mut KernelAccounting::standalone(budget, &cancel))
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let native = crate::NativeMaterializationWork::new(budget, &cancel).unwrap();
-                check_retained_growth(count, refuse, &mut KernelAccounting::native(&native, &cancel));
+                check_retained_growth(count, refuse, &mut KernelAccounting::native(&native, &cancel))
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
             }
         }
 
@@ -1248,13 +1268,14 @@ mod tests {
             let mut temporary = accounting.claim_owned(scratch, 1).unwrap();
             let funded = control + retained + scratch;
             prop_assert_eq!(live(), funded);
-            prop_assert_eq!(accounting.spent().peak_allocation_bytes, funded);
-            prop_assert_eq!(accounting.spent().allocation_operations, 3);
+            prop_assert_eq!(accounting.spent().map(|work| work.peak_allocation_bytes), Ok(funded));
+            prop_assert_eq!(accounting.spent().map(|work| work.allocation_operations), Ok(3));
 
             // A scratch owner cannot retire even one byte of retained backing.
             // Reject the former live-byte-delta release before it can corrupt
             // the original guard's later Drop.
             let before = accounting.spent();
+            prop_assert!(before.is_ok());
             let allocations = accounting.standalone_parts().unwrap().0;
             prop_assert!(matches!(allocations.release_owned(scratch + 1),
                 Err(crate::FsError::Work(WorkError::Overflow))),
@@ -1312,7 +1333,7 @@ mod tests {
             &cancel,
         );
         assert!(RetainedAllocation::claim(73, 1, &mut accounting).is_err());
-        assert_eq!(accounting.spent().allocation_operations, 1);
+        assert_eq!(accounting.spent()?.allocation_operations, 1);
         let ledger = accounting.standalone_parts().ok_or(WorkError::Overflow)?.0;
         assert_eq!(ledger.live_bytes(), 0);
         assert!(

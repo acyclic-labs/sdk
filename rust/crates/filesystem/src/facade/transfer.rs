@@ -57,7 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation,
         ))
         .await
-        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
+        .map_err(|failure| failure.map_error(map_transfer_error))
     }
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
@@ -80,7 +80,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation,
         ))
         .await
-        .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work))
+        .map_err(|failure| failure.map_error(map_transfer_error))
     }
 }
 

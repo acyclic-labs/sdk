@@ -42,13 +42,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
             return Ok(value);
         }
-        let observation = self
-            .data_custody
-            .filter(|_| !context.is_native())
-            .map(|owner| (owner, context.spent()));
+        let observation = match self.data_custody.filter(|_| !context.is_native()) {
+            Some(owner) => Some((owner, context.spent()?)),
+            None => None,
+        };
         let read = self.store.read(object_id, maximum_bytes, context).await;
         if let Some((owner, before)) = observation {
-            owner.record_original_work(context.spent().checked_sub_cumulative(&before)?)?;
+            owner.record_original_work(context.spent()?.checked_sub_cumulative(&before)?)?;
         }
         let mut value = read?;
         let owned = if context.is_native() {

@@ -185,7 +185,10 @@ pub(crate) fn finish_context<T>(
     match context {
         CallbackWork::Original(_) => result,
         CallbackWork::Ordinary(mut context) => {
-            merge_source_work(context.receipt(), accounting)?;
+            let receipt =
+                crate::performance::finish_measured(result, context.receipt(), DemandError::from);
+            let (result, completed) = accounting.split_receipt(receipt)?;
+            merge_source_work(completed, accounting)?;
             result
         }
     }

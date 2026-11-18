@@ -25,7 +25,7 @@ impl FuseProjection {
                 Ok(_) => refusal,
             };
             let errno = callback_errno(&cause);
-            let prefix = work.state.lock().work;
+            let prefix = work.receipt();
             self.core.retain_handler_failure((cause, prefix));
             return Err(errno.into());
         }
@@ -398,7 +398,7 @@ impl FuseProjection {
                     Ok(copied) => copied,
                     Err(error) if transferred == 0 => return Err(error),
                     Err(error) => {
-                        let prefix = work.state.lock().work;
+                        let prefix = work.receipt();
                         let _ = self.core.finish::<()>(Err((error, prefix)));
                         break;
                     }

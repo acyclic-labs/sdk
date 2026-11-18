@@ -60,8 +60,8 @@ fn join<T, const FENCE: bool>(
     identity: [u8; 16],
     create: impl FnOnce() -> Result<Arc<T>, LocalCoreStateStoreError>,
 ) -> Result<Arc<T>, LocalCoreStateStoreError> {
-    let mut guard = Some(owners.lock().unwrap_or_else(PoisonError::into_inner));
-    if let Some((original, owner)) = guard.as_ref().unwrap().get(&root)
+    let guard = owners.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((original, owner)) = guard.get(&root)
         && let Some(owner) = owner.upgrade()
     {
         return if *original == identity {
@@ -71,9 +71,12 @@ fn join<T, const FENCE: bool>(
         };
     }
     // FENCE=false is the deliberately broken initialization race.
-    if !FENCE {
-        guard.take();
-    }
+    let guard = if FENCE {
+        Some(guard)
+    } else {
+        drop(guard);
+        None
+    };
     let owner = create()?;
     let mut guard = guard.unwrap_or_else(|| owners.lock().unwrap_or_else(PoisonError::into_inner));
     guard.insert(root, (identity, Arc::downgrade(&owner)));
@@ -243,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_join_cannot_turn_an_exclusive_open_into_a_retirement_wait() {
+    fn shared_join_cannot_turn_an_exclusive_open_into_a_retirement_wait() -> std::io::Result<()> {
         crate::initialize_test_native_io();
 
         fn retain<T>(owner: &Arc<T>) -> Arc<T> {
@@ -303,10 +306,11 @@ mod tests {
             "a shared join waited on its own live store"
         );
         assert!(!conflicts(false), "the bare-owner negative control escaped");
+        Ok(())
     }
 
     #[test]
-    fn reopening_waits_for_the_retiring_native_owner() {
+    fn reopening_waits_for_the_retiring_native_owner() -> std::io::Result<()> {
         crate::initialize_test_native_io();
         for shared in [false, true] {
             let directory = tempfile::tempdir().unwrap();
@@ -344,5 +348,6 @@ mod tests {
             );
             assert!(reopened.is_ok(), "{reopened:?}");
         }
+        Ok(())
     }
 }

@@ -66,8 +66,8 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
         .objects()
         .read(record.metadata, limits.maximum_object_bytes, &mut physical)
         .await?;
-    let mut copied = physical.spent().bytes_copied;
-    let mut examined = physical.spent().items_examined;
+    let mut copied = physical.spent().unwrap().bytes_copied;
+    let mut examined = physical.spent().unwrap().items_examined;
     assert_eq!(
         decode_file_metadata(&read.bytes, limits, &mut |step| {
             match step {
@@ -107,7 +107,7 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
                 ),
                 "{failure:?}"
             );
-            assert!(failure.work.bytes_copied <= maximum);
+            assert!(failure.work.as_deref().unwrap().bytes_copied <= maximum);
         }
     }
     commit(&mut checkout, &cancel).await?;
@@ -497,7 +497,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> 
             .as_ref(),
         b"real detached stream"
     );
-    assert_eq!(denied.receipt().bytes_encoded, 0);
-    assert_eq!(denied.receipt().backend_write_operations, 0);
+    assert_eq!(denied.receipt().unwrap().bytes_encoded, 0);
+    assert_eq!(denied.receipt().unwrap().backend_write_operations, 0);
     Ok(())
 }
