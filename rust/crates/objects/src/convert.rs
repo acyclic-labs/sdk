@@ -1,8 +1,7 @@
 //! Exact conversions between the public Rust types and their wire messages.
 
 use crate::Part;
-use crate::blob::invalid;
-use crate::error::unavailable;
+use crate::error::{invalid, unavailable};
 use crate::{
     ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
 };

@@ -1,5 +1,5 @@
 //! Authenticated blob client for the Protobuf-JSON HTTP gateway.
-use crate::error::unavailable;
+use crate::error::{invalid, unavailable};
 use crate::{
     Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
     RootId, Usage,
@@ -18,8 +18,7 @@ mod availability;
 mod tests;
 
 fn credential_header(token: &str) -> Result<HeaderValue, Error> {
-    acyclic_auth::credential::bearer_header(token)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
+    acyclic_auth::credential::bearer_header(token).map_err(|_| invalid())
 }
 
 /// The canonical JSON success acknowledgement of a batch put, bounded per member:
@@ -28,24 +27,22 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
 /// over every put outcome, with the widest length. Failure details have
 /// producer-owned lengths and are admitted against the actual response budget.
 fn put_batch_acknowledgement() -> Option<(usize, usize)> {
-    use wire::{put_response::Outcome as Put, put_result::Outcome};
+    use wire::put_result::Outcome;
     static BOUND: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
     *BOUND.get_or_init(|| {
-        let verified = wire::Verified {
-            digest: Some(Digest::of(b"").into()),
+        let verified = crate::Verified {
+            digest: Digest::from_bytes([0; 32]),
             length: u64::MAX,
+            revision: None,
         };
         let outcomes = [
-            Outcome::Put(wire::PutResponse {
-                outcome: Some(Put::Created(verified.clone())),
-            }),
-            Outcome::Put(wire::PutResponse {
-                outcome: Some(Put::AlreadyExists(verified)),
-            }),
-            Outcome::Put(wire::PutResponse {
-                outcome: Some(Put::Unknown(true)),
-            }),
-        ];
+            Put::Created {
+                verified: verified.clone(),
+            },
+            Put::AlreadyExists { verified },
+            Put::Unknown,
+        ]
+        .map(|put| Outcome::Put(crate::convert::wire_put(&put)));
         let reply = |outcome: &Outcome, members: usize| {
             json::encode(
                 "PutBlobsResponse",
@@ -79,10 +76,11 @@ fn put_batch_acknowledgement() -> Option<(usize, usize)> {
 fn put_batch_request() -> Option<(usize, usize, usize)> {
     static BOUND: std::sync::OnceLock<Option<(usize, usize, usize)>> = std::sync::OnceLock::new();
     *BOUND.get_or_init(|| {
+        let digest: wire::Digest = Digest::from_bytes([0; 32]).into();
         let member = |references: usize| wire::PutBlobRequest {
-            digest: Some(Digest::of(b"").into()),
+            digest: Some(digest.clone()),
             body: bytes::Bytes::from_static(&[0xff; 3]),
-            references: vec![Digest::of(b"").into(); references],
+            references: vec![digest.clone(); references],
         };
         let request = |members: usize, references: usize| {
             json::encode(
@@ -155,7 +153,6 @@ impl HttpObjects {
         maximum_response_bytes: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
-        let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
         let endpoint = acyclic_auth::credential::base_endpoint(endpoint).map_err(|_| invalid())?;
         if maximum_response_bytes == Some(0) {
             return Err(invalid());
@@ -179,32 +176,14 @@ impl HttpObjects {
         })
     }
 
-    async fn authorization(
+    fn authorization_header(
         &self,
-    ) -> Result<
-        (
-            HeaderValue,
-            Option<acyclic_auth::credential::ResolvedCredential>,
-        ),
-        Error,
-    > {
-        if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            token
-                .check()
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            let header = credential_header(&token)
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            Ok((header, Some(token)))
-        } else {
-            self.authorization
-                .clone()
-                .map(|header| (header, None))
-                .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))
+        lease: Option<&acyclic_auth::credential::ResolvedCredential>,
+    ) -> Result<HeaderValue, Error> {
+        let denied = || Error::from(wire::ErrorCode::AccessDenied);
+        match lease {
+            Some(lease) => credential_header(lease).map_err(|_| denied()),
+            None => self.authorization.clone().ok_or_else(denied),
         }
     }
 
@@ -215,11 +194,12 @@ impl HttpObjects {
                 .filter(|method| !method.is_streaming_http())
                 .map(crate::ObjectsMethod::http_message_types)
                 .ok_or_else(unavailable)?;
-            let url = self
-                .endpoint
-                .join(route)
-                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-            let (authorization, lease) = self.authorization().await?;
+            let url = self.endpoint.join(route).map_err(|_| invalid())?;
+            let lease = match self.credential.as_ref() {
+                Some(provider) => Some(crate::operation::checked_lease(provider).await?),
+                None => None,
+            };
+            let authorization = self.authorization_header(lease.as_ref())?;
             let request = self
                 .transport
                 .post(url)
@@ -230,41 +210,26 @@ impl HttpObjects {
                 context.check()?;
             }
             let response = request.send().await.map_err(|_| unavailable())?;
-            if response.status().as_u16() == 401
-                && let Some(lease) = &lease
-            {
-                lease
-                    .reject()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            if response.status().as_u16() == 401 {
+                crate::operation::reject_lease(lease.as_ref()).await?;
             }
             if response.status().as_u16() != 200 {
                 return Err(self.failure(response).await);
             }
             let bytes = self.bytes(response).await?;
-            if let Some(lease) = &lease {
-                lease
-                    .check()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            }
+            crate::operation::validate_lease(lease.as_ref()).await?;
             if let Some(context) = &self.context {
                 context.check()?;
             }
-            let decoded = json::decode_binary(output_name, &bytes, self.maximum)
-                .map_err(|_| unavailable())?;
-            if let Some(lease) = &lease {
-                lease
-                    .check()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            }
+            let decoded =
+                json::decode_binary(output_name, &bytes, None).map_err(|_| unavailable())?;
+            crate::operation::validate_lease(lease.as_ref()).await?;
             Ok(decoded.into())
         })
         .await
     }
 
-    async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {
+    async fn bytes(&self, mut response: Response) -> Result<Bytes, Error> {
         if self.maximum.is_some_and(|maximum| {
             response
                 .content_length()
@@ -272,17 +237,28 @@ impl HttpObjects {
         }) {
             return Err(wire::ErrorCode::QuotaExceeded.into());
         }
-        let mut bytes = Vec::new();
+        let mut first = Bytes::new();
+        let mut joined = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
+            let used = first.len() + joined.len();
             if self
                 .maximum
-                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(bytes.len()))
+                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(used))
             {
                 return Err(wire::ErrorCode::QuotaExceeded.into());
             }
-            bytes.extend_from_slice(&chunk);
+            if used == 0 {
+                first = chunk;
+            } else {
+                joined.extend_from_slice(&std::mem::take(&mut first));
+                joined.extend_from_slice(&chunk);
+            }
         }
-        Ok(bytes)
+        Ok(if joined.is_empty() {
+            first
+        } else {
+            joined.into()
+        })
     }
 
     async fn failure(&self, response: Response) -> Error {
@@ -291,13 +267,10 @@ impl HttpObjects {
             Ok(bytes) => bytes,
             Err(error) => return error,
         };
-        if let Some(error) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, self.maximum)
+        json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, None)
             .ok()
             .and_then(Error::from_detail)
-        {
-            return error;
-        }
-        Error::from_http_status(status)
+            .unwrap_or_else(|| Error::from_http_status(status))
     }
 }
 
@@ -348,41 +321,42 @@ impl Blobs for HttpObjects {
         // alone, exactly as its single put would. Chunks go in request order,
         // so a member's references in an earlier chunk have settled before
         // it is sent.
-        let bounds = self.maximum.map(|maximum| {
-            let per_call = put_batch_acknowledgement().map_or(1, |(single, step)| {
-                1 + maximum.saturating_sub(single) / step.max(1)
-            });
-            (maximum, per_call, put_batch_request())
+        if requests.is_empty() {
+            return Vec::new();
+        }
+        let publish = |chunk: Vec<_>| async move {
+            let members = chunk.len();
+            crate::operation::admit(self.context.as_ref(), async {
+                Ok(BinaryObjects::new(self).put_batch_sealed(chunk).await)
+            })
+            .await
+            .unwrap_or_else(|error| vec![Err(error); members])
+        };
+        let Some(maximum) = self.maximum else {
+            return publish(requests).await;
+        };
+        let per_call = put_batch_acknowledgement().map_or(1, |(single, step)| {
+            1 + maximum.saturating_sub(single) / step.max(1)
         });
+        let bound = put_batch_request();
         let mut results = Vec::with_capacity(requests.len());
         let mut requests = requests.into_iter().peekable();
         while requests.peek().is_some() {
             let mut chunk = Vec::new();
-            let mut used = bounds
-                .and_then(|(_, _, request)| request)
-                .map_or(0, |(frame, ..)| frame);
+            let mut used = bound.map_or(0, |(frame, ..)| frame);
             while let Some((body, references)) = requests.peek() {
-                if let Some((maximum, per_call, request)) = bounds {
-                    let cost = request.map_or(usize::MAX, |bound| {
-                        request_member(bound, body.bytes().len(), references.len())
-                    });
-                    if !chunk.is_empty()
-                        && (chunk.len() == per_call || used.saturating_add(cost) > maximum)
-                    {
-                        break;
-                    }
-                    used = used.saturating_add(cost);
+                let cost = bound.map_or(usize::MAX, |parts| {
+                    request_member(parts, body.bytes().len(), references.len())
+                });
+                if !chunk.is_empty()
+                    && (chunk.len() == per_call || used.saturating_add(cost) > maximum)
+                {
+                    break;
                 }
+                used = used.saturating_add(cost);
                 chunk.extend(requests.next());
             }
-            let members = chunk.len();
-            results.extend(
-                crate::operation::admit(self.context.as_ref(), async {
-                    Ok(BinaryObjects::new(self).put_batch_sealed(chunk).await)
-                })
-                .await
-                .unwrap_or_else(|error| vec![Err(error); members]),
-            );
+            results.extend(publish(chunk).await);
         }
         results
     }

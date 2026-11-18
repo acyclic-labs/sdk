@@ -21,21 +21,14 @@ impl HttpObjects {
             if let Some(context) = &self.context {
                 context.check()?;
             }
-            let authorization = match &credential.lease {
-                Some(lease) => credential_header(lease)
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?,
-                None => self
-                    .authorization
-                    .clone()
-                    .ok_or(Error::from(wire::ErrorCode::AccessDenied))?,
-            };
+            let authorization = self.authorization_header(credential.lease.as_ref())?;
             let request = wire::AvailabilityRequest {
                 digest: Some(digest.into()),
             };
             let url = self
                 .endpoint
                 .join(crate::ObjectsMethod::Availability.http_route())
-                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+                .map_err(|_| invalid())?;
             let response = self
                 .transport
                 .post(url)
@@ -46,13 +39,8 @@ impl HttpObjects {
                 .send()
                 .await
                 .map_err(|_| unavailable())?;
-            if response.status().as_u16() == 401
-                && let Some(lease) = &credential.lease
-            {
-                lease
-                    .reject()
-                    .await
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            if response.status().as_u16() == 401 {
+                crate::operation::reject_lease(credential.lease.as_ref()).await?;
             }
             if response.status().as_u16() != 200 {
                 return Err(self.failure(response).await);

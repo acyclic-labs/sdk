@@ -13,6 +13,10 @@ pub(crate) fn unavailable() -> Error {
     wire::ErrorCode::Unavailable.into()
 }
 
+pub(crate) fn invalid() -> Error {
+    wire::ErrorCode::InvalidArgument.into()
+}
+
 /// Semantic service failure or the original local operation stop.
 ///
 /// Its `source` is the local stop or, for a remote failure, the server's

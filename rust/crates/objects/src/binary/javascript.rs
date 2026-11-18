@@ -1,6 +1,6 @@
 //! Original JavaScript request ownership over the canonical binary client.
 use super::{Reply, Transport};
-use crate::error::unavailable;
+use crate::error::{invalid, unavailable};
 use crate::{Availability, Blobs, Digest, Error, ObjectsMethod, wire};
 use bytes::Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -146,7 +146,7 @@ impl Request {
             .as_f64()
             .filter(|value| (1.0..=9_007_199_254_740_991.0).contains(value))
             .and_then(acyclic_stream::wasm_unsigned_integer)
-            .ok_or_else(|| Error::from(wire::ErrorCode::InvalidArgument))?;
+            .ok_or_else(invalid)?;
         Ok(Some(
             usize::try_from(maximum)
                 .unwrap_or(usize::MAX)
