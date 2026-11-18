@@ -37,7 +37,6 @@
   "scripts/check-feature-matrix.mjs",
   "scripts/check-feature-matrix.test.mjs",
   "scripts/check-git-proto-build.mjs",
-  "scripts/check-guest-callback.sh",
   "scripts/check-hermetic-clippy.mjs",
   "scripts/check-proto-source-root.mjs",
   "scripts/check-test-support.test.mjs",
