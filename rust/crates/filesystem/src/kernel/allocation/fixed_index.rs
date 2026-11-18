@@ -1,9 +1,9 @@
 //! Filesystem custody for the shared fixed-width index.
 mod recent;
 pub(crate) use recent::RecentIndex;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod persistent;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use persistent::PersistentIndex;
 mod prepared;
 pub(crate) use prepared::PreparedIndexWork;
