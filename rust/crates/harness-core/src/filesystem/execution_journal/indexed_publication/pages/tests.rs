@@ -645,19 +645,23 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
             .is_some()
     );
     let execution_record =
-        crate::store::operations::one_record(&provider, &execution, 0, &mut None)
+        crate::store::operations::one_record(provider.as_ref(), &execution, 0, &mut None)
             .await?
             .expect("published observation");
-    let head_record = crate::store::operations::one_record(&provider, &head, 0, &mut None)
+    let head_record = crate::store::operations::one_record(provider.as_ref(), &head, 0, &mut None)
         .await?
         .expect("published checkpoint");
-    let first_page = crate::store::operations::one_record(&provider, &pages, 0, &mut None)
+    let first_page = crate::store::operations::one_record(provider.as_ref(), &pages, 0, &mut None)
         .await?
         .expect("staged page");
-    let last_page =
-        crate::store::operations::one_record(&provider, &pages, count as u64 - 1, &mut None)
-            .await?
-            .expect("last page");
+    let last_page = crate::store::operations::one_record(
+        provider.as_ref(),
+        &pages,
+        count as u64 - 1,
+        &mut None,
+    )
+    .await?
+    .expect("last page");
     assert_eq!(execution_record.value, observation);
     assert_eq!(head_record.value, checkpoint);
     assert_eq!(head_record.commit_id, execution_record.commit_id);
@@ -806,7 +810,7 @@ async fn a_refused_acknowledgment_recovers_the_publication_by_its_key() -> Resul
         .publish(&landed, &records, &observation, &checkpoint, &mut None)
         .await?
         .expect("recovered publication");
-    let published = crate::store::operations::one_record(&landed, &head, 0, &mut None)
+    let published = crate::store::operations::one_record(landed.as_ref(), &head, 0, &mut None)
         .await?
         .expect("published checkpoint");
     assert_eq!(published.commit_id, committed.0);

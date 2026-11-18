@@ -64,7 +64,7 @@ where
                 .map(|io| io.guard_owned(path.as_str().len() as u64))
                 .transpose()?;
             crate::store::operations::one_selected_record(
-                &self.stream,
+                self.stream.as_ref(),
                 acyclic_stream::ReadRequest {
                     key: Some(acyclic_stream::ReadKeySeek::exact(key.clone(), u64::MAX)),
                     path,

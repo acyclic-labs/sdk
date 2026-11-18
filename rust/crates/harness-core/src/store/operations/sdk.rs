@@ -75,7 +75,7 @@ impl std::ops::Deref for ObservedAppend {
 }
 
 pub(crate) async fn append_with_work<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     request: acyclic_stream::AppendRequest,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<ObservedAppend> {
@@ -107,7 +107,7 @@ pub(crate) async fn append_with_work<P: crate::store::JournalProvider + ?Sized>(
 }
 
 pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     request: &acyclic_stream::HeadsRequest,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<ObservedHeads> {
@@ -241,7 +241,7 @@ impl ObservedRecords {
 }
 
 pub(crate) async fn read_records<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     path: &StreamPath,
     from: u64,
     count: u32,
@@ -259,7 +259,7 @@ pub(crate) async fn read_records<P: crate::store::JournalProvider + ?Sized>(
 
 /// Positional and indexed reads share the original ledger and SDK entrance.
 pub(crate) async fn read_selection<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     request: ReadRequest,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<ObservedRecords, StreamError>> {
@@ -281,7 +281,7 @@ pub(crate) async fn read_selection<P: crate::store::JournalProvider + ?Sized>(
 
 /// Preserves the provider's `NotFound` result for the canonical CAS selector.
 async fn tail_result_with_work<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<u64, StreamError>> {
@@ -303,7 +303,7 @@ async fn tail_result_with_work<P: crate::store::JournalProvider + ?Sized>(
 }
 
 pub(crate) async fn tail_optional_with_work<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<u64>> {
@@ -317,7 +317,7 @@ pub(crate) async fn tail_optional_with_work<P: crate::store::JournalProvider + ?
 
 /// Reads one exact record and rejects a producer exceeding the bound.
 pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     path: &StreamPath,
     from: u64,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -339,7 +339,7 @@ pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
 /// The first immutable record carrying an exact indexed key, without a tail read.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn one_keyed_record<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     path: &StreamPath,
     key: Vec<u8>,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -360,7 +360,7 @@ pub(crate) async fn one_keyed_record<P: crate::store::JournalProvider + ?Sized>(
 /// A keyed selection uses the shared cursor contract; an unkeyed selection
 /// must return the exact cursor. Both reject a producer exceeding one record.
 pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     request: ReadRequest,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<ObservedRecord>> {

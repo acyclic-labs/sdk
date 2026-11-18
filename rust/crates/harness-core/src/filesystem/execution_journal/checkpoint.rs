@@ -227,10 +227,13 @@ where
         #[cfg(feature = "test-support")]
         tracing::trace!(target: "acyclic_harness::journal_work",
             journal_reads = 1_u64, "execution checkpoint tail requested");
-        let tail =
-            crate::store::operations::tail_optional_with_work(&self.stream, &path, &mut work)
-                .await?
-                .unwrap_or(0);
+        let tail = crate::store::operations::tail_optional_with_work(
+            self.stream.as_ref(),
+            &path,
+            &mut work,
+        )
+        .await?
+        .unwrap_or(0);
         let Some(sequence) = tail.checked_sub(1) else {
             return Ok(None);
         };
@@ -238,9 +241,10 @@ where
         #[cfg(feature = "test-support")]
         tracing::trace!(target: "acyclic_harness::journal_work",
             journal_reads = 1_u64, "execution checkpoint record requested");
-        let record = crate::store::operations::one_record(&self.stream, &path, sequence, &mut work)
-            .await?
-            .ok_or_else(|| missing(io))?;
+        let record =
+            crate::store::operations::one_record(self.stream.as_ref(), &path, sequence, &mut work)
+                .await?
+                .ok_or_else(|| missing(io))?;
         #[cfg(feature = "test-support")]
         tracing::trace!(target: "acyclic_harness::journal_work",
             journal_records = 1_u64, journal_read_bytes = record.value.len() as u64,
@@ -285,10 +289,14 @@ where
         #[cfg(feature = "test-support")]
         tracing::trace!(target: "acyclic_harness::journal_work",
             journal_reads = 1_u64, "execution checkpoint anchor requested");
-        let anchor =
-            crate::store::operations::one_record(&self.stream, &path, state.tail - 1, &mut work)
-                .await?
-                .ok_or_else(|| missing(io))?;
+        let anchor = crate::store::operations::one_record(
+            self.stream.as_ref(),
+            &path,
+            state.tail - 1,
+            &mut work,
+        )
+        .await?
+        .ok_or_else(|| missing(io))?;
         #[cfg(feature = "test-support")]
         tracing::trace!(target: "acyclic_harness::journal_work",
             journal_records = 1_u64, journal_read_bytes = anchor.value.len() as u64,

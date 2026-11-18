@@ -5,7 +5,7 @@ use crate::executor::PreparationIo;
 use acyclic_stream::{AppendOutcome, AppendRecord, AppendRequest, IdempotencyKey};
 
 pub(crate) async fn stage_chunks<P, F>(
-    client: &Arc<P>,
+    client: &P,
     path: &StreamPath,
     bytes: &[u8],
     io: Option<&PreparationIo>,
@@ -80,7 +80,7 @@ where
 }
 
 pub(crate) async fn read_chunks<'a, P: crate::store::JournalProvider + ?Sized>(
-    client: &Arc<P>,
+    client: &P,
     path: &StreamPath,
     length: u64,
     digest: &[u8; 32],

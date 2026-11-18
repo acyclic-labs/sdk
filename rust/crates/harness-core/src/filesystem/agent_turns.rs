@@ -3465,7 +3465,7 @@ where
                     .as_mut()
                     .map(|work| work as &mut dyn crate::store::HistoryIo);
                 let mut records = crate::store::operations::read_records(
-                    &self.stream,
+                    self.stream.as_ref(),
                     &request.path,
                     request.from,
                     request.limit,

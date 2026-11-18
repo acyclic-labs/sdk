@@ -350,7 +350,7 @@ async fn input_record<P: crate::store::JournalProvider + ?Sized>(
     path: &StreamPath,
     sequence: u64,
 ) -> Result<crate::store::operations::ObservedRecord, Error> {
-    crate::store::operations::one_record(provider, path, sequence, &mut None)
+    crate::store::operations::one_record(provider.as_ref(), path, sequence, &mut None)
         .await
         .map_err(turn)?
         .ok_or(Error::Record("input preview source is absent"))
