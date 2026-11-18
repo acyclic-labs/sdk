@@ -35,7 +35,6 @@ def _declared_toolchain(target):
 
 def _rustdoc_fixture_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".json")
-    metadata = ctx.actions.declare_file(ctx.label.name + ".fixture.json")
     artifacts = ctx.actions.declare_directory(ctx.label.name + ".artifacts") if ctx.attr.retain_artifacts else None
     toolchain = _declared_toolchain(ctx.attr._rustup)
     binary_name = ctx.attr.binary_name
@@ -68,7 +67,6 @@ def _rustdoc_fixture_impl(ctx):
         "output": _repository_path(output.short_path),
         "artifacts": _repository_path(artifacts.short_path) if artifacts else "",
     }
-    ctx.actions.write(metadata, json.encode(metadata_value))
     args = ctx.actions.args()
     args.add(output)
     args.add(artifacts.path if artifacts else "")
@@ -108,7 +106,7 @@ def _rustdoc_fixture_impl(ctx):
         progress_message = "Building Rustdoc fixture %{label}",
     )
     return [
-        DefaultInfo(files = depset([output, metadata] + ([artifacts] if artifacts else []))),
+        DefaultInfo(files = depset([output] + ([artifacts] if artifacts else []))),
         RustdocFixtureInfo(metadata = metadata_value),
     ]
 

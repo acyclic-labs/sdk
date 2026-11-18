@@ -31,12 +31,13 @@ fn shared_package() -> cache::Arc<Package> {
             .output()
             .unwrap();
         assert!(result.status.success(), "{}", output_message(&result));
-        let members = sdk_generation::historical::decode_archive_members(
+        let mut members = sdk_generation::historical::decode_archive_members(
             &fs::read(support.join("package-target/package/demo-1.0.0.crate")).unwrap(),
             "demo",
             "1.0.0",
         )
         .unwrap();
+        members.remove(".cargo_vcs_info.json");
         Ok::<_, std::convert::Infallible>((fixture, members))
     })
     .unwrap()
@@ -79,11 +80,26 @@ pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) ->
         super::package_manifest::normalize(&template.1["Cargo.toml"], &original).unwrap();
     fs::write(source.join("Cargo.toml.orig"), original).unwrap();
     fs::write(source.join("Cargo.toml"), normalized).unwrap();
-    let lock = fs::read_to_string(source.join("Cargo.lock")).unwrap();
+    if package_name != "demo" {
+        let lock = source.join("Cargo.lock");
+        let contents = fs::read_to_string(&lock).unwrap();
+        fs::write(
+            lock,
+            contents.replace("name = \"demo\"", &format!("name = {package_name:?}")),
+        )
+        .unwrap();
+    }
+    source
+}
+
+pub(super) fn write_publisher_vcs(root: &Path, archive: &Path, dirty: bool) {
+    let vcs = json!({
+        "git": {"sha1": git_revision(root), "dirty": dirty},
+        "path_in_vcs": "rust/crates/demo",
+    });
     fs::write(
-        source.join("Cargo.lock"),
-        lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
+        archive.join(".cargo_vcs_info.json"),
+        serde_json::to_vec(&vcs).unwrap(),
     )
     .unwrap();
-    source
 }

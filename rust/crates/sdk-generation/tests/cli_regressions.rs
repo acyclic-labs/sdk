@@ -702,7 +702,7 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
         "# Cargo-produced standalone package lock fixture\n",
     )
     .unwrap();
-    fs::write(archive_source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":false},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
+    packaging::write_publisher_vcs(&fixture.root, &archive_source, false);
     let archive = archives.join("demo-1.0.0.crate");
     archives::pack(&archive_source, &archive);
     write_registry_transport(&support);
@@ -743,24 +743,31 @@ fn run_historical_generate_mode(
     support: &Path,
     mode: Option<&str>,
 ) -> std::process::Output {
-    run_historical_generate_mode_with_env(fixture, support, mode, None)
+    run_historical_generation(fixture, support, mode, None, &[])
 }
 
-fn run_historical_generate_mode_with_env(
+enum HistoricalAuthority<'a> {
+    Lock(&'a Path),
+    CargoHome(&'a Path),
+    WorkingDirectory(&'a Path),
+}
+
+impl HistoricalAuthority<'_> {
+    fn configure(&self, command: &mut Command) {
+        match self {
+            Self::Lock(lock) => command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock),
+            Self::CargoHome(home) => command.env("CARGO_HOME", home),
+            Self::WorkingDirectory(directory) => command.current_dir(directory),
+        };
+    }
+}
+
+fn run_historical_generation(
     fixture: &Fixture,
     support: &Path,
     mode: Option<&str>,
-    override_lock: Option<&Path>,
-) -> std::process::Output {
-    run_historical_generate_mode_with_authority(fixture, support, mode, override_lock, None)
-}
-
-fn run_historical_generate_mode_with_authority(
-    fixture: &Fixture,
-    support: &Path,
-    mode: Option<&str>,
-    override_lock: Option<&Path>,
-    automatic_config: Option<(&Path, bool)>,
+    authority: Option<HistoricalAuthority<'_>>,
+    expected_owners: &[&str],
 ) -> std::process::Output {
     let path = fixture_path(support);
     let mut command = Command::new(runtime::binary("sdk-generation"));
@@ -796,15 +803,8 @@ fn run_historical_generate_mode_with_authority(
                 .arg(revisions.trim());
         }
     }
-    if let Some(lock) = override_lock {
-        command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock);
-    }
-    if let Some((directory, cargo_home)) = automatic_config {
-        if cargo_home {
-            command.env("CARGO_HOME", directory);
-        } else {
-            command.current_dir(directory);
-        }
+    if let Some(authority) = authority {
+        authority.configure(&mut command);
     }
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");
@@ -819,6 +819,15 @@ fn run_historical_generate_mode_with_authority(
             .iter()
             .map(|release| (release["crate"].as_str().unwrap(), 4))
             .collect::<Vec<_>>();
+        if !expected_owners.is_empty() {
+            assert_eq!(
+                expected
+                    .iter()
+                    .map(|&(owner, _)| owner)
+                    .collect::<BTreeSet<_>>(),
+                expected_owners.iter().copied().collect::<BTreeSet<_>>(),
+            );
+        }
         assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
     }
     result
@@ -909,9 +918,8 @@ fn registry_archive_fixture_configured(
         setup(&package);
     }
     let source = packaging::materialize(&package, &support, package_name);
-    fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
-    if !publisher_vcs {
-        fs::remove_file(source.join(".cargo_vcs_info.json")).unwrap();
+    if publisher_vcs {
+        packaging::write_publisher_vcs(&fixture.root, &source, dirty);
     }
     if !published_lock {
         fs::remove_file(source.join("Cargo.lock")).unwrap();
