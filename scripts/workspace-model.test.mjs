@@ -71,6 +71,14 @@ test('Git manifests retain build scripts and source fields when Bazel supplies l
   const targets = graph.packages.find(p => p.name === 'sdk').targets;
   assert.deepEqual(targets.find(t => t.kind.includes('custom-build')), original.find(t => t.kind.includes('custom-build')));
   assert.deepEqual(targets.find(t => t.kind.includes('proc-macro')), {...original.find(t => t.kind.includes('lib')), kind: ['proc-macro'], name: 'sdk_macro'});
+  const manifest = path.join(checkout, 'Cargo.toml');
+  fs.appendFileSync(manifest, '\n[lib]\ncrate-type=["rlib", "cdylib"]\n');
+  const multiOutput = workspacePackages(checkout)[0].targets;
+  const libraryOptions = {...bazelTargets[0].rule, ruleClass: 'rust_library'};
+  const multiGraph = workspaceGraph(root, undefined, {bazelTargets: [{rule: libraryOptions}], sourceRoots: {[source]: checkout}});
+  const multiTargets = multiGraph.packages.find(p => p.name === 'sdk').targets;
+  assert.deepEqual(multiTargets, multiOutput.map(target =>
+    target.kind.includes('rlib') ? {...target, name: 'sdk_macro'} : target));
 });
 
 test('Cloud-shaped consumer keeps inherited pinned Git dependencies distinct from registry crates', t => {

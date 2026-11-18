@@ -416,8 +416,16 @@ function registryPackages(lock, universe, triple, {bazelTargets = [], sourceRoot
     const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
     const target = lib?.Library ?? lib?.ProcMacro;
     const library = target && {kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name};
-    const targets = (manifest?.targets ?? []).map(t => library && t.kind.some(kind => ['lib', 'proc-macro'].includes(kind)) ? {...t, ...library} : t);
-    if (library && !targets.some(t => t.kind.some(kind => ['lib', 'proc-macro'].includes(kind)))) targets.push(library);
+    const targets = [...(manifest?.targets ?? [])];
+    if (library) {
+      const index = targets.findIndex(target => target.kind.some(kind => ['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'].includes(kind)));
+      if (index === -1) targets.push(library);
+      else {
+        const manifestTarget = targets[index];
+        const kind = lib.ProcMacro || manifestTarget.kind.includes('proc-macro') ? library.kind : manifestTarget.kind;
+        targets[index] = {...manifestTarget, name: library.name, kind};
+      }
+    }
     if (resolved) bazelRules.set(`${p.source}#${p.name}@${p.version}`, resolved);
     return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: manifest?.manifest_path ?? '', dependencies: [], metadata: manifest?.metadata ?? null,
       features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
