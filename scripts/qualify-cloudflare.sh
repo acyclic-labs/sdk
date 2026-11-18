@@ -24,7 +24,7 @@ guest_facade=typescript/packages/harness/generated/wasm
 step guest-facade-directory mkdir -p "$guest_facade"
 step guest-facade-stage cp -R "$bazel_bin/wasm/harness/." "$guest_facade/"
 step guest-module cp typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm "$crate/generated/agent_guest_bg.wasm"
-step adapter-types bun x --no-install tsc --ignoreConfig --noEmit --strict --skipLibCheck --target es2022 --module nodenext --moduleResolution nodenext typescript/packages/harness/src/cloudflare.ts typescript/packages/harness/src/cloudflare-storage.ts
+step adapter-types bun x --no-install tsc --ignoreConfig --noEmit --strict --skipLibCheck --target es2022 --module nodenext --moduleResolution nodenext typescript/packages/harness/src/cloudflare.ts typescript/packages/harness/src/cloudflare-storage.ts typescript/packages/harness/test/guest-hosting-types.ts
 step worker-bundle bun build "$crate/worker.ts" --target browser --external cloudflare:workers --external '*.wasm' --outfile "$crate/worker.mjs"
 step emulator-dependencies npm ci --prefix "$crate" --ignore-scripts
 step workerd-suites node "$crate/run.mjs"
