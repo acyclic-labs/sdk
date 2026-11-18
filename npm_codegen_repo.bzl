@@ -37,6 +37,7 @@ def _npm_codegen_repository_impl(ctx):
     ctx.file("connect.patch", patch)
     ctx.patch("connect.patch", strip = 1)
     ctx.file("BUILD.bazel", 'filegroup(name = "packages", srcs = glob(["node_modules/**"]), visibility = ["//visibility:public"])\n')
+    return ctx.repo_metadata(reproducible = True)
 
 npm_codegen_repository = repository_rule(
     implementation = _npm_codegen_repository_impl,
