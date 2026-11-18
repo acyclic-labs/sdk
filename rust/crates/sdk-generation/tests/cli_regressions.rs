@@ -713,7 +713,7 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
 fn write_registry_transport(support: &Path) {
     let mut responses = fs::read_dir(support.join("registry")).unwrap().flat_map(|entry| {
         let archive = entry.unwrap().path();
-        let package = archive.file_stem().unwrap().to_str().unwrap().strip_suffix("-1.0.0").unwrap().to_owned();
+        let package = archive.file_stem().unwrap().to_str().unwrap().strip_suffix("-1.0.0").unwrap();
         let version = json!({"crate":package,"num":"1.0.0","checksum":hash_file(&archive).trim_start_matches("sha256:"),"yanked":false});
         [
             (format!("/{package}/1.0.0"), serde_json::to_string(&json!({"version":version})).unwrap()),
@@ -727,12 +727,10 @@ fn write_registry_transport(support: &Path) {
         .collect::<String>();
     fs::write(support.join("registry-responses.txt"), records).unwrap();
     let destination = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
-    if !destination.exists() {
-        let source = runtime::binary("registry-transport-fixture");
-        fs::hard_link(&source, &destination)
-            .or_else(|_| fs::copy(&source, &destination).map(|_| ()))
-            .unwrap();
-    }
+    let source = runtime::binary("registry-transport-fixture");
+    fs::hard_link(&source, &destination)
+        .or_else(|_| fs::copy(&source, &destination).map(|_| ()))
+        .unwrap();
 }
 
 fn run_historical_generate(fixture: &Fixture, support: &Path) -> std::process::Output {
