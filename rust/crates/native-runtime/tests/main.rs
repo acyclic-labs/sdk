@@ -7,6 +7,7 @@ mod native_claim_record;
 mod native_owner_record;
 mod native_report_port;
 mod node_process;
+mod private_file;
 mod seeded_runtime;
 mod signing_custody;
 #[path = "positional/mod.rs"]
