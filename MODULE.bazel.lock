@@ -243,7 +243,7 @@
     },
     "//:node_repo.bzl%node": {
       "general": {
-        "bzlTransitiveDigest": "q7uYUA9zpfZYnPQBO6zleyE0sPYcKAEpmZfsBC1Cn2U=",
+        "bzlTransitiveDigest": "PSfS8WIGPAeJgTLGPDGhZXBirUTql3dLWA9TuP3zgRo=",
         "usagesDigest": "FPCFWNrWy4C6DiuAQ/J/op4V14JvAVoA3Mb+qezTQHA=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
@@ -612,7 +612,7 @@
     },
     "@@rules_rust+//crate_universe/private:internal_extensions.bzl%cu_nr": {
       "general": {
-        "bzlTransitiveDigest": "btXVm4FwfwuaOvCaqSsPT/JaSnarfnu4v0RVf176doI=",
+        "bzlTransitiveDigest": "4XFeB7vlAH3D7rN0wiNDvrHRMD6aewuvzLa+o4HLaBs=",
         "usagesDigest": "iAlgqWkqGEYgZXT70xCEYNNlc6zWLu7Ll4Kv/g2xyzI=",
         "recordedInputs": [
           "REPO_MAPPING:apple_support+,bazel_skylib bazel_skylib+",
