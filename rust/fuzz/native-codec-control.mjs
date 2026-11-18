@@ -118,11 +118,9 @@ async function main() {
         const request = readFileSync(join(retained, "request"));
         writeFileSync(join(corpus, "unread-delimiters"), Buffer.alloc(4096, request.at(-1)));
       } else if (owner) {
-        await run("capture", ["cargo", "run", "--locked", "-p", "acyclic-native-runtime", "--example", "capture_owner_record", "--", corpus]);
+        await run("capture", ["bazel", "run", "//rust/crates/native-runtime:capture_owner_record_example", "--", corpus]);
       } else {
-        const capture = join(output, process.platform === "win32" ? "capture-native-claim.exe" : "capture-native-claim");
-        await run("compile-capture", ["rustc", "--edition=2024", "rust/fuzz/examples/capture_native_claim.rs", "-o", capture]);
-        await run("capture", [capture, corpus]);
+        await run("capture", ["bazel", "run", "//rust/fuzz:capture_native_claim_example", "--", corpus]);
       }
       command = ["cargo", toolchain, "fuzz", "run", "--fuzz-dir", "rust/fuzz", "--dev", "--no-default-features", ...features, targetName, corpus, "--",
         `-runs=${owner || reportPort ? 1000 : 10000}`, "-seed=1", `-max_len=${reportPort ? 4096 : 8192}`, `-artifact_prefix=${artifacts}${sep}`];
