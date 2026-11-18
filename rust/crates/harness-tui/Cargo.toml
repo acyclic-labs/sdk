@@ -13,10 +13,10 @@ model-checking = ["dep:loom"]
 
 [dependencies]
 acyclic-harness-tui-core = { version = "=0.2.0", path = "../harness-tui-core" }
+acyclic-harness-tui-terminal = { version = "=0.2.0", path = "../harness-tui-terminal" }
 futures.workspace = true
 loom = { version = "0.7.3", optional = true }
 acyclic-markdown = { version = "=0.2.0", path = "../markdown" }
-vte = { version = "0.15" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 zeroize = { workspace = true }

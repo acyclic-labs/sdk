@@ -1,7 +1,7 @@
 use std::io;
 
 use super::{PROBE_LIMIT, Probe, ProbeReplies};
-use crate::key_event::{
+use acyclic_harness_tui_core::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
@@ -93,7 +93,8 @@ impl Decoder {
         Ok(())
     }
 
-    pub(crate) fn input_deadline(
+    /// Shorten the caller's read deadline while a lone Escape is pending.
+    pub fn input_deadline(
         &self,
         deadline: Option<std::time::Instant>,
     ) -> Option<std::time::Instant> {

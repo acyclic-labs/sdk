@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-harness-tui-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal input decoding and capability negotiation for the harness TUI"
+
+[dependencies]
+acyclic-harness-tui-core = { version = "=0.2.0", path = "../harness-tui-core" }
+vte = "0.15"
+
+[lints]
+workspace = true
