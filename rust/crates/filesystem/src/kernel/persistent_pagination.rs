@@ -1270,8 +1270,5 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
 }
 
 fn failed(error: Error, work: Result<WorkCounters, crate::WorkObservationError>) -> Failure {
-    match work {
-        Ok(work) => OperationFailure::new(error, work),
-        Err(observation) => OperationFailure::without_receipt(error, observation),
-    }
+    OperationFailure::observed(error, work)
 }

@@ -119,10 +119,7 @@ where
         },
     )
     .await;
-    result.map_err(|error| match accounting.spent() {
-        Ok(work) => OperationFailure::new(error, work),
-        Err(observation) => OperationFailure::without_receipt(error, observation),
-    })
+    result.map_err(|error| OperationFailure::observed(error, accounting.spent()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
