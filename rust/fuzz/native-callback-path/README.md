@@ -8,18 +8,23 @@ would let both codecs reject every input.
 From the repository root, run the retained corpus and a finite campaign:
 
 ```sh
-target="$(rustc -vV | sed -n 's/^host: //p')"
-RUSTFLAGS="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 \
--Cllvm-args=-sanitizer-coverage-inline-8bit-counters \
--Cllvm-args=-sanitizer-coverage-pc-table \
--Cllvm-args=-sanitizer-coverage-trace-compares" \
-cargo build --locked --target "$target" \
-  -p native-callback-path-fuzz --bin callback_path
-node scripts/fuzz-smoke.mjs "${CARGO_TARGET_DIR:-target}/$target/debug/callback_path" \
+target=//rust/fuzz/native-callback-path:callback_path
+rust_flag=--@rules_rust//rust/settings:per_crate_rustc_flag
+instrumentation=(
+  "$rust_flag=$target@-Cpasses=sancov-module"
+  "$rust_flag=$target@-Cllvm-args=-sanitizer-coverage-level=4"
+  "$rust_flag=$target@-Cllvm-args=-sanitizer-coverage-inline-8bit-counters"
+  "$rust_flag=$target@-Cllvm-args=-sanitizer-coverage-pc-table"
+  "$rust_flag=$target@-Cllvm-args=-sanitizer-coverage-trace-compares"
+)
+bazel build --remote_download_toplevel "${instrumentation[@]}" "$target"
+binary="$(bazel info "${instrumentation[@]}" bazel-bin)/rust/fuzz/native-callback-path/callback_path"
+if [ ! -f "$binary" ]; then binary="$binary.exe"; fi
+node scripts/fuzz-smoke.mjs "$binary" \
   rust/fuzz/native-callback-path/corpus/callback_path -- -seed=1 -runs=4096
 ```
 
-An explicit target keeps coverage instrumentation out of host build scripts,
+The per-crate flags keep coverage instrumentation out of host build scripts,
 which do not link the libFuzzer runtime. LibFuzzer feedback is not a
 source-branch coverage report.
 

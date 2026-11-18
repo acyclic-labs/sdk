@@ -1,6 +1,6 @@
 # Observable fuzz smoke
 
-Build only the selected fuzzer in the existing warm Cargo target, with its original
+Build only the selected Bazel fuzzer target, with its original
 features, profile, target and instrumentation. Then submit its binary, the entire
 retained corpus and the original libFuzzer options to the shared campaign runner:
 
@@ -11,11 +11,8 @@ SDK_FUZZ_CAMPAIGN=/absolute/path/to/fuzz-campaign.mjs node scripts/fuzz-smoke.mj
 The caller declares the workload; there is no default run count or time budget.
 For example, the existing callback-path smoke remains **4096 runs**, with its full
 corpus and sanitizer-coverage flags documented in
-[the target README](../rust/fuzz/native-callback-path/README.md). Replace that
-README's `cargo run` with `cargo build` using the same options, then use the
-resulting `$CARGO_TARGET_DIR/$target/debug/callback_path` binary above. Cargo's
-existing source clocks and target keep unchanged compilation units warm. Building
-in another checkout or changing flags silently splits that artifact cache.
+[the target README](../rust/fuzz/native-callback-path/README.md). Use the Bazel
+build and output path documented there to run this campaign.
 
 Each invocation prints exactly one `FUZZ_CAMPAIGN_TERMINAL PASS|FAIL` line, with
 version 1 JSON containing the binary, corpus, options, elapsed time, phase timings
