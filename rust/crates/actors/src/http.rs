@@ -317,5 +317,5 @@ impl Client {
         .await
     }
 
-    crate::client::operations!(http_operations);
+    acyclic_actors_inventory::native_operations!(http_operations);
 }
