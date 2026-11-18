@@ -100,7 +100,7 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
     pub async fn create_multipart_record(
         &self,
         upload_id: &str,
-        record: Bytes,
+        record: MultipartCreateRecord,
         operation: IdempotencyKey,
     ) -> MultipartStorageResult<bool> {
         let path = self.multipart_path(upload_id)?;
@@ -157,10 +157,10 @@ impl<A: StreamBackedAuthority, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         upload_id: &str,
         expected_tail: u64,
-        record: Bytes,
+        record: MultipartUpdateRecord,
         operation: IdempotencyKey,
     ) -> MultipartStorageResult<bool> {
-        let phase: &[u8] = match RecordCursor::new(&record).any_header()? {
+        let phase: &[u8] = match RecordCursor::new(record.as_ref()).any_header()? {
             PART_RECORD => b"part\0",
             COMPLETING_RECORD => b"complete-intent\0",
             COMPLETED_RECORD => b"complete-terminal\0",

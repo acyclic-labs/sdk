@@ -4,13 +4,45 @@ const COMPLETING_RECORD: u8 = 3;
 const COMPLETED_RECORD: u8 = 4;
 const ABORTED_RECORD: u8 = 5;
 
+/// Encoded creation record for a new multipart upload.
+#[derive(Clone)]
+pub struct MultipartCreateRecord(Bytes);
+
+impl AsRef<[u8]> for MultipartCreateRecord {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl From<MultipartCreateRecord> for acyclic_stream::OwnedBytes {
+    fn from(record: MultipartCreateRecord) -> Self {
+        record.0.into()
+    }
+}
+
+/// Encoded update for an existing multipart upload.
+#[derive(Clone)]
+pub struct MultipartUpdateRecord(Bytes);
+
+impl AsRef<[u8]> for MultipartUpdateRecord {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl From<MultipartUpdateRecord> for acyclic_stream::OwnedBytes {
+    fn from(record: MultipartUpdateRecord) -> Self {
+        record.0.into()
+    }
+}
+
 /// Encodes the key and part bounds of a new upload.
 pub fn encode_multipart_created(
     key: &str,
     maximum_parts: Option<u32>,
     maximum_part_bytes: Option<u64>,
     minimum_part_bytes: u64,
-) -> MultipartStorageResult<Bytes> {
+) -> MultipartStorageResult<MultipartCreateRecord> {
     let key_length = u32::try_from(key.len()).map_err(|_| MultipartStorageError::KeyTooLong)?;
     let mut output = Vec::with_capacity(2 + 4 + key.len() + 4 + 8 + 8);
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, CREATED_RECORD]);
@@ -19,7 +51,7 @@ pub fn encode_multipart_created(
     output.extend_from_slice(&maximum_parts.unwrap_or(0).to_le_bytes());
     output.extend_from_slice(&maximum_part_bytes.unwrap_or(0).to_le_bytes());
     output.extend_from_slice(&minimum_part_bytes.to_le_bytes());
-    Ok(Bytes::from(output))
+    Ok(MultipartCreateRecord(Bytes::from(output)))
 }
 
 /// Encodes a part reference and the operation that uploaded it.
@@ -29,7 +61,7 @@ pub fn encode_multipart_part(
     logical_bytes: u64,
     operation: IdempotencyKey,
     etag_value: &str,
-) -> Bytes {
+) -> MultipartUpdateRecord {
     let mut output = Vec::with_capacity(2 + 4 + root.encoded_len() + 8 + 16 + 32);
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, PART_RECORD]);
     output.extend_from_slice(&part_number.to_le_bytes());
@@ -42,11 +74,13 @@ pub fn encode_multipart_part(
         etag_digest = *blake3::hash(etag_value.as_bytes()).as_bytes();
     }
     output.extend_from_slice(&etag_digest);
-    Bytes::from(output)
+    MultipartUpdateRecord(Bytes::from(output))
 }
 
 /// Encodes the ordered set of parts selected for completion.
-pub fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageResult<Bytes> {
+pub fn encode_multipart_completing(
+    parts: &[(u32, String)],
+) -> MultipartStorageResult<MultipartUpdateRecord> {
     let count = u32::try_from(parts.len()).map_err(|_| MultipartStorageError::TooManyParts)?;
     let mut output = Vec::with_capacity(6 + parts.len().saturating_mul(36));
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, COMPLETING_RECORD]);
@@ -58,22 +92,25 @@ pub fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageR
             .map_err(|_| MultipartStorageError::InvalidPartDigest)?;
         output.extend_from_slice(&digest);
     }
-    Ok(Bytes::from(output))
+    Ok(MultipartUpdateRecord(Bytes::from(output)))
 }
 
 /// Encodes the generation published by completion.
 pub fn encode_multipart_completed(
     generation: acyclic_fs_format::object_reference::GenerationId,
-) -> Bytes {
+) -> MultipartUpdateRecord {
     let mut output = Vec::with_capacity(2 + generation.object_id().encoded_len());
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, COMPLETED_RECORD]);
     output.extend_from_slice(&generation.to_bytes());
-    Bytes::from(output)
+    MultipartUpdateRecord(Bytes::from(output))
 }
 
 /// Encodes an upload abort.
-pub fn encode_multipart_aborted() -> Bytes {
-    Bytes::from_static(&[MULTIPART_RECORD_VERSION, ABORTED_RECORD])
+pub fn encode_multipart_aborted() -> MultipartUpdateRecord {
+    MultipartUpdateRecord(Bytes::from_static(&[
+        MULTIPART_RECORD_VERSION,
+        ABORTED_RECORD,
+    ]))
 }
 
 /// Replays every record up to the observed upload stream tail.

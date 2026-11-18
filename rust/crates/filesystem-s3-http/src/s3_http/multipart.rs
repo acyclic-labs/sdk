@@ -28,7 +28,7 @@ where
         workspace: &Workspace<A, O>,
         upload_id: &str,
         expected_tail: u64,
-        record: Bytes,
+        record: acyclic_fs::s3_multipart::MultipartUpdateRecord,
         operation: IdempotencyKey,
     ) -> S3Result<bool> {
         workspace

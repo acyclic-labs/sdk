@@ -1,7 +1,7 @@
 //! On-demand multipart record admission through the original replay decoder.
 use super::*;
 
-fn created() -> MultipartStorageResult<Bytes> {
+fn created() -> MultipartStorageResult<MultipartCreateRecord> {
     let limits = FilesystemS3Limits::default();
     encode_multipart_created("key", Some(2), limits.maximum_multipart_part_bytes, 0)
 }
@@ -104,7 +104,9 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
         ..FilesystemS3Limits::default()
     };
     let initial = encode_multipart_created("key", Some(u32::MAX), Some(1), 0)?;
-    let mut count_only = encode_multipart_completing(&[(1, etag())])?.to_vec();
+    let mut count_only = encode_multipart_completing(&[(1, etag())])?
+        .as_ref()
+        .to_vec();
     count_only.truncate(6);
     count_only[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(
@@ -121,12 +123,17 @@ fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
 /// Capture each production writer with complete plain and sealed references.
 pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
     let mut seeds = vec![
-        ("multipart-created", created()?.to_vec()),
+        ("multipart-created", created()?.as_ref().to_vec()),
         (
             "multipart-completing",
-            encode_multipart_completing(&[(1, etag())])?.to_vec(),
+            encode_multipart_completing(&[(1, etag())])?
+                .as_ref()
+                .to_vec(),
         ),
-        ("multipart-aborted", encode_multipart_aborted().to_vec()),
+        (
+            "multipart-aborted",
+            encode_multipart_aborted().as_ref().to_vec(),
+        ),
     ];
     for sealed in [false, true] {
         let root = ObjectId {
@@ -145,6 +152,7 @@ pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
                 "multipart-part"
             },
             encode_multipart_part(1, root, 4, IdempotencyKey::from_bytes([6; 16]), &etag())
+                .as_ref()
                 .to_vec(),
         ));
         let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
@@ -157,7 +165,7 @@ pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
             } else {
                 "multipart-completed"
             },
-            encode_multipart_completed(generation).to_vec(),
+            encode_multipart_completed(generation).as_ref().to_vec(),
         ));
     }
     Ok(seeds)
