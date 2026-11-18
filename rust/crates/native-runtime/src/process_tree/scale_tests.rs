@@ -58,7 +58,7 @@ fn threads() -> io::Result<u64> {
         );
         Ok(total + u64::try_from(started).map_err(io::Error::other)?)
     })?;
-    crate::resources::process_resources()?
+    acyclic_process_resources::resources::process_resources()?
         .threads
         .checked_sub(shared)
         .ok_or_else(|| {
