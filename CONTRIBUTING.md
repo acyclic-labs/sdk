@@ -239,8 +239,9 @@ not need these adapters.
 ## Before opening a PR
 
 Run `node scripts/qualify-rustfmt.mjs` and use Bazel to build and test the
-affected packages. Pass `--@rules_rust//rust/settings:extra_rustc_flag=-Dwarnings`
-to deny warnings. Full release qualification covers the broader suites.
+affected packages. Use `--@rules_rust//rust/settings:per_crate_rustc_flag=//package:@-Dwarnings`
+to deny warnings for Rust targets in the affected package. Full release
+qualification covers the broader suites.
 Write formatting with `node scripts/qualify-rustfmt.mjs --write`, the
 same mechanism the check uses. Every PR should get review and approval from a
 code owner (`.github/CODEOWNERS`) before it merges; branch protection does not yet

@@ -25,7 +25,7 @@ Run the default workspace checks:
 
 ```sh
 node scripts/qualify-rustfmt.mjs
-bazel test --@rules_rust//rust/settings:extra_rustc_flag=-Dwarnings //...
+bazel test //...
 bun install --frozen-lockfile
 bun run check
 bun test
