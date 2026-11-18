@@ -550,7 +550,6 @@ rust_test(
         "tests/support/provider_receipt.rs",
         "tests/support/selected_budget.rs",
         "tests/support/simulation_image.rs",
-        "tests/support/join_plan.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/wire_errors.rs",
@@ -1859,6 +1858,7 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
