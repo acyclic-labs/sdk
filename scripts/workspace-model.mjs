@@ -8,30 +8,49 @@ import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, lockDepende
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
+function bazelResolution(file, optional = false) {
+  try {return JSON.parse(fs.readFileSync(file, 'utf8'));}
+  catch (error) {if (!optional || error.code !== 'ENOENT') throw error; return null;}
+}
 const requirement = value => value === undefined ? '*' : /^\d/.test(value) ? `^${value}` : value;
 const selectedEntries = (value, universe, triple) => Array.isArray(value) ? value :
   [...(value?.common ?? []), ...Object.entries(value?.selects ?? {}).flatMap(([cfg, entries]) => triple === null || (universe.conditions[cfg] ?? [cfg]).includes(triple) ? entries : [])];
 export function compareVersions(a, b) {
-  const parts = value => value.split('+')[0].split(/[.-]/).map(x => /^\d+$/.test(x) ? Number(x) : x);
+  const parts = value => {
+    const [core, ...suffix] = value.split('+')[0].split('-');
+    return {core: core.split('.').map(Number), pre: suffix.length ? suffix.join('-').split('.') : null};
+  };
   const aa = parts(a), bb = parts(b);
-  for (let n = 0; n < Math.max(aa.length, bb.length); n++) {
-    if (aa[n] === bb[n]) continue;
-    if (aa[n] === undefined) return n >= 3 ? 1 : -1;
-    if (bb[n] === undefined) return n >= 3 ? -1 : 1;
-    return aa[n] < bb[n] ? -1 : 1;
+  for (let n = 0; n < 3; n++) {
+    const delta = (aa.core[n] ?? 0) - (bb.core[n] ?? 0);
+    if (delta) return delta;
+  }
+  if (!aa.pre || !bb.pre) return aa.pre ? -1 : bb.pre ? 1 : 0;
+  for (let n = 0; n < Math.max(aa.pre.length, bb.pre.length); n++) {
+    const x = aa.pre[n], y = bb.pre[n];
+    if (x === y) continue;
+    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+    const numericX = /^\d+$/.test(x), numericY = /^\d+$/.test(y);
+    if (numericX !== numericY) return numericX ? -1 : 1;
+    return numericX ? Number(x) - Number(y) : x < y ? -1 : 1;
   }
   return 0;
 }
 export function versionMatches(version, requirement) {
-  return requirement.split(',').every(part => {
-    const match = /^\s*(\^|~|=|>=|<=|>|<)?\s*(\d+|\*)(?:\.(\d+|\*))?(?:\.(\d+|\*))?\s*$/.exec(part);
+  const comparisons = requirement.split(',').map(part => {
+    const match = /^\s*(\^|~|=|>=|<=|>|<)?\s*(\d+|\*)(?:\.(\d+|\*))?(?:\.(\d+|\*))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?\s*$/.exec(part);
     if (!match) throw Error(`unsupported locked version requirement ${requirement}`);
-    const [, operator = '^', ...fields] = match;
+    return match;
+  });
+  if (version.split('+')[0].includes('-') && !comparisons.some(match => match[5] && match.slice(2, 5).join('.') === version.split('-')[0])) return false;
+  return comparisons.every(match => {
+    const [, operator = '^', major, minor, patch, prerelease] = match;
+    const fields = [major, minor, patch];
     const count = fields.findIndex(x => x === undefined || x === '*');
     const length = count < 0 ? 3 : count;
     if (!length) return true;
     const lower = fields.map(x => x === undefined || x === '*' ? 0 : Number(x));
-    const comparison = compareVersions(version, lower.join('.'));
+    const comparison = compareVersions(version, lower.join('.') + (prerelease ? `-${prerelease}` : ''));
     if (operator === '>=') return comparison >= 0;
     if (operator === '<=') return comparison <= 0;
     if (operator === '>') return comparison > 0;
@@ -173,7 +192,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
       dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
         req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
         uses_default_features: declaration['default-features'] ?? true, features: declaration.features ?? [],
-        source: declaration.path ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {resolved_path: local} : {}), ...(declaration.path ? {path: local} : {})});
+        source: declaration.path ? null : declaration.git ? 'git+' + declaration.git + (declaration.rev ? '?rev=' + declaration.rev : declaration.branch ? '?branch=' + declaration.branch : declaration.tag ? '?tag=' + declaration.tag : '') : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {resolved_path: local} : {}), ...(declaration.path ? {path: local} : {})});
     }
     const features = {...manifest.features};
     const explicit = new Set(Object.values(features).flat().filter(value => value.startsWith('dep:')).map(value => value.slice(4)));
@@ -294,7 +313,7 @@ function lockedOwner(lock, {name, version}) {
 
 function lockedCandidates(resolve, declaration, owner) {
   return [...new Set((owner.dependencies ?? []).flatMap(ref => resolve(ref, declaration.name)))]
-    .filter(pkg => versionMatches(pkg.version, declaration.req));
+    .filter(pkg => (!declaration.source || pkg.source?.split('#')[0] === declaration.source) && versionMatches(pkg.version, declaration.req));
 }
 
 function uniqueDependency(owner, declaration, matches) {
@@ -318,7 +337,7 @@ function recordRegistryRequests(input, declaration, features) {
 // The resolved features themselves remain crate_universe's responsibility.
 export function registryInputs(root) {
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
-  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
+  const universe = bazelResolution(path.join(root, 'cargo-bazel-lock.json'), true) ?? {crates: {}, conditions: {}};
   const candidates = (lock.package ?? []).filter(p => p.source?.startsWith('registry+')).map(p => ({
     ...p, features: new Set(), defaultFeatures: false,
   }));
@@ -340,7 +359,7 @@ export function registryInputs(root) {
             if (!dep) throw Error(`${p.name}: missing path dependency ${d.name}`);
             add(reachable, dep.id);
             applyRequests(add, enabled.get(dep.id), dep, d, features);
-          } else {
+          } else if (d.source?.startsWith('registry+')) {
             const input = uniqueDependency(p, d, lockedCandidates(resolve, d, locked));
             inputs.add(input);
             recordRegistryRequests(input, d, features);
@@ -364,14 +383,53 @@ export function assertRegistryPinsCurrent(root) {
   }
 }
 
-function registryPackages(lock, universe, triple) {
-  return (lock.package ?? []).filter(p => p.source).map(p => {
-    const pinned = universe.crates[`${p.name} ${p.version}`];
+function registryPackages(lock, universe, triple, {bazelTargets = [], sourceRoots = {}, bazelRules = new Map()} = {}) {
+  const sources = new Map(Object.entries(sourceRoots).map(([source, directory]) => [source, workspacePackages(directory)]));
+  const external = (lock.package ?? []).filter(pkg => pkg.source);
+  const byPin = Map.groupBy(external, pkg => pkg.name + ' ' + pkg.version);
+  const rules = bazelTargets.map(target => target.rule).filter(rule => ['rust_library', 'rust_proc_macro'].includes(rule?.ruleClass));
+  return external.map(p => {
+    const baseSource = p.source.split(/[?#]/)[0];
+    let checkout = sources.get(p.source);
+    if (!checkout && sources.has(baseSource)) {
+      const revisions = new Set(lock.package.filter(x => x.source?.split(/[?#]/)[0] === baseSource).map(x => x.source));
+      if (revisions.size !== 1) throw Error(`ambiguous Git source root ${baseSource}; supply exact locked-source keys`);
+      checkout = sources.get(baseSource);
+    }
+    const manifest = checkout?.find(x => x.name === p.name && x.version === p.version);
+    const matches = rules.filter(rule => {
+      const attribute = name => rule.attribute?.find(a => a.name === name)?.stringValue;
+      return rule.name.includes(`__${p.name}-${p.version}//`) || attribute('version') === p.version &&
+        (attribute('crate_name') === p.name.replaceAll('-', '_') || rule.name.split(':').at(-1) === p.name.replaceAll('-', '_'));
+    });
+    const identities = new Set((byPin.get(p.name + ' ' + p.version) ?? []).map(x => x.source));
+    if (identities.size > 1 && (matches.length || universe.crates[`${p.name} ${p.version}`]))
+      throw Error(`ambiguous Bazel metadata for ${p.name}@${p.version}: multiple locked sources`);
+    if (new Set(matches.map(rule => rule.name)).size > 1)
+      throw Error(`ambiguous Bazel metadata for ${p.name}@${p.version}: multiple library rules`);
+    const resolved = matches[0];
+    const attribute = name => resolved?.attribute?.find(a => a.name === name);
+    const pinned = universe.crates[`${p.name} ${p.version}`] ?? (resolved ? {
+      targets: [{[resolved.ruleClass === 'rust_proc_macro' ? 'ProcMacro' : 'Library']: {crate_name: attribute('crate_name')?.stringValue || resolved.name.split(':').at(-1)}}],
+      common_attrs: {crate_features: attribute('crate_features')?.stringListValue ?? []},
+    } : undefined);
     const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
     const target = lib?.Library ?? lib?.ProcMacro;
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
+    const library = target && {kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name};
+    const targets = [...(manifest?.targets ?? [])];
+    if (library) {
+      const index = targets.findIndex(target => target.kind.some(kind => ['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'].includes(kind)));
+      if (index === -1) targets.push(library);
+      else {
+        const manifestTarget = targets[index];
+        const kind = lib.ProcMacro || manifestTarget.kind.includes('proc-macro') ? library.kind : manifestTarget.kind;
+        targets[index] = {...manifestTarget, name: library.name, kind};
+      }
+    }
+    if (resolved) bazelRules.set(`${p.source}#${p.name}@${p.version}`, resolved);
+    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: manifest?.manifest_path ?? '', dependencies: [], metadata: manifest?.metadata ?? null,
       features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
-      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
+      targets};
   });
 }
 
@@ -457,7 +515,7 @@ export function workspaceBrowserGraph(root, selections) {
     workspace_root:root, registry_inputs:registryInputs, resolve:{nodes:[...nodes.values()]}};
 }
 
-export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile} = {}) {
+export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile, resolution, bazelTargets = [], sourceRoots = {}} = {}) {
   const allPlatforms = triple === null;
   triple ??= 'x86_64-unknown-linux-gnu';
   root = path.resolve(root);
@@ -465,8 +523,12 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const universePath = universeFile ? path.resolve(sourceRoot, universeFile) : path.join(root, 'cargo-bazel-lock.json');
   const universeRelative = path.relative(path.resolve(sourceRoot), universePath);
   if (universeRelative === '..' || universeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(universeRelative)) throw Error('workspace universe escapes source root');
-  const universe = JSON.parse(fs.readFileSync(universePath, 'utf8'));
-  const registry = registryPackages(lock, universe, allPlatforms ? null : triple);
+  const pinnedResolution = resolution ?? bazelResolution(universePath, !universeFile);
+  const universe = pinnedResolution ?? {crates: {}, conditions: {}};
+  const resolvedFeatures = pinnedResolution !== null || bazelTargets.length > 0;
+  const bazelRules = new Map();
+  const registry = registryPackages(lock, universe, allPlatforms ? null : triple, {bazelTargets, sourceRoots, bazelRules});
+  const packagesByRule = new Map(registry.flatMap(pkg => bazelRules.has(pkg.id) ? [[bazelRules.get(pkg.id).name, pkg]] : []));
   const packages = [...local, ...registry];
   const resolve = lockDependencyIndex(packages);
   const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
@@ -490,6 +552,11 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
       const dependency = uniqueDependency(p, d, d.resolved_path
         ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : lockedCandidates(resolve, d, locked));
       const name = (d.rename ?? d.name).replaceAll('-', '_');
+      if (dependency.source && resolvedFeatures) {
+        const requested = [...d.features, ...forwardedFeatures(enabled.get(p.id), d.rename ?? d.name)];
+        for (const feature of requested) if (!Object.hasOwn(dependency.features, feature))
+          throw Error(`${p.name}: ${d.name} feature ${feature} missing from Bazel resolution; repin the crate graph`);
+      }
       const key = `${name}:${dependency.id}`;
       if (!deps.has(key)) deps.set(key, {name, pkg: dependency.id, dep_kinds: []});
       deps.get(key).dep_kinds.push({kind: d.kind, target: d.target});
@@ -499,11 +566,21 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   nodes.push(...registry.map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const deps = [];
-    let incomplete = !pinned;
+    let incomplete = !pinned && !bazelRules.has(p.id);
     for (const {entry, kind} of pinnedEdges(pinned, universe, allPlatforms ? null : triple)) {
       const candidates = byPin.get(entry.id) ?? [];
       if (candidates.length !== 1) {incomplete = true; continue;}
       deps.push({name: entry.alias ?? entry.target, pkg: candidates[0].id, dep_kinds: [{kind, target: null}]});
+    }
+    if (!pinned) {
+      const rule = bazelRules.get(p.id);
+      for (const attribute of rule?.attribute ?? []) {
+        if (!['deps', 'proc_macro_deps'].includes(attribute.name)) continue;
+        for (const label of attribute.stringListValue ?? []) {
+          const dependency = packagesByRule.get(label);
+          if (dependency) deps.push({name: label.split(':').at(-1), pkg: dependency.id, dep_kinds: [{kind: null, target: null}]});
+        }
+      }
     }
     return {id: p.id, deps, features: Object.keys(p.features), incomplete};
   }));

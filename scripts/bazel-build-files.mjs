@@ -1274,7 +1274,7 @@ const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n
 /** @type {Map<string,string|null>} */
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
-  ["rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json", workspaceMetadata],
+  ["workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 ${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],

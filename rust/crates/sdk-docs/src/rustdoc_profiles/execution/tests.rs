@@ -5,7 +5,7 @@ use std::cell::Cell;
 #[test]
 fn declared_workspace_metadata_round_trips_to_a_new_root() {
     let source = acyclic_test_support::source_path(
-        "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+        "workspace-metadata.json",
     );
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
@@ -35,7 +35,7 @@ fn declared_workspace_metadata_round_trips_to_a_new_root() {
 #[test]
 fn workspace_metadata_rebases_percent_encoded_package_ids() {
     let source = acyclic_test_support::source_path(
-        "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+        "workspace-metadata.json",
     );
     let mut metadata: serde_json::Value =
         serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
@@ -78,7 +78,7 @@ fn workspace_metadata_relocates_windows_path_components() {
     assert_eq!(graph["sibling"], "C:/build/sdk-other/Cargo.toml");
 
     let source = acyclic_test_support::source_path(
-        "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+        "workspace-metadata.json",
     );
     let mut metadata: serde_json::Value =
         serde_json::from_slice(&fs::read(source).unwrap()).unwrap();

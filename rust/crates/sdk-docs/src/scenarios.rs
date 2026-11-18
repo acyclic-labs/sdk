@@ -552,9 +552,7 @@ mod tests {
         let root = acyclic_test_support::source_path("");
         let metadata = crate::rustdoc_profiles::load_workspace_metadata(
             &root,
-            &acyclic_test_support::source_path(
-                "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
-            ),
+            &acyclic_test_support::source_path("workspace-metadata.json"),
         )
         .expect("generated workspace metadata");
         let sources = validate(&root, &metadata).expect("registered scenario sources should exist");

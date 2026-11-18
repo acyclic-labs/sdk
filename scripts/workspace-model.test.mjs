@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {assertRegistryPinsCurrent, workspaceBrowserGraph, workspaceGraph, workspacePackages, workspaceProfileMetadata, versionMatches} from './workspace-model.mjs';
+import {assertRegistryPinsCurrent, compareVersions, workspaceBrowserGraph, workspaceGraph, workspacePackages, workspaceProfileMetadata, versionMatches} from './workspace-model.mjs';
 import {workspacePackages as testPackages, wasmPackages} from './check-crate-tests.mjs';
 
 function workspaceFixture(t, prefix) {
@@ -17,6 +17,117 @@ function workspaceFixture(t, prefix) {
     fs.writeFileSync(destination, text);
   }};
 }
+
+test('consumer graph reads Cargo.lock without a root Bazel resolution', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'consumer-model-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[package]\nname="consumer"\nversion="0.1.0"\n[dependencies]\nserde="1"\n');
+  fs.writeFileSync(path.join(root, 'Cargo.lock'), 'version=4\n[[package]]\nname="consumer"\nversion="0.1.0"\ndependencies=["serde"]\n[[package]]\nname="serde"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname="helper"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+  const graph = workspaceGraph(root);
+  const serde = graph.packages.find(p => p.name === 'serde');
+  assert.equal(graph.resolve.nodes.find(n => n.id === graph.workspace_members[0]).deps[0].pkg, serde.id);
+  assert.deepEqual(serde.targets, []);
+  const resolution = {conditions: {}, crates: {'serde 1.0.0': {targets: [{Library: {crate_name: 'serde'}}], common_attrs: {crate_features: ['derive']}}}};
+  const resolved = workspaceGraph(root, 'x86_64-unknown-linux-gnu', {resolution});
+  assert.deepEqual(resolved.packages.find(p => p.name === 'serde').targets, [{kind: ['lib'], name: 'serde'}]);
+  assert.deepEqual(resolved.resolve.nodes.find(n => n.id === serde.id).features, ['derive']);
+  const bazelTargets = [{rule: {name: '@crates__serde-1.0.0//:build_script', ruleClass: 'cargo_build_script'}}, {rule: {name: '@crates__serde_1_0_0//:serde', ruleClass: 'rust_proc_macro', attribute: [
+    {name: 'version', stringValue: '1.0.0'}, {name: 'crate_name', stringValue: 'serde_macro'}, {name: 'crate_features', stringListValue: ['derive']},
+    {name: 'deps', stringListValue: ['@crates__helper-1.0.0//:helper']},
+  ]}}, {rule: {name: '@crates__helper-1.0.0//:helper', ruleClass: 'rust_library', attribute: []}}];
+  const bazel = workspaceGraph(root, 'x86_64-unknown-linux-gnu', {bazelTargets});
+  assert.deepEqual(bazel.packages.find(p => p.name === 'serde').targets, [{kind: ['proc-macro'], name: 'serde_macro'}]);
+  assert.deepEqual(bazel.resolve.nodes.find(n => n.id === serde.id).features, ['derive']);
+  assert.equal(bazel.resolve.nodes.find(n => n.id === serde.id).deps[0].pkg, bazel.packages.find(p => p.name === 'helper').id);
+  const requested = path.join(root, 'requested');
+  fs.mkdirSync(requested);
+  fs.copyFileSync(path.join(root, 'Cargo.lock'), path.join(requested, 'Cargo.lock'));
+  fs.writeFileSync(path.join(requested, 'Cargo.toml'), '[package]\nname="consumer"\nversion="0.1.0"\n[dependencies]\nserde={version="1",features=["missing"]}\n');
+  assert.throws(() => workspaceGraph(requested, 'x86_64-unknown-linux-gnu', {bazelTargets}), /feature missing missing from Bazel resolution/);
+  assert.throws(() => workspaceGraph(requested, 'x86_64-unknown-linux-gnu', {resolution}), /feature missing missing from Bazel resolution/);
+  assert.throws(() => workspaceGraph(requested, 'x86_64-unknown-linux-gnu', {resolution: {conditions: {}, crates: {}}}), /feature missing missing from Bazel resolution/);
+  const matchingResolution = structuredClone(resolution);
+  matchingResolution.crates['serde 1.0.0'].common_attrs.crate_features = ['missing'];
+  assert.deepEqual(workspaceGraph(requested, 'x86_64-unknown-linux-gnu', {resolution: matchingResolution}).resolve.nodes.find(n => n.id.endsWith('#serde@1.0.0')).features, ['missing']);
+  fs.writeFileSync(path.join(root, 'cargo-bazel-lock.json'), '{invalid');
+  assert.throws(() => workspaceGraph(root), SyntaxError);
+});
+
+test('Git manifests retain build scripts and source fields when Bazel supplies library metadata', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-targets-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const source = 'git+https://github.com/example/sdk?rev=abc#abc', checkout = path.join(root, 'sdk-source');
+  fs.mkdirSync(path.join(checkout, 'src'), {recursive: true});
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers=[]\n');
+  fs.writeFileSync(path.join(root, 'Cargo.lock'), `version=4\n[[package]]\nname="sdk"\nversion="1.0.0"\nsource="${source}"\n`);
+  fs.writeFileSync(path.join(checkout, 'Cargo.toml'), '[package]\nname="sdk"\nversion="1.0.0"\nedition="2024"\n');
+  fs.writeFileSync(path.join(checkout, 'src/lib.rs'), '');
+  fs.writeFileSync(path.join(checkout, 'build.rs'), 'fn main() {}\n');
+  const original = workspacePackages(checkout)[0].targets;
+  const bazelTargets = [{rule: {name: '@crates__sdk-1.0.0//:sdk_macro', ruleClass: 'rust_proc_macro', attribute: [
+    {name: 'crate_name', stringValue: 'sdk_macro'},
+  ]}}];
+  const graph = workspaceGraph(root, undefined, {bazelTargets, sourceRoots: {[source]: checkout}});
+  const targets = graph.packages.find(p => p.name === 'sdk').targets;
+  assert.deepEqual(targets.find(t => t.kind.includes('custom-build')), original.find(t => t.kind.includes('custom-build')));
+  assert.deepEqual(targets.find(t => t.kind.includes('proc-macro')), {...original.find(t => t.kind.includes('lib')), kind: ['proc-macro'], name: 'sdk_macro'});
+  const manifest = path.join(checkout, 'Cargo.toml');
+  fs.appendFileSync(manifest, '\n[lib]\ncrate-type=["rlib", "cdylib"]\n');
+  const multiOutput = workspacePackages(checkout)[0].targets;
+  const libraryOptions = {...bazelTargets[0].rule, ruleClass: 'rust_library'};
+  const multiGraph = workspaceGraph(root, undefined, {bazelTargets: [{rule: libraryOptions}], sourceRoots: {[source]: checkout}});
+  const multiTargets = multiGraph.packages.find(p => p.name === 'sdk').targets;
+  assert.deepEqual(multiTargets, multiOutput.map(target =>
+    target.kind.includes('rlib') ? {...target, name: 'sdk_macro'} : target));
+});
+
+test('Cloud-shaped consumer keeps inherited pinned Git dependencies distinct from registry crates', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-model-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  fs.mkdirSync(path.join(root, 'svc'));
+  fs.writeFileSync(path.join(root, 'cargo-bazel-lock.json'), JSON.stringify({crates: {}, conditions: {}}));
+  const revision = 'a'.repeat(40), source = `git+https://github.com/acyclic-labs/sdk?rev=${revision}`;
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), `[workspace]\nmembers=["svc"]\n[workspace.dependencies]\nsdk={package="acyclic-fs",git="https://github.com/acyclic-labs/sdk",rev="${revision}",default-features=false}\n`);
+  fs.writeFileSync(path.join(root, 'svc/Cargo.toml'), '[package]\nname="cloud-service"\nversion="0.1.0"\n[dependencies]\nsdk.workspace=true\nregistry={package="acyclic-fs",version="1"}\n');
+  fs.writeFileSync(path.join(root, 'Cargo.lock'), `version=4\n[[package]]\nname="cloud-service"\nversion="0.1.0"\ndependencies=["acyclic-fs 1.0.0 (${source}#${revision})", "acyclic-fs 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)"]\n[[package]]\nname="acyclic-fs"\nversion="1.0.0"\nsource="${source}#${revision}"\n[[package]]\nname="acyclic-fs"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n`);
+  const graph = workspaceGraph(root), service = graph.packages.find(p => p.name === 'cloud-service');
+  assert.equal(service.dependencies.find(d => d.rename === 'sdk').source, source);
+  const edges = graph.resolve.nodes.find(n => n.id === service.id).deps;
+  for (const [alias, prefix] of [['sdk', 'git+'], ['registry', 'registry+']])
+    assert.ok(graph.packages.find(p => p.id === edges.find(d => d.name === alias).pkg).source.startsWith(prefix));
+  const checkout = path.join(root, 'sdk-source');
+  fs.mkdirSync(path.join(checkout, 'src'), {recursive: true});
+  fs.writeFileSync(path.join(checkout, 'src/lib.rs'), '');
+  fs.writeFileSync(path.join(checkout, 'Cargo.toml'), '[package]\nname="acyclic-fs"\nversion="1.0.0"\n[package.metadata.bazel]\nbuild-script-env={linux-x86_64={PROTOC="protoc"}}\n');
+  const projected = workspaceGraph(root, 'x86_64-unknown-linux-gnu', {sourceRoots: {'git+https://github.com/acyclic-labs/sdk': checkout}});
+  const git = projected.packages.find(p => p.source?.startsWith('git+'));
+  assert.equal(git.manifest_path, path.join(checkout, 'Cargo.toml'));
+  assert.equal(git.metadata.bazel['build-script-env']['linux-x86_64'].PROTOC, 'protoc');
+  assert.deepEqual(git.targets.map(t => t.name), ['acyclic_fs']);
+  const ambiguous = [{rule: {name: '@crates__acyclic_fs_1_0_0//:acyclic_fs', ruleClass: 'rust_library', attribute: [
+    {name: 'version', stringValue: '1.0.0'}, {name: 'crate_name', stringValue: 'acyclic_fs'},
+  ]}}];
+  assert.throws(() => workspaceGraph(root, 'x86_64-unknown-linux-gnu', {bazelTargets: ambiguous}), /ambiguous Bazel metadata.*multiple locked sources/);
+});
+
+test('Git source roots distinguish exact locked revisions and refuse an ambiguous base URL', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-revisions-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const base = 'git+https://github.com/example/sdk', revisions = ['a'.repeat(40), 'b'.repeat(40)];
+  const sources = revisions.map(rev => `${base}?rev=${rev}#${rev}`), roots = {};
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers=[]\n');
+  fs.writeFileSync(path.join(root, 'Cargo.lock'), 'version=4\n' + sources.map(source => `[[package]]\nname="sdk"\nversion="1.0.0"\nsource="${source}"\n`).join(''));
+  for (const [index, source] of sources.entries()) {
+    const checkout = path.join(root, `revision-${index}`);
+    fs.mkdirSync(checkout);
+    fs.writeFileSync(path.join(checkout, 'Cargo.toml'), `[package]\nname="sdk"\nversion="1.0.0"\n[package.metadata]\nrevision=${index}\n`);
+    roots[source] = checkout;
+  }
+  const graph = workspaceGraph(root, 'x86_64-unknown-linux-gnu', {sourceRoots: roots});
+  for (const [index, source] of sources.entries())
+    assert.equal(graph.packages.find(p => p.source === source).metadata.revision, index);
+  assert.throws(() => workspaceGraph(root, 'x86_64-unknown-linux-gnu', {sourceRoots: {[base]: roots[sources[0]]}}), /ambiguous Git source root.*exact locked-source/);
+});
 
 test('manifest and Bazel lock projection preserves aliases, target edges and local feature forwarding', t => {
   const {root, write} = workspaceFixture(t, 'workspace model #% -');
@@ -196,6 +307,15 @@ test('locked version selection distinguishes aliases across incompatible version
   assert.equal(versionMatches('0.0.4', '^0.0.3'), false);
   assert.equal(versionMatches('2.4.1', '>=2, <3'), true);
   assert.equal(versionMatches('2.5.0', '~2.4.0'), false);
+  assert.equal(versionMatches('0.10.0-alpha.37', '=0.10.0-alpha.37'), true);
+  assert.equal(versionMatches('0.10.0-alpha.38', '=0.10.0-alpha.37'), false);
+  assert.equal(versionMatches('0.10.0-alpha.38', '^0.10.0-alpha.37'), true);
+  assert.equal(versionMatches('0.10.0-alpha.37', '^0.10'), false);
+  assert.equal(versionMatches('0.10.1-alpha.37', '^0.10.0-alpha.37'), false);
+  assert.equal(versionMatches('1.0.0-beta', '>=1.0.0-alpha, <2'), true);
+  assert.equal(versionMatches('1.0.0-alpha.1', '>=1.0.0-alpha'), true);
+  assert.ok(compareVersions('1.0.0-alpha-beta', '1.0.0-alpha.beta') > 0);
+  assert.ok(compareVersions('1.0.0-alpha', '1.0.0-alpha.1') < 0);
   assert.throws(() => versionMatches('1.0.0', 'not a requirement'), /unsupported/);
 });
 
