@@ -23,29 +23,37 @@ pub(crate) fn accounted<R>(
     } else {
         None
     };
+    let native_receipt = || {
+        work.as_ref()
+            .map_or_else(WorkCounters::default, NativeMaterializationWork::receipt)
+    };
+    let live_native = || match &work {
+        Some(work) => work
+            .live_allocation_bytes()
+            .map_err(|error| (error.to_string(), work.receipt())),
+        None => Ok(0),
+    };
     let io = match &work {
         Some(work) => PreparationIo::from_native_work(work),
         None => PreparationIo::from_budget(budget, &cancellation),
     }
-    .unwrap();
+    .map_err(|error| (error.to_string(), native_receipt()))?;
     if cancelled {
         cancellation.cancel();
     }
     let result = run(&io);
     let receipt = io.receipt();
-    let owned = io.owned_bytes().unwrap();
-    let held = work
-        .as_ref()
-        .map_or(0, NativeMaterializationWork::live_allocation_bytes);
+    let owned = io
+        .owned_bytes()
+        .map_err(|error| (error.to_string(), receipt))?;
+    let held = live_native()?;
     drop(io);
     Ok((
         result,
         receipt,
         owned,
-        work.as_ref()
-            .map_or(WorkCounters::default(), NativeMaterializationWork::receipt),
+        native_receipt(),
         held,
-        work.as_ref()
-            .map_or(0, NativeMaterializationWork::live_allocation_bytes),
+        live_native()?,
     ))
 }
