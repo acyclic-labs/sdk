@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs_work::serde_decode::MaterializationDecode;
 
 pub(crate) fn reserve<T>(
     values: &mut Vec<T>,
@@ -292,31 +293,24 @@ pub(super) fn measured_decode_reader<T: DeserializeOwned>(
             ..crate::WorkCounters::UNCHARGED
         },
     )?;
-    let decode = MaterializationDecode {
-        work,
-        allocation: std::cell::RefCell::new(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
-        failure: std::cell::RefCell::new(None),
-    };
+    let decode = MaterializationDecode::new(work)?;
     let mut reader = DecodeReader {
         inner: reader,
         failure: None,
     };
     let mut deserializer = serde_json::Deserializer::from_reader(&mut reader);
-    let result = T::deserialize(Funded {
-        inner: &mut deserializer,
-        decode: &decode,
-        kind: DecodeKind::Borrowed,
-    })
-    .and_then(|value| deserializer.end().map(|()| value));
+    let result = decode
+        .deserialize(&mut deserializer)
+        .and_then(|value| deserializer.end().map(|()| value));
     drop(deserializer);
-    if let Some(error) = decode.failure.borrow_mut().take() {
+    if let Some(error) = decode.take_failure() {
         return Err(LocalCoreStateStoreError::from(error));
     }
     if let Some(error) = reader.failure {
         return Err(LocalCoreStateStoreError::from(error));
     }
     let value = result?;
-    Ok((value, decode.allocation.into_inner()))
+    Ok((value, decode.into_allocation()))
 }
 
 pub(super) struct MaterializationWriter<'a> {

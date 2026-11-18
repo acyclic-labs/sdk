@@ -734,10 +734,9 @@ mod journal;
 mod materialized_metadata;
 pub use journal::LocalMaterializationActionCompletion;
 mod decode;
+mod nodes;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
-use decode::*;
-mod nodes;
 pub(crate) use nodes::native_core_error;
 mod publications;
 use nodes::*;

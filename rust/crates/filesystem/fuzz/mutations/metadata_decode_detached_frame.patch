@@ -1,6 +1,6 @@
---- a/rust/crates/filesystem/src/kernel/serde_decode/original.rs
-+++ b/rust/crates/filesystem/src/kernel/serde_decode/original.rs
-@@ -45,6 +45,11 @@
+--- a/rust/crates/filesystem/src/kernel/serde_decode.rs
++++ b/rust/crates/filesystem/src/kernel/serde_decode.rs
+@@ -86,6 +86,11 @@
      input: &[u8],
      accounting: &mut KernelAccounting<'_>,
  ) -> Result<Retained<T>, MetadataDecodeError> {
