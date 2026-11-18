@@ -111,12 +111,14 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
     }
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     pub(crate) fn values(&self) -> Result<Vec<V>, StreamError> {
-        Ok(self
-            .entries
-            .lock()?
-            .values()
-            .map(|entry| entry.value.clone())
-            .collect())
+        self.snapshot(|entry| entry.value.clone())
+    }
+    #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), all(loom, test)))]
+    fn snapshot<T>(
+        &self,
+        project: impl FnMut(&Registration<V>) -> T,
+    ) -> Result<Vec<T>, StreamError> {
+        Ok(self.entries.lock()?.values().map(project).collect())
     }
     #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
     pub(crate) fn notify(&self, key: &K) -> Result<(), StreamError> {
@@ -132,13 +134,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
     }
     #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), all(loom, test)))]
     pub(crate) fn notify_all(&self) -> Result<(), StreamError> {
-        let changed = self
-            .entries
-            .lock()?
-            .values()
-            .map(|entry| entry.changed.clone())
-            .collect::<Vec<_>>();
-        for changed in changed {
+        for changed in self.snapshot(|entry| entry.changed.clone())? {
             changed.notify()?;
         }
         Ok(())
