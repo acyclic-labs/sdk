@@ -71,6 +71,9 @@ pub struct Head {
     pub length: u64,
     /// Outgoing references recorded outside the payload.
     pub references: Vec<Digest>,
+    /// Publisher-declared SHA-256 for a manifest's logical body. The
+    /// declaration is not verified by Objects; consumers must verify bytes.
+    pub sha256: Option<[u8; 32]>,
     /// The applied revision this read was served at, when the provider
     /// issues revisions.
     pub revision: Option<Revision>,

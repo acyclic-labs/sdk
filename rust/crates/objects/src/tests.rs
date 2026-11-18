@@ -1,5 +1,5 @@
 use crate::{
-    Blobs, ByteRange, Delete, Digest, Medium, MediumError, MemoryMedium, Observation,
+    Blobs, ByteRange, Delete, Digest, Medium, MediumError, MediumKey, MemoryMedium, Observation,
     ObservationSource, Observed, ObservedVersion, Put, RootId, Store, conformance, wire::ErrorCode,
 };
 use acyclic_stream::OwnedBytes;
@@ -7,6 +7,67 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub(crate) mod availability;
+
+#[test]
+fn medium_key_classifies_the_storage_contract() -> Result<(), Box<dyn std::error::Error>> {
+    let digest = Digest::from_bytes([0xab; 32]);
+    let hash = digest.to_hex();
+    let version = [0x12; 16];
+    let valid = [
+        (format!("e/ab/{hash}"), MediumKey::Envelope(digest)),
+        (
+            format!("p/ab/{hash}.{}", hex::encode(version)),
+            MediumKey::Payload { digest, version },
+        ),
+        (format!("t/{hash}"), MediumKey::Terminal(digest)),
+        ("incarnation".into(), MediumKey::Control),
+        ("epoch".into(), MediumKey::Control),
+        ("r/opaque/reference".into(), MediumKey::Control),
+        ("i/opaque/reference".into(), MediumKey::Control),
+        ("f/opaque/reference".into(), MediumKey::Control),
+    ];
+    for (key, expected) in valid {
+        assert_eq!(MediumKey::parse(&key)?, expected, "{key}");
+    }
+    let invalid = [
+        String::new(),
+        "epoch/extra".into(),
+        "r/".into(),
+        "i/".into(),
+        "f/".into(),
+        format!("e/00/{hash}"),
+        format!("e/ab/{}", hash.to_uppercase()),
+        format!("p/ab/{hash}.1234"),
+        format!("p/ab/{hash}.{}", "FF".repeat(16)),
+        format!("t/{}", "ab".repeat(31)),
+        format!("other/{hash}"),
+    ];
+    for key in invalid {
+        assert_eq!(
+            MediumKey::parse(&key).err().map(|error| error.code),
+            Some(ErrorCode::InvalidArgument),
+            "{key}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn listing_rejects_an_envelope_in_the_wrong_shard() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = Store::new(MemoryMedium::default());
+    let account = b"medium-key-test";
+    let digest = Digest::of(b"body").to_hex();
+    let shard = if digest.starts_with("00") { "ff" } else { "00" };
+    let key = format!("{}/e/{shard}/{digest}", Digest::of(account));
+    assert!(store.medium().create(&key, Vec::new().into()).await?);
+    let error = match store.account(account)?.list(None, 10).await {
+        Err(error) => error,
+        Ok(_) => return Err("malformed envelope key was silently skipped".into()),
+    };
+    assert_eq!(error.code, ErrorCode::Corrupt);
+    Ok(())
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod simulation;
@@ -2139,6 +2200,7 @@ async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::
             length: 1,
             stored: 1,
             references: Vec::new(),
+            sha256: None,
             version: [1; 16],
             dying: None,
             condemned: 0,

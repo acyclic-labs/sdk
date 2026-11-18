@@ -53,6 +53,7 @@ pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
             })
             .collect(),
         edges: wire_digests(&manifest.edges),
+        sha256: manifest.sha256.map(|digest| digest.to_vec()),
     }
 }
 
@@ -70,6 +71,11 @@ pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifes
             })
             .collect::<Result<_, Error>>()?,
         edges: digests(&manifest.edges)?,
+        sha256: manifest
+            .sha256
+            .as_ref()
+            .map(|digest| digest.as_slice().try_into().map_err(|_| invalid()))
+            .transpose()?,
     })
 }
 
@@ -116,6 +122,9 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
 }
 
 pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
+    if value.kind == wire::Kind::Blob as i32 && value.sha256.is_some() {
+        return Err(invalid());
+    }
     Ok(Head {
         digest: digest(value.digest.as_ref())?,
         kind: match wire::Kind::try_from(value.kind).map_err(|_| invalid())? {
@@ -125,6 +134,11 @@ pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
         },
         length: value.length,
         references: digests(&value.references)?,
+        sha256: value
+            .sha256
+            .as_ref()
+            .map(|digest| digest.as_slice().try_into().map_err(|_| invalid()))
+            .transpose()?,
         revision: None,
     })
 }
@@ -138,6 +152,7 @@ pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
         } as i32,
         length: value.length,
         references: wire_digests(&value.references),
+        sha256: value.sha256.map(|digest| digest.to_vec()),
     }
 }
 

@@ -281,6 +281,7 @@ async fn refused_writes_for(foreign: bool) -> TestResult {
                 length: body.len() as u64,
             }],
             edges: Vec::new(),
+            sha256: None,
         }),
     });
     minimum(&mut request, Some(&floor));

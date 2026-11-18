@@ -98,6 +98,13 @@ fn wide(fields: &[u8], start: usize) -> [u8; 16] {
     bytes
 }
 
+fn changed(mut bytes: Vec<u8>, edits: &[(usize, u8)]) -> Option<Vec<u8>> {
+    for &(offset, value) in edits {
+        *bytes.get_mut(offset)? = value;
+    }
+    Some(bytes)
+}
+
 fn check_codec<T: PartialEq>(
     bytes: &[u8],
     magic: &[u8],
@@ -307,6 +314,7 @@ pub fn check(bytes: &[u8]) -> bool {
     let manifest = Manifest {
         parts,
         edges: references.clone(),
+        sha256: (fields[58] & 1 != 0).then(|| *digest.as_bytes()),
     };
     // Wide arithmetic independently checks the public logical-length boundary.
     let length: u128 = manifest
@@ -331,6 +339,7 @@ pub fn check(bytes: &[u8]) -> bool {
     if (Manifest {
         parts: vec![part, part],
         edges: vec![edge, digest, edge],
+        sha256: None,
     })
     .references()
     .as_slice()
@@ -338,15 +347,17 @@ pub fn check(bytes: &[u8]) -> bool {
     {
         return false;
     }
+    let kind = if fields[56] & 1 == 0 {
+        Kind::Blob
+    } else {
+        Kind::Manifest
+    };
     let mut envelope = Envelope {
-        kind: if fields[56] & 1 == 0 {
-            Kind::Blob
-        } else {
-            Kind::Manifest
-        },
+        kind,
         length: word(&fields, 0),
         stored: word(&fields, 8),
         references: references.clone(),
+        sha256: (kind == Kind::Manifest && fields[58] & 1 != 0).then(|| *digest.as_bytes()),
         version: wide(&fields, 16),
         dying: (fields[57] & 1 != 0).then(|| wide(&fields, 32)),
         condemned: word(&fields, 48),
@@ -357,6 +368,51 @@ pub fn check(bytes: &[u8]) -> bool {
     let Ok(manifest_bytes) = manifest.encode() else {
         return false;
     };
+    let Some(manifest_tag) = manifest_bytes.len().checked_sub(33) else {
+        return false;
+    };
+    let Some(envelope_tag) = encoded.len().checked_sub(74) else {
+        return false;
+    };
+    let Some(invalid_manifest_tag) = changed(manifest_bytes.clone(), &[(manifest_tag, 2)]) else {
+        return false;
+    };
+    let Some(nonzero_absent_manifest) = changed(
+        manifest_bytes.clone(),
+        &[(manifest_tag, 0), (manifest_tag + 1, 1)],
+    ) else {
+        return false;
+    };
+    if ![invalid_manifest_tag, nonzero_absent_manifest]
+        .iter()
+        .all(|bytes| Manifest::decode(bytes).is_err_and(|error| error.code == ErrorCode::Corrupt))
+    {
+        return false;
+    }
+    let Some(invalid_envelope_tag) = changed(encoded.clone(), &[(envelope_tag, 2)]) else {
+        return false;
+    };
+    let Some(nonzero_absent_envelope) =
+        changed(encoded.clone(), &[(envelope_tag, 0), (envelope_tag + 1, 1)])
+    else {
+        return false;
+    };
+    let Some(checksum_on_blob) = changed(
+        encoded.clone(),
+        &[(ENVELOPE_MAGIC.len(), 1), (envelope_tag, 1)],
+    ) else {
+        return false;
+    };
+    if ![
+        invalid_envelope_tag,
+        nonzero_absent_envelope,
+        checksum_on_blob,
+    ]
+    .iter()
+    .all(|bytes| Envelope::decode(bytes).is_err_and(|error| error.code == ErrorCode::Corrupt))
+    {
+        return false;
+    }
     if !check_admission(
         &manifest,
         &manifest_bytes,
@@ -493,6 +549,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
             Manifest {
                 parts: vec![Part { digest, length: 22 }],
                 edges: vec![digest],
+                sha256: None,
             }
             .encode()?,
         ),
@@ -500,7 +557,10 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
         ("incarnation", encode_incarnation(7, 9)),
         ("epoch", encode_epoch(9)),
     ];
-    for (name, dying) in [("head-v2-live", None), ("head-v2-dying", Some([2; 16]))] {
+    for (name, dying, sha256) in [
+        ("head-v3-live", None, None),
+        ("head-v3-dying", Some([2; 16]), Some(*digest.as_bytes())),
+    ] {
         seeds.push((
             name,
             Envelope {
@@ -508,6 +568,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
                 length: 22,
                 stored: 64,
                 references: vec![digest],
+                sha256,
                 version: [1; 16],
                 dying,
                 condemned: 9,

@@ -25,6 +25,7 @@ async fn deep_manifests_select_whole_and_partial_bytes_without_recursive_frames(
                     length: head.length,
                 }],
                 edges: Vec::new(),
+                sha256: None,
             })
             .await?
             .verified()

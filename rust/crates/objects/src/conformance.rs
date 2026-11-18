@@ -398,6 +398,14 @@ async fn verify_batches_and_manifest(
         Vec::new(),
     )
     .await?;
+    let mut checksum = crate::ContentHasher::default();
+    checksum
+        .update(&left)
+        .map_err(|error| fail("manifest-checksum", error))?;
+    checksum
+        .update(&right)
+        .map_err(|error| fail("manifest-checksum", error))?;
+    let checksum = *checksum.finish().sha256();
     let manifest = Manifest {
         parts: vec![
             Part {
@@ -410,6 +418,7 @@ async fn verify_batches_and_manifest(
             },
         ],
         edges: vec![parent],
+        sha256: Some(checksum),
     };
     let published = first.put_manifest(manifest.clone()).await;
     let Ok(Put::Created { verified }) = published else {
@@ -418,6 +427,12 @@ async fn verify_batches_and_manifest(
     let encoded = manifest
         .encode()
         .map_err(|error| fail("manifest-ranges-select-intersecting-parts", error))?;
+    let head = first.head(verified.digest).await;
+    expect!(
+        "manifest-checksum",
+        matches!(&head, Ok(head) if head.sha256 == Some(checksum)),
+        head
+    );
     expect!(
         "manifest-ranges-select-intersecting-parts",
         verified.digest == Digest::of(&encoded) && verified.length == 2500,
@@ -448,6 +463,7 @@ async fn verify_batches_and_manifest(
                 length: 999,
             }],
             edges: Vec::new(),
+            sha256: None,
         })
         .await;
     expect!(

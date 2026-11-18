@@ -107,6 +107,7 @@ mod format_recovery_tests {
             length: 7,
             stored: 7,
             references: Vec::new(),
+            sha256: None,
             version: [1; 16],
             dying: None,
             condemned: 0,
@@ -996,21 +997,22 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn digest_from_key(&self, key: &str) -> Result<Digest, Error> {
-        key.rsplit('/')
-            .next()
-            .and_then(|name| name.split('.').next())
-            .ok_or_else(corrupt)
-            .and_then(|hex| Digest::from_hex(hex).map_err(|_| corrupt()))
+        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
+        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+            crate::MediumKey::Envelope(digest) | crate::MediumKey::Payload { digest, .. } => {
+                Ok(digest)
+            }
+            _ => Err(corrupt()),
+        }
     }
 
     /// The digest and version a payload key names.
     fn payload_of(&self, key: &str) -> Result<(Digest, [u8; 16]), Error> {
-        let version = key
-            .rsplit_once('.')
-            .and_then(|(_, version)| hex::decode(version).ok())
-            .and_then(|version| version.try_into().ok())
-            .ok_or_else(corrupt)?;
-        Ok((self.digest_from_key(key)?, version))
+        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
+        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+            crate::MediumKey::Payload { digest, version } => Ok((digest, version)),
+            _ => Err(corrupt()),
+        }
     }
 
     fn epoch_key(&self) -> String {
@@ -1489,6 +1491,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         if existing.kind != wanted.kind
             || existing.length != wanted.length
             || existing.stored != wanted.stored
+            || existing.sha256 != wanted.sha256
         {
             return Err(corrupt());
         }
@@ -1528,7 +1531,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     async fn manifest(&self, digest: &Digest, envelope: &Envelope) -> Result<Manifest, Error> {
-        Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)
+        let manifest =
+            Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)?;
+        if manifest.sha256 != envelope.sha256 {
+            return Err(corrupt());
+        }
+        Ok(manifest)
     }
 
     /// Every reference held by a retained root. Unsupported formats retain
@@ -1583,6 +1591,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             kind: envelope.kind,
             length: envelope.length,
             references: envelope.references,
+            sha256: envelope.sha256,
             revision: None,
         }
     }
@@ -1674,6 +1683,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                         length,
                         stored: length,
                         references,
+                        sha256: None,
                         // Assigned by `publish`.
                         version: [0; 16],
                         dying: None,
@@ -1716,6 +1726,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                         length,
                         stored,
                         references: canonical(manifest.references()),
+                        sha256: manifest.sha256,
                         // Assigned by `publish`.
                         version: [0; 16],
                         dying: None,
@@ -2253,6 +2264,7 @@ mod written_tests {
             length: 4,
             stored: 4,
             references: Vec::new(),
+            sha256: None,
             version: [1; 16],
             dying: None,
             condemned: 0,

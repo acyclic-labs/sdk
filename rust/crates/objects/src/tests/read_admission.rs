@@ -553,6 +553,7 @@ async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
             .put_manifest(crate::Manifest {
                 parts: parts.to_vec(),
                 edges: Vec::new(),
+                sha256: None,
             })
             .await?
             .verified()
@@ -567,6 +568,7 @@ async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
         .put_manifest(crate::Manifest {
             parts: branches,
             edges: Vec::new(),
+            sha256: None,
         })
         .await?
         .verified()
@@ -676,6 +678,7 @@ async fn native_manifest_growth_releases_replaced_backing() -> Result<(), Box<dy
                 count
             ],
             edges: Vec::new(),
+            sha256: None,
         })
         .await?
         .verified()
