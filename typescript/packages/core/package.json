@@ -17,6 +17,11 @@
       "bun": "./src/index.ts",
       "default": "./dist/index.js"
     },
+    "./wasm": {
+      "types": "./dist/wasm.d.ts",
+      "bun": "./src/wasm.ts",
+      "default": "./dist/wasm.js"
+    },
     "./observe": {
       "types": "./dist/observe.d.ts",
       "bun": "./src/observe.ts",

@@ -83,3 +83,28 @@ fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Result<u64, LocalS
         epoch.try_into().map_err(|_| LocalStreamError::Corrupt)?,
     ))
 }
+
+/// Admits a complete header or a canonical interrupted header write.
+fn read_header(
+    mut reader: impl Read,
+    length: u64,
+    limits: LocalStreamLimits,
+    epoch: u64,
+) -> Result<Option<u64>, LocalStreamError> {
+    let mut header = [0; HEADER_BYTES];
+    if length >= u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)? {
+        reader
+            .read_exact(&mut header)
+            .map_err(|_| LocalStreamError::Corrupt)?;
+        return decode_header(&header, limits).map(Some);
+    }
+    let partial = header
+        .get_mut(..usize::try_from(length).map_err(|_| LocalStreamError::Corrupt)?)
+        .ok_or(LocalStreamError::Corrupt)?;
+    reader.read_exact(partial)?;
+    if encode_header(limits, epoch)?.starts_with(partial) {
+        Ok(None)
+    } else {
+        Err(LocalStreamError::Corrupt)
+    }
+}

@@ -1273,7 +1273,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         use prost::Message as _;
         let encoded = crate::convert::wire_delete(deleted.clone()).encode_to_vec();
         let reply = crate::wire::DeleteBlobResponse::decode(encoded.as_slice())?;
-        let decoded = crate::convert::delete(&reply)?;
+        let decoded = crate::convert::delete(&reply, None)?;
         assert_eq!(decoded.outcome, deleted.outcome);
         assert_eq!(decoded.references, deleted.references);
         for status in [
@@ -1284,7 +1284,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
                 status: status as i32,
                 ..reply.clone()
             };
-            assert!(crate::convert::delete(&invalid).is_err());
+            assert!(crate::convert::delete(&invalid, None).is_err());
         }
     }
     assert_eq!(
@@ -2141,7 +2141,7 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
             after.is_none_or(|after| next > after)
                 && page.digests.last().is_none_or(|last| *last <= next)
         }));
-        let decoded = crate::convert::page(&crate::convert::wire_page(&page))?;
+        let decoded = crate::convert::page(&crate::convert::wire_page(&page), None)?;
         assert_eq!(decoded.digests, page.digests);
         assert_eq!(decoded.next, page.next);
         listed.extend(page.digests.iter().copied());
@@ -2170,7 +2170,7 @@ fn sparse_remote_pages_require_forward_cursors() -> Result<(), crate::Error> {
                 digests: digests.clone(),
                 next: Some(cursor.into()),
             };
-            assert!(crate::convert::listed(&page, Some(after), 4).is_err());
+            assert!(crate::convert::listed(&page, Some(after), 4, None).is_err());
         }
     }
     for cursor in [None, Some(next)] {
@@ -2178,7 +2178,10 @@ fn sparse_remote_pages_require_forward_cursors() -> Result<(), crate::Error> {
             digests: Vec::new(),
             next: cursor.map(Into::into),
         };
-        assert_eq!(crate::convert::listed(&page, Some(after), 4)?.next, cursor);
+        assert_eq!(
+            crate::convert::listed(&page, Some(after), 4, None)?.next,
+            cursor
+        );
     }
     Ok(())
 }
@@ -2220,7 +2223,7 @@ async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::
         let counted = store.medium().take();
         assert!(page.digests.is_empty(), "incomplete puts are not blobs");
         assert!(page.next.is_some(), "an empty page must retain progress");
-        let decoded = crate::convert::page(&crate::convert::wire_page(&page))?;
+        let decoded = crate::convert::page(&crate::convert::wire_page(&page), None)?;
         assert_eq!(decoded.digests, page.digests);
         assert_eq!(decoded.next, page.next);
         assert_eq!(counted.get("list"), Some(&1));

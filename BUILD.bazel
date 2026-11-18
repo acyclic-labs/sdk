@@ -245,6 +245,12 @@ proto_js(
 )
 
 filegroup(
+    name = "workspace_acyclic_labs_core",
+    srcs = glob(["typescript/packages/core/**"], exclude = ["typescript/packages/core/generated/wasm/**","typescript/packages/core/generated/proto/**"], allow_empty = True) + [],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
     name = "workspace_acyclic_labs_actors",
     srcs = glob(["typescript/packages/actors/**"], exclude = ["typescript/packages/actors/generated/wasm/**","typescript/packages/actors/generated/proto/**"], allow_empty = True) + [],
     visibility = ["//visibility:public"],
@@ -257,12 +263,6 @@ proto_js(
         "//compatibility:proto/harness/v2/resources.proto": "compatibility/proto/harness/v2/resources.proto",
         "//rust/crates/actors:proto/actors/v1/actors.proto": "rust/crates/actors/proto/actors/v1/actors.proto",
     },
-)
-
-filegroup(
-    name = "workspace_acyclic_labs_core",
-    srcs = glob(["typescript/packages/core/**"], exclude = ["typescript/packages/core/generated/wasm/**","typescript/packages/core/generated/proto/**"], allow_empty = True) + [],
-    visibility = ["//visibility:public"],
 )
 
 filegroup(
@@ -315,8 +315,8 @@ typescript_packages(
     name = "sdk_typescript_packages",
     packages = [
         "auth",
-        "actors",
         "core",
+        "actors",
         "machines",
         "inference",
     ],
@@ -324,8 +324,8 @@ typescript_packages(
         "//:package.json",
         "//:tsconfig.base.json",
         ":workspace_acyclic_labs_auth",
-        ":workspace_acyclic_labs_actors",
         ":workspace_acyclic_labs_core",
+        ":workspace_acyclic_labs_actors",
         ":workspace_acyclic_labs_machines",
         ":workspace_acyclic_labs_inference",
     ],
@@ -366,19 +366,19 @@ filegroup(
 )
 
 filegroup(
-    name = "sdk_typescript_actors",
-    srcs = [
-        ":sdk_typescript_packages",
-    ],
-    output_group = "actors",
-)
-
-filegroup(
     name = "sdk_typescript_core",
     srcs = [
         ":sdk_typescript_packages",
     ],
     output_group = "core",
+)
+
+filegroup(
+    name = "sdk_typescript_actors",
+    srcs = [
+        ":sdk_typescript_packages",
+    ],
+    output_group = "actors",
 )
 
 filegroup(
@@ -401,6 +401,7 @@ node_modules(
     name = "wasm_auth_node_modules",
     packages = {
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
+        ":sdk_typescript_core": "@acyclic-labs/core=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
     },

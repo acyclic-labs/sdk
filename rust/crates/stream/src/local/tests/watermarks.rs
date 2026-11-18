@@ -24,7 +24,7 @@ async fn qualify(
     for &operation in operations {
         match operation % 4 {
             3 => {
-                provider.flush()?;
+                provider.durability_barrier().await?;
                 flushed = frames;
             }
             selected => {
@@ -97,28 +97,33 @@ fn accepted_and_durable_watch_cuts_match_the_journal_and_reference() -> Result {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let directory = tempfile::tempdir()?;
-    let provider = runtime.block_on(LocalStream::open(
-        directory.path(),
-        LocalStreamLimits::default(),
-    ))?;
-    let namespace = std::cell::Cell::new(0);
     proptest::test_runner::TestRunner::new(ProptestConfig {
         source_file: Some(file!()),
         test_name: Some(concat!(
             module_path!(),
             "::accepted_and_durable_watch_cuts_match_the_journal_and_reference"
         )),
-        ..ProptestConfig::with_cases(64)
+        ..ProptestConfig::with_cases(1)
     })
-    .run(&prop::collection::vec(any::<u8>(), 0..24), |operations| {
-        let selected = namespace.get();
-        namespace.set(selected + 1);
-        runtime
-            .block_on(qualify(&provider, selected, &operations, false))
-            .unwrap();
-        Ok(())
-    })?;
+    // The same 64 generated traces own independent devices. Exercise their
+    // real flush cuts concurrently; a failure still shrinks the whole batch.
+    .run(
+        &prop::collection::vec(prop::collection::vec(any::<u8>(), 0..24), 64),
+        |traces| {
+            runtime
+                .block_on(futures::future::try_join_all(traces.into_iter().map(
+                    |operations| async move {
+                        let directory = tempfile::tempdir()?;
+                        let provider =
+                            LocalStream::open(directory.path(), LocalStreamLimits::default())
+                                .await?;
+                        qualify(&provider, 0, &operations, false).await
+                    },
+                )))
+                .unwrap();
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 #[tokio::test]

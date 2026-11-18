@@ -663,6 +663,25 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
 
     for (key, prefix, frame, before, after, outcome) in &captures {
         for cut in 0..=frame.len() {
+            // Exhaust the actual recovery parser at every byte. Physical
+            // recovery then covers each distinct framing/repair boundary.
+            assert_eq!(
+                read_frame(std::io::Cursor::new(&frame[..cut]), u64::try_from(cut)?)?.is_some(),
+                cut == frame.len(),
+                "frame {key:?}, cut {cut} admitted a partial command"
+            );
+            if ![
+                0,
+                1,
+                4,
+                frame.len() - FRAME_CHECKSUM_BYTES,
+                frame.len() - 1,
+                frame.len(),
+            ]
+            .contains(&cut)
+            {
+                continue;
+            }
             let mut bytes = prefix.clone();
             bytes.extend_from_slice(&frame[..cut]);
             std::fs::write(&path, &bytes)?;
@@ -971,19 +990,61 @@ async fn barrier_policy_uses_full_flush_and_preserves_exact_replay()
 #[tokio::test]
 async fn a_journal_torn_before_its_header_completed_is_created_again()
 -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join(JOURNAL_FILE);
-    let limits = LocalStreamLimits::default();
-    let header = encode_header(limits, 0)?;
-    for cut in 0..header.len() {
-        std::fs::write(
-            &path,
-            header.get(..cut).ok_or(StreamError::InvalidArgument)?,
-        )?;
-        let provider = LocalStream::open(directory.path(), limits).await?;
-        drop(provider);
-        assert_eq!(std::fs::read(&path)?, header);
-    }
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    acyclic_native_runtime::testing::drive(&schedule, &mut events, |_| {}, async {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(JOURNAL_FILE);
+        let limits = LocalStreamLimits::default();
+        let header = encode_header(limits, 0)?;
+        for cut in 0..header.len() {
+            let mut partial = header[..cut].to_vec();
+            assert_eq!(
+                read_header(
+                    std::io::Cursor::new(&partial),
+                    u64::try_from(cut)?,
+                    limits,
+                    0
+                )?,
+                None
+            );
+            for index in 0..cut {
+                partial[index] ^= 1;
+                assert!(matches!(
+                    read_header(
+                        std::io::Cursor::new(&partial),
+                        u64::try_from(cut)?,
+                        limits,
+                        0
+                    ),
+                    Err(LocalStreamError::Corrupt)
+                ));
+                partial[index] ^= 1;
+            }
+            // Empty, first-byte and final-byte tears traverse the same physical
+            // restart path; every canonical and corrupt byte cut was checked above.
+            if ![0, 1, header.len() - 1].contains(&cut) {
+                continue;
+            }
+            std::fs::write(
+                &path,
+                header.get(..cut).ok_or(StreamError::InvalidArgument)?,
+            )?;
+            let provider = LocalStream::open(directory.path(), limits).await?;
+            drop(provider);
+            assert_eq!(std::fs::read(&path)?, header);
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?;
+    assert_eq!(
+        schedule
+            .durable_writes()
+            .iter()
+            .filter(|call| call.operation == "file:sync_parent")
+            .count(),
+        3,
+        "header byte cuts repeated physical recovery"
+    );
     Ok(())
 }
 

@@ -18,3 +18,15 @@ export const packagedTypeScriptBindings = [
 
 // These packages intentionally own no protobuf outputs after protocol retirement.
 export const retiredTypeScriptBindingPackages = ["harness"];
+
+/** @param {ReadonlySet<string>} packages
+ * @returns {[string, string[], string?][]} */
+export function selectTypeScriptBindings(packages) {
+  /** @type {[string, string[], string?][]} */
+  const bindings = [];
+  for (const [stem, names, sourceRoot] of packagedTypeScriptBindings) {
+    const selected = names.filter(name => packages.has(name));
+    if (selected.length) bindings.push([stem, selected, sourceRoot]);
+  }
+  return bindings;
+}

@@ -6,7 +6,8 @@ use crate::{
     ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
 };
 
-use crate::{Retained, Usage};
+use crate::{Released, Retained, Usage};
+use acyclic_stream::Revision;
 
 impl From<Digest> for wire::Digest {
     fn from(digest: Digest) -> Self {
@@ -35,6 +36,65 @@ pub(crate) fn range(range: ByteRange) -> wire::ByteRange {
     }
 }
 
+/// Builds the same read request for every transport.
+pub(crate) fn get_request(
+    digest: Digest,
+    selection: ByteRange,
+    maximum_bytes: u64,
+) -> wire::GetBlobRequest {
+    wire::GetBlobRequest {
+        digest: Some(digest.into()),
+        range: Some(range(selection)),
+        maximum_bytes,
+    }
+}
+
+/// Builds the same page request for every transport.
+pub(crate) fn list_request(after: Option<Digest>, limit: u32) -> wire::ListBlobsRequest {
+    wire::ListBlobsRequest {
+        after: after.map(Into::into),
+        limit,
+    }
+}
+
+/// Lowers a root retention for every transport.
+pub(crate) fn retain_request(root: &crate::RootId, references: &[Digest]) -> wire::RetainRequest {
+    wire::RetainRequest {
+        root: root.as_bytes().to_vec(),
+        references: wire_digests(references),
+    }
+}
+
+/// Lowers a fenced retention through the same root and reference mapping.
+pub(crate) fn retain_fenced_request(
+    root: &crate::RootId,
+    fence: u64,
+    references: &[Digest],
+) -> wire::RetainFencedRequest {
+    let wire::RetainRequest { root, references } = retain_request(root, references);
+    wire::RetainFencedRequest {
+        root,
+        references,
+        fence,
+    }
+}
+
+/// Lowers a root release for every transport.
+pub(crate) fn release_request(root: &crate::RootId) -> wire::ReleaseRequest {
+    wire::ReleaseRequest {
+        root: root.as_bytes().to_vec(),
+    }
+}
+
+/// Lowers a terminal release through the same root mapping.
+pub(crate) fn release_terminal_request(
+    root: &crate::RootId,
+    fence: u64,
+) -> wire::ReleaseTerminalRequest {
+    let wire::ReleaseRequest { root } = release_request(root);
+    wire::ReleaseTerminalRequest { root, fence }
+}
+
 pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
     range.map_or(ByteRange::FULL, |range| ByteRange {
         start: range.start,
@@ -55,6 +115,19 @@ pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
         edges: wire_digests(&manifest.edges),
         sha256: manifest.sha256.map(|digest| digest.to_vec()),
     }
+}
+
+/// Lowers a manifest and records the digest and length its receipt must prove.
+pub(crate) fn put_manifest(
+    value: &Manifest,
+) -> Result<(wire::PutManifestRequest, (Digest, u64)), Error> {
+    let expected = (Digest::of(&value.encode()?), value.length()?);
+    Ok((
+        wire::PutManifestRequest {
+            manifest: Some(manifest(value)),
+        },
+        expected,
+    ))
 }
 
 pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifest, Error> {
@@ -121,7 +194,7 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     }
 }
 
-pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
+pub(crate) fn head(value: &wire::BlobInfo, revision: Option<Revision>) -> Result<Head, Error> {
     if value.kind == wire::Kind::Blob as i32 && value.sha256.is_some() {
         return Err(invalid());
     }
@@ -139,7 +212,7 @@ pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
             .as_ref()
             .map(|digest| digest.as_slice().try_into().map_err(|_| invalid()))
             .transpose()?,
-        revision: None,
+        revision,
     })
 }
 
@@ -156,7 +229,10 @@ pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
     }
 }
 
-pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<crate::Deletion, Error> {
+pub(crate) fn delete(
+    value: &wire::DeleteBlobResponse,
+    revision: Option<Revision>,
+) -> Result<crate::Deletion, Error> {
     let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
         wire::DeleteStatus::Deleted => Delete::Deleted,
         wire::DeleteStatus::Absent => Delete::Absent,
@@ -169,7 +245,7 @@ pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<crate::Deletion
     Ok(crate::Deletion {
         outcome,
         references: digests(&value.references)?,
-        revision: None,
+        revision,
     })
 }
 
@@ -184,7 +260,10 @@ pub(crate) fn wire_delete(value: crate::Deletion) -> wire::DeleteBlobResponse {
     }
 }
 
-pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
+pub(crate) fn page(
+    value: &wire::ListBlobsResponse,
+    revision: Option<Revision>,
+) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
         next: value
@@ -192,7 +271,7 @@ pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
             .as_ref()
             .map(|next| digest(Some(next)))
             .transpose()?,
-        revision: None,
+        revision,
     };
     if page
         .digests
@@ -214,20 +293,27 @@ pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
     }
 }
 
-pub(crate) fn retained(value: &wire::RetainResponse) -> Retained {
+pub(crate) fn retained(value: &wire::RetainResponse, revision: Option<Revision>) -> Retained {
     Retained {
         references: value.references,
-        revision: None,
+        revision,
     }
 }
 
-pub(crate) fn collection(value: &wire::CollectResponse) -> Collection {
+pub(crate) fn released(value: &wire::ReleaseResponse, revision: Option<Revision>) -> Released {
+    Released {
+        existed: value.existed,
+        revision,
+    }
+}
+
+pub(crate) fn collection(value: &wire::CollectResponse, revision: Option<Revision>) -> Collection {
     Collection {
         epoch: value.epoch,
         marked: value.marked,
         swept: value.swept,
         swept_bytes: value.swept_bytes,
-        revision: None,
+        revision,
     }
 }
 
@@ -253,8 +339,9 @@ pub(crate) fn object(
     requested: Digest,
     selection: ByteRange,
     maximum: u64,
+    revision: Option<Revision>,
 ) -> Result<crate::Object, Error> {
-    let head = head(value.info.as_ref().ok_or_else(invalid)?)?;
+    let head = head(value.info.as_ref().ok_or_else(invalid)?, revision)?;
     let selected = selection.resolve(head.length)?;
     if head.digest != requested
         || value.start != selected.start
@@ -286,23 +373,31 @@ pub(crate) fn verified_put(
     Ok(put)
 }
 
+/// Lowers a sealed body once, retaining its original bytes and expected receipt.
+pub(crate) fn put_blob(
+    body: crate::Sealed,
+    references: Vec<Digest>,
+) -> (wire::PutBlobRequest, (Digest, u64)) {
+    let digest = Digest::sealed(&body);
+    let expected = (digest, body.bytes().len() as u64);
+    (
+        wire::PutBlobRequest {
+            digest: Some(digest.into()),
+            body: bytes::Bytes::from_owner(body.into_bytes()),
+            references: wire_digests(&references),
+        },
+        expected,
+    )
+}
+
 /// One put batch's request, and the acknowledgement each member must carry.
 pub(crate) fn put_blobs(
     requests: Vec<(crate::Sealed, Vec<Digest>)>,
 ) -> (wire::PutBlobsRequest, Vec<(Digest, u64)>) {
-    let mut expected = Vec::with_capacity(requests.len());
-    let puts = requests
+    let (puts, expected) = requests
         .into_iter()
-        .map(|(body, references)| {
-            let digest = Digest::sealed(&body);
-            expected.push((digest, body.bytes().len() as u64));
-            wire::PutBlobRequest {
-                digest: Some(digest.into()),
-                body: bytes::Bytes::from_owner(body.into_bytes()),
-                references: wire_digests(&references),
-            }
-        })
-        .collect();
+        .map(|(body, references)| put_blob(body, references))
+        .unzip();
     (wire::PutBlobsRequest { puts }, expected)
 }
 
@@ -312,7 +407,7 @@ pub(crate) fn put_blobs(
 pub(crate) fn verified_puts(
     value: wire::PutBlobsResponse,
     expected: &[(Digest, u64)],
-    revision: Option<&acyclic_stream::Revision>,
+    revision: Option<&Revision>,
 ) -> Result<Vec<Result<Put, Error>>, Error> {
     if value.results.len() != expected.len() {
         return Err(wire::ErrorCode::Unavailable.into());
@@ -335,8 +430,12 @@ pub(crate) fn verified_puts(
 }
 
 /// Checks an envelope against the digest it was read for.
-pub(crate) fn headed(value: &wire::BlobInfo, requested: Digest) -> Result<Head, Error> {
-    let head = head(value)?;
+pub(crate) fn headed(
+    value: &wire::BlobInfo,
+    requested: Digest,
+    revision: Option<Revision>,
+) -> Result<Head, Error> {
+    let head = head(value, revision)?;
     if head.digest != requested {
         return Err(wire::ErrorCode::Unavailable.into());
     }
@@ -348,8 +447,9 @@ pub(crate) fn listed(
     value: &wire::ListBlobsResponse,
     after: Option<Digest>,
     limit: u32,
+    revision: Option<Revision>,
 ) -> Result<Page, Error> {
-    let page = page(value)?;
+    let page = page(value, revision)?;
     if page.digests.len() > limit as usize
         || after.is_some_and(|after| {
             page.digests.first().is_some_and(|first| *first <= after)

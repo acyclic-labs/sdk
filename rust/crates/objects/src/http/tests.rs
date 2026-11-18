@@ -1,5 +1,6 @@
 //! The shipping HTTP client against canonical dispatch over a real engine.
 use super::*;
+use crate::convert;
 use axum::{
     body::{Body, Bytes},
     extract::{OriginalUri, State},

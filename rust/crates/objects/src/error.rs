@@ -63,6 +63,28 @@ impl Error {
         )
     }
 
+    /// Classifies an HTTP failure when the response carries no usable detail.
+    #[must_use]
+    pub fn from_http_status(status: u16) -> Self {
+        match status {
+            400 => wire::ErrorCode::InvalidArgument,
+            401 | 403 => wire::ErrorCode::AccessDenied,
+            404 => wire::ErrorCode::NotFound,
+            409 => wire::ErrorCode::Conflict,
+            413 | 429 => wire::ErrorCode::QuotaExceeded,
+            416 => wire::ErrorCode::RangeNotSatisfiable,
+            501 => wire::ErrorCode::Unsupported,
+            _ => wire::ErrorCode::Unavailable,
+        }
+        .into()
+    }
+
+    /// Classifies a gRPC status when no usable typed detail is present.
+    #[must_use]
+    pub fn from_grpc_status_code(code: i32) -> Self {
+        Self::decode_status(code, &[])
+    }
+
     pub(crate) fn decode_status(code: i32, details: &[u8]) -> Self {
         wire::ErrorDetail::decode(details)
             .ok()
