@@ -1,6 +1,6 @@
 use acyclic_fs::GenerationId;
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, DecodeLimits, ReadAllocationStep, decode_generation_root,
+    CanonicalDecodeError, DecodeLimits, GenerationRoot, ReadAllocationStep, decode_generation_root,
     encode_generation_root, generation_root_id,
 };
 use acyclic_fs_format::{
@@ -11,6 +11,10 @@ use acyclic_fs_format::{
 #[path = "../../../support/generation_root.rs"]
 mod fixture;
 use fixture::root;
+
+fn parent_count_offset(value: &GenerationRoot) -> usize {
+    b"ACYFSGEN".len() + size_of::<u16>() + 16 + 16 + value.file_table.encoded_len()
+}
 
 #[test]
 fn generation_root_round_trip_and_identity_are_locked() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +100,7 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
         |_| Ok::<_, CanonicalDecodeError>(()),
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
-    let parents_offset = 8 + 2 + 16 + 16 + two_parents.file_table.encoded_len() + 4;
+    let parents_offset = parent_count_offset(&two_parents) + size_of::<u32>();
     let first_parent = encoded
         .get(parents_offset..parents_offset + 33)
         .ok_or("missing encoded first parent")?
@@ -202,7 +206,7 @@ fn large_parent_lineage_preserves_order_and_rejects_nonadjacent_duplicates()
         value
     );
     let mut corrupted = encoded;
-    let parents_offset = b"ACYFSGEN".len() + 2 + 16 + 16 + value.file_table.encoded_len() + 4;
+    let parents_offset = parent_count_offset(&value) + size_of::<u32>();
     let (last_parent, preceding) = value.parents.split_last().ok_or("missing last parent")?;
     let last = parents_offset
         + preceding
@@ -251,9 +255,9 @@ fn forged_parent_count_is_rejected_before_allocating() -> Result<(), Box<dyn std
         |_| Ok::<_, CanonicalDecodeError>(()),
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
-    let count_offset = b"ACYFSGEN".len() + 2 + 16 + 16 + root().file_table.encoded_len();
+    let count_offset = parent_count_offset(&root());
     encoded
-        .get_mut(count_offset..count_offset + 4)
+        .get_mut(count_offset..count_offset + size_of::<u32>())
         .ok_or("missing encoded parent count")?
         .copy_from_slice(&u32::MAX.to_le_bytes());
     let mut allocations = 0;
@@ -268,5 +272,40 @@ fn forged_parent_count_is_rejected_before_allocating() -> Result<(), Box<dyn std
         Err(CanonicalDecodeError::Truncated | CanonicalDecodeError::LengthOverflow)
     ));
     assert_eq!(allocations, 0);
+    Ok(())
+}
+
+#[test]
+fn every_generation_invariant_fails_closed_on_encode_and_decode()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut wrong_kind = root();
+    wrong_kind.file_table.kind = ObjectKind::Blob;
+    assert!(matches!(
+        encode_generation_root(
+            &wrong_kind,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed,
+        ),
+        Err(CanonicalDecodeError::Invariant(_))
+    ));
+
+    let value = root();
+    let mut encoded = encode_generation_root(
+        &value,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
+    let count_offset = parent_count_offset(&value);
+    encoded
+        .get_mut(count_offset..count_offset + size_of::<u32>())
+        .ok_or("missing encoded parent count")?
+        .copy_from_slice(&3_u32.to_le_bytes());
+    assert!(matches!(
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
+            _,
+            CanonicalDecodeError,
+        >(())),
+        Err(CanonicalDecodeError::Truncated)
+    ));
     Ok(())
 }
