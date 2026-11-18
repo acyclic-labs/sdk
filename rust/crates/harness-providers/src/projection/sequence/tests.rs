@@ -54,7 +54,7 @@ fn negative_controls_fault_the_production_successor_rule() {
     );
     let run = [item(0, ""), item(0, ""), item(2, "")];
     let former = replay_responses_with(&run, |previous, next| {
-        use crate::protocol::sequence::ResponseItem;
+        use acyclic_harness_provider_protocol::sequence::ResponseItem;
         previous != ResponseItem::Reasoning || next == ResponseItem::Output
     });
     assert_eq!(

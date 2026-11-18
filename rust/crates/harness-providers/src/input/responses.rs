@@ -1,5 +1,5 @@
 use super::{check, id, name};
-use crate::protocol::{content, sequence::ResponseItem, shape};
+use acyclic_harness_provider_protocol::{content, sequence::ResponseItem, shape};
 use serde_json::Value;
 use std::collections::BTreeMap;
 

@@ -1,5 +1,5 @@
 use super::{check, name, text};
-use crate::protocol::sequence::{GeminiPart, answered, exchange, user_boundary};
+use acyclic_harness_provider_protocol::sequence::{GeminiPart, answered, exchange, user_boundary};
 use serde_json::Value;
 
 pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
@@ -32,7 +32,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         let mut results = Vec::new();
         for part in parts {
             check(
-                crate::protocol::gemini::Part::of(part).is_some(),
+                acyclic_harness_provider_protocol::gemini::Part::of(part).is_some(),
                 "GEM-SEQ-03",
                 errors,
             );

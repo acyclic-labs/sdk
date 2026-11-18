@@ -20,6 +20,7 @@ model-checking = ["dep:loom"]
 
 [dependencies]
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
+acyclic-harness-provider-protocol = { path = "../harness-provider-protocol", version = "=0.2.0" }
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
 acyclic-auth = { path = "../auth", version = "=0.2.0" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }

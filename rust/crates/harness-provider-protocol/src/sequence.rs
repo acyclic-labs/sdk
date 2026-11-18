@@ -5,15 +5,21 @@ use serde_json::Value;
 /// A response may contain several reasoning items before its tool call.
 /// End is a position so projection finalization and validation use the same rule.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResponseItem {
+pub enum ResponseItem {
+    /// A reasoning item that must be followed by output.
     Reasoning,
+    /// An assistant message or tool call.
     Output,
+    /// A configuration update.
     Configuration,
+    /// An item with no special adjacency rule.
     Other,
+    /// The end of the sequence.
     End,
 }
 
 impl ResponseItem {
+    /// Classify a decoded wire item for adjacency checking.
     pub fn of(item: &Value) -> Self {
         match item["type"].as_str().unwrap_or("message") {
             "reasoning" => Self::Reasoning,
@@ -24,10 +30,12 @@ impl ResponseItem {
         }
     }
 
+    /// Check whether this item may precede the next position.
     pub fn allows(self, next: Self) -> bool {
         self.violation(next).is_none()
     }
 
+    /// Return the protocol rule violated by this pair, if any.
     pub fn violation(self, next: Self) -> Option<&'static str> {
         if self == Self::Configuration && next == Self::Configuration {
             Some("OAR-CFG-02")
@@ -41,18 +49,18 @@ impl ResponseItem {
 
 /// ANT-SEQ-04/06, GEM-SEQ-05: role-alternating conversations open and close
 /// on a user turn. `None` is the missing turn of an empty conversation.
-pub(crate) fn user_boundary(role: Option<&str>) -> bool {
+pub fn user_boundary(role: Option<&str>) -> bool {
     role == Some("user")
 }
 
 /// ANT-TOOL-05: whether an Anthropic content block is a `tool_result`.
-pub(crate) fn tool_result(part: &Value) -> bool {
+pub fn tool_result(part: &Value) -> bool {
     part["type"] == "tool_result"
 }
 
 /// ANT-TOOL-05: every `tool_result` in a message precedes all other content.
 /// Takes one `tool_result` flag per block, in order.
-pub(crate) fn results_lead(results: impl IntoIterator<Item = bool>) -> bool {
+pub fn results_lead(results: impl IntoIterator<Item = bool>) -> bool {
     let mut content = false;
     results.into_iter().all(|result| {
         let leads = !(result && content);
@@ -62,13 +70,17 @@ pub(crate) fn results_lead(results: impl IntoIterator<Item = bool>) -> bool {
 }
 
 /// GEM-TOOL-05/06: a part is a call, else a response, else other content.
-pub(crate) enum GeminiPart<'a> {
+pub enum GeminiPart<'a> {
+    /// A function call and its wire value.
     Call(&'a Value),
+    /// A function response and its wire value.
     Response(&'a Value),
+    /// An item with no special adjacency rule.
     Other,
 }
 
 impl<'a> GeminiPart<'a> {
+    /// Classify a decoded Gemini part for pairing.
     pub fn of(part: &'a Value) -> Self {
         if let Some(call) = part.get("functionCall") {
             Self::Call(call)
@@ -81,14 +93,15 @@ impl<'a> GeminiPart<'a> {
 }
 
 /// GEM-TOOL-05: the wire `(name, id)` a `functionCall` or `functionResponse` pairs on.
-pub(crate) type Exchange<'a> = (Option<&'a str>, Option<&'a str>);
+pub type Exchange<'a> = (Option<&'a str>, Option<&'a str>);
 
-pub(crate) fn exchange(value: &Value) -> Exchange<'_> {
+/// Read the name and ID used to pair a call with its response.
+pub fn exchange(value: &Value) -> Exchange<'_> {
     (value["name"].as_str(), value["id"].as_str())
 }
 
 /// GEM-TOOL-05: a call turn is answered by exactly its responses, in call order.
-pub(crate) fn answered<'a>(
+pub fn answered<'a>(
     calls: impl IntoIterator<Item = Exchange<'a>>,
     responses: impl IntoIterator<Item = Exchange<'a>>,
 ) -> bool {

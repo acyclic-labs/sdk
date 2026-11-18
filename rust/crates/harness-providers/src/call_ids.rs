@@ -54,7 +54,7 @@ fn ids(
 }
 
 fn unchanged(id: &str) -> bool {
-    !id.starts_with(PREFIX) && crate::protocol::name::CALL_ID.accepts(id)
+    !id.starts_with(PREFIX) && acyclic_harness_provider_protocol::name::CALL_ID.accepts(id)
 }
 
 impl<'a> CallIds<'a> {

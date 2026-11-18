@@ -1,8 +1,8 @@
 use super::{Adapter, Result, State, Value, budget, invalid};
-use crate::protocol::present;
 use acyclic_harness_core::model::{
     ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome,
 };
+use acyclic_harness_provider_protocol::present;
 use std::mem::size_of;
 
 pub(super) struct Thinking {
