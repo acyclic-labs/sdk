@@ -105,6 +105,8 @@ pub mod local;
 /// Canonical conversions shared by Machines transports.
 #[doc(hidden)]
 pub mod codec;
+include!(concat!(env!("OUT_DIR"), "/machines-client.rs"));
+
 pub mod grpc;
 mod obs;
 #[cfg(not(target_arch = "wasm32"))]

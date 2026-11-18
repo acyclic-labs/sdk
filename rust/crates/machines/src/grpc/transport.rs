@@ -5,7 +5,16 @@ use acyclic_stream::{ProviderPlatform, ProviderTask};
 use futures::{Future, Stream};
 use tonic::Response;
 
-include!(concat!(env!("OUT_DIR"), "/machines-client.rs"));
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! native_rpc {
+    ($client:ident, $method:ident, $request:expr) => {{
+        let request = $client.request($request)?;
+        let response = $client.inner.$method(request).await;
+        $client.admit(response).await
+    }};
+}
+
+machines_rpc_client!(native_rpc);
 
 /// Authentication and physical transport belong to the embedding platform.
 /// The provider retains all admission, decoding and settlement in one core.

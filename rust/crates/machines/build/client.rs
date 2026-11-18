@@ -68,7 +68,7 @@ pub fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
         };
         writeln!(
             native,
-            "{signature} {{ async move {{ let request = self.request({native_request})?; let response = self.inner.{rust}(request).await; self.admit(response).await }} }}"
+            "{signature} {{ async move {{ $native_rpc!(self, {rust}, {native_request}) }} }}"
         )?;
         let request = if method.client_streaming() {
             "request".to_owned()
@@ -91,7 +91,9 @@ pub fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
     javascript.push_str("}\n");
     std::fs::write(
         output.join("machines-client.rs"),
-        contract + &native + &javascript,
+        format!(
+            "#[doc(hidden)]\n#[macro_export]\nmacro_rules! machines_rpc_client {{\n($native_rpc:ident) => {{\n{contract}{native}{javascript}}};\n}}\n"
+        ),
     )?;
     Ok(())
 }
