@@ -398,6 +398,7 @@ rust_test(
         "tests/record_formats.rs",
         "tests/retry_recovery_loom.rs",
         "tests/revision_frontier_loom.rs",
+        "tests/trust_credentials.rs",
         "tests/wave1_loom.rs",
     ],
     edition = "2024",
