@@ -121,6 +121,24 @@ export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array 
   }
 }
 
+function childrenPageMessage(request: import("./types.js").ChildrenPageRequest) {
+  const { offset, tailStream, parent, after, hierarchyVersion, limit } = request;
+  if (offset !== undefined) requireSequenceType(offset);
+  if (tailStream !== undefined) requirePathType(tailStream);
+  if (parent !== undefined) requirePathType(parent);
+  if (after !== undefined) requirePathType(after);
+  if (hierarchyVersion !== undefined) requireBytesType(hierarchyVersion);
+  requireLimitType(limit);
+  return create(ChildrenPageRequestSchema, {
+    limit,
+    ...(offset === undefined ? {} : { offset }),
+    ...(tailStream === undefined ? {} : { tailStream }),
+    ...(parent === undefined ? {} : { parent }),
+    ...(after === undefined ? {} : { after }),
+    ...(hierarchyVersion === undefined ? {} : { hierarchyVersion }),
+  });
+}
+
 export function wireRequest(request: WireRequest): Uint8Array {
   switch (request.kind) {
       case "heads": {
@@ -140,13 +158,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
           ...(request.durableThrough === undefined ? {} : { durableThrough: request.durableThrough }),
           paths: [...request.paths], limit: request.limit, atLeast: [...(request.atLeast ?? [])],
           retained: [...(request.retained ?? [])],
-          ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", limit: request.children.limit,
-            ...(request.children.offset === undefined ? {} : { offset: request.children.offset }),
-            ...(request.children.parent === undefined ? {} : { parent: request.children.parent }),
-            ...(request.children.tailStream === undefined ? {} : { tailStream: request.children.tailStream }),
-            ...(request.children.after === undefined ? {} : { after: request.children.after }),
-            ...(request.children.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.children.hierarchyVersion }),
-          })) }),
+          ...(request.children === undefined ? {} : { children: childrenPageMessage(request.children) }),
         }));
       }
       case "head":
@@ -186,20 +198,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
           ...(request.filter === undefined ? {} : { filter: request.filter }),
         }));
       case "children_page":
-        if (request.offset !== undefined) requireSequenceType(request.offset);
-        if (request.tailStream !== undefined) requirePathType(request.tailStream);
-        if (request.parent !== undefined) requirePathType(request.parent);
-        if (request.after !== undefined) requirePathType(request.after);
-        if (request.hierarchyVersion !== undefined) requireBytesType(request.hierarchyVersion);
-        requireLimitType(request.limit);
-        return toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, {
-          ...(request.offset === undefined ? {} : { offset: request.offset }),
-          limit: request.limit,
-          ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
-          ...(request.parent === undefined ? {} : { parent: request.parent }),
-          ...(request.after === undefined ? {} : { after: request.after }),
-          ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
-        }));
+        return toBinary(ChildrenPageRequestSchema, childrenPageMessage(request));
       default: throw new StreamError("invalid_argument", "stream request kind is invalid");
   }
 }
