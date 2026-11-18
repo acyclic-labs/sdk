@@ -816,17 +816,21 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             "published availability must match the independent replay"
         );
     }
-    let spans = data
-        .families
-        .iter()
-        .flat_map(|family| &family.items)
-        .filter_map(|item| item.source.as_ref())
-        .map(|span| span.path.as_str())
-        .filter(|path| path.starts_with("generated/rustdoc/"))
-        .collect::<BTreeSet<_>>();
+    let mut spans = BTreeSet::new();
+    let mut generated_wire = false;
+    for item in data.families.iter().flat_map(|family| &family.items) {
+        if let Some(span) = item
+            .source
+            .as_ref()
+            .filter(|span| span.path.starts_with("generated/rustdoc/"))
+        {
+            spans.insert(span.path.as_str());
+            generated_wire |= item.name == "GeneratedWire";
+        }
+    }
     assert!(
-        !spans.is_empty(),
-        "generated source spans must appear in the actual docs data"
+        generated_wire,
+        "GeneratedWire must point to the generated source"
     );
     for path in spans {
         for checkout in [&fixture, &relocated] {
