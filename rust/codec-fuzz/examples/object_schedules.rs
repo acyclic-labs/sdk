@@ -13,7 +13,7 @@ fn replay() -> Result<(), Box<dyn Error>> {
     if inputs.first().is_some_and(|input| input == "--seed") {
         let names = &inputs[1..];
         if names.is_empty() {
-            return Err("seed selection needs names; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
+            return Err("seed selection needs names; recovery: bazel run //rust/codec-fuzz:object_schedules_example -- --seed medium-false-0-0-0".into());
         }
         let producers = seeds()?;
         return replay_inputs(names.iter().map(|name| {
@@ -21,14 +21,14 @@ fn replay() -> Result<(), Box<dyn Error>> {
                 .iter()
                 .find(|(candidate, _)| name == candidate.as_str())
                 .map(|(_, bytes)| bytes.clone())
-                .ok_or_else(|| "unknown writer seed; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into())
+                .ok_or_else(|| "unknown writer seed; recovery: bazel run //rust/codec-fuzz:object_schedules_example -- --seed medium-false-0-0-0".into())
         }), all_sites);
     }
     if inputs.is_empty() {
-        return Err("missing input files; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
+        return Err("missing input files; recovery: bazel run //rust/codec-fuzz:object_schedules_example -- --seed medium-false-0-0-0".into());
     }
     replay_inputs(inputs.iter().map(|input| {
-        std::fs::read(input).map_err(|error| format!("read replay input failed: {error}; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0").into())
+        std::fs::read(input).map_err(|error| format!("read replay input failed: {error}; recovery: bazel run //rust/codec-fuzz:object_schedules_example -- --seed medium-false-0-0-0").into())
     }), all_sites)
 }
 
@@ -95,7 +95,7 @@ fn replay_inputs(
             check_selected_site(&bytes, &mut observe)?
         };
         if !admitted {
-            return Err("admit replay input failed: no admitted full generation identity; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
+            return Err("admit replay input failed: no admitted full generation identity; recovery: bazel run //rust/codec-fuzz:object_schedules_example -- --seed medium-false-0-0-0".into());
         }
         if !reported {
             no_fault_inputs += 1;
@@ -114,7 +114,7 @@ fn replay_inputs(
 fn main() {
     if let Err(error) = replay() {
         eprintln!(
-            "real Medium replay failed: {error}; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0"
+            "real Medium replay failed: {error}; recovery: bazel run //rust/codec-fuzz:object_schedules_example -- --seed medium-false-0-0-0"
         );
         std::process::exit(1);
     }
