@@ -136,44 +136,41 @@ impl Before {
     ) -> Result<(), StreamError> {
         for (path, before) in self.0 {
             let after = tail(provider, path.clone()).await?;
-            if after != before {
-                keys.keys.insert(Key::Records(path.clone()));
-                let followed = publications.follows.get(&path)?.is_some();
-                if before.is_none()
-                    && let Some(after) = after
-                    && followed
-                {
-                    keys.created.insert(path.clone(), after);
+            if after == before {
+                continue;
+            }
+            keys.keys.insert(Key::Records(path.clone()));
+            let followed = publications.follows.get(&path)?.is_some();
+            let Some(after) = after.filter(|_| followed) else {
+                continue;
+            };
+            if before.is_none() {
+                keys.created.insert(path.clone(), after);
+            }
+            let records = keys.records.entry(path.clone()).or_default();
+            records.1 = after;
+            let mut next = before.unwrap_or(0);
+            while next < after {
+                let mut batch = provider
+                    .read(ReadRequest {
+                        key: None,
+                        path: path.clone(),
+                        from: next,
+                        limit: acyclic_stream_wire::wire::StreamLimit::MaxItems as u32,
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                let initial = next;
+                while let Some(record) = batch.next().await {
+                    let record = record?;
+                    next = record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(StreamError::OutOfRange)?;
+                    records.0.push(record);
                 }
-                if let Some(after) = after
-                    && followed
-                {
-                    let records = keys.records.entry(path.clone()).or_default();
-                    records.1 = after;
-                    let mut next = before.unwrap_or(0);
-                    while next < after {
-                        let mut batch = provider
-                            .read(ReadRequest {
-                                key: None,
-                                path: path.clone(),
-                                from: next,
-                                limit: acyclic_stream_wire::wire::StreamLimit::MaxItems as u32,
-                                at_least: Default::default(),
-                            })
-                            .await?;
-                        let initial = next;
-                        while let Some(record) = batch.next().await {
-                            let record = record?;
-                            next = record
-                                .sequence
-                                .checked_add(1)
-                                .ok_or(StreamError::OutOfRange)?;
-                            records.0.push(record);
-                        }
-                        if next <= initial {
-                            return Err(StreamError::Unavailable);
-                        }
-                    }
+                if next <= initial {
+                    return Err(StreamError::Unavailable);
                 }
             }
         }
