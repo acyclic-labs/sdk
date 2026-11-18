@@ -1,5 +1,5 @@
 use super::provider_case::{Protocol, ProviderCase};
-use acyclic_harness::{Error, Result, context::ModelContextCapacity};
+use acyclic_harness_core::{Error, Result, context::ModelContextCapacity};
 use acyclic_harness_providers::{
     Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
     ModelSpec, ProviderSpec, Registry, ResolvedModel, TokenCountField, TokenCounterSpec,
@@ -86,7 +86,7 @@ impl Recorded {
             // Both platform paths retain the semantic Connect class. Native
             // failures omit the excerpt until diagnostic storage is admitted.
             return Err(Error::ModelUnavailable {
-                failure: acyclic_harness::ModelTransportFailure::Connect,
+                failure: acyclic_harness_core::ModelTransportFailure::Connect,
                 excerpt: if native {
                     String::new()
                 } else {

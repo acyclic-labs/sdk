@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/local/checkout_tools/shell/tail.rs b/rust/crates/harness/src/local/checkout_tools/shell/tail.rs
+diff --git a/rust/crates/harness-local/src/local/checkout_tools/shell/tail.rs b/rust/crates/harness-local/src/local/checkout_tools/shell/tail.rs
 index bbe7c77bce..6da8605179 100644
---- a/rust/crates/harness/src/local/checkout_tools/shell/tail.rs
-+++ b/rust/crates/harness/src/local/checkout_tools/shell/tail.rs
+--- a/rust/crates/harness-local/src/local/checkout_tools/shell/tail.rs
++++ b/rust/crates/harness-local/src/local/checkout_tools/shell/tail.rs
 @@ -37,7 +37,7 @@ impl Tail {
              self.ensure_spill()?;
          }

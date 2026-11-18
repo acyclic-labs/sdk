@@ -2,7 +2,7 @@
 use super::*;
 use crate::executor::json::JsonCodecCharge;
 use proptest::prelude::*;
-use proptest::test_runner::TestCaseResult;
+use proptest::test_runner::{TestCaseError, TestCaseResult};
 
 #[derive(Clone, Copy)]
 enum Fault {
@@ -31,7 +31,7 @@ fn history(
     fault: Fault,
 ) -> TestCaseResult {
     let cancellation = CancellationToken::new();
-    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     for (index, limit) in limits.into_iter().enumerate() {
         *field(&mut budget, index) = limit;
     }
@@ -43,7 +43,9 @@ fn history(
         Some(original) => PreparationIo::from_native_work(original).unwrap(),
         None => PreparationIo::from_budget(budget, &cancellation).unwrap(),
     };
-    let mut expected = io.receipt();
+    let mut expected = io
+        .receipt()
+        .map_err(|error| TestCaseError::fail(error.to_string()))?;
     let mut observed = Vec::new();
     let mut wanted = Vec::new();
     let mut cancelled = false;
@@ -112,7 +114,11 @@ fn history(
         if accepted {
             expected = next;
         }
-        observed.push((result.is_ok(), io.receipt()));
+        observed.push((
+            result.is_ok(),
+            io.receipt()
+                .map_err(|error| TestCaseError::fail(error.to_string()))?,
+        ));
         wanted.push((accepted, expected));
     }
     prop_assert_eq!(
@@ -145,17 +151,17 @@ fn value_serialization_requires_encoding_credit() {
     let value = serde_json::json!({"value": ["complete", 1, true]});
     for credit in [0, 100_000] {
         let cancellation = CancellationToken::new();
-        let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+        let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
         budget.bytes_encoded = credit;
         let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
         let io = PreparationIo::from_native_work(&original).unwrap();
         let result = io.value_json(&value, None);
         if credit == 0 {
             assert!(matches!(result, Err(Error::NativeWork { .. })));
-            assert_eq!(io.receipt().bytes_encoded, 0);
+            assert_eq!(io.receipt().map(|work| work.bytes_encoded), Ok(0));
         } else {
             assert_eq!(result.unwrap(), value);
-            assert!(io.receipt().bytes_encoded > 0);
+            assert!(io.receipt().is_ok_and(|work| work.bytes_encoded > 0));
         }
     }
 }

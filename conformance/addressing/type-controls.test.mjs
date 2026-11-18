@@ -58,7 +58,7 @@ test("all public identity bindings accept byte fields and reject text and mutabl
     const fields = new Identity${index}(new Uint8Array([1]), new Uint8Array([2])).toFields();
     fields.id = new Uint8Array([3]);
     new Actor${index}(new Uint8Array([1]), "ClassOne", new Uint8Array([2]));
-    const actorFields = Actor${index}.fromLegacyFields(new Uint8Array([1]), undefined, "same").toFields();
+    const actorFields = new Actor${index}(new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])).toFields();
     actorFields.namespace = new Uint8Array([3]);
   }`).join("\n");
   const compiler = fileURLToPath(new URL("../../node_modules/typescript/bin/tsc", import.meta.url));

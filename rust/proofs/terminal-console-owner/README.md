@@ -1,6 +1,6 @@
 # Native terminal ownership from the ordinary test entry
 
-`real_terminal_frame_cost` must run its real frame and region syscall oracles
+`terminal_frames::real_terminal_frame_cost` must run its real frame and region syscall oracles
 through the ordinary test entry even when its Windows parent has no console.
 That parent invokes the existing `scripts/test-terminal-signals.ps1` host. The
 host creates the ConPTY, re-enters the same test executable and exact test name,
@@ -37,12 +37,12 @@ git apply --check rust/proofs/terminal-console-owner/original-entry.patch
 git apply rust/proofs/terminal-console-owner/original-entry.patch
 git diff --exit-code 179c3069c37cb1fa8f06ae2bbe72f65325075730 -- rust/crates/harness-tui/tests/terminal_frames.rs
 git apply rust/proofs/terminal-console-owner/consoleless.patch
-cargo nextest run --locked -p acyclic-harness-tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'
+cargo nextest run --locked -p acyclic-harness-tui --test main -E 'test(=terminal_frames::real_terminal_frame_cost)'
 # Require the original native missing-console failure on Windows.
 git apply -R rust/proofs/terminal-console-owner/consoleless.patch
 git apply -R rust/proofs/terminal-console-owner/original-entry.patch
 git apply rust/proofs/terminal-console-owner/consoleless.patch
-cargo nextest run --locked -p acyclic-harness-tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'
+cargo nextest run --locked -p acyclic-harness-tui --test main -E 'test(=terminal_frames::real_terminal_frame_cost)'
 # Require exactly one ordinary entry to pass, without selected skips.
 git apply -R rust/proofs/terminal-console-owner/consoleless.patch
 ```

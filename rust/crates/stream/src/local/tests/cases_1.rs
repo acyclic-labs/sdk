@@ -5,7 +5,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let publication = provider.inner.publication.write().await;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
+    let captured = acyclic_test_support::trace_capture::Capture::default();
     let future = tracing::subscriber::with_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
         || {
@@ -25,7 +25,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     );
     let mut future = Box::pin(future);
     assert!(futures::poll!(future.as_mut()).is_pending());
-    let other = acyclic_grpc_observability::tests::Capture::default();
+    let other = acyclic_test_support::trace_capture::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(other.clone()),
     );
@@ -49,7 +49,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
 #[tokio::test]
 async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
+    let captured = acyclic_test_support::trace_capture::Capture::default();
     let capture = captured.clone();
     let _default =
         tracing::subscriber::set_default(tracing_subscriber::Registry::default().with(capture));
@@ -247,16 +247,37 @@ async fn emitted_history_drains_replay_and_refuses_repair_after_semantic_failure
             .await?;
     }
     let count = u32::try_from(REPLAY_PIPELINE_COMMANDS * 4)?;
-    for index in 1..u64::from(count) {
-        provider
-            .append(AppendRequest {
-                path: paths[2].clone(),
-                records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
-                if_tail: Some(index),
-                idempotency_key: IdempotencyKey::unique(),
-            })
-            .await?;
-    }
+    // Replay needs every emitted frame, but only the final setup cut must be
+    // durable. Use the public phase boundary instead of flushing each frame.
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    acyclic_native_runtime::testing::drive(&schedule, &mut events, |_| {}, async {
+        deferring_provider_durability(&provider, async {
+            for index in 1..u64::from(count) {
+                provider
+                    .append(AppendRequest {
+                        path: paths[2].clone(),
+                        records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
+                        if_tail: Some(index),
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await?;
+            }
+            Ok::<_, StreamError>(())
+        })
+        .await?;
+        provider.durability_barrier().await?;
+        Ok::<_, StreamError>(())
+    })
+    .await?;
+    assert_eq!(
+        schedule
+            .durable_writes()
+            .iter()
+            .filter(|call| call.operation == "file:sync_data")
+            .count(),
+        1,
+        "replay setup must share one device flush"
+    );
     let mut expected = Vec::new();
     for path in &paths {
         expected.push(history(&provider, path, count).await?);

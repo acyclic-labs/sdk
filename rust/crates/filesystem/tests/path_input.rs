@@ -58,9 +58,8 @@ pub fn check(data: &[u8]) {
         LogicalName::case_fold_key,
         &mut |event| {
             for (name, invariant) in INVARIANTS {
-                if let Err(detail) = invariant(&event) {
-                    panic!("{name}: {detail}");
-                }
+                let result = invariant(&event);
+                assert!(result.is_ok(), "{name}: {result:?}");
             }
             Ok::<_, std::convert::Infallible>(())
         },
@@ -89,7 +88,7 @@ pub fn observe<E>(
         record(
             see,
             "portable",
-            path.is_within(&parse("/", limits).unwrap()),
+            parse("/", limits).is_ok_and(|root| path.is_within(&root)),
         )?;
     }
     native_names(data, new, see)?;
@@ -102,10 +101,13 @@ pub fn observe<E>(
             let alias = LogicalName::new(
                 NameEncoding::Utf8,
                 component.to_ascii_uppercase().into_bytes(),
-            )
-            .unwrap();
+            );
             let key = fold(&name);
-            record(see, "utf8-fold", key == fold(&alias))?;
+            record(
+                see,
+                "utf8-fold",
+                alias.is_ok_and(|alias| key == fold(&alias)),
+            )?;
             if let Ok(folded) = LogicalName::new(NameEncoding::Utf8, key.clone()) {
                 record(see, "utf8-fold", fold(&folded) == key)?;
             }
@@ -121,10 +123,18 @@ pub fn observe<E>(
         .collect();
     let text: String = parts.iter().map(|&(text, _)| text).collect();
     let expected: String = parts.iter().map(|&(_, folded)| folded).collect();
-    let name = LogicalName::new(NameEncoding::Utf8, text.into_bytes()).unwrap();
-    record(see, "full-fold", fold(&name) == expected.as_bytes())?;
-    let folded = LogicalName::new(NameEncoding::Utf8, expected.into_bytes()).unwrap();
-    record(see, "full-fold", fold(&folded) == folded.as_bytes())?;
+    let name = LogicalName::new(NameEncoding::Utf8, text.into_bytes());
+    record(
+        see,
+        "full-fold",
+        name.is_ok_and(|name| fold(&name) == expected.as_bytes()),
+    )?;
+    let folded = LogicalName::new(NameEncoding::Utf8, expected.into_bytes());
+    record(
+        see,
+        "full-fold",
+        folded.is_ok_and(|folded| fold(&folded) == folded.as_bytes()),
+    )?;
     let path = format!(
         "/{}",
         parts
@@ -133,7 +143,11 @@ pub fn observe<E>(
             .collect::<Vec<_>>()
             .join("/")
     );
-    let canonical = parse(&path, limits).unwrap();
+    let canonical = parse(&path, limits);
+    record(see, "portable", canonical.is_ok())?;
+    let Ok(canonical) = canonical else {
+        return Ok(());
+    };
     record(see, "portable", canonical.depth() == parts.len())?;
     for suffix in ["/", "//leaf", "/.", "/..", "/\0"] {
         record(
@@ -142,11 +156,25 @@ pub fn observe<E>(
             parse(&format!("{path}{suffix}"), limits).is_err(),
         )?;
     }
-    let child = parse(&format!("{path}/child"), limits).unwrap();
-    let sibling = parse(&format!("{path}-sibling"), limits).unwrap();
-    record(see, "portable", child.is_within(&canonical))?;
-    record(see, "portable", !sibling.is_within(&canonical))?;
-    record(see, "portable", !canonical.is_within(&child))?;
+    let child = parse(&format!("{path}/child"), limits);
+    let sibling = parse(&format!("{path}-sibling"), limits);
+    record(
+        see,
+        "portable",
+        child
+            .as_ref()
+            .is_ok_and(|child| child.is_within(&canonical)),
+    )?;
+    record(
+        see,
+        "portable",
+        sibling.is_ok_and(|sibling| !sibling.is_within(&canonical)),
+    )?;
+    record(
+        see,
+        "portable",
+        child.is_ok_and(|child| !canonical.is_within(&child)),
+    )?;
     Ok(())
 }
 
@@ -186,15 +214,15 @@ fn native_names<E>(
             record(see, site, name.encoding() == encoding)?;
             record(see, site, name.as_bytes() == bytes)?;
             record(see, site, name.case_fold_key() == bytes)?;
-            for unit in [0, u16::from(b'/'), u16::from(b'\\')] {
-                if encoding == NameEncoding::PosixBytes && unit == u16::from(b'\\') {
+            for unit in [0, b'/', b'\\'] {
+                if encoding == NameEncoding::PosixBytes && unit == b'\\' {
                     continue;
                 }
                 let mut invalid = bytes.clone();
                 if encoding == NameEncoding::WindowsUtf16Le {
-                    invalid.extend_from_slice(&unit.to_le_bytes());
+                    invalid.extend_from_slice(&u16::from(unit).to_le_bytes());
                 } else {
-                    invalid.push(u8::try_from(unit).unwrap());
+                    invalid.push(unit);
                 }
                 record(see, site, new(encoding, invalid).is_err())?;
             }

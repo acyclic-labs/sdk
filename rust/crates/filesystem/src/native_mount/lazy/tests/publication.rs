@@ -281,7 +281,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             let mut checkout = view.authored.shared_checkout().lock().await;
             checkout.retain_operation_id(pending)?;
         }
-        let appended = work.receipt().authority_records_appended;
+        let appended = work.receipt().unwrap().authority_records_appended;
         let mut acknowledged = None;
         let replay = view
             .sync_async_with_permit_qualified_native_work_guarded_with_ack(
@@ -299,7 +299,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             .map_err(|(cause, _)| cause)?;
         assert_eq!(replay, clean);
         assert_eq!(acknowledged, Some(clean.clone()));
-        assert_eq!(work.receipt().authority_records_appended, appended);
+        assert_eq!(work.receipt().unwrap().authority_records_appended, appended);
         if let Some(pending) = pending {
             let mut checkout = view.authored.shared_checkout().lock().await;
             assert_eq!(
@@ -1066,13 +1066,105 @@ where
     )?)
 }
 
+/// A store that can present one workspace as a prepared child fork after the
+/// live view has opened, so the mounted read path sees the fork fence it must
+/// refuse.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct PreparedForkStore {
+    inner: crate::MemoryLazyWorkspaceStore,
+    prepared: std::sync::Arc<std::sync::Mutex<Option<crate::lazy_workspace::LazyWorkspaceState>>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::lazy_workspace::LazyWorkspaceStore for PreparedForkStore {
+    async fn load_lazy_workspace(
+        &self,
+        id: crate::WorkspaceId,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<Option<crate::lazy_workspace::LazyWorkspaceState>, crate::LazyWorkspaceError> {
+        if let Some(state) = self
+            .prepared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|state| state.workspace_id == id)
+        {
+            return Ok(Some(state.clone()));
+        }
+        self.inner.load_lazy_workspace(id, ctx).await
+    }
+    async fn load_lazy_overlay(
+        &self,
+        id: crate::lazy_workspace::LazyOverlayId,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        Option<(
+            crate::lazy_workspace::LazyOverlay,
+            crate::kernel::KernelOwnedAllocation,
+        )>,
+        crate::LazyWorkspaceError,
+    > {
+        self.inner.load_lazy_overlay(id, ctx).await
+    }
+    async fn load_lazy_shadow(
+        &self,
+        id: crate::lazy_workspace::LazyShadowId,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        Option<(
+            crate::lazy_workspace::LazyShadow,
+            crate::kernel::KernelOwnedAllocation,
+        )>,
+        crate::LazyWorkspaceError,
+    > {
+        self.inner.load_lazy_shadow(id, ctx).await
+    }
+    async fn compare_and_swap_lazy_workspace(
+        &self,
+        id: crate::WorkspaceId,
+        revision: u64,
+        state: crate::lazy_workspace::LazyWorkspaceState,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<bool, crate::LazyWorkspaceError> {
+        self.inner
+            .compare_and_swap_lazy_workspace(id, revision, state, ctx)
+            .await
+    }
+    async fn put_lazy_overlay(
+        &self,
+        id: crate::lazy_workspace::LazyOverlayId,
+        value: (
+            crate::lazy_workspace::LazyOverlay,
+            crate::kernel::KernelOwnedAllocation,
+        ),
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::LazyWorkspaceError> {
+        self.inner.put_lazy_overlay(id, value, ctx).await
+    }
+    async fn put_lazy_shadow(
+        &self,
+        id: crate::lazy_workspace::LazyShadowId,
+        value: (
+            crate::lazy_workspace::LazyShadow,
+            crate::kernel::KernelOwnedAllocation,
+        ),
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::LazyWorkspaceError> {
+        self.inner.put_lazy_shadow(id, value, ctx).await
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
 -> Result<(), Box<dyn std::error::Error>> {
     let source_root = tempfile::tempdir()?;
     std::fs::write(source_root.path().join("removed"), b"source")?;
-    let store = crate::MemoryLazyWorkspaceStore::default();
+    let store = PreparedForkStore {
+        inner: crate::MemoryLazyWorkspaceStore::default(),
+        prepared: std::sync::Arc::new(std::sync::Mutex::new(None)),
+    };
     let view = mounted_view_of(
         Arc::new(
             native_source(
@@ -1091,6 +1183,18 @@ async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
     let mut accounting = crate::kernel::KernelAccounting::native(&work, &cancellation);
     let prior = view.lazy.state(&mut accounting).await?;
     let cut = view.lazy.snapshot(&mut accounting).await?;
+    // A real child fork gives the read path a prepared fork with a distinct
+    // parent; the self-fork case below stays its own check.
+    let (child, _) = view
+        .lazy
+        .fork_snapshot(
+            "prepared-child-fork",
+            cut.clone(),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            &mut accounting,
+        )
+        .await?;
     let operation = IdempotencyKey::new();
     view.lazy
         .prepare_mount_removals(
@@ -1147,9 +1251,9 @@ async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
         "source-only",
         "authored",
         "overlay",
-        "fork",
         "source",
         "epoch",
+        "fork",
     ] {
         let mut next = staged.clone();
         next.revision = revision + 1;
@@ -1171,12 +1275,27 @@ async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
                     .prepared_overlay = prior.overlay
             }
             "fork" => {
+                // A prepared fork on the same workspace is not a product state:
+                // the fork fence refuses it. Assert that refusal instead of
+                // trying to install it.
                 next.fork_origin = Some(crate::lazy_workspace::LazyForkOrigin {
                     operation_id: crate::OperationId::new(),
                     snapshot: cut.clone(),
                     config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
                     phase: crate::lazy_workspace::LazyForkPhase::Prepared,
-                })
+                });
+                assert!(
+                    !store
+                        .compare_and_swap_lazy_workspace(
+                            view.lazy.workspace().id(),
+                            revision,
+                            next,
+                            &mut accounting,
+                        )
+                        .await?,
+                    "the fork fence accepted a prepared fork on the same workspace"
+                );
+                continue;
             }
             "source" => next.source.identity[0] ^= 1,
             _ => next.source.epoch += 1,
@@ -1206,6 +1325,46 @@ async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
             "rejected read changed durable pending-removal authority"
         );
     }
+    let child_view = mounted_native_view_of(Arc::new(child), &work).await?;
+    let mut child_carrier = adapter::NativeDemandCarrier::Native(&work);
+    let child_observation = child_view
+        .authored
+        .shared_checkout()
+        .observe(
+            ViewGate::callback_owner()?,
+            &mut child_carrier,
+            &cancellation,
+            None,
+        )
+        .await?;
+    let mut prepared = store
+        .inner
+        .load_lazy_workspace(child_view.lazy.workspace().id(), &mut accounting)
+        .await?
+        .ok_or("committed child state")?;
+    prepared.revision = prepared
+        .revision
+        .checked_sub(1)
+        .ok_or("prepared child revision")?;
+    prepared
+        .fork_origin
+        .as_mut()
+        .ok_or("child fork origin")?
+        .phase = crate::lazy_workspace::LazyForkPhase::Prepared;
+    *store
+        .prepared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(prepared);
+    assert!(
+        matches!(
+            child_view
+                .lazy
+                .mounted_read_state(&child_observation, &mut accounting)
+                .await,
+            Err(LazyWorkspaceError::Concurrent)
+        ),
+        "mounted reads accepted a prepared child fork"
+    );
     Ok(())
 }
 
@@ -1420,7 +1579,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
                 Err(MountSourceError::Stale)
             ));
         }
-        let appended_before_reconciliation = work.receipt().authority_records_appended;
+        let appended_before_reconciliation = work.receipt().unwrap().authority_records_appended;
         let guarded = move |work: &crate::NativeMaterializationWork| {
             assert!(!unknown_ack, "a durable original must not be sealed twice");
             allow(work)
@@ -1661,7 +1820,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
             let retried = retry_ack.ok_or("reconciled post-CAS ACK")?;
             assert_eq!(retried.operation(), ack.operation());
             assert_eq!(retried.generation(), ack.generation());
-            assert_eq!(retry_work.receipt().authority_records_appended, 0);
+            assert_eq!(retry_work.receipt().unwrap().authority_records_appended, 0);
             let settled = view
                 .authored
                 .shared_checkout()
@@ -1694,7 +1853,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         assert_eq!(settled_observation.retained_operation(), None);
         if unknown_ack {
             assert_eq!(
-                work.receipt().authority_records_appended,
+                work.receipt().unwrap().authority_records_appended,
                 appended_before_reconciliation
             );
         }

@@ -1,7 +1,10 @@
 use super::*;
 use acyclic_fs::facade::FsWork;
-use acyclic_fs::{CancellationToken, Lifecycle, VolumeConfig, WorkBudget};
 use proptest::prelude::*;
+use {
+    acyclic_fs::{CancellationToken, Lifecycle, VolumeConfig},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -45,7 +48,7 @@ async fn recovery(name: &str, durable: bool, recreate: bool) -> TestResult {
                     config: VolumeConfig::native(Lifecycle::Durable),
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
-                acyclic_fs::OperationId::from_bytes(operation),
+                acyclic_fs_format::identity::OperationId::from_bytes(operation),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 None,
@@ -168,7 +171,8 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
     )
     .await?
     .value;
-    let identity = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes());
+    let identity =
+        uuid::Uuid::from_bytes(acyclic_fs_format::identity::OperationId::new().into_bytes());
     let name = format!("readonly-import-{identity}");
     let lazy = LazyWorkspace::attach(
         &acyclic_fs::Fs::memory(),
@@ -179,7 +183,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
             config,
             access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
         },
-        acyclic_fs::OperationId::new(),
+        acyclic_fs_format::identity::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
     )
     .await?
@@ -415,7 +419,7 @@ where
         .map_err(|failure| failure.error)?;
     checkout
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,
@@ -423,10 +427,10 @@ where
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     },
                 )
             },
@@ -439,7 +443,8 @@ where
 async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> TestResult {
     initialize()?;
     let fs = acyclic_fs::Fs::memory();
-    let identity = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes());
+    let identity =
+        uuid::Uuid::from_bytes(acyclic_fs_format::identity::OperationId::new().into_bytes());
     let first = preparation_workspace(&fs, &format!("preparation-{identity}")).await?;
     first.write_text("/secret", "first secret").await?;
     let target = if foreign {
@@ -509,7 +514,7 @@ async fn preparation_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectS
                 config: VolumeConfig::native(Lifecycle::Ephemeral),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,

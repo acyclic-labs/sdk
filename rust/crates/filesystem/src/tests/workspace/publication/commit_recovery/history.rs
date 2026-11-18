@@ -63,7 +63,7 @@ pub(super) async fn publish(
             acknowledged_key: true,
         }
         .save(root)?;
-        crate::workspace::tests::simulation::check(workspace, &acknowledged).await?;
+        crate::workspace::tests::simulation_image::check(workspace, &acknowledged).await?;
     }
     Ok(())
 }
@@ -99,7 +99,7 @@ async fn recover(root: &Path) -> TestResult {
     } else {
         &checkpoint.acknowledged
     };
-    crate::workspace::tests::simulation::check(&workspace, expected).await?;
+    crate::workspace::tests::simulation_image::check(&workspace, expected).await?;
     let head = unbounded!(workspace, head())?;
     let child = fork_workspace(
         &workspace,
@@ -123,7 +123,7 @@ async fn recover(root: &Path) -> TestResult {
     ));
     let mut expected = expected.clone();
     expected.insert("/successor".into(), b"live".to_vec());
-    crate::workspace::tests::simulation::check(&workspace, &expected).await?;
+    crate::workspace::tests::simulation_image::check(&workspace, &expected).await?;
     drop(plan);
     drop(child);
     drop(workspace);

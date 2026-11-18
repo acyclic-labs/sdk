@@ -297,7 +297,7 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
     let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
     let cursor = Cursor::new(roots, config(), &mut work)?;
     drain(cursor, &store, roots, &mut work, &cancel).await?;
-    let allocations = work.spent().allocation_operations;
+    let allocations = work.spent().unwrap().allocation_operations;
     for maximum in 0..allocations {
         let mut work = KernelAccounting::standalone(
             WorkBudget {
@@ -332,7 +332,7 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
         .await?
         .ok_or("missing first row")?
         .retire(&mut work)?;
-    let before = work.spent().backend_read_operations;
+    let before = work.spent().unwrap().backend_read_operations;
     cancel.cancel();
     assert!(
         cursor
@@ -340,7 +340,7 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
             .await
             .is_err()
     );
-    assert_eq!(work.spent().backend_read_operations, before);
+    assert_eq!(work.spent().unwrap().backend_read_operations, before);
     assert!(matches!(
         cursor.next(&store, roots, &mut work, &cancel).await,
         Err(FsError::InvalidDiff)
@@ -386,7 +386,7 @@ async fn sparse_alias_change(
         expected(store, roots, &[&["alias-128"], &["renamed"]]).await?
     );
     assert_eq!(
-        work.spent().source_path_components,
+        work.spent().unwrap().source_path_components,
         2,
         "a binding-only change reconstructed unrelated aliases"
     );
@@ -412,8 +412,8 @@ async fn sparse_alias_change(
         let retired = paths.retire(&mut eager);
         result.and(retired)?;
     }
-    assert_eq!(eager.spent().source_path_components, 516);
-    assert!(eager.spent().items_examined > work.spent().items_examined);
+    assert_eq!(eager.spent().unwrap().source_path_components, 516);
+    assert!(eager.spent().unwrap().items_examined > work.spent().unwrap().items_examined);
     eager
         .standalone_parts()
         .unwrap()

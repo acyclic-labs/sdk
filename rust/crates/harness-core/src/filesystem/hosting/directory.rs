@@ -183,7 +183,7 @@ where
         {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .map_err(|(error, _)| turn(crate::Error::from(error)))?;

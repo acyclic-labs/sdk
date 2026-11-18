@@ -34,7 +34,7 @@ fn accounting_shared(bencher: Bencher, observers: usize) {
 fn accounting_bench(bencher: Bencher, observers: usize, shared: bool) {
     let runtime = Runtime::new().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let fs = Fs::memory();
     let workspace = runtime
         .block_on(Box::pin(fs.create_workspace(
@@ -58,9 +58,9 @@ fn accounting_bench(bencher: Bencher, observers: usize, shared: bool) {
                 .unwrap(),
         );
     }
-    let delta = acyclic_fs::WorkCounters {
+    let delta = acyclic_fs_work::performance::WorkCounters {
         items_examined: 1,
-        ..acyclic_fs::WorkCounters::UNCHARGED
+        ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
     };
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         eprintln!(
@@ -82,8 +82,8 @@ fn accounting_bench(bencher: Bencher, observers: usize, shared: bool) {
 
 #[divan::bench(sample_count = 200, sample_size = 64)]
 fn accounting_charge_local(bencher: Bencher) {
-    let mut work = acyclic_fs::WorkCounters::UNCHARGED;
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let mut work = acyclic_fs_work::performance::WorkCounters::UNCHARGED;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     bencher.bench_local(|| work.charge_items(1, &budget).unwrap());
     std::hint::black_box(work);
 }
@@ -97,7 +97,7 @@ fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) 
     let root = tempfile::tempdir().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .unwrap();
@@ -120,9 +120,9 @@ fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) 
     if retire {
         sources.clear();
     }
-    let delta = acyclic_fs::WorkCounters {
+    let delta = acyclic_fs_work::performance::WorkCounters {
         items_examined: 1,
-        ..acyclic_fs::WorkCounters::UNCHARGED
+        ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
     };
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         eprintln!(
@@ -153,10 +153,13 @@ fn authority_head_shared(bencher: Bencher) {
 }
 
 fn authority_head_bench(bencher: Bencher, native_accounting: bool, shared: bool) {
-    use acyclic_fs::{AsyncAuthorityStore, AuthorityId, AuthorityWork, Epoch};
+    use {
+        acyclic_fs::{AsyncAuthorityStore, AuthorityWork, Epoch},
+        acyclic_fs_format::identity::AuthorityId,
+    };
     let runtime = Runtime::new().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let store = acyclic_fs::distributed::StreamAuthorityStore::new(std::sync::Arc::new(
         acyclic_stream::MemoryStream::default(),
     ));
@@ -220,7 +223,7 @@ fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) 
             .unwrap();
         let workspace = Box::pin(fs.create_workspace(
             "bench",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         ))
         .await
@@ -261,7 +264,7 @@ fn transaction_publish_16(bencher: Bencher) {
                 workspace
                     .begin_transaction(
                         IdempotencyKey::new(),
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new(),
                     )
                     .await
@@ -275,7 +278,7 @@ fn transaction_publish_16(bencher: Bencher) {
                 Box::pin(transaction.write(
                     &path,
                     Bytes::from_static(b"value"),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 ))
                 .await
@@ -286,13 +289,18 @@ fn transaction_publish_16(bencher: Bencher) {
                     .commit(
                         None,
                         acyclic_fs::PublicationPermit::Unrestricted,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new(),
                         |_| async {
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                                acyclic_fs::OperationReceipt {
+                            Ok::<
+                                _,
+                                acyclic_fs_work::performance::OperationFailure<
+                                    acyclic_fs::WorkspaceError,
+                                >,
+                            >(
+                                acyclic_fs_work::performance::OperationReceipt {
                                     value: (),
-                                    work: acyclic_fs::WorkCounters::default(),
+                                    work: acyclic_fs_work::performance::WorkCounters::default(),
                                 },
                             )
                         },
@@ -320,7 +328,7 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
     let cancellation = acyclic_fs::CancellationToken::new();
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() && native_accounting {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .unwrap();
@@ -334,7 +342,7 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
             .block_on(Box::pin(workspace.read(
                 "/entry",
                 64,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )))
             .unwrap();
@@ -344,7 +352,7 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
     bencher.bench_local(|| {
         if native_accounting {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .unwrap();
@@ -356,7 +364,7 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
             .block_on(Box::pin(workspace.read(
                 "/entry",
                 64,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )))
             .unwrap()
@@ -373,7 +381,7 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
     let workspace = runtime
         .block_on(Box::pin(fs.create_workspace(
             "bench",
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )))
         .unwrap()
@@ -385,7 +393,7 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
         .unwrap();
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() && native_accounting {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .unwrap();
@@ -399,7 +407,7 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
             .block_on(Box::pin(workspace.read(
                 "/entry",
                 64,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )))
             .unwrap();
@@ -409,7 +417,7 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
     bencher.bench(|| {
         if native_accounting {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .unwrap();
@@ -421,7 +429,7 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
             .block_on(Box::pin(workspace.read(
                 "/entry",
                 64,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )))
             .unwrap()

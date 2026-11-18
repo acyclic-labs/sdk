@@ -1,0 +1,590 @@
+//! Public named-creation work bounds and failure receipts.
+use acyclic_stream::StreamProviderExt as _;
+#[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+
+use acyclic_fs::model::{Lifecycle, VolumeConfig};
+use {
+    acyclic_fs::{CancellationToken, Fs, IdempotencyKey, WorkspaceError},
+    acyclic_fs_format::identity::OperationId,
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+};
+
+#[path = "support/creation_budget.rs"]
+mod creation_budget;
+use creation_budget::FINITE_BUDGET;
+
+#[path = "measured_creation/workspace.rs"]
+mod workspace;
+
+#[tokio::test]
+async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("measured-pinning"))?;
+    workspace
+        .write_text("/original.txt", "original generation")
+        .await?;
+    let original = unbounded!(workspace, head())?.id();
+    workspace.write_text("/later.txt", "later head").await?;
+    let current = unbounded!(workspace, head())?.id();
+    assert_ne!(original, current);
+    let budget = FINITE_BUDGET;
+    for select_head in [false, true] {
+        let read = |allowance, token: CancellationToken| {
+            let workspace = workspace.clone();
+            async move {
+                if select_head {
+                    workspace.head(allowance, &token).await
+                } else {
+                    workspace.generation(original, allowance, &token).await
+                }
+            }
+        };
+        let pinned = read(budget, CancellationToken::new()).await?;
+        pinned.work.verify(budget)?;
+        assert_eq!(
+            pinned.value.id(),
+            if select_head { current } else { original }
+        );
+        assert!(pinned.work.backend_read_operations > 0);
+        // Both selected roots have a parent. Reading their authenticated bytes
+        // precedes the bounded allocation/copy needed to decode that parent.
+        assert!(pinned.work.bytes_copied > pinned.work.object_bytes_read);
+        let mut partial = budget;
+        partial.bytes_copied = pinned.work.bytes_copied - 1;
+        let failure = read(partial, CancellationToken::new())
+            .await
+            .err()
+            .ok_or("generation pin exceeded the parent decoding allowance")?;
+        assert!(matches!(failure.error, WorkspaceError::Work(_)));
+        assert!(failure.work().unwrap().backend_read_operations > 0);
+        assert!(failure.work().unwrap().object_bytes_read > 0);
+        failure.work().unwrap().verify(partial)?;
+        let mut denied = budget;
+        denied.backend_read_operations = 0;
+        let failure = read(denied, CancellationToken::new())
+            .await
+            .err()
+            .ok_or("generation pin admitted zero reads")?;
+        assert!(matches!(failure.error, WorkspaceError::Work(_)));
+        assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+        assert_eq!(failure.work().unwrap().authority_records_read, 0);
+        assert_eq!(failure.work().unwrap().object_bytes_read, 0);
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let failure = read(budget, cancelled)
+            .await
+            .err()
+            .ok_or("pre-cancelled generation pin succeeded")?;
+        assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
+    }
+    assert_eq!(unbounded!(workspace, head())?.id(), current);
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_creation_retains_finite_success_and_spent_exhaustion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let budget = FINITE_BUDGET;
+    assert!(budget.has_finite_allowances());
+    let fs = Fs::memory();
+    let created = fs
+        .create_workspace("measured-create", budget, &CancellationToken::new())
+        .await?;
+    created.work.verify(budget)?;
+    assert!(created.work.authority_records_appended > 0);
+    assert!(created.work.authority_records_read > 0);
+    assert!(created.work.object_bytes_written > 0);
+    assert_eq!(
+        unbounded!(fs, open_workspace("measured-create"))?.id(),
+        created.value.id()
+    );
+    assert_eq!(
+        unbounded!(fs, create_workspace("measured-create"))?.id(),
+        created.value.id()
+    );
+
+    let mut limited = budget;
+    limited.authority_records_read = 0;
+    let failed = Fs::memory()
+        .create_workspace("spent-create", limited, &CancellationToken::new())
+        .await;
+    let failure = failed
+        .err()
+        .ok_or("zero authority read budget admitted creation")?;
+    assert!(
+        matches!(failure.error, WorkspaceError::Work(_)),
+        "{:?}",
+        failure.error
+    );
+    assert!(failure.work().unwrap().object_bytes_written > 0);
+    failure.work().unwrap().verify(limited)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_creation_spends_nothing_and_does_not_publish()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failed = fs
+        .create_workspace("cancelled-create", FINITE_BUDGET, &cancelled)
+        .await;
+    let failure = failed.err().ok_or("pre-cancelled creation succeeded")?;
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
+    assert!(unbounded!(fs, open_workspace("cancelled-create")).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_open_retains_cumulative_work_and_original_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let created = unbounded!(fs, create_workspace("measured-open"))?;
+    let budget = FINITE_BUDGET;
+    let opened = fs
+        .open_workspace("measured-open", budget, &CancellationToken::new())
+        .await?;
+    assert_eq!(opened.value.id(), created.id());
+    opened.work.verify(budget)?;
+    assert!(opened.work.authority_records_read > 1);
+    assert!(opened.work.backend_read_operations > 0);
+    let mut exhausted = budget;
+    exhausted.authority_records_read = opened.work.authority_records_read - 1;
+    let failure = fs
+        .open_workspace("measured-open", exhausted, &CancellationToken::new())
+        .await
+        .err()
+        .ok_or("opening exceeded cumulative authority budget")?;
+    assert!(matches!(failure.error, WorkspaceError::Work(_)));
+    assert!(failure.work().unwrap().authority_records_read > 0);
+    failure.work().unwrap().verify(exhausted)?;
+    let mut denied = budget;
+    denied.backend_read_operations = 0;
+    let failure = fs
+        .open_workspace("measured-open", denied, &CancellationToken::new())
+        .await
+        .err()
+        .ok_or("zero backend-read budget admitted open")?;
+    assert!(matches!(failure.error, WorkspaceError::Work(_)));
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().authority_records_read, 0);
+    assert_eq!(failure.work().unwrap().object_bytes_read, 0);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = fs
+        .open_workspace("measured-open", budget, &cancelled)
+        .await
+        .err()
+        .ok_or("pre-cancelled open succeeded")?;
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
+    assert_eq!(
+        unbounded!(fs, open_workspace("measured-open"))?.id(),
+        created.id()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_operation_recovery_is_bounded_and_never_adopts_head()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let operation = OperationId::new();
+    let budget = FINITE_BUDGET;
+    let created = fs
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+            "measured-recovery",
+            acyclic_fs::VolumeInitialization::new(
+                VolumeConfig::portable(Lifecycle::Ephemeral),
+                None,
+            ),
+            operation,
+            budget,
+            &CancellationToken::new(),
+            None,
+        )
+        .await?;
+    let workspace = created.value.workspace();
+    workspace
+        .write_text("/later.txt", "later generation")
+        .await?;
+    let head = unbounded!(workspace, head())?.id();
+    assert_ne!(head, created.value.id());
+    let key = IdempotencyKey::from_bytes(operation.into_bytes());
+    let recovered = workspace
+        .operation_generation(key, budget, &CancellationToken::new())
+        .await?;
+    recovered.work.verify(budget)?;
+    assert!(recovered.work.backend_read_operations > 0);
+    assert_eq!(
+        recovered
+            .value
+            .ok_or("original operation disappeared")?
+            .id(),
+        created.value.id()
+    );
+    let mut denied = budget;
+    denied.backend_read_operations = 0;
+    let failure = workspace
+        .operation_generation(key, denied, &CancellationToken::new())
+        .await
+        .err()
+        .ok_or("recovery admitted zero backend-read budget")?;
+    assert!(matches!(failure.error, WorkspaceError::Work(_)));
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().authority_records_read, 0);
+    assert_eq!(failure.work().unwrap().object_bytes_read, 0);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = workspace
+        .operation_generation(key, budget, &cancelled)
+        .await
+        .err()
+        .ok_or("pre-cancelled recovery succeeded")?;
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
+    let absent = workspace
+        .operation_generation(
+            IdempotencyKey::from_bytes(OperationId::new().into_bytes()),
+            budget,
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert!(absent.value.is_none());
+    absent.work.verify(budget)?;
+    assert_eq!(unbounded!(workspace, head())?.id(), head);
+    assert_eq!(
+        unbounded!(workspace, operation_generation(key))?
+            .ok_or("convenience lost original")?
+            .id(),
+        created.value.id()
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod source_bound_lost_ack {
+    use super::*;
+    use acyclic_fs::demand::{SourceReference, native::NativeDemandSource};
+    use acyclic_fs::facade::FsWork;
+    use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
+    use acyclic_fs::{
+        EmbeddedCapabilities, LazyWorkspace, LazyWorkspaceStore, LogicalObjectStore,
+        MemoryLazyWorkspaceStore, StreamAuthorityStore,
+    };
+    use acyclic_stream::{MemoryStream, ReadRequest, StreamError, StreamProvider};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // Only the acknowledgement is lost: all storage and idempotency decisions
+    // remain those of the exact public Stream provider used by Fs::memory().
+    struct LostCreationAck {
+        inner: Arc<MemoryStream>,
+        armed: AtomicBool,
+        committed: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl StreamProvider for LostCreationAck {
+        fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+            acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
+        }
+
+        async fn inspect_idempotency(
+            &self,
+            key: acyclic_stream::IdempotencyKey,
+        ) -> Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+
+        async fn heads(
+            &self,
+            request: acyclic_stream::HeadsRequest,
+        ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+            self.inner.heads(request).await
+        }
+
+        fn write(
+            &self,
+            request: acyclic_stream::WriteRequest,
+        ) -> acyclic_stream::BoxProviderFuture<
+            '_,
+            std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        > {
+            match request {
+                acyclic_stream::WriteRequest::CommitAccepted(_) => {
+                    Box::pin(async { Err(acyclic_stream::StreamError::Unsupported) })
+                }
+                acyclic_stream::WriteRequest::Append(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move { self.inner.append(request).await },
+                        acyclic_stream::WriteOutcome::Append,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Fork(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move { self.inner.fork(request).await },
+                        acyclic_stream::WriteOutcome::Fork,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Commit(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move {
+                            let result = self.inner.commit(request).await?;
+                            if matches!(&result, acyclic_stream::CommitOutcome::Committed(_)) {
+                                self.committed.fetch_add(1, Ordering::SeqCst);
+                                if self.armed.swap(false, Ordering::SeqCst) {
+                                    return Err(StreamError::Unavailable);
+                                }
+                            }
+                            Ok(result)
+                        },
+                        acyclic_stream::WriteOutcome::Commit,
+                    ))
+                }
+            }
+        }
+
+        async fn read(
+            &self,
+            request: ReadRequest,
+        ) -> Result<acyclic_stream::RecordStream, StreamError> {
+            self.inner.read(request).await
+        }
+
+        async fn follow(
+            &self,
+            request: acyclic_stream::FollowRequest,
+        ) -> Result<acyclic_stream::FollowStream, StreamError> {
+            self.inner.follow(request).await
+        }
+
+        async fn read_commit(
+            &self,
+            id: acyclic_stream::CommitId,
+        ) -> Result<acyclic_stream::CommittedEnvelope, StreamError> {
+            self.inner.read_commit(id).await
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl acyclic_stream::NativeStreamProvider for LostCreationAck {}
+
+    #[tokio::test]
+    async fn lost_stream_creation_ack_reopens_same_source_bound_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let budget = FINITE_BUDGET;
+        let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        let operation = OperationId::new();
+        let cancellation = CancellationToken::new();
+        let stream = Arc::new(MemoryStream::default());
+        let fault = Arc::new(LostCreationAck {
+            inner: stream.clone(),
+            armed: AtomicBool::new(true),
+            committed: AtomicUsize::new(0),
+        });
+        let objects = acyclic_objects::MemoryObjects::memory();
+        let objects = Arc::new(objects);
+        let fs = Fs::new(
+            StreamAuthorityStore::new(fault.clone()),
+            LogicalObjectStore::new(objects.clone()),
+            EmbeddedCapabilities::MEMORY,
+        );
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir_all(directory.path().join("unresolved/deeper"))?;
+        std::fs::write(
+            directory.path().join("unresolved/deeper/file"),
+            b"unread source",
+        )?;
+        let reference = SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
+            identity: [61; 16],
+            epoch: 4,
+        };
+        let source = Arc::new(
+            NativeDemandSource::open(
+                std::borrow::Cow::Owned(directory.path().to_path_buf()),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+                Some(reference.clone()),
+                None,
+                budget,
+                &cancellation,
+            )
+            .await?
+            .value,
+        );
+        let store = MemoryLazyWorkspaceStore::default();
+        let mut accounting = budget.accounting(&cancellation);
+        let result = LazyWorkspace::attach(
+            &fs,
+            "stream-lost-ack",
+            source.clone(),
+            store.clone(),
+            acyclic_fs::VolumeInitialization::new(config, None),
+            operation,
+            &mut accounting,
+        )
+        .await;
+        let failure = budget
+            .finish(result, &accounting)
+            .err()
+            .ok_or("lost real Stream acknowledgement succeeded")?;
+        assert!(matches!(
+            failure.error,
+            acyclic_fs::LazyWorkspaceError::WorkspaceCause(WorkspaceError::Filesystem(
+                acyclic_fs::FsError::Authority(acyclic_fs::AuthorityStoreError::NativeStream(
+                    StreamError::Unavailable
+                ))
+            ))
+        ));
+        assert!(failure.work().unwrap().backend_write_operations > 0);
+        failure.work().unwrap().verify(budget)?;
+        assert_eq!(fault.committed.load(Ordering::SeqCst), 1);
+        let workspace = unbounded!(fs, open_workspace("stream-lost-ack"))?;
+        let initial = unbounded!(
+            workspace,
+            operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()))
+        )?
+        .ok_or("lost acknowledgement did not retain original allocation")?;
+        let initial_id = initial.id();
+        let workspace_id = initial.workspace_id();
+        assert!(
+            store
+                .load_lazy_workspace(
+                    workspace_id,
+                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation)
+                )
+                .await?
+                .is_none()
+        );
+        workspace
+            .write_text("/later.txt", "head after lost acknowledgement")
+            .await?;
+        let head = unbounded!(workspace, head())?.id();
+        assert_ne!(head, initial_id);
+        drop(initial);
+        drop(workspace);
+        drop(fs);
+        drop(source);
+        drop(fault);
+
+        // Reconstruct both production adapters, without the fault wrapper.
+        let reopened = Fs::from_memory_providers(stream, objects);
+        let source = Arc::new(
+            NativeDemandSource::open(
+                std::borrow::Cow::Owned(directory.path().to_path_buf()),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+                Some(reference.clone()),
+                None,
+                budget,
+                &cancellation,
+            )
+            .await?
+            .value,
+        );
+        assert_eq!(source.as_ref().reference(), reference);
+        let mut accounting = budget.accounting(&cancellation);
+        let result = LazyWorkspace::attach(
+            &reopened,
+            "stream-lost-ack",
+            source,
+            store.clone(),
+            acyclic_fs::VolumeInitialization::new(config, None),
+            operation,
+            &mut accounting,
+        )
+        .await;
+        let recovered = budget.finish(result, &accounting)?;
+        recovered.work.verify(budget)?;
+        assert_eq!(recovered.work.source_entries_visited, 0);
+        let (lazy, original) = recovered.value;
+        assert_eq!(original.id(), initial_id);
+        assert_eq!(original.workspace_id(), workspace_id);
+        assert_eq!(
+            lazy.workspace()
+                .head(WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?
+                .id(),
+            head
+        );
+        assert_eq!(
+            lazy.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation))
+                .await?
+                .source,
+            reference
+        );
+        assert_eq!(
+            store
+                .load_lazy_workspace(
+                    workspace_id,
+                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation)
+                )
+                .await?
+                .ok_or("binding absent after restart")?
+                .source,
+            reference
+        );
+        let mut changed_config = config;
+        changed_config.hard_links = !config.hard_links;
+        for (requested_config, requested_operation) in
+            [(config, OperationId::new()), (changed_config, operation)]
+        {
+            let failure = reopened
+                .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+                    "stream-lost-ack",
+                    acyclic_fs::VolumeInitialization::new(requested_config, None),
+                    requested_operation,
+                    budget,
+                    &cancellation,
+                    None,
+                )
+                .await
+                .err()
+                .ok_or("restart accepted a foreign or reconfigured original creation")?;
+            assert!(matches!(
+                failure.error,
+                WorkspaceError::Filesystem(acyclic_fs::FsError::CreationRejected)
+            ));
+            failure.work().unwrap().verify(budget)?;
+            assert_eq!(
+                lazy.workspace()
+                    .head(
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?
+                    .id(),
+                head
+            );
+            let retained = lazy
+                .workspace()
+                .operation_generation(
+                    IdempotencyKey::from_bytes(operation.into_bytes()),
+                    budget,
+                    &cancellation,
+                )
+                .await?;
+            retained.work.verify(budget)?;
+            assert_eq!(
+                retained
+                    .value
+                    .ok_or("restart lost original operation")?
+                    .id(),
+                initial_id
+            );
+        }
+        Ok(())
+    }
+}

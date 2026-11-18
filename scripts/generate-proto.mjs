@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { projectGenerated, compatibilityArtifacts, packagedTypeScriptBindings, recordGeneration, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
+import { projectGenerated, compatibilityArtifacts, recordGeneration, writeChanged } from "./generated-bindings.mjs";
+import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages, selectTypeScriptBindings } from "./protobuf-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -28,12 +29,7 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
       }
     }
   };
-  /** @type {[string, string[], string?][]} */
-  const bindings = [];
-  for (const [stem, names, sourceRoot] of packagedTypeScriptBindings) {
-    const selected = names.filter(name => packages.has(name));
-    if (selected.length > 0) bindings.push([stem, selected, sourceRoot]);
-  }
+  const bindings = selectTypeScriptBindings(packages);
   if (bindings.length === 0) { prune(); return; }
   const paths = bindings.map(([stem, , sourceRoot]) => {
     const family = stem.split("/")[0];
@@ -53,7 +49,7 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
     for (const [stem, names] of bindings) {
       for (const extension of [".js", ".d.ts"]) {
         const relative = `${stem}${extension}`;
-        const bytes = readFileSync(join(temporary, "generated/typescript", relative));
+        const bytes = readFileSync(join(temporary, "generated/typescript", relative), "utf8").replace(/\n+$/u, "\n");
         for (const name of names) {
           const directory = join(root, "typescript/packages", name, "generated/proto");
           const destination = join(directory, relative);
@@ -74,4 +70,4 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) generateProto();
+if (import.meta.main) generateProto();

@@ -57,7 +57,7 @@ async fn both_cancellation_roots_deny_all_authority_surfaces() -> Result<(), Box
         let root = CancellationToken::new();
         let supplied = CancellationToken::new();
         let original = NativeMaterializationWork::new(BUDGET, &root).map_err(|(error, _)| error)?;
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         if cancel_root {
             root.cancel();
         } else {
@@ -99,7 +99,7 @@ async fn both_cancellation_roots_deny_all_authority_surfaces() -> Result<(), Box
                 .await
                 .is_err()
         );
-        assert_eq!(original.receipt(), before);
+        assert_eq!(original.receipt().unwrap(), before);
     }
     assert_eq!(provider_receipt!(store, head(id), BUDGET)?.value, head);
     Ok(())
@@ -172,7 +172,7 @@ async fn first_record_is_atomic_idempotent_and_matches_ordinary_publication()
         );
     }
     assert_eq!(provider_receipt!(native, head(id), BUDGET)?.value, head);
-    original.receipt().verify(BUDGET)?;
+    original.receipt().unwrap().verify(BUDGET)?;
     Ok(())
 }
 
@@ -234,12 +234,12 @@ async fn native_owner_reenters_provider_and_preserves_its_rejection() -> Result<
         failure.into_error(OwnerError::from),
         OwnerError::Owner(0xa7)
     ));
-    assert!(original.receipt().items_examined >= 5);
+    assert!(original.receipt().unwrap().items_examined >= 5);
     assert_eq!(
         provider_receipt!(store, head(id), WorkBudget::UNBOUNDED)?.value,
         head
     );
-    original.receipt().verify(BUDGET)?;
+    original.receipt().unwrap().verify(BUDGET)?;
     Ok(())
 }
 
@@ -318,7 +318,7 @@ async fn provider_revalidates_fence_permit_and_cancellation_after_owner_callback
                 .map_err(|error| error.into_error(std::convert::identity)),
             Ok(AppendOutcome::Conflict { actual: observed }) if observed == actual
         ));
-        original.receipt().verify(BUDGET)?;
+        original.receipt().unwrap().verify(BUDGET)?;
     }
     Ok(())
 }
@@ -354,7 +354,7 @@ async fn first_record_allocation_denial_leaves_no_partial_authority() -> Result<
             ..
         })
     ));
-    original.receipt().verify(budget)?;
+    original.receipt().unwrap().verify(budget)?;
     Ok(())
 }
 
@@ -395,7 +395,7 @@ async fn ordinary_first_record_guard_runs_unlocked_on_creation_and_recovery()
         failure.into_error(crate::FsError::from),
         crate::FsError::Cancelled(_)
     ));
-    assert!(work.spent().items_examined >= 3);
+    assert!(work.spent().unwrap().items_examined >= 3);
     assert!(matches!(
         provider_receipt!(store, head(id), WorkBudget::UNBOUNDED),
         Err(AuthorityFailure {
@@ -439,7 +439,7 @@ async fn opaque_native_publication_rejects_without_owner_or_io_and_keeps_ordinar
     let id = AuthorityId::from_bytes([0x99; 16]);
     let cancel = CancellationToken::new();
     let original = NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let append = request(id, Head::genesis(Epoch::GENESIS));
     let mut work = AuthorityWork::native(&original, &cancel);
     assert!(matches!(
@@ -468,7 +468,7 @@ async fn opaque_native_publication_rejects_without_owner_or_io_and_keeps_ordinar
             .map_err(|error| error.into_error(std::convert::identity)),
         Err(AuthorityStoreError::NativeOriginalUnsupported)
     ));
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
     assert!(matches!(
         provider_receipt!(store, head(id), WorkBudget::UNBOUNDED),
         Err(AuthorityFailure {

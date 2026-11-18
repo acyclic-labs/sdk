@@ -150,7 +150,7 @@ test("selected Windows native producer acknowledges through the original decoder
 }, async () => {
   const executable = process.env.E2E_REPORT_TEST_BINARY;
   assert.ok(executable && isAbsolute(executable),
-    "step=admit-native-report-producer; recovery=cargo test --locked -p acyclic-native-runtime --lib --no-run; set E2E_REPORT_TEST_BINARY to its Windows executable");
+    "step=admit-native-report-producer; recovery=bazel build //rust/crates/native-runtime:acyclic_native_runtime_test_cases; set E2E_REPORT_TEST_BINARY to its Windows executable");
   const scope = new Processes();
   try {
     const running = await scope.startReported(executable, ["--exact",

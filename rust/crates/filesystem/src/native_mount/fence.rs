@@ -67,7 +67,7 @@ pub(super) struct MountDestinationGuard {
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
     // Directory and lock custody belong to the sole process-wide registry.
-    pub(super) registry_file: Option<crate::sync::native::Arc<registry::Registry>>,
+    pub(super) registry_file: Option<crate::native_sync::Arc<registry::Registry>>,
     pub(super) cleanup_name:
         Option<crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
@@ -234,7 +234,7 @@ impl MountDestinationGuard {
         registry: impl FnOnce(
             &NativeMaterializationWork,
         )
-            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
+            -> Result<crate::native_sync::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         if guard.is_some() {
             return Err(NativeMountError::ControlPending);
@@ -280,7 +280,7 @@ impl MountDestinationGuard {
         registry: impl FnOnce(
             &NativeMaterializationWork,
         )
-            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
+            -> Result<crate::native_sync::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
@@ -568,7 +568,7 @@ impl MountDestinationGuard {
         registry: impl FnOnce(
             &NativeMaterializationWork,
         )
-            -> Result<crate::sync::native::Arc<registry::Registry>, NativeMountError>,
+            -> Result<crate::native_sync::Arc<registry::Registry>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         let (cleanup_name, birth_cleanup) = cleanup;
         let work = &mut &*native;
@@ -594,7 +594,7 @@ impl MountDestinationGuard {
             lock_path: PathBuf::new(),
             parent_directory,
             fence_name: Some(name),
-            registry_file: Some(crate::sync::native::Arc::clone(&registry)),
+            registry_file: Some(crate::native_sync::Arc::clone(&registry)),
             cleanup_name,
             birth_cleanup,
             destination_cleanup: None,
@@ -858,7 +858,7 @@ where
             fence_io::try_lock(file)
         };
         match result {
-            Err(error) if lock_is_contended(&error) => Ok(false),
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Ok(false),
             result => result.map(|()| true),
         }
     })
@@ -919,21 +919,6 @@ fn open_mount_lock(
     let file = file.into();
     lock_mount_file_with_work(&file, blocking, &mut work)?;
     Ok(file)
-}
-
-pub(super) fn lock_is_contended(error: &std::io::Error) -> bool {
-    if error.kind() == std::io::ErrorKind::WouldBlock {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        // Windows reports ERROR_LOCK_VIOLATION rather than WouldBlock.
-        error.raw_os_error() == Some(33)
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
 }
 
 #[cfg(unix)]
@@ -1062,7 +1047,7 @@ mod cleanup_credit_tests {
         // PreparedAsciiLeaf already owns validation. Reserve the actual
         // retirement transaction with no remaining name-validation credit.
         let _credit = work.reserve_work(MountDestinationGuard::cleanup_work())?;
-        assert_eq!(work.receipt().items_examined, 0);
+        assert_eq!(work.receipt().unwrap().items_examined, 0);
         Ok(())
     }
 }

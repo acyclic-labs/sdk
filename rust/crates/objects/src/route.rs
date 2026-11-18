@@ -2,10 +2,99 @@
 //! each route through these functions, each paired with the revision its
 //! result carries.
 use crate::convert;
-use crate::{Blobs, Digest, Error, RootId, wire};
+use crate::error::unavailable;
+use crate::{Blobs, Digest, Error, ObjectsMethod, RootId, wire};
+use acyclic_auth::action::{Action, ObjectsAction};
 use acyclic_stream::Revision;
 use bytes::Bytes;
 use prost::Message;
+
+macro_rules! http_routes {
+    (
+        unary { $($method:ident => ($route:literal, $input:ident, $output:ident)),+ $(,)? }
+        streaming { $($stream:ident => ($stream_route:literal, $stream_in:ident, $stream_out:ident)),+ $(,)? }
+    ) => {
+        /// Canonical unary HTTP route and message names relative to `/v1/objects/`.
+        pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
+            $(ObjectsMethod::$method.http_metadata()),+
+        ];
+
+        /// Streaming HTTP routes with length-delimited Protobuf frames.
+        pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[
+            $(ObjectsMethod::$stream.http_metadata()),+
+        ];
+
+        impl ObjectsMethod {
+            /// Resolve an exact binary HTTP route to its generated method identity.
+            #[must_use]
+            pub fn from_http_route(route: &str) -> Option<Self> {
+                match route {
+                    $($route => Some(Self::$method),)+
+                    $($stream_route => Some(Self::$stream),)+
+                    _ => None,
+                }
+            }
+
+            /// Canonical binary HTTP route relative to `/v1/objects/`.
+            #[must_use]
+            pub const fn http_route(self) -> &'static str {
+                self.http_metadata().0
+            }
+
+            /// Canonical Protobuf request and response (or stream item) names.
+            #[must_use]
+            pub const fn http_message_types(self) -> (&'static str, &'static str) {
+                let (_, input, output) = self.http_metadata();
+                (input, output)
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            pub(crate) const fn is_streaming_http(self) -> bool {
+                matches!(self, $(Self::$stream)|+)
+            }
+
+            const fn http_metadata(self) -> (&'static str, &'static str, &'static str) {
+                match self {
+                    $(Self::$method => ($route, stringify!($input), stringify!($output)),)+
+                    $(Self::$stream => ($stream_route, stringify!($stream_in), stringify!($stream_out)),)+
+                }
+            }
+        }
+    };
+}
+
+http_routes! {
+    unary {
+        PutBlob => ("blobs/put", PutBlobRequest, PutResponse),
+        PutBlobs => ("blobs/put-batch", PutBlobsRequest, PutBlobsResponse),
+        PutManifest => ("blobs/put-manifest", PutManifestRequest, PutResponse),
+        GetBlob => ("blobs/get", GetBlobRequest, GetBlobResponse),
+        HeadBlob => ("blobs/head", HeadBlobRequest, BlobInfo),
+        DeleteBlob => ("blobs/delete", DeleteBlobRequest, DeleteBlobResponse),
+        ListBlobs => ("blobs/list", ListBlobsRequest, ListBlobsResponse),
+        Retain => ("blobs/retain", RetainRequest, RetainResponse),
+        Release => ("blobs/release", ReleaseRequest, ReleaseResponse),
+        RetainFenced => ("blobs/retain-fenced", RetainFencedRequest, RetainResponse),
+        ReleaseTerminal => ("blobs/release-terminal", ReleaseTerminalRequest, ReleaseResponse),
+        Collect => ("blobs/collect", CollectRequest, CollectResponse),
+        Usage => ("blobs/usage", UsageRequest, UsageResponse),
+    }
+    streaming {
+        Availability => ("blobs/availability", AvailabilityRequest, AvailabilityCursor),
+    }
+}
+
+impl ObjectsMethod {
+    /// The exact authorization action declared by this method's contract.
+    /// An absent, foreign or non-singleton declaration refuses admission.
+    #[must_use]
+    pub const fn action(self) -> Option<ObjectsAction> {
+        match self.authorization().single_action() {
+            Some(Action::Objects(action)) => Some(action),
+            _ => None,
+        }
+    }
+}
 
 /// A route's response and the revision committing or serving it.
 pub type Served<T> = (T, Option<Revision>);
@@ -48,7 +137,7 @@ pub async fn invoke_stream(
     input: Bytes,
 ) -> Result<acyclic_stream::BoxProviderStream<'static, Result<Vec<u8>, Error>>, Error> {
     use futures::StreamExt as _;
-    if route != "blobs/availability" {
+    if ObjectsMethod::from_http_route(route) != Some(ObjectsMethod::Availability) {
         return Err(wire::ErrorCode::InvalidArgument.into());
     }
     let observation = availability(blobs, decode(input)?).await?;
@@ -65,13 +154,7 @@ pub async fn put_blob(
     blobs: &dyn Blobs,
     request: wire::PutBlobRequest,
 ) -> Result<Served<wire::PutResponse>, Error> {
-    let expected = convert::digest(request.digest.as_ref())?;
-    // Received bytes are hashed once, here at the trust boundary.
-    let body = crate::Sealed::new(request.body.into());
-    if Digest::sealed(&body) != expected {
-        return Err(wire::ErrorCode::DigestMismatch.into());
-    }
-    let references = convert::digests(&request.references)?;
+    let (body, references) = member(request)?;
     let put = blobs.put_durable(body, references).await?;
     Ok((convert::wire_put(&put), put_revision(&put)))
 }
@@ -108,6 +191,12 @@ pub async fn put_blobs(
                 )
             })?);
         }
+    }
+    if published.next().is_some() {
+        return Err(Error::caused(
+            wire::ErrorCode::Unavailable,
+            acyclic_auth::refusal::Cause::new("objects.route", "batch_result_surplus"),
+        ));
     }
     let outcomes: Vec<_> = outcomes.into_iter().flatten().collect();
     let revision = covering(outcomes.iter().flatten());
@@ -235,6 +324,24 @@ pub async fn list_blobs(
     Ok((convert::wire_page(&page), page.revision))
 }
 
+fn retained_reply(retained: crate::Retained) -> Served<wire::RetainResponse> {
+    (
+        wire::RetainResponse {
+            references: retained.references,
+        },
+        retained.revision,
+    )
+}
+
+fn released_reply(released: crate::Released) -> Served<wire::ReleaseResponse> {
+    (
+        wire::ReleaseResponse {
+            existed: released.existed,
+        },
+        released.revision,
+    )
+}
+
 /// Appends a reference batch to a root.
 ///
 /// # Errors
@@ -247,12 +354,7 @@ pub async fn retain(
     let retained = blobs
         .retain(&RootId::new(request.root)?, references)
         .await?;
-    Ok((
-        wire::RetainResponse {
-            references: retained.references,
-        },
-        retained.revision,
-    ))
+    Ok(retained_reply(retained))
 }
 
 /// Releases a root.
@@ -264,12 +366,33 @@ pub async fn release(
     request: wire::ReleaseRequest,
 ) -> Result<Served<wire::ReleaseResponse>, Error> {
     let released = blobs.release(&RootId::new(request.root)?).await?;
-    Ok((
-        wire::ReleaseResponse {
-            existed: released.existed,
-        },
-        released.revision,
-    ))
+    Ok(released_reply(released))
+}
+
+/// Retains one batch at a fenced intent's original generation.
+pub async fn retain_fenced(
+    blobs: &dyn Blobs,
+    request: wire::RetainFencedRequest,
+) -> Result<Served<wire::RetainResponse>, Error> {
+    let retained = blobs
+        .retain_fenced(
+            &RootId::new(request.root)?,
+            request.fence,
+            convert::digests(&request.references)?,
+        )
+        .await?;
+    Ok(retained_reply(retained))
+}
+
+/// Durably closes a fenced intent through its supplied generation.
+pub async fn release_terminal(
+    blobs: &dyn Blobs,
+    request: wire::ReleaseTerminalRequest,
+) -> Result<Served<wire::ReleaseResponse>, Error> {
+    let released = blobs
+        .release_terminal(&RootId::new(request.root)?, request.fence)
+        .await?;
+    Ok(released_reply(released))
 }
 
 /// Runs one mark-and-sweep pass.
@@ -327,20 +450,26 @@ pub async fn invoke_at(
     fn encode<T: Message>((body, revision): Served<T>) -> Served<Vec<u8>> {
         (body.encode_to_vec(), revision)
     }
-    Ok(match route {
-        "blobs/put" => encode(put_blob(blobs, decode(input)?).await?),
-        "blobs/put-batch" => encode(put_blobs(blobs, decode(input)?).await?),
-        "blobs/put-manifest" => encode(put_manifest(blobs, decode(input)?).await?),
-        "blobs/get" => encode(get_blob(blobs, decode(input)?).await?),
-        "blobs/head" => encode(head_blob(blobs, decode(input)?).await?),
-        "blobs/delete" => encode(delete_blob(blobs, decode(input)?).await?),
-        "blobs/list" => encode(list_blobs(blobs, decode(input)?).await?),
-        "blobs/retain" => encode(retain(blobs, decode(input)?).await?),
-        "blobs/release" => encode(release(blobs, decode(input)?).await?),
-        "blobs/collect" => encode(collect(blobs, decode(input)?).await?),
-        "blobs/usage" => encode(usage(blobs, decode(input)?).await?),
-        _ => return Err(wire::ErrorCode::InvalidArgument.into()),
-    })
+    Ok(
+        match ObjectsMethod::from_http_route(route).ok_or(wire::ErrorCode::InvalidArgument)? {
+            ObjectsMethod::PutBlob => encode(put_blob(blobs, decode(input)?).await?),
+            ObjectsMethod::PutBlobs => encode(put_blobs(blobs, decode(input)?).await?),
+            ObjectsMethod::PutManifest => encode(put_manifest(blobs, decode(input)?).await?),
+            ObjectsMethod::GetBlob => encode(get_blob(blobs, decode(input)?).await?),
+            ObjectsMethod::HeadBlob => encode(head_blob(blobs, decode(input)?).await?),
+            ObjectsMethod::DeleteBlob => encode(delete_blob(blobs, decode(input)?).await?),
+            ObjectsMethod::ListBlobs => encode(list_blobs(blobs, decode(input)?).await?),
+            ObjectsMethod::Retain => encode(retain(blobs, decode(input)?).await?),
+            ObjectsMethod::Release => encode(release(blobs, decode(input)?).await?),
+            ObjectsMethod::RetainFenced => encode(retain_fenced(blobs, decode(input)?).await?),
+            ObjectsMethod::ReleaseTerminal => {
+                encode(release_terminal(blobs, decode(input)?).await?)
+            }
+            ObjectsMethod::Collect => encode(collect(blobs, decode(input)?).await?),
+            ObjectsMethod::Usage => encode(usage(blobs, decode(input)?).await?),
+            ObjectsMethod::Availability => return Err(wire::ErrorCode::InvalidArgument.into()),
+        },
+    )
 }
 
 /// Checks one [`crate::HTTP_ROUTES`] reply against the request it answers,
@@ -356,15 +485,16 @@ pub async fn invoke_at(
 /// `Unavailable` for a reply that is malformed or does not answer it.
 pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
     fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
-        decode(bytes).map_err(|_| wire::ErrorCode::Unavailable.into())
+        decode(bytes).map_err(|_| unavailable())
     }
-    let checked = match route {
-        "blobs/put" => {
+    match ObjectsMethod::from_http_route(route).ok_or(wire::ErrorCode::InvalidArgument)? {
+        ObjectsMethod::PutBlob => {
             let request: wire::PutBlobRequest = decode(input)?;
             let digest = convert::digest(request.digest.as_ref())?;
-            convert::verified_put(&reply(output)?, digest, request.body.len() as u64).map(drop)
+            convert::verified_put(&reply(output)?, digest, request.body.len() as u64, None)
+                .map(drop)
         }
-        "blobs/put-batch" => {
+        ObjectsMethod::PutBlobs => {
             let request: wire::PutBlobsRequest = decode(input)?;
             let expected = request
                 .puts
@@ -373,40 +503,43 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
                 .collect::<Result<Vec<_>, Error>>()?;
             convert::verified_puts(reply(output)?, &expected, None).map(drop)
         }
-        "blobs/put-manifest" => {
+        ObjectsMethod::PutManifest => {
             let request: wire::PutManifestRequest = decode(input)?;
             let manifest = convert::from_manifest(request.manifest.as_ref())?;
             let (digest, length) = (Digest::of(&manifest.encode()?), manifest.length()?);
-            convert::verified_put(&reply(output)?, digest, length).map(drop)
+            convert::verified_put(&reply(output)?, digest, length, None).map(drop)
         }
-        "blobs/get" => {
+        ObjectsMethod::GetBlob => {
             let request: wire::GetBlobRequest = decode(input)?;
             let digest = convert::digest(request.digest.as_ref())?;
             let range = convert::from_range(request.range.as_ref());
-            convert::object(reply(output)?, digest, range, request.maximum_bytes).map(drop)
+            convert::object(reply(output)?, digest, range, request.maximum_bytes, None).map(drop)
         }
-        "blobs/head" => {
+        ObjectsMethod::HeadBlob => {
             let request: wire::HeadBlobRequest = decode(input)?;
             let digest = convert::digest(request.digest.as_ref())?;
-            convert::headed(&reply(output)?, digest).map(drop)
+            convert::headed(&reply(output)?, digest, None).map(drop)
         }
-        "blobs/delete" => convert::delete(&reply(output)?).map(drop),
-        "blobs/list" => {
+        ObjectsMethod::DeleteBlob => convert::delete(&reply(output)?, None).map(drop),
+        ObjectsMethod::ListBlobs => {
             let request: wire::ListBlobsRequest = decode(input)?;
             let after = request
                 .after
                 .as_ref()
                 .map(|after| convert::digest(Some(after)))
                 .transpose()?;
-            convert::listed(&reply(output)?, after, request.limit).map(drop)
+            convert::listed(&reply(output)?, after, request.limit, None).map(drop)
         }
-        "blobs/retain" => reply::<wire::RetainResponse>(output).map(drop),
-        "blobs/release" => reply::<wire::ReleaseResponse>(output).map(drop),
-        "blobs/collect" => reply::<wire::CollectResponse>(output).map(drop),
-        "blobs/usage" => reply::<wire::UsageResponse>(output).map(drop),
-        _ => return Err(wire::ErrorCode::InvalidArgument.into()),
-    };
-    checked.map_err(|_| wire::ErrorCode::Unavailable.into())
+        ObjectsMethod::Retain | ObjectsMethod::RetainFenced => {
+            reply::<wire::RetainResponse>(output).map(drop)
+        }
+        ObjectsMethod::Release | ObjectsMethod::ReleaseTerminal => {
+            reply::<wire::ReleaseResponse>(output).map(drop)
+        }
+        ObjectsMethod::Collect => reply::<wire::CollectResponse>(output).map(drop),
+        ObjectsMethod::Usage => reply::<wire::UsageResponse>(output).map(drop),
+        ObjectsMethod::Availability => Err(wire::ErrorCode::InvalidArgument.into()),
+    }
 }
 
 #[cfg(test)]

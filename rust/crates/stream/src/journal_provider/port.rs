@@ -166,8 +166,9 @@ impl CommandJournal for HostPort {
         }
         let head = appended?
             .as_f64()
-            .filter(|head| head.fract() == 0.0 && *head >= 0.0 && *head <= f64::from(u32::MAX))
-            .ok_or(StreamError::InvalidResponse)? as u32;
+            .and_then(crate::wasm_unsigned_integer)
+            .and_then(|head| u32::try_from(head).ok())
+            .ok_or(StreamError::InvalidResponse)?;
         let Some(_) = accepted.get() else {
             return Ok(AppendIf::Stale {
                 head: u64::from(head),

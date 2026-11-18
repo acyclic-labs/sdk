@@ -54,7 +54,7 @@ pub(in crate::filesystem::execution_journal) fn contribution_identity(
         .ok_or_else(|| invalid(io))?;
     let bytes = crate::core::owned_sum([domain.len() as u64, 8, digests])?;
     if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: bytes,
             ..Default::default()
         })?;
@@ -71,7 +71,7 @@ pub(in crate::filesystem::execution_journal) fn contribution_identity(
         previous = Some(path);
         let admit = |bytes_hashed| {
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters {
+                io.charge(acyclic_fs_work::performance::WorkCounters {
                     bytes_hashed,
                     ..Default::default()
                 })?;

@@ -1,7 +1,10 @@
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 use std::cell::Cell;
 use tokio::io::AsyncReadExt as _;
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 struct Peer<'a> {
     received: &'a Cell<usize>,
@@ -25,7 +28,7 @@ async fn raw_transport_cannot_receive_a_chunk_beyond_its_allowance() -> Result<(
         let work = NativeMaterializationWork::new(
             WorkBudget {
                 source_bytes_read: allowance,
-                ..acyclic_fs::performance::BOUNDARY_BUDGET
+                ..acyclic_fs_work::performance::BOUNDARY_BUDGET
             },
             &CancellationToken::new(),
         )
@@ -76,7 +79,7 @@ async fn cancellation_and_retained_memory_denial_precede_transport_reads() -> Re
                 } else {
                     NativeMaterializationWork::accounting_state_bytes()
                 },
-                ..acyclic_fs::performance::BOUNDARY_BUDGET
+                ..acyclic_fs_work::performance::BOUNDARY_BUDGET
             },
             &cancellation,
         )

@@ -42,7 +42,7 @@ async fn registered_workspace(
     WorkspaceGraph::new(store.clone())
         .register_root(
             &workspace,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -456,9 +456,9 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
             WorkBudget::UNBOUNDED,
             &stop,
             |_| async {
-                Ok(acyclic_fs::OperationReceipt {
+                Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 })
             },
         )
@@ -516,7 +516,7 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
         current
             .stat("/untracked", WorkBudget::UNBOUNDED, &stop)
             .await,
-        Err(acyclic_fs::OperationFailure {
+        Err(acyclic_fs_work::performance::OperationFailure {
             error: WorkspaceError::NotFound,
             ..
         })

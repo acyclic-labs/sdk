@@ -145,7 +145,8 @@ pub struct AgentState {
     /// publishes it idle or done answers with one `ChildSettled`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaited: bool,
-    /// Open children that still have to receive `Archive`.
+    /// Children whose `Archive` has not been emitted.
+    /// Only archive emission removes an entry; settlement does not close an inbox.
     pub archive_pending: super::Children,
     /// A terminal publication refusal stopped the cascade. Pending children
     /// remain durable, but neither arrivals nor alarms retry their writes.
@@ -791,7 +792,7 @@ pub(super) struct PreparedStep {
 impl PreparedStep {
     pub(super) async fn persist_indexes<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
-        provider: std::sync::Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         previous: Option<&acyclic_actors::guest::Checkpoint>,
     ) -> Result<(), Error> {
         self.step.state.open_children.bind(provider.clone());
@@ -1449,7 +1450,6 @@ async fn admit(
     if let InboxRecord::ChildDone(done) = &record {
         if done.child.is_child_of(&state.path) {
             state.open_children.remove(&done.child).await?;
-            state.archive_pending.remove(&done.child).await?;
         }
     }
     match &record {
@@ -1680,16 +1680,28 @@ async fn run<T: TurnDriver + ?Sized>(
     let input = match picked {
         Pick::Nothing => return Ok(()),
         Pick::Review => {
-            let review = driver.review(state, cursor, cancellation.clone()).await;
+            let review = crate::core::until_turn_stopped(Some(cancellation.clone()), async {
+                driver
+                    .review(state, cursor, cancellation.clone())
+                    .await
+                    .map_err(|error| crate::Error::Agent(Box::new(error)))
+            })
+            .await;
             let review = match review {
+                Ok(review) => Ok(review),
+                Err(crate::Error::Agent(error)) => Err(*error),
+                Err(error) => Err(Error::Turn(Box::new(error))),
+            };
+            let review = match review {
+                // A cancelled review leaves its original page pending. The
+                // next step finishes it, repairing any decision whose wake was
+                // not published; clearing the page would strand every child
+                // whose ask was already consumed from the inbox.
                 Err(Error::Turn(error))
-                    if cancellation.is_cancelled()
-                        && matches!(
-                            *error,
-                            crate::Error::InteractionRejected(
-                                crate::InteractionRejection::Cancelled
-                            )
-                        ) =>
+                    if matches!(
+                        *error,
+                        crate::Error::InteractionRejected(crate::InteractionRejection::Cancelled)
+                    ) =>
                 {
                     return Ok(());
                 }
@@ -2107,12 +2119,14 @@ async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Erro
             target: child,
         });
     }
-    state.reported = step.control.reported;
-    if step.report {
+    if step.report && state.open_children.is_empty() {
+        state.reported = step.control.reported;
         state.phase = Phase::Done {
             outcome: AgentOutcome::Archived,
         };
         outs.extend(report(state, &AgentOutcome::Archived));
+    } else if !step.report {
+        state.reported = step.control.reported;
     }
     Ok(())
 }
@@ -2156,20 +2170,22 @@ async fn apply_spawns(
             index += 1;
             continue;
         };
+        let topology = state
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.topology.as_ref());
+        let within_lifetime = topology
+            .and_then(|topology| topology.spawn_limit(state.parent.is_none()))
+            .is_none_or(|limit| {
+                (state.spawned_children.len() as u64).saturating_add(state.reserved_spawns) < limit
+            });
+        let within_width =
+            topology.is_none_or(|topology| topology.admits_children(state.open_children.len()));
         let opened = match state.spawned(intent) {
             Ok(child)
                 if !state.closed
                     && (state.spawned_children.contains(&child).await?
-                        || state
-                            .profile
-                            .as_ref()
-                            .and_then(|profile| profile.topology.as_ref())
-                            .and_then(|topology| topology.spawn_limit(state.parent.is_none()))
-                            .is_none_or(|limit| {
-                                (state.spawned_children.len() as u64)
-                                    .saturating_add(state.reserved_spawns)
-                                    < limit
-                            })) =>
+                        || (within_lifetime && within_width)) =>
             {
                 state.spawned_children.insert(&child).await?;
                 state.open_children.insert(&child).await?;

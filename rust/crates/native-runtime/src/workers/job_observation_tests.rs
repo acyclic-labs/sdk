@@ -351,7 +351,7 @@ impl QueueScenario<'_> {
         );
         drop(rejected);
         drop(first); // Detach the observer before the accepted job runs.
-        let job = crate::workers::receive_job(receive, &workers.admission)
+        let (job, _running) = crate::workers::receive_job(receive, &workers.admission)
             .ok_or(io::ErrorKind::BrokenPipe)?;
         std::thread::spawn(move || {
             tracing::dispatcher::with_default(&tracing::Dispatch::none(), || job.run())
@@ -386,7 +386,7 @@ impl QueueScenario<'_> {
         // Original completion progresses while the one output credit is held.
         let mut blocked = task(|| Ok(()))?;
         assert!(matches!(submit(workers, &mut blocked), Poll::Ready(Ok(()))));
-        let job = crate::workers::receive_job(receive, &workers.admission)
+        let (job, _running) = crate::workers::receive_job(receive, &workers.admission)
             .ok_or(io::ErrorKind::BrokenPipe)?;
         let _ = job.run();
         let state = blocked.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
@@ -416,7 +416,7 @@ impl QueueScenario<'_> {
         std::thread::scope(|scope| -> io::Result<()> {
             let admission = &workers.admission;
             let worker = scope.spawn(move || {
-                if let Some(job) = crate::workers::receive_job(receive, admission) {
+                if let Some((job, _running)) = crate::workers::receive_job(receive, admission) {
                     let _ = job.run();
                 }
                 let _ = done.send(());
@@ -466,9 +466,9 @@ impl QueueScenario<'_> {
             submit(workers, &mut panicked),
             Poll::Ready(Ok(()))
         ));
-        let _ = crate::workers::receive_job(receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?
-            .run();
+        let (job, _running) = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?;
+        let _ = job.run();
         let panic = sample(output)?;
         assert_eq!(panic.sample().outcome, Outcome::Err);
         assert_eq!(panic.sample().error_kind, Some("panic"));
@@ -522,9 +522,9 @@ impl QueueScenario<'_> {
             });
         }
         assert!(matches!(submit(workers, &mut both), Poll::Ready(Ok(()))));
-        let _ = crate::workers::receive_job(receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?
-            .run();
+        let (job, _running) = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?;
+        let _ = job.run();
         let joined = sample(output)?;
         assert_eq!(joined.sample().outcome, Outcome::Err);
         assert_eq!(joined.sample().error_kind, Some("not_found"));
@@ -568,9 +568,9 @@ impl QueueScenario<'_> {
             *operation = Box::new(|| {});
         }
         assert!(matches!(submit(workers, &mut missing), Poll::Ready(Ok(()))));
-        let _ = crate::workers::receive_job(receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?
-            .run();
+        let (job, _running) = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?;
+        let _ = job.run();
         let absent = sample(output)?;
         assert_eq!(absent.sample().outcome, Outcome::Incomplete);
         assert_eq!(
@@ -716,7 +716,7 @@ fn subscriber_unwind_case(
         }
         std::thread::scope(|scope| -> io::Result<()> {
             let worker = scope.spawn(|| -> io::Result<()> {
-                let job = crate::workers::receive_job(&receiver, &workers.admission)
+                let (job, _running) = crate::workers::receive_job(&receiver, &workers.admission)
                     .ok_or_else(|| io::Error::other("accepted original job absent"))?;
                 if let Some(waker) = job.run() {
                     waker.wake();

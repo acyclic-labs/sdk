@@ -104,8 +104,8 @@ async fn seed(
 ) -> (
     MemoryStream,
     StreamPath,
-    Vec<Result<AppendOutcome, StreamError>>,
-    Vec<Result<ForkReceipt, StreamError>>,
+    Vec<Result<AppendOutcome, StreamCategory>>,
+    Vec<Result<ForkReceipt, StreamCategory>>,
 ) {
     let mut provider =
         MemoryStream::new_with_clock(MemoryLimits::default(), Arc::new(AtomicU64::new(7)));
@@ -126,7 +126,8 @@ async fn seed(
                     if_tail: None,
                     idempotency_key: crate::IdempotencyKey::unique(),
                 })
-                .await,
+                .await
+                .map_err(|error| error.category()),
         );
     }
     let mut forks = Vec::new();
@@ -141,7 +142,8 @@ async fn seed(
                     at_tail: Some((batches / 2) as u64),
                     idempotency_key: crate::IdempotencyKey::unique(),
                 })
-                .await,
+                .await
+                .map_err(|error| error.category()),
         );
         forks.push(
             provider
@@ -152,7 +154,8 @@ async fn seed(
                     at_tail: None,
                     idempotency_key: crate::IdempotencyKey::unique(),
                 })
-                .await,
+                .await
+                .map_err(|error| error.category()),
         );
         target
     } else {
@@ -174,17 +177,17 @@ proptest! {
                 let mut cursor = HistoryCursor::at(start);
                 let mut old_cursor = BaselineCursor::at(start);
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }
-                else { cursor.sync(stream); }
+                else { cursor.sync(stream).expect("read-only cut"); }
                 let first: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).take(cut).collect();
                 drop(state);
                 let appended = provider.append(AppendRequest {
                     path: path.clone(), records: vec![(Bytes::from_static(b"new\0bytes")).into()],
                     if_tail: None, idempotency_key: crate::IdempotencyKey::unique(),
-                }).await;
+                }).await.map_err(|error| error.category());
                 let state = provider.state.read().await;
                 let stream = state.paths.get(&path).unwrap();
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }
-                else { cursor.sync(stream); }
+                else { cursor.sync(stream).expect("read-only cut"); }
                 let rest: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).collect();
                 (appends, forks, appended, first, rest, if old { old_cursor.next } else { cursor.position() })
         });
@@ -210,7 +213,7 @@ fn pinned_cursor_open_is_constant_space_and_eager_control_grows() {
                 if old {
                     baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
                 } else {
-                    cursor.sync(stream);
+                    cursor.sync(stream).expect("read-only cut");
                 }
             }));
             counts.push(HISTORY_VISITS.with(std::cell::Cell::get));
@@ -235,7 +238,7 @@ fn pinned_cursor_open_is_constant_space_and_eager_control_grows() {
         };
         assert_eq!(old_records, new_records);
         assert_eq!(*new_count, 0, "opening walked the pinned backlog");
-        assert_eq!(new_heap.count_total, 0, "opening allocated backlog windows");
+        assert_eq!(new_heap.count_total, 0, "opening must not allocate");
         assert!(*old_count >= batches, "eager control hid its history walk");
         assert!(old_heap.count_total > 0 && old_heap.bytes_total > new_heap.bytes_total);
         let [eager_first, lazy_first] = first_output.as_slice() else {
@@ -271,7 +274,7 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
             if old {
                 baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
             } else {
-                cursor.sync(stream);
+                cursor.sync(stream).expect("read-only cut");
             }
             while read(old, &mut old_cursor, &mut cursor).is_some() {}
         }
@@ -289,7 +292,7 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
             if old {
                 baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
             } else {
-                cursor.sync(stream);
+                cursor.sync(stream).expect("read-only cut");
             }
         });
         measured.push((
@@ -313,7 +316,8 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
         *before,
         (2, 1, (4 * std::mem::size_of::<HistoryWindow>()) as u64)
     );
-    assert_eq!(*after, (0, 0, 0));
+    assert_eq!(after.0, 0);
+    assert_eq!(after.1, 0, "append refresh must not allocate");
     assert_ne!(
         before, after,
         "old scratch allocation escaped exact work assertions"
@@ -461,7 +465,7 @@ fn follow_chain(depth: usize) -> (Vec<(u64, String)>, FollowCost) {
         counter.with(|count| count.set(0));
     }
     let allocations = acyclic_test_support::measure(|| {
-        cursor.sync(tip);
+        cursor.sync(tip).expect("read-only cut");
         while let Some(record) = futures::FutureExt::now_or_never(cursor.next_record())
             .expect("memory pages are immediately ready")
             .unwrap()

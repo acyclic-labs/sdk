@@ -12,7 +12,7 @@ fn report(number: usize) -> String {
 fn batches_replay_in_order_and_reject_the_whole_write_on_any_invalid_record() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

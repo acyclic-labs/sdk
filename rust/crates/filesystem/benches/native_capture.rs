@@ -1,8 +1,12 @@
 //! Complete rescans of a published native tree, including unchanged files.
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
-use acyclic_fs::{
-    CancellationToken, CaptureOptions, CapturePolicy, Fs, OperationId, WorkBudget,
-    capture_baseline, capture_root_identity, seal_checkout,
+use {
+    acyclic_fs::{
+        CancellationToken, CaptureOptions, CapturePolicy, Fs, capture_baseline,
+        capture_root_identity, seal_checkout,
+    },
+    acyclic_fs_format::identity::OperationId,
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 #[global_allocator]

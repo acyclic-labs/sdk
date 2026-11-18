@@ -11,7 +11,7 @@ fn cancel_binding_wait(
         .wait(|| async { Ok(source.checkout.view_gate.write().await) })?;
     let cancellation = CancellationToken::new();
     let work = capture_meter(WorkBudget::UNBOUNDED, &cancellation)?;
-    let initial = work.live_allocation_bytes();
+    let initial = work.live_allocation_bytes().unwrap();
     let cancelled = if lifetime {
         source.cancellation().clone()
     } else {
@@ -25,7 +25,7 @@ fn cancel_binding_wait(
         *hook = Some(Box::new(move || {
             // A held writer forces the real gate future to register its waits
             // before returning Pending. Cancel at that exact poll boundary.
-            assert!(waiting_work.live_allocation_bytes() > initial);
+            assert!(waiting_work.live_allocation_bytes().unwrap() > initial);
             observed.set(true);
             cancelled.cancel();
         }));
@@ -57,9 +57,12 @@ fn cancel_binding_wait(
         matches!(result, Err(MountSourceError::Cancelled))
     });
     assert!(!source.checkout.view_gate.reads_for_callback(owner));
-    assert_eq!(work.live_allocation_bytes(), initial);
+    assert_eq!(work.live_allocation_bytes().unwrap(), initial);
     drop(writer);
-    Ok((work.receipt(), work.live_allocation_bytes()))
+    Ok((
+        work.receipt().unwrap(),
+        work.live_allocation_bytes().unwrap(),
+    ))
 }
 
 #[test]
@@ -99,17 +102,20 @@ fn binding_lease_only_allocates_its_waker_and_owned_payload()
             )
         })?;
         drop(lease);
-        (work.receipt(), work.live_allocation_bytes())
+        (
+            work.receipt().unwrap(),
+            work.live_allocation_bytes().unwrap(),
+        )
     };
     let work = capture_meter(WorkBudget::UNBOUNDED, source.cancellation())?;
     let lease = source.binding_lease(None, &work)?;
     drop(lease);
-    let mut actual = work.receipt();
+    let mut actual = work.receipt().unwrap();
     assert_eq!(
         actual.allocation_operations,
         reference.allocation_operations + 2
     );
-    assert_eq!(work.live_allocation_bytes(), retained);
+    assert_eq!(work.live_allocation_bytes().unwrap(), retained);
     // The gate is the work oracle: only temporary allocation ownership differs.
     actual.allocation_operations = reference.allocation_operations;
     actual.peak_allocation_bytes = reference.peak_allocation_bytes;
@@ -125,7 +131,7 @@ fn binding_lease_respects_allocation_ceilings_and_releases_on_failure()
     let required = {
         let work = capture_meter(WorkBudget::UNBOUNDED, source.cancellation())?;
         drop(source.binding_lease(None, &work)?);
-        work.receipt()
+        work.receipt().unwrap()
     };
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 64,
@@ -159,7 +165,7 @@ fn binding_lease_respects_allocation_ceilings_and_releases_on_failure()
             let lease = source.binding_lease(None, &work);
             prop_assert_eq!(lease.is_ok(), succeeds);
             drop(lease);
-            prop_assert!(work.receipt().verify(budget).is_ok());
+            prop_assert!(work.receipt().unwrap().verify(budget).is_ok());
             // Failure must not leave a read lease behind on this callback owner.
             prop_assert!(!source.checkout.view_gate.reads_for_callback(owner));
             Ok(())

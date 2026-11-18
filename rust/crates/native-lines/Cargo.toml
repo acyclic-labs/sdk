@@ -1,0 +1,20 @@
+[package]
+name = "acyclic-native-lines"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Line framing for native byte streams"
+
+[features]
+test-support = ["tokio/macros"]
+
+[dependencies]
+bytes.workspace = true
+futures-core = "0.3.31"
+tokio = { workspace = true, features = ["io-util"] }
+tokio-util = { workspace = true, features = ["codec"] }
+
+[lints]
+workspace = true

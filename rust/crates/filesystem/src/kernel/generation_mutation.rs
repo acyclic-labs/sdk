@@ -178,7 +178,7 @@ pub async fn apply_generation_mutations<S: AsyncObjectStore>(
     )
     .await
     .map(|(receipt, _, _)| receipt)
-    .map_err(|error| OperationFailure::new(generation_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(generation_error(error), accounting.spent()))
 }
 
 pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: AsyncObjectStore>(
@@ -301,7 +301,7 @@ async fn apply_generation_mutations_validated<S: AsyncObjectStore>(
     Ok((
         GenerationMutationReceipt {
             root,
-            work: accounting.spent(),
+            work: accounting.spent()?,
         },
         operations,
         allocation,

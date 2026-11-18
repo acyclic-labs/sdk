@@ -66,7 +66,7 @@ async fn admitted_request_append_reads_only_the_manifest_as_history_grows() -> R
         );
         if [1, 100, 1000].contains(&step) {
             let io = PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
                 &acyclic_fs::CancellationToken::new(),
             )?;
             let event = ExecutionEvent::ModelStarted {
@@ -76,11 +76,11 @@ async fn admitted_request_append_reads_only_the_manifest_as_history_grows() -> R
                 request_digest: prepared.request_digest(),
                 context: None,
             };
-            let before = io.receipt();
+            let before = io.receipt()?;
             journal
                 .append(operation, &format!("model:{step}"), &event, Some(&io))?
                 .await?;
-            let loaded = io.receipt().object_bytes_read - before.object_bytes_read;
+            let loaded = io.receipt()?.object_bytes_read - before.object_bytes_read;
             assert!(
                 loaded < 4096,
                 "history {step} loaded {loaded} payload bytes"
@@ -165,7 +165,7 @@ where
             context: None,
         };
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )?;
         let result = journal
@@ -179,7 +179,7 @@ where
         );
         // Removing the production attestation restores the former walk over
         // every payload and violates the positive test's identical bound.
-        assert!(io.receipt().object_bytes_read > 4096);
+        assert!(io.receipt()?.object_bytes_read > 4096);
         if forged {
             assert_eq!(io.owned_bytes()?, 0);
         }

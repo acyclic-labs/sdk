@@ -58,6 +58,6 @@ export async function runNodeWasmTests(args, runner = process.env.ACYCLIC_WASM_T
   return result.status ?? 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   process.exitCode = await runNodeWasmTests(process.argv.slice(2));
 }

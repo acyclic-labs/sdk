@@ -138,7 +138,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 &name,
                 initialization,
                 operation,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 None,
             )
@@ -147,7 +147,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {
@@ -281,7 +281,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {
@@ -434,7 +434,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {
@@ -502,7 +502,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
 async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()> {
     for native_adapter in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
         let workspace = Fs::memory()
             .create_workspace("typed-staging-error", budget, &cancellation)
             .await
@@ -860,7 +860,7 @@ async fn publication_recovers_original_evidence_without_receipt_paths_for_every_
             let (write, read) = publication_grants(&volume, agent)?;
             let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = match adapter {
@@ -892,7 +892,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
     use acyclic_fs::access::{Action, Capability};
     for adapter in 0..3 {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = match adapter {
@@ -1401,5 +1401,92 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             first.descriptor().sha256()
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn expiry_crossing_between_authorization_and_commit_refuses_publication() -> Result<()> {
+    use acyclic_fs::access::{Action, Capability};
+    use acyclic_stream::UnixMillisClock as _;
+
+    let wall = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
+    let expiry = wall / 1000 + 10;
+    let start = wall + 5_000;
+    let (clock, control) = acyclic_actors::local::ControlledClock::new(start);
+    let provider = ProviderRef::new("expiry".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let mut host = FilesystemHost::new_with_clock(Fs::memory(), &provider, None, Arc::new(clock))?;
+    let agent = crate::AgentId::from_bytes([40; 16]);
+    let volume = VolumeRef::new(
+        provider,
+        "expiring".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&volume).await?;
+    let issuer = AuthorityRoot::new(
+        "expiry",
+        [42; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "expiry".into(),
+        },
+    );
+    let capability = Capability {
+        expires_at: Some(expiry),
+        ..Capability::whole_volume(
+            None,
+            &[
+                Action::List,
+                Action::Read,
+                Action::ReadHistory,
+                Action::Create,
+                Action::Write,
+                Action::Delete,
+            ],
+        )
+    };
+    let scope = issuer.bootstrap_scope(
+        "expiring-writer",
+        &crate::Capabilities::new([capability
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?]),
+        Some(agent),
+        &mut None,
+    )?;
+    let grant = ContentGrant::verify(
+        &issuer.verifier(&mut None)?,
+        &scope,
+        &volume,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    let control = Arc::new(std::sync::Mutex::new(Some(control)));
+    let pause_control = control.clone();
+    Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+        pause_control
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .advance_to((expiry + 1) * 1000)
+            .unwrap();
+        Box::pin(std::future::ready(()))
+    }));
+    let result = host
+        .put_content(
+            &volume,
+            &grant,
+            "expiring",
+            b"secret",
+            "text/plain",
+            "expiring",
+            Some(64),
+            &IdempotencyKey::new("expiry-crossing")?,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await;
+    assert!(matches!(result, Err(Error::Unauthorized(_))), "{result:?}");
     Ok(())
 }

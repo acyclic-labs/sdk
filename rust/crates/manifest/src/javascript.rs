@@ -28,7 +28,7 @@ export type EntryResult = PublishedDeployment | ObjectsV1BinaryReply;
 
 fn entry_error(error: entry::Error) -> JsValue {
     match error {
-        entry::Error::Objects(error) => js_error(error),
+        entry::Error::Objects(error) => js_error(&error),
         entry::Error::Manifest(error) => {
             let value = js_sys::Error::new(&error.to_string());
             value.set_name("ManifestError");
@@ -45,7 +45,7 @@ fn unavailable() -> entry::Error {
 
 fn root(bytes: &Uint8Array) -> Result<RootId, JsValue> {
     let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(bytes, |_| Ok(()))?;
-    RootId::new(bytes).map_err(js_error)
+    RootId::new(bytes).map_err(|error| js_error(&error))
 }
 
 /// Selected-entry publication over the caller's original admitted Objects owner.
@@ -61,7 +61,7 @@ impl JavaScriptEntryStore {
     pub fn new(objects: JsValue) -> Result<Self, JsValue> {
         Ok(Self {
             inner: Rc::new(entry::EntryStore::new(BinaryObjects::new(
-                JavaScriptTransport::new(objects).map_err(js_error)?,
+                JavaScriptTransport::new(objects).map_err(|error| js_error(&error))?,
             ))),
         })
     }

@@ -290,7 +290,8 @@ fn shared_listing(
                     Ok(true) => return Ok(()),
                     Ok(false) => {}
                     Err(failure)
-                        if crate::native_mount::shared::outcome::stops_mount(&failure.0) =>
+                        if failure.1.is_err()
+                            || crate::native_mount::shared::outcome::stops_mount(&failure.0) =>
                     {
                         return Err(
                             PacketFailure::source(&core, failure).retaining_work(retained_work)

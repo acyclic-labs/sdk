@@ -1,16 +1,21 @@
 use super::{
-    TestResult, local_workspace, matchers,
+    TestResult,
+    integration_helpers::echo_tool,
+    local_workspace, matchers,
     provider_case::ProviderCase,
     provider_http::{Recorded, resolve},
 };
-use acyclic_harness::{
-    LocalHarness, OperationId,
+use acyclic_harness_core::{
+    OperationId,
     context::CompactionPolicy,
     conversation::Limits,
     model::{
         ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider as _, ModelRequest,
         ModelRole, PreparedModelRequest,
     },
+};
+use acyclic_harness_local::{
+    LocalHarness,
     test_support::{PromptOutcome, local_harness_config, prompt_settled},
 };
 use acyclic_harness_providers::{HttpRequest, HttpTransport as _};
@@ -182,47 +187,6 @@ pub(super) async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> Tes
 }
 
 /// A registered tool returning its arguments, named like an installed MCP tool.
-pub(super) fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
-    use acyclic_harness::tool::{
-        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult,
-    };
-    struct Echo;
-    impl ToolExecutor for Echo {
-        fn execute<'a>(
-            &'a self,
-            invocation: ToolInvocation,
-            _: Option<acyclic_harness::runtime::ToolContext>,
-        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ToolResult>> {
-            Box::pin(async move {
-                Ok(ToolResult {
-                    value: invocation.arguments,
-                })
-            })
-        }
-        fn reconcile<'a>(
-            &'a self,
-            _: ToolInvocation,
-            _: Option<acyclic_harness::runtime::ToolContext>,
-        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<Option<ToolResult>>>
-        {
-            Box::pin(async { Ok(None) })
-        }
-    }
-    let schema = serde_json::json!({"type":"object"});
-    Tool {
-        hook_names: &[],
-        definition: ToolDefinition {
-            name: name.into(),
-            revision: "1".into(),
-            description: "Echo".into(),
-            input_schema: schema.clone(),
-            output_schema: schema.clone(),
-            projection_schema: acyclic_harness::tool::json_projection_schema(schema),
-        },
-        executor: Arc::new(Echo),
-        projection: Arc::new(JsonToolProjection),
-    }
-}
 
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
@@ -284,14 +248,16 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>) -> TestResult {
     let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory))
         .await
         .map_err(|error| format!("provider scenario reopen: {error}"))?;
-    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
+    let cold =
+        acyclic_harness_core::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
     for (path, expected) in &case.expect.files {
         let actual = cold
             .read(&workspace, None, &format!("/{path}"), 65_536, None)
             .await;
         match (expected, actual) {
             (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(error)) if error.code() == acyclic_harness::wire::ErrorCode::NotFound => {}
+            (None, Err(error))
+                if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound => {}
             (_, actual) => {
                 return Err(format!("provider persisted file differs: {path}: {actual:?}").into());
             }

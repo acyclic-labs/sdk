@@ -1,5 +1,5 @@
 {
-  "checksum": "aadfa56a0ce82ef58080a7c27cd2185151c45958a2bfe10432eb93e572fc4fb2",
+  "checksum": "638cad838f9bc8d9328d6e210d492667de4dddbbc2fd6997fd736d082c2c0a43",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -344,8 +344,6 @@
       },
       "common_attrs": {
         "crate_features": [
-          "compile-time-rng",
-          "const-random",
           "default",
           "getrandom",
           "runtime-rng",
@@ -357,10 +355,6 @@
             {
               "id": "cfg-if 1.0.5",
               "target": "cfg_if"
-            },
-            {
-              "id": "const-random 0.1.18",
-              "target": "const_random"
             },
             {
               "id": "getrandom 0.3.4",
@@ -986,9 +980,6 @@
     },
     "approx 0.5.1": {
       "common_attrs": {
-        "crate_features": [
-          "std"
-        ],
         "deps": [
           {
             "id": "num-traits 0.2.19",
@@ -1884,10 +1875,6 @@
     },
     "async-lock 3.4.2": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
         "deps": [
           {
             "id": "event-listener 5.4.2",
@@ -2899,9 +2886,6 @@
     },
     "bit-vec 0.9.1": {
       "common_attrs": {
-        "crate_features": [
-          "std"
-        ],
         "edition": "2021"
       },
       "library_target_name": "bit_vec",
@@ -3330,20 +3314,9 @@
         ]
       },
       "common_attrs": {
-        "crate_features": [
-          "borsh-derive",
-          "derive",
-          "std"
-        ],
         "edition": "2018",
         "extra_deps": [
           ":build_script_build"
-        ],
-        "proc_macro_deps": [
-          {
-            "id": "borsh-derive 1.8.1",
-            "target": "borsh_derive"
-          }
         ]
       },
       "library_target_name": "borsh",
@@ -3379,9 +3352,6 @@
     },
     "borsh-derive 1.8.1": {
       "common_attrs": {
-        "crate_features": [
-          "default"
-        ],
         "deps": [
           {
             "id": "once_cell 1.21.4",
@@ -4417,7 +4387,6 @@
           "iana-time-zone",
           "js-sys",
           "now",
-          "oldtime",
           "serde",
           "std",
           "wasm-bindgen",
@@ -5064,10 +5033,16 @@
         ]
       },
       "common_attrs": {
-        "crate_features": [
-          "io-uring",
-          "linux-raw-sys"
-        ],
+        "crate_features": {
+          "common": [
+            "io-uring"
+          ],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              "linux-raw-sys"
+            ]
+          }
+        },
         "deps": {
           "common": [
             {
@@ -6211,9 +6186,17 @@
     "crossbeam-utils 0.8.23": {
       "build_script_attrs": {},
       "common_attrs": {
-        "crate_features": [
-          "std"
-        ],
+        "crate_features": {
+          "common": [],
+          "selects": {
+            "aarch64-apple-darwin": [
+              "std"
+            ],
+            "x86_64-unknown-linux-gnu": [
+              "std"
+            ]
+          }
+        },
         "edition": "2021",
         "extra_deps": [
           ":build_script_build"
@@ -7135,9 +7118,6 @@
         "links": "defmt"
       },
       "common_attrs": {
-        "crate_features": [
-          "alloc"
-        ],
         "deps": [
           {
             "id": "bitflags 1.3.2",
@@ -7418,13 +7398,7 @@
     "derive_more 2.1.1": {
       "common_attrs": {
         "crate_features": [
-          "as_ref",
-          "debug",
           "default",
-          "deref",
-          "deref_mut",
-          "from",
-          "into",
           "is_variant",
           "std"
         ],
@@ -7463,13 +7437,7 @@
     "derive_more-impl 2.1.1": {
       "common_attrs": {
         "crate_features": [
-          "as_ref",
-          "debug",
           "default",
-          "deref",
-          "deref_mut",
-          "from",
-          "into",
           "is_variant"
         ],
         "deps": [
@@ -7488,10 +7456,6 @@
           {
             "id": "syn 2.0.119",
             "target": "syn"
-          },
-          {
-            "id": "unicode-xid 0.2.6",
-            "target": "unicode_xid"
           }
         ],
         "edition": "2021"
@@ -7560,29 +7524,41 @@
     },
     "digest 0.10.7": {
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "block-buffer",
-          "core-api",
-          "default",
-          "mac",
-          "std",
-          "subtle"
-        ],
-        "deps": [
-          {
-            "id": "block-buffer 0.10.4",
-            "target": "block_buffer"
-          },
-          {
-            "id": "crypto-common 0.1.7",
-            "target": "crypto_common"
-          },
-          {
-            "id": "subtle 2.6.1",
-            "target": "subtle"
+        "crate_features": {
+          "common": [
+            "alloc",
+            "block-buffer",
+            "core-api",
+            "default",
+            "std"
+          ],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              "mac",
+              "subtle"
+            ]
           }
-        ],
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "block-buffer 0.10.4",
+              "target": "block_buffer"
+            },
+            {
+              "id": "crypto-common 0.1.7",
+              "target": "crypto_common"
+            }
+          ],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              {
+                "id": "subtle 2.6.1",
+                "target": "subtle"
+              }
+            ]
+          }
+        },
         "edition": "2018"
       },
       "library_target_name": "digest",
@@ -7669,80 +7645,12 @@
       "common_attrs": {
         "deps": [
           {
-            "id": "adler2 2.0.1",
-            "target": "adler2"
-          },
-          {
-            "id": "aead 0.6.1",
-            "target": "aead"
-          },
-          {
-            "id": "aes 0.8.4",
-            "target": "aes"
-          },
-          {
-            "id": "ahash 0.8.12",
-            "target": "ahash"
-          },
-          {
-            "id": "aho-corasick 1.1.5",
-            "target": "aho_corasick"
-          },
-          {
             "id": "alacritty_terminal 0.26.0",
             "target": "alacritty_terminal"
           },
           {
-            "id": "allocator-api2 0.2.21",
-            "target": "allocator_api2"
-          },
-          {
-            "id": "ambient-authority 0.0.2",
-            "target": "ambient_authority"
-          },
-          {
-            "id": "annotate-snippets 0.12.16",
-            "target": "annotate_snippets"
-          },
-          {
-            "id": "anstream 1.0.0",
-            "target": "anstream"
-          },
-          {
-            "id": "anstyle 1.0.14",
-            "target": "anstyle"
-          },
-          {
-            "id": "anstyle-parse 1.0.0",
-            "target": "anstyle_parse"
-          },
-          {
-            "id": "anstyle-query 1.1.5",
-            "target": "anstyle_query"
-          },
-          {
-            "id": "anstyle-wincon 3.0.11",
-            "target": "anstyle_wincon"
-          },
-          {
-            "id": "anyhow 1.0.104",
-            "target": "anyhow"
-          },
-          {
-            "id": "approx 0.5.1",
-            "target": "approx"
-          },
-          {
-            "id": "arbitrary 1.5.0",
-            "target": "arbitrary"
-          },
-          {
             "id": "arc-swap 1.9.2",
             "target": "arc_swap"
-          },
-          {
-            "id": "arraydeque 0.5.1",
-            "target": "arraydeque"
           },
           {
             "id": "arrayvec 0.7.8",
@@ -7753,18 +7661,6 @@
             "target": "arrow_array"
           },
           {
-            "id": "arrow-buffer 60.1.0",
-            "target": "arrow_buffer"
-          },
-          {
-            "id": "arrow-cmp 60.1.0",
-            "target": "arrow_cmp"
-          },
-          {
-            "id": "arrow-data 60.1.0",
-            "target": "arrow_data"
-          },
-          {
             "id": "arrow-ipc 60.1.0",
             "target": "arrow_ipc"
           },
@@ -7773,52 +7669,12 @@
             "target": "arrow_schema"
           },
           {
-            "id": "arrow-select 60.1.0",
-            "target": "arrow_select"
-          },
-          {
-            "id": "asn1-rs 0.7.2",
-            "target": "asn1_rs"
-          },
-          {
-            "id": "assoc 0.1.3",
-            "target": "assoc"
-          },
-          {
-            "id": "async-broadcast 0.7.2",
-            "target": "async_broadcast"
-          },
-          {
-            "id": "async-lock 3.4.2",
-            "target": "async_lock"
-          },
-          {
             "id": "async-stream 0.3.6",
             "target": "async_stream"
           },
           {
-            "id": "atoi 3.1.0",
-            "target": "atoi"
-          },
-          {
-            "id": "atomic-waker 1.1.2",
-            "target": "atomic_waker"
-          },
-          {
-            "id": "autocfg 1.5.1",
-            "target": "autocfg"
-          },
-          {
             "id": "axum 0.8.9",
             "target": "axum"
-          },
-          {
-            "id": "axum-core 0.5.6",
-            "target": "axum_core"
-          },
-          {
-            "id": "base16ct 1.0.0",
-            "target": "base16ct"
           },
           {
             "alias": "base64_0_22_1",
@@ -7831,109 +7687,16 @@
             "target": "base64"
           },
           {
-            "id": "base64-simd 0.8.0",
-            "target": "base64_simd"
-          },
-          {
-            "alias": "bit_set_0_8_0",
-            "id": "bit-set 0.8.0",
-            "target": "bit_set"
-          },
-          {
-            "alias": "bit_set_0_11_1",
-            "id": "bit-set 0.11.1",
-            "target": "bit_set"
-          },
-          {
-            "alias": "bit_vec_0_8_0",
-            "id": "bit-vec 0.8.0",
-            "target": "bit_vec"
-          },
-          {
-            "alias": "bit_vec_0_9_1",
-            "id": "bit-vec 0.9.1",
-            "target": "bit_vec"
-          },
-          {
-            "alias": "bit_vec_0_10_1",
-            "id": "bit-vec 0.10.1",
-            "target": "bit_vec"
-          },
-          {
-            "alias": "bitflags_1_3_2",
-            "id": "bitflags 1.3.2",
-            "target": "bitflags"
-          },
-          {
-            "alias": "bitflags_2_13_2",
             "id": "bitflags 2.13.2",
             "target": "bitflags"
-          },
-          {
-            "id": "bitvec 1.1.1",
-            "target": "bitvec"
           },
           {
             "id": "blake3 1.8.7",
             "target": "blake3"
           },
           {
-            "alias": "block_buffer_0_10_4",
-            "id": "block-buffer 0.10.4",
-            "target": "block_buffer"
-          },
-          {
-            "alias": "block_buffer_0_12_1",
-            "id": "block-buffer 0.12.1",
-            "target": "block_buffer"
-          },
-          {
-            "id": "block-padding 0.3.3",
-            "target": "block_padding"
-          },
-          {
-            "id": "borrow-or-share 0.2.4",
-            "target": "borrow_or_share"
-          },
-          {
-            "id": "borsh 1.8.1",
-            "target": "borsh"
-          },
-          {
-            "id": "bumpalo 3.20.3",
-            "target": "bumpalo"
-          },
-          {
-            "id": "by_address 1.2.1",
-            "target": "by_address"
-          },
-          {
-            "id": "bytecount 0.6.9",
-            "target": "bytecount"
-          },
-          {
-            "id": "bytemuck 1.25.2",
-            "target": "bytemuck"
-          },
-          {
-            "id": "byteorder 1.5.0",
-            "target": "byteorder"
-          },
-          {
-            "id": "byteorder-lite 0.1.0",
-            "target": "byteorder_lite"
-          },
-          {
             "id": "bytes 1.12.1",
             "target": "bytes"
-          },
-          {
-            "id": "bytestring 1.5.1",
-            "target": "bytestring"
-          },
-          {
-            "id": "camino 1.2.6",
-            "target": "camino"
           },
           {
             "id": "cap-fs-ext 4.0.3",
@@ -7948,10 +7711,6 @@
             "target": "cap_std"
           },
           {
-            "id": "cargo-platform 0.3.3",
-            "target": "cargo_platform"
-          },
-          {
             "id": "cargo_metadata 0.23.1",
             "target": "cargo_metadata"
           },
@@ -7960,80 +7719,16 @@
             "target": "caseless"
           },
           {
-            "id": "castaway 0.2.4",
-            "target": "castaway"
-          },
-          {
-            "id": "cbc 0.1.2",
-            "target": "cbc"
-          },
-          {
             "id": "cc 1.10.0",
             "target": "cc"
-          },
-          {
-            "id": "cfg-if 1.0.5",
-            "target": "cfg_if"
-          },
-          {
-            "id": "cfg_aliases 0.2.2",
-            "target": "cfg_aliases"
-          },
-          {
-            "id": "chacha20 0.10.2",
-            "target": "chacha20"
           },
           {
             "id": "chacha20poly1305 0.11.0",
             "target": "chacha20poly1305"
           },
           {
-            "id": "chrono 0.4.45",
-            "target": "chrono"
-          },
-          {
-            "alias": "cipher_0_4_4",
-            "id": "cipher 0.4.4",
-            "target": "cipher"
-          },
-          {
-            "alias": "cipher_0_5_2",
-            "id": "cipher 0.5.2",
-            "target": "cipher"
-          },
-          {
             "id": "clap 4.6.7",
             "target": "clap"
-          },
-          {
-            "id": "clap_builder 4.6.7",
-            "target": "clap_builder"
-          },
-          {
-            "id": "clap_lex 1.1.1",
-            "target": "clap_lex"
-          },
-          {
-            "id": "cmov 0.5.4",
-            "target": "cmov"
-          },
-          {
-            "id": "cobs 0.3.0",
-            "target": "cobs"
-          },
-          {
-            "id": "colorchoice 1.0.5",
-            "target": "colorchoice"
-          },
-          {
-            "alias": "compact_str_0_9_1",
-            "id": "compact_str 0.9.1",
-            "target": "compact_str"
-          },
-          {
-            "alias": "compact_str_0_10_0",
-            "id": "compact_str 0.10.0",
-            "target": "compact_str"
           },
           {
             "id": "compio-buf 0.8.3",
@@ -8044,328 +7739,36 @@
             "target": "compio_driver"
           },
           {
-            "id": "compio-log 0.2.1",
-            "target": "compio_log"
-          },
-          {
-            "id": "compio-send-wrapper 0.7.2",
-            "target": "compio_send_wrapper"
-          },
-          {
-            "id": "concurrent-queue 2.5.0",
-            "target": "concurrent_queue"
-          },
-          {
-            "id": "condtype 1.3.0",
-            "target": "condtype"
-          },
-          {
-            "id": "console 0.15.11",
-            "target": "console"
-          },
-          {
-            "id": "const-oid 0.10.2",
-            "target": "const_oid"
-          },
-          {
-            "id": "const-random 0.1.18",
-            "target": "const_random"
-          },
-          {
-            "id": "const-siphasher 1.0.2",
-            "target": "const_siphasher"
-          },
-          {
-            "id": "constant_time_eq 0.4.2",
-            "target": "constant_time_eq"
-          },
-          {
-            "alias": "convert_case_0_10_0",
-            "id": "convert_case 0.10.0",
-            "target": "convert_case"
-          },
-          {
-            "alias": "convert_case_0_12_0",
-            "id": "convert_case 0.12.0",
-            "target": "convert_case"
-          },
-          {
-            "id": "core-foundation 0.10.1",
-            "target": "core_foundation"
-          },
-          {
-            "id": "core-foundation-sys 0.8.7",
-            "target": "core_foundation_sys"
-          },
-          {
-            "id": "core_detect 1.0.0",
-            "target": "core_detect"
-          },
-          {
-            "id": "corosensei 0.3.4",
-            "target": "corosensei"
-          },
-          {
-            "id": "cow-utils 0.1.3",
-            "target": "cow_utils"
-          },
-          {
-            "id": "cpubits 0.1.1",
-            "target": "cpubits"
-          },
-          {
-            "alias": "cpufeatures_0_2_17",
-            "id": "cpufeatures 0.2.17",
-            "target": "cpufeatures"
-          },
-          {
-            "alias": "cpufeatures_0_3_1",
-            "id": "cpufeatures 0.3.1",
-            "target": "cpufeatures"
-          },
-          {
             "id": "crc-fast 1.10.0",
             "target": "crc_fast"
-          },
-          {
-            "id": "crc32fast 1.5.3",
-            "target": "crc32fast"
-          },
-          {
-            "id": "crossbeam-queue 0.3.14",
-            "target": "crossbeam_queue"
-          },
-          {
-            "id": "crossbeam-utils 0.8.23",
-            "target": "crossbeam_utils"
           },
           {
             "id": "crossterm 0.29.0",
             "target": "crossterm"
           },
           {
-            "id": "crossterm_winapi 0.9.1",
-            "target": "crossterm_winapi"
-          },
-          {
-            "id": "crunchy 0.2.4",
-            "target": "crunchy"
-          },
-          {
-            "id": "crypto-bigint 0.7.10",
-            "target": "crypto_bigint"
-          },
-          {
-            "alias": "crypto_common_0_1_7",
-            "id": "crypto-common 0.1.7",
-            "target": "crypto_common"
-          },
-          {
-            "alias": "crypto_common_0_2_2",
-            "id": "crypto-common 0.2.2",
-            "target": "crypto_common"
-          },
-          {
             "id": "ctor 1.0.13",
             "target": "ctor"
-          },
-          {
-            "id": "ctutils 0.4.8",
-            "target": "ctutils"
-          },
-          {
-            "id": "cursor-icon 1.2.0",
-            "target": "cursor_icon"
-          },
-          {
-            "id": "curve25519-dalek 5.0.0",
-            "target": "curve25519_dalek"
-          },
-          {
-            "id": "darling 0.24.1",
-            "target": "darling"
-          },
-          {
-            "id": "darling_core 0.24.1",
-            "target": "darling_core"
-          },
-          {
-            "id": "data-encoding 2.11.1",
-            "target": "data_encoding"
-          },
-          {
-            "id": "dbus 0.9.12",
-            "target": "dbus"
-          },
-          {
-            "id": "dbus-secret-service 4.1.0",
-            "target": "dbus_secret_service"
-          },
-          {
-            "id": "defmt 1.1.1",
-            "target": "defmt"
-          },
-          {
-            "id": "defmt-parser 1.0.0",
-            "target": "defmt_parser"
-          },
-          {
-            "id": "der 0.8.3",
-            "target": "der"
-          },
-          {
-            "id": "der-parser 10.0.0",
-            "target": "der_parser"
-          },
-          {
-            "id": "deranged 0.5.8",
-            "target": "deranged"
-          },
-          {
-            "id": "derive_more 2.1.1",
-            "target": "derive_more"
           },
           {
             "id": "diffy 0.5.2",
             "target": "diffy"
           },
           {
-            "alias": "digest_0_10_7",
-            "id": "digest 0.10.7",
-            "target": "digest"
-          },
-          {
-            "alias": "digest_0_11_3",
-            "id": "digest 0.11.3",
-            "target": "digest"
-          },
-          {
             "id": "dirs 7.0.0",
             "target": "dirs"
-          },
-          {
-            "id": "dirs-sys 0.5.0",
-            "target": "dirs_sys"
           },
           {
             "id": "divan 0.1.21",
             "target": "divan"
           },
           {
-            "id": "dragonbox_ecma 0.1.12",
-            "target": "dragonbox_ecma"
-          },
-          {
-            "id": "dyn-clone 1.0.20",
-            "target": "dyn_clone"
-          },
-          {
-            "id": "ecdsa 0.17.0",
-            "target": "ecdsa"
-          },
-          {
-            "id": "ed25519 3.0.0",
-            "target": "ed25519"
-          },
-          {
             "id": "ed25519-dalek 3.0.0",
             "target": "ed25519_dalek"
           },
           {
-            "id": "either 1.19.0",
-            "target": "either"
-          },
-          {
-            "id": "elliptic-curve 0.14.3",
-            "target": "elliptic_curve"
-          },
-          {
-            "id": "email_address 0.2.9",
-            "target": "email_address"
-          },
-          {
-            "alias": "embedded_io_0_4_0",
-            "id": "embedded-io 0.4.0",
-            "target": "embedded_io"
-          },
-          {
-            "alias": "embedded_io_0_6_1",
-            "id": "embedded-io 0.6.1",
-            "target": "embedded_io"
-          },
-          {
-            "id": "encode_unicode 1.0.0",
-            "target": "encode_unicode"
-          },
-          {
-            "id": "encoding_rs 0.8.42",
-            "target": "encoding_rs"
-          },
-          {
-            "id": "encoding_rs_io 0.1.8",
-            "target": "encoding_rs_io"
-          },
-          {
-            "id": "endi 1.1.1",
-            "target": "endi"
-          },
-          {
-            "id": "enumflags2 0.7.12",
-            "target": "enumflags2"
-          },
-          {
-            "id": "equivalent 1.0.2",
-            "target": "equivalent"
-          },
-          {
-            "id": "errno 0.3.14",
-            "target": "errno"
-          },
-          {
-            "id": "event-listener 5.4.2",
-            "target": "event_listener"
-          },
-          {
-            "id": "event-listener-strategy 0.5.4",
-            "target": "event_listener_strategy"
-          },
-          {
-            "alias": "fallible_iterator_0_2_0",
-            "id": "fallible-iterator 0.2.0",
-            "target": "fallible_iterator"
-          },
-          {
-            "alias": "fallible_iterator_0_3_0",
-            "id": "fallible-iterator 0.3.0",
-            "target": "fallible_iterator"
-          },
-          {
-            "id": "fallible-streaming-iterator 0.1.9",
-            "target": "fallible_streaming_iterator"
-          },
-          {
             "id": "fancy-regex 0.20.2",
             "target": "fancy_regex"
-          },
-          {
-            "id": "fastrand 2.5.0",
-            "target": "fastrand"
-          },
-          {
-            "id": "ff 0.14.0",
-            "target": "ff"
-          },
-          {
-            "id": "filetime 0.2.29",
-            "target": "filetime"
-          },
-          {
-            "id": "find-msvc-tools 0.1.15",
-            "target": "find_msvc_tools"
-          },
-          {
-            "id": "fixedbitset 0.5.7",
-            "target": "fixedbitset"
           },
           {
             "id": "flatbuffers 25.12.19",
@@ -8376,50 +7779,8 @@
             "target": "flate2"
           },
           {
-            "id": "fluent-uri 0.4.1",
-            "target": "fluent_uri"
-          },
-          {
-            "id": "flume 0.12.0",
-            "target": "flume"
-          },
-          {
             "id": "fnv 1.0.7",
             "target": "fnv"
-          },
-          {
-            "alias": "foldhash_0_1_5",
-            "id": "foldhash 0.1.5",
-            "target": "foldhash"
-          },
-          {
-            "alias": "foldhash_0_2_0",
-            "id": "foldhash 0.2.0",
-            "target": "foldhash"
-          },
-          {
-            "id": "foreign-types 0.3.2",
-            "target": "foreign_types"
-          },
-          {
-            "id": "foreign-types-shared 0.1.1",
-            "target": "foreign_types_shared"
-          },
-          {
-            "id": "form_urlencoded 1.2.2",
-            "target": "form_urlencoded"
-          },
-          {
-            "id": "fraction 0.17.0",
-            "target": "fraction"
-          },
-          {
-            "id": "fs-set-times 0.20.3",
-            "target": "fs_set_times"
-          },
-          {
-            "id": "funty 2.0.0",
-            "target": "funty"
           },
           {
             "id": "fuser 0.18.0",
@@ -8430,98 +7791,20 @@
             "target": "futures"
           },
           {
-            "id": "futures-channel 0.3.34",
-            "target": "futures_channel"
-          },
-          {
             "id": "futures-core 0.3.34",
             "target": "futures_core"
-          },
-          {
-            "id": "futures-executor 0.3.34",
-            "target": "futures_executor"
-          },
-          {
-            "id": "futures-io 0.3.34",
-            "target": "futures_io"
-          },
-          {
-            "id": "futures-sink 0.3.34",
-            "target": "futures_sink"
-          },
-          {
-            "id": "futures-task 0.3.34",
-            "target": "futures_task"
           },
           {
             "id": "futures-util 0.3.34",
             "target": "futures_util"
           },
           {
-            "id": "generator 0.8.10",
-            "target": "generator"
-          },
-          {
-            "id": "generic-array 0.14.7",
-            "target": "generic_array"
-          },
-          {
-            "alias": "getrandom_0_2_17",
-            "id": "getrandom 0.2.17",
-            "target": "getrandom"
-          },
-          {
-            "alias": "getrandom_0_3_4",
-            "id": "getrandom 0.3.4",
-            "target": "getrandom"
-          },
-          {
-            "alias": "getrandom_0_4_3",
             "id": "getrandom 0.4.3",
             "target": "getrandom"
           },
           {
-            "id": "gloo-utils 0.2.0",
-            "target": "gloo_utils"
-          },
-          {
-            "id": "granit-parser 2.0.0",
-            "target": "granit_parser"
-          },
-          {
-            "id": "group 0.14.0",
-            "target": "group"
-          },
-          {
             "id": "h2 0.4.20",
             "target": "h2"
-          },
-          {
-            "id": "half 2.7.1",
-            "target": "half"
-          },
-          {
-            "id": "hashbag 0.1.13",
-            "target": "hashbag"
-          },
-          {
-            "alias": "hashbrown_0_15_5",
-            "id": "hashbrown 0.15.5",
-            "target": "hashbrown"
-          },
-          {
-            "alias": "hashbrown_0_16_1",
-            "id": "hashbrown 0.16.1",
-            "target": "hashbrown"
-          },
-          {
-            "alias": "hashbrown_0_17_1",
-            "id": "hashbrown 0.17.1",
-            "target": "hashbrown"
-          },
-          {
-            "id": "hashlink 0.12.2",
-            "target": "hashlink"
           },
           {
             "id": "heck 0.5.0",
@@ -8532,30 +7815,8 @@
             "target": "hex"
           },
           {
-            "id": "hex-simd 0.8.0",
-            "target": "hex_simd"
-          },
-          {
-            "id": "hkdf 0.12.4",
-            "target": "hkdf"
-          },
-          {
-            "alias": "hmac_0_12_1",
-            "id": "hmac 0.12.1",
-            "target": "hmac"
-          },
-          {
-            "alias": "hmac_0_13_0",
             "id": "hmac 0.13.0",
             "target": "hmac"
-          },
-          {
-            "id": "hmac-sha1-compact 1.1.8",
-            "target": "hmac_sha1_compact"
-          },
-          {
-            "id": "home 0.5.12",
-            "target": "home"
           },
           {
             "id": "http 1.5.0",
@@ -8570,10 +7831,6 @@
             "target": "http_body_util"
           },
           {
-            "id": "httparse 1.10.1",
-            "target": "httparse"
-          },
-          {
             "id": "httpdate 1.0.3",
             "target": "httpdate"
           },
@@ -8582,92 +7839,16 @@
             "target": "humantime"
           },
           {
-            "id": "hybrid-array 0.4.15",
-            "target": "hybrid_array"
-          },
-          {
             "id": "hyper 1.12.0",
             "target": "hyper"
-          },
-          {
-            "id": "hyper-rustls 0.27.10",
-            "target": "hyper_rustls"
-          },
-          {
-            "id": "hyper-timeout 0.5.2",
-            "target": "hyper_timeout"
           },
           {
             "id": "hyper-util 0.1.21",
             "target": "hyper_util"
           },
           {
-            "id": "iana-time-zone 0.1.65",
-            "target": "iana_time_zone"
-          },
-          {
             "id": "icu_casemap 2.3.0",
             "target": "icu_casemap"
-          },
-          {
-            "id": "icu_casemap_data 2.3.0",
-            "target": "icu_casemap_data"
-          },
-          {
-            "id": "icu_collections 2.3.0",
-            "target": "icu_collections"
-          },
-          {
-            "id": "icu_locale_core 2.3.0",
-            "target": "icu_locale_core"
-          },
-          {
-            "id": "icu_locale_fallback 2.3.0",
-            "target": "icu_locale_fallback"
-          },
-          {
-            "id": "icu_locale_fallback_data 2.3.0",
-            "target": "icu_locale_fallback_data"
-          },
-          {
-            "id": "icu_normalizer 2.3.0",
-            "target": "icu_normalizer"
-          },
-          {
-            "id": "icu_normalizer_data 2.3.0",
-            "target": "icu_normalizer_data"
-          },
-          {
-            "id": "icu_properties 2.3.0",
-            "target": "icu_properties"
-          },
-          {
-            "id": "icu_properties_data 2.3.0",
-            "target": "icu_properties_data"
-          },
-          {
-            "id": "icu_provider 2.3.1",
-            "target": "icu_provider"
-          },
-          {
-            "id": "icu_segmenter 2.3.0",
-            "target": "icu_segmenter"
-          },
-          {
-            "id": "icu_segmenter_data 2.3.0",
-            "target": "icu_segmenter_data"
-          },
-          {
-            "id": "ident_case 1.0.1",
-            "target": "ident_case"
-          },
-          {
-            "id": "idna 1.1.0",
-            "target": "idna"
-          },
-          {
-            "id": "idna_adapter 1.2.2",
-            "target": "idna_adapter"
           },
           {
             "id": "image 0.25.10",
@@ -8678,84 +7859,6 @@
             "target": "indexmap"
           },
           {
-            "id": "inotify 0.11.5",
-            "target": "inotify"
-          },
-          {
-            "id": "inotify-sys 0.1.8",
-            "target": "inotify_sys"
-          },
-          {
-            "alias": "inout_0_1_4",
-            "id": "inout 0.1.4",
-            "target": "inout"
-          },
-          {
-            "alias": "inout_0_2_6",
-            "id": "inout 0.2.6",
-            "target": "inout"
-          },
-          {
-            "id": "io-extras 0.19.0",
-            "target": "io_extras"
-          },
-          {
-            "alias": "io_lifetimes_2_0_4",
-            "id": "io-lifetimes 2.0.4",
-            "target": "io_lifetimes"
-          },
-          {
-            "alias": "io_lifetimes_3_0_1",
-            "id": "io-lifetimes 3.0.1",
-            "target": "io_lifetimes"
-          },
-          {
-            "id": "io-uring 0.7.15",
-            "target": "io_uring"
-          },
-          {
-            "id": "ipnet 2.12.2",
-            "target": "ipnet"
-          },
-          {
-            "id": "is_terminal_polyfill 1.70.2",
-            "target": "is_terminal_polyfill"
-          },
-          {
-            "alias": "itertools_0_14_0",
-            "id": "itertools 0.14.0",
-            "target": "itertools"
-          },
-          {
-            "alias": "itertools_0_15_0",
-            "id": "itertools 0.15.0",
-            "target": "itertools"
-          },
-          {
-            "id": "itoa 1.0.18",
-            "target": "itoa"
-          },
-          {
-            "id": "jiff 0.2.37",
-            "target": "jiff"
-          },
-          {
-            "id": "jiff-core 0.1.1",
-            "target": "jiff_core"
-          },
-          {
-            "id": "jiff-tzdb 0.1.8",
-            "target": "jiff_tzdb"
-          },
-          {
-            "id": "jiff-tzdb-platform 0.1.3",
-            "target": "jiff_tzdb_platform"
-          },
-          {
-            "id": "jobserver 0.1.35",
-            "target": "jobserver"
-          },
-          {
             "id": "js-sys 0.3.94",
             "target": "js_sys"
           },
@@ -8764,183 +7867,38 @@
             "target": "jsonschema"
           },
           {
-            "id": "jsonschema-regex 0.61.2",
-            "target": "jsonschema_regex"
-          },
-          {
-            "id": "jsonschema-value 0.61.2",
-            "target": "jsonschema_value"
-          },
-          {
-            "id": "kasuari 0.4.12",
-            "target": "kasuari"
-          },
-          {
             "id": "keyring 3.6.3",
             "target": "keyring"
-          },
-          {
-            "id": "kqueue 1.2.1",
-            "target": "kqueue"
-          },
-          {
-            "id": "kqueue-sys 1.1.2",
-            "target": "kqueue_sys"
-          },
-          {
-            "id": "lazy_static 1.5.1",
-            "target": "lazy_static"
           },
           {
             "id": "libc 0.2.191",
             "target": "libc"
           },
           {
-            "id": "libdbus-sys 0.2.7",
-            "target": "libdbus_sys"
-          },
-          {
             "id": "libfuzzer-sys 0.4.13",
             "target": "libfuzzer_sys"
-          },
-          {
-            "id": "libloading 0.9.0",
-            "target": "libloading"
-          },
-          {
-            "id": "libm 0.2.16",
-            "target": "libm"
-          },
-          {
-            "id": "libsqlite3-sys 0.39.1",
-            "target": "libsqlite3_sys"
-          },
-          {
-            "id": "line-clipping 0.3.8",
-            "target": "line_clipping"
           },
           {
             "id": "linux-keyutils 0.2.5",
             "target": "linux_keyutils"
           },
           {
-            "id": "linux-raw-sys 0.12.1",
-            "target": "linux_raw_sys"
-          },
-          {
-            "id": "litemap 0.8.3",
-            "target": "litemap"
-          },
-          {
-            "id": "litrs 1.0.1",
-            "target": "litrs"
-          },
-          {
-            "alias": "lock_api_0_4_14",
-            "id": "lock_api 0.4.14",
-            "target": "lock_api"
-          },
-          {
-            "alias": "lock_api_0_5_0",
-            "id": "lock_api 0.5.0",
-            "target": "lock_api"
-          },
-          {
-            "id": "log 0.4.34",
-            "target": "log"
-          },
-          {
             "id": "loom 0.7.3",
             "target": "loom"
-          },
-          {
-            "id": "lru 0.18.5",
-            "target": "lru"
-          },
-          {
-            "id": "lru-slab 0.1.3",
-            "target": "lru_slab"
-          },
-          {
-            "id": "matchers 0.2.0",
-            "target": "matchers"
-          },
-          {
-            "id": "matchit 0.8.4",
-            "target": "matchit"
-          },
-          {
-            "id": "maybe-owned 0.3.4",
-            "target": "maybe_owned"
-          },
-          {
-            "alias": "md_5",
-            "id": "md-5 0.11.0",
-            "target": "md5"
           },
           {
             "id": "memchr 2.8.3",
             "target": "memchr"
           },
           {
-            "id": "memoffset 0.9.1",
-            "target": "memoffset"
-          },
-          {
-            "id": "micromap 0.3.0",
-            "target": "micromap"
-          },
-          {
-            "id": "mime 0.3.17",
-            "target": "mime"
-          },
-          {
-            "id": "minimal-lexical 0.2.1",
-            "target": "minimal_lexical"
-          },
-          {
-            "id": "miniz_oxide 0.9.1",
-            "target": "miniz_oxide"
-          },
-          {
-            "id": "mio 1.2.4",
-            "target": "mio"
-          },
-          {
-            "id": "miow 0.6.1",
-            "target": "miow"
-          },
-          {
-            "id": "mod_use 0.2.3",
-            "target": "mod_use"
-          },
-          {
-            "id": "moxcms 0.8.1",
-            "target": "moxcms"
-          },
-          {
-            "id": "multimap 0.10.1",
-            "target": "multimap"
-          },
-          {
             "id": "napi-build 2.6.0",
             "target": "napi_build"
-          },
-          {
-            "id": "napi-derive-backend 6.1.6",
-            "target": "napi_derive_backend"
           },
           {
             "id": "napi-sys 3.4.1",
             "target": "napi_sys"
           },
           {
-            "alias": "nix_0_29_0",
-            "id": "nix 0.29.0",
-            "target": "nix"
-          },
-          {
-            "alias": "nix_0_31_3",
             "id": "nix 0.31.3",
             "target": "nix"
           },
@@ -8949,201 +7907,28 @@
             "target": "nohash_hasher"
           },
           {
-            "alias": "nom_7_1_3",
-            "id": "nom 7.1.3",
-            "target": "nom"
-          },
-          {
-            "alias": "nom_8_0_0",
-            "id": "nom 8.0.0",
-            "target": "nom"
-          },
-          {
-            "id": "nonmax 0.5.5",
-            "target": "nonmax"
-          },
-          {
             "id": "notify 8.2.2",
             "target": "notify"
-          },
-          {
-            "id": "notify-types 2.1.0",
-            "target": "notify_types"
-          },
-          {
-            "id": "nu-ansi-term 0.50.3",
-            "target": "nu_ansi_term"
-          },
-          {
-            "id": "num 0.4.3",
-            "target": "num"
-          },
-          {
-            "alias": "num_bigint_0_4_8",
-            "id": "num-bigint 0.4.8",
-            "target": "num_bigint"
-          },
-          {
-            "alias": "num_bigint_0_5_1",
-            "id": "num-bigint 0.5.1",
-            "target": "num_bigint"
-          },
-          {
-            "id": "num-cmp 0.1.0",
-            "target": "num_cmp"
-          },
-          {
-            "id": "num-complex 0.4.6",
-            "target": "num_complex"
-          },
-          {
-            "id": "num-conv 0.2.2",
-            "target": "num_conv"
-          },
-          {
-            "id": "num-integer 0.1.47",
-            "target": "num_integer"
-          },
-          {
-            "id": "num-iter 0.1.46",
-            "target": "num_iter"
-          },
-          {
-            "id": "num-rational 0.4.2",
-            "target": "num_rational"
-          },
-          {
-            "id": "num-traits 0.2.19",
-            "target": "num_traits"
-          },
-          {
-            "id": "num_enum 0.7.6",
-            "target": "num_enum"
-          },
-          {
-            "id": "num_threads 0.1.7",
-            "target": "num_threads"
-          },
-          {
-            "id": "numeric_cast 0.3.0",
-            "target": "numeric_cast"
-          },
-          {
-            "id": "oauth2 5.0.0",
-            "target": "oauth2"
-          },
-          {
-            "id": "objc2-core-foundation 0.3.2",
-            "target": "objc2_core_foundation"
-          },
-          {
-            "id": "objc2-system-configuration 0.3.2",
-            "target": "objc2_system_configuration"
           },
           {
             "id": "object_store 0.14.2",
             "target": "object_store"
           },
           {
-            "id": "oid-registry 0.8.1",
-            "target": "oid_registry"
-          },
-          {
             "id": "once_cell 1.21.4",
             "target": "once_cell"
-          },
-          {
-            "id": "once_cell_polyfill 1.70.2",
-            "target": "once_cell_polyfill"
-          },
-          {
-            "id": "openssl 0.10.81",
-            "target": "openssl"
-          },
-          {
-            "id": "openssl-probe 0.2.1",
-            "target": "openssl_probe"
-          },
-          {
-            "id": "openssl-src 300.6.1+3.6.3",
-            "target": "openssl_src"
-          },
-          {
-            "id": "openssl-sys 0.9.117",
-            "target": "openssl_sys"
-          },
-          {
-            "id": "option-ext 0.2.0",
-            "target": "option_ext"
-          },
-          {
-            "id": "ordered-float 2.10.1",
-            "target": "ordered_float"
-          },
-          {
-            "id": "ordered-stream 0.2.0",
-            "target": "ordered_stream"
-          },
-          {
-            "id": "outref 0.5.2",
-            "target": "outref"
-          },
-          {
-            "id": "owo-colors 4.4.0",
-            "target": "owo_colors"
-          },
-          {
-            "alias": "oxc_browserslist",
-            "id": "oxc-browserslist 5.0.1",
-            "target": "browserslist"
           },
           {
             "id": "oxc_allocator 0.156.0",
             "target": "oxc_allocator"
           },
           {
-            "id": "oxc_ast 0.156.0",
-            "target": "oxc_ast"
-          },
-          {
-            "id": "oxc_ast_visit 0.156.0",
-            "target": "oxc_ast_visit"
-          },
-          {
             "id": "oxc_codegen 0.156.0",
             "target": "oxc_codegen"
           },
           {
-            "id": "oxc_compat 0.156.0",
-            "target": "oxc_compat"
-          },
-          {
-            "id": "oxc_data_structures 0.156.0",
-            "target": "oxc_data_structures"
-          },
-          {
-            "id": "oxc_diagnostics 0.156.0",
-            "target": "oxc_diagnostics"
-          },
-          {
-            "id": "oxc_ecmascript 0.156.0",
-            "target": "oxc_ecmascript"
-          },
-          {
-            "id": "oxc_estree 0.156.0",
-            "target": "oxc_estree"
-          },
-          {
-            "id": "oxc_index 5.0.0",
-            "target": "oxc_index"
-          },
-          {
             "id": "oxc_parser 0.156.0",
             "target": "oxc_parser"
-          },
-          {
-            "id": "oxc_regular_expression 0.156.0",
-            "target": "oxc_regular_expression"
           },
           {
             "id": "oxc_semantic 0.156.0",
@@ -9154,28 +7939,8 @@
             "target": "oxc_span"
           },
           {
-            "id": "oxc_str 0.156.0",
-            "target": "oxc_str"
-          },
-          {
-            "id": "oxc_syntax 0.156.0",
-            "target": "oxc_syntax"
-          },
-          {
             "id": "oxc_transformer 0.156.0",
             "target": "oxc_transformer"
-          },
-          {
-            "id": "oxc_traverse 0.156.0",
-            "target": "oxc_traverse"
-          },
-          {
-            "id": "oxilangtag 0.1.6",
-            "target": "oxilangtag"
-          },
-          {
-            "id": "oxiri 0.2.11",
-            "target": "oxiri"
           },
           {
             "id": "oxrdf 0.3.5",
@@ -9190,154 +7955,20 @@
             "target": "p256"
           },
           {
-            "id": "page_size 0.6.0",
-            "target": "page_size"
-          },
-          {
-            "id": "palette 0.7.7",
-            "target": "palette"
-          },
-          {
-            "id": "palette_math 0.7.7",
-            "target": "palette_math"
-          },
-          {
-            "id": "parking 2.2.1",
-            "target": "parking"
-          },
-          {
-            "alias": "parking_lot_0_12_5",
-            "id": "parking_lot 0.12.5",
-            "target": "parking_lot"
-          },
-          {
-            "alias": "parking_lot_0_13_0",
             "id": "parking_lot 0.13.0",
             "target": "parking_lot"
-          },
-          {
-            "alias": "parking_lot_core_0_9_12",
-            "id": "parking_lot_core 0.9.12",
-            "target": "parking_lot_core"
-          },
-          {
-            "alias": "parking_lot_core_0_10_0",
-            "id": "parking_lot_core 0.10.0",
-            "target": "parking_lot_core"
           },
           {
             "id": "parquet 60.1.0",
             "target": "parquet"
           },
           {
-            "id": "pem 4.0.0",
-            "target": "pem"
-          },
-          {
-            "id": "percent-encoding 2.3.2",
-            "target": "percent_encoding"
-          },
-          {
-            "id": "petgraph 0.8.3",
-            "target": "petgraph"
-          },
-          {
-            "alias": "phf_0_13_1",
-            "id": "phf 0.13.1",
-            "target": "phf"
-          },
-          {
-            "alias": "phf_0_14_0",
-            "id": "phf 0.14.0",
-            "target": "phf"
-          },
-          {
-            "id": "phf_generator 0.14.0",
-            "target": "phf_generator"
-          },
-          {
-            "alias": "phf_shared_0_13_1",
-            "id": "phf_shared 0.13.1",
-            "target": "phf_shared"
-          },
-          {
-            "alias": "phf_shared_0_14_0",
-            "id": "phf_shared 0.14.0",
-            "target": "phf_shared"
-          },
-          {
-            "id": "pin-project 1.1.13",
-            "target": "pin_project"
-          },
-          {
             "id": "pin-project-lite 0.2.17",
             "target": "pin_project_lite"
           },
           {
-            "id": "piper 0.2.5",
-            "target": "piper"
-          },
-          {
-            "id": "pkg-config 0.3.34",
-            "target": "pkg_config"
-          },
-          {
-            "id": "polling 3.11.0",
-            "target": "polling"
-          },
-          {
-            "id": "poly1305 0.9.1",
-            "target": "poly1305"
-          },
-          {
-            "id": "portable-atomic 1.15.0",
-            "target": "portable_atomic"
-          },
-          {
-            "id": "postcard 1.1.3",
-            "target": "postcard"
-          },
-          {
-            "id": "postgres-protocol 0.6.12",
-            "target": "postgres_protocol"
-          },
-          {
-            "id": "postgres-types 0.2.14",
-            "target": "postgres_types"
-          },
-          {
-            "id": "potential_utf 0.1.6",
-            "target": "potential_utf"
-          },
-          {
-            "id": "powerfmt 0.2.1",
-            "target": "powerfmt"
-          },
-          {
-            "id": "ppv-lite86 0.2.21",
-            "target": "ppv_lite86"
-          },
-          {
-            "alias": "prettyplease_0_2_37",
-            "id": "prettyplease 0.2.37",
-            "target": "prettyplease"
-          },
-          {
-            "alias": "prettyplease_0_3_0",
             "id": "prettyplease 0.3.0",
             "target": "prettyplease"
-          },
-          {
-            "id": "primefield 0.14.0",
-            "target": "primefield"
-          },
-          {
-            "id": "primeorder 0.14.0",
-            "target": "primeorder"
-          },
-          {
-            "id": "proc-macro-crate 3.5.0",
-            "target": "proc_macro_crate"
           },
           {
             "id": "proc-macro2 1.0.107",
@@ -9404,136 +8035,20 @@
             "target": "pulldown_cmark"
           },
           {
-            "id": "pulldown-cmark-to-cmark 22.0.3",
-            "target": "pulldown_cmark_to_cmark"
-          },
-          {
-            "id": "pxfm 0.1.30",
-            "target": "pxfm"
-          },
-          {
-            "id": "quick-error 1.2.3",
-            "target": "quick_error"
-          },
-          {
-            "alias": "quick_xml_0_41_0",
             "id": "quick-xml 0.41.0",
             "target": "quick_xml"
-          },
-          {
-            "alias": "quick_xml_0_42_0",
-            "id": "quick-xml 0.42.0",
-            "target": "quick_xml"
-          },
-          {
-            "id": "quinn 0.11.12",
-            "target": "quinn"
-          },
-          {
-            "id": "quinn-proto 0.11.19",
-            "target": "quinn_proto"
-          },
-          {
-            "id": "quinn-udp 0.5.16",
-            "target": "quinn_udp"
           },
           {
             "id": "quote 1.0.47",
             "target": "quote"
           },
           {
-            "id": "radium 0.7.0",
-            "target": "radium"
-          },
-          {
-            "alias": "rand_0_8_8",
-            "id": "rand 0.8.8",
-            "target": "rand"
-          },
-          {
-            "alias": "rand_0_9_5",
-            "id": "rand 0.9.5",
-            "target": "rand"
-          },
-          {
-            "alias": "rand_0_10_3",
-            "id": "rand 0.10.3",
-            "target": "rand"
-          },
-          {
-            "alias": "rand_chacha_0_3_1",
-            "id": "rand_chacha 0.3.1",
-            "target": "rand_chacha"
-          },
-          {
-            "alias": "rand_chacha_0_9_0",
-            "id": "rand_chacha 0.9.0",
-            "target": "rand_chacha"
-          },
-          {
-            "alias": "rand_core_0_6_4",
-            "id": "rand_core 0.6.4",
-            "target": "rand_core"
-          },
-          {
-            "alias": "rand_core_0_9_5",
-            "id": "rand_core 0.9.5",
-            "target": "rand_core"
-          },
-          {
-            "alias": "rand_core_0_10_1",
-            "id": "rand_core 0.10.1",
-            "target": "rand_core"
-          },
-          {
-            "alias": "rand_pcg_0_3_1",
-            "id": "rand_pcg 0.3.1",
-            "target": "rand_pcg"
-          },
-          {
-            "alias": "rand_pcg_0_10_2",
-            "id": "rand_pcg 0.10.2",
-            "target": "rand_pcg"
-          },
-          {
-            "id": "rand_xorshift 0.5.0",
-            "target": "rand_xorshift"
-          },
-          {
             "id": "ratatui 0.30.2",
             "target": "ratatui"
           },
           {
-            "id": "ratatui-core 0.1.2",
-            "target": "ratatui_core"
-          },
-          {
-            "id": "ratatui-crossterm 0.1.2",
-            "target": "ratatui_crossterm"
-          },
-          {
-            "id": "ratatui-widgets 0.3.2",
-            "target": "ratatui_widgets"
-          },
-          {
             "id": "rcgen 0.14.10",
             "target": "rcgen"
-          },
-          {
-            "id": "ref-cast 1.0.27",
-            "target": "ref_cast"
-          },
-          {
-            "id": "referencing 0.61.2",
-            "target": "referencing"
-          },
-          {
-            "id": "regex 1.13.1",
-            "target": "regex"
-          },
-          {
-            "id": "regex-automata 0.4.18",
-            "target": "regex_automata"
           },
           {
             "id": "regex-lite 0.1.9",
@@ -9542,10 +8057,6 @@
           {
             "id": "regex-syntax 0.8.11",
             "target": "regex_syntax"
-          },
-          {
-            "id": "relative-path 2.0.3",
-            "target": "relative_path"
           },
           {
             "alias": "reqwest_0_12_28",
@@ -9558,10 +8069,6 @@
             "target": "reqwest"
           },
           {
-            "id": "rfc6979 0.6.0",
-            "target": "rfc6979"
-          },
-          {
             "id": "ring 0.17.14",
             "target": "ring"
           },
@@ -9570,16 +8077,8 @@
             "target": "rmcp"
           },
           {
-            "id": "rmp 0.8.15",
-            "target": "rmp"
-          },
-          {
             "id": "rmp-serde 1.3.1",
             "target": "rmp_serde"
-          },
-          {
-            "id": "ropey 1.6.1",
-            "target": "ropey"
           },
           {
             "id": "rquickjs 0.14.0",
@@ -9594,30 +8093,12 @@
             "target": "rustc_hash"
           },
           {
-            "id": "rustc_version 0.4.1",
-            "target": "rustc_version"
-          },
-          {
-            "alias": "rustdoc_types_0_59_0",
-            "id": "rustdoc-types 0.59.0",
-            "target": "rustdoc_types"
-          },
-          {
-            "alias": "rustdoc_types_0_60_0",
             "id": "rustdoc-types 0.60.0",
             "target": "rustdoc_types"
           },
           {
-            "id": "rusticata-macros 4.1.0",
-            "target": "rusticata_macros"
-          },
-          {
             "id": "rustix 1.1.6",
             "target": "rustix"
-          },
-          {
-            "id": "rustix-linux-procfs 0.1.1",
-            "target": "rustix_linux_procfs"
           },
           {
             "id": "rustix-openpty 0.2.0",
@@ -9628,53 +8109,16 @@
             "target": "rustls"
           },
           {
-            "id": "rustls-native-certs 0.8.4",
-            "target": "rustls_native_certs"
-          },
-          {
-            "id": "rustls-pki-types 1.15.1",
-            "target": "rustls_pki_types"
-          },
-          {
             "id": "rustls-platform-verifier 0.7.1",
             "target": "rustls_platform_verifier"
-          },
-          {
-            "alias": "rustls_webpki",
-            "id": "rustls-webpki 0.103.16",
-            "target": "webpki"
-          },
-          {
-            "id": "rusty-fork 0.3.1",
-            "target": "rusty_fork"
           },
           {
             "id": "ruzstd 0.9.1",
             "target": "ruzstd"
           },
           {
-            "id": "ryu 1.0.23",
-            "target": "ryu"
-          },
-          {
             "id": "s3s 0.17.0",
             "target": "s3s"
-          },
-          {
-            "id": "s3s-multipart 0.17.0",
-            "target": "s3s_multipart"
-          },
-          {
-            "id": "s3s-rfc2047 0.17.0",
-            "target": "s3s_rfc2047"
-          },
-          {
-            "id": "s3s-sigv2 0.17.0",
-            "target": "s3s_sigv2"
-          },
-          {
-            "id": "s3s-sigv4 0.17.0",
-            "target": "s3s_sigv4"
           },
           {
             "id": "same-file 1.0.6",
@@ -9685,32 +8129,8 @@
             "target": "schemars"
           },
           {
-            "id": "scoped-tls 1.0.1",
-            "target": "scoped_tls"
-          },
-          {
-            "id": "scopeguard 1.2.0",
-            "target": "scopeguard"
-          },
-          {
-            "id": "sec1 0.8.1",
-            "target": "sec1"
-          },
-          {
-            "id": "secret-service 4.0.0",
-            "target": "secret_service"
-          },
-          {
             "id": "security-framework 3.7.0",
             "target": "security_framework"
-          },
-          {
-            "id": "security-framework-sys 2.17.0",
-            "target": "security_framework_sys"
-          },
-          {
-            "id": "self_cell 1.3.0",
-            "target": "self_cell"
           },
           {
             "id": "semver 1.0.28",
@@ -9725,10 +8145,6 @@
             "target": "serde_saphyr"
           },
           {
-            "id": "serde-value 0.7.0",
-            "target": "serde_value"
-          },
-          {
             "id": "serde-wasm-bindgen 0.6.5",
             "target": "serde_wasm_bindgen"
           },
@@ -9737,16 +8153,6 @@
             "target": "serde_bytes"
           },
           {
-            "id": "serde_core 1.0.229",
-            "target": "serde_core"
-          },
-          {
-            "alias": "serde_derive_internals_0_29_1",
-            "id": "serde_derive_internals 0.29.1",
-            "target": "serde_derive_internals"
-          },
-          {
-            "alias": "serde_derive_internals_0_30_0",
             "id": "serde_derive_internals 0.30.0",
             "target": "serde_derive_internals"
           },
@@ -9759,161 +8165,28 @@
             "target": "serde_path_to_error"
           },
           {
-            "id": "serde_spanned 1.1.1",
-            "target": "serde_spanned"
-          },
-          {
             "id": "serde_urlencoded 0.7.1",
             "target": "serde_urlencoded"
           },
           {
-            "alias": "sha1_0_10_7",
-            "id": "sha1 0.10.7",
-            "target": "sha1"
-          },
-          {
-            "alias": "sha1_0_11_0",
-            "id": "sha1 0.11.0",
-            "target": "sha1"
-          },
-          {
-            "alias": "sha2_0_10_9",
-            "id": "sha2 0.10.9",
-            "target": "sha2"
-          },
-          {
-            "alias": "sha2_0_11_1",
             "id": "sha2 0.11.1",
             "target": "sha2"
-          },
-          {
-            "id": "sharded-slab 0.1.7",
-            "target": "sharded_slab"
           },
           {
             "id": "shell-words 1.1.1",
             "target": "shell_words"
           },
           {
-            "id": "shlex 2.0.1",
-            "target": "shlex"
-          },
-          {
             "id": "shuttle 0.9.8",
             "target": "shuttle"
           },
           {
-            "id": "shuttle-engine 0.1.6",
-            "target": "shuttle_engine"
-          },
-          {
-            "id": "shuttle-schedulers 0.1.1",
-            "target": "shuttle_schedulers"
-          },
-          {
-            "id": "shuttle-std 0.1.4",
-            "target": "shuttle_std"
-          },
-          {
-            "alias": "signal_hook_0_3_18",
-            "id": "signal-hook 0.3.18",
-            "target": "signal_hook"
-          },
-          {
-            "alias": "signal_hook_0_4_5",
             "id": "signal-hook 0.4.5",
             "target": "signal_hook"
           },
           {
-            "id": "signal-hook-mio 0.2.5",
-            "target": "signal_hook_mio"
-          },
-          {
-            "id": "signal-hook-registry 1.4.8",
-            "target": "signal_hook_registry"
-          },
-          {
-            "id": "signature 3.0.0",
-            "target": "signature"
-          },
-          {
-            "id": "simd-adler32 0.3.10",
-            "target": "simd_adler32"
-          },
-          {
-            "id": "simdutf8 0.1.5",
-            "target": "simdutf8"
-          },
-          {
-            "id": "similar 2.7.0",
-            "target": "similar"
-          },
-          {
-            "id": "similar-asserts 1.7.0",
-            "target": "similar_asserts"
-          },
-          {
-            "id": "siphasher 1.0.4",
-            "target": "siphasher"
-          },
-          {
-            "id": "slab 0.4.12",
-            "target": "slab"
-          },
-          {
             "id": "smallvec 1.16.2",
             "target": "smallvec"
-          },
-          {
-            "id": "smawk 0.3.3",
-            "target": "smawk"
-          },
-          {
-            "id": "snapshot-testing 0.1.8",
-            "target": "snapshot_testing"
-          },
-          {
-            "id": "socket2 0.6.5",
-            "target": "socket2"
-          },
-          {
-            "alias": "spin_0_9_9",
-            "id": "spin 0.9.9",
-            "target": "spin"
-          },
-          {
-            "alias": "spin_0_10_1",
-            "id": "spin 0.10.1",
-            "target": "spin"
-          },
-          {
-            "id": "sse-stream 0.3.0",
-            "target": "sse_stream"
-          },
-          {
-            "id": "stable_deref_trait 1.2.1",
-            "target": "stable_deref_trait"
-          },
-          {
-            "id": "static_assertions 1.1.0",
-            "target": "static_assertions"
-          },
-          {
-            "alias": "std_next",
-            "id": "std-next 0.1.9",
-            "target": "stdx"
-          },
-          {
-            "id": "str_indices 0.4.4",
-            "target": "str_indices"
-          },
-          {
-            "id": "stringprep 0.1.5",
-            "target": "stringprep"
-          },
-          {
-            "id": "strsim 0.11.1",
-            "target": "strsim"
           },
           {
             "id": "strum 0.28.0",
@@ -9938,24 +8211,6 @@
             "target": "sync_wrapper"
           },
           {
-            "id": "synchrony 0.1.9",
-            "target": "synchrony"
-          },
-          {
-            "alias": "synstructure_0_13_2",
-            "id": "synstructure 0.13.2",
-            "target": "synstructure"
-          },
-          {
-            "alias": "synstructure_0_14_0",
-            "id": "synstructure 0.14.0",
-            "target": "synstructure"
-          },
-          {
-            "id": "tap 1.0.1",
-            "target": "tap"
-          },
-          {
             "id": "tar 0.4.46",
             "target": "tar"
           },
@@ -9968,50 +8223,12 @@
             "target": "termcolor"
           },
           {
-            "id": "terminal_size 0.4.4",
-            "target": "terminal_size"
-          },
-          {
-            "id": "textwrap 0.16.4",
-            "target": "textwrap"
-          },
-          {
-            "id": "thin-cell 0.2.1",
-            "target": "thin_cell"
-          },
-          {
-            "alias": "thiserror_1_0_69",
-            "id": "thiserror 1.0.69",
-            "target": "thiserror"
-          },
-          {
-            "alias": "thiserror_2_0_21",
             "id": "thiserror 2.0.21",
             "target": "thiserror"
           },
           {
-            "id": "thread_local 1.1.10",
-            "target": "thread_local"
-          },
-          {
             "id": "time 0.3.55",
             "target": "time"
-          },
-          {
-            "id": "time-core 0.1.9",
-            "target": "time_core"
-          },
-          {
-            "id": "tiny-keccak 2.0.2",
-            "target": "tiny_keccak"
-          },
-          {
-            "id": "tinystr 0.8.4",
-            "target": "tinystr"
-          },
-          {
-            "id": "tinyvec 1.13.3",
-            "target": "tinyvec"
           },
           {
             "id": "tokio 1.54.1",
@@ -10030,10 +8247,6 @@
             "target": "tokio_stream"
           },
           {
-            "id": "tokio-tungstenite 0.29.0",
-            "target": "tokio_tungstenite"
-          },
-          {
             "id": "tokio-util 0.7.20",
             "target": "tokio_util"
           },
@@ -10042,28 +8255,8 @@
             "target": "toml"
           },
           {
-            "id": "toml_datetime 1.1.1+spec-1.1.0",
-            "target": "toml_datetime"
-          },
-          {
-            "id": "toml_edit 0.25.15+spec-1.1.0",
-            "target": "toml_edit"
-          },
-          {
-            "id": "toml_parser 1.1.3+spec-1.1.0",
-            "target": "toml_parser"
-          },
-          {
-            "id": "toml_writer 1.1.2+spec-1.1.0",
-            "target": "toml_writer"
-          },
-          {
             "id": "tonic 0.14.9",
             "target": "tonic"
-          },
-          {
-            "id": "tonic-build 0.14.6",
-            "target": "tonic_build"
           },
           {
             "id": "tonic-prost 0.14.6",
@@ -10086,14 +8279,6 @@
             "target": "tower_http"
           },
           {
-            "id": "tower-layer 0.3.3",
-            "target": "tower_layer"
-          },
-          {
-            "id": "tower-service 0.3.3",
-            "target": "tower_service"
-          },
-          {
             "id": "tracing 0.1.44",
             "target": "tracing"
           },
@@ -10102,20 +8287,8 @@
             "target": "tracing_core"
           },
           {
-            "id": "tracing-log 0.2.0",
-            "target": "tracing_log"
-          },
-          {
             "id": "tracing-subscriber 0.3.23",
             "target": "tracing_subscriber"
-          },
-          {
-            "id": "transform-stream 0.3.1",
-            "target": "transform_stream"
-          },
-          {
-            "id": "try-lock 0.2.5",
-            "target": "try_lock"
           },
           {
             "id": "ts-rs 12.0.1",
@@ -10126,72 +8299,20 @@
             "target": "tsify"
           },
           {
-            "id": "tungstenite 0.29.0",
-            "target": "tungstenite"
-          },
-          {
-            "id": "twox-hash 2.1.5",
-            "target": "twox_hash"
-          },
-          {
-            "id": "typenum 1.20.1",
-            "target": "typenum"
-          },
-          {
-            "id": "unarray 0.1.4",
-            "target": "unarray"
-          },
-          {
             "id": "unicase 2.10.0",
             "target": "unicase"
-          },
-          {
-            "id": "unicode-bidi 0.3.18",
-            "target": "unicode_bidi"
-          },
-          {
-            "id": "unicode-general-category 1.1.0",
-            "target": "unicode_general_category"
-          },
-          {
-            "id": "unicode-id-start 1.5.0",
-            "target": "unicode_id_start"
-          },
-          {
-            "id": "unicode-ident 1.0.26",
-            "target": "unicode_ident"
           },
           {
             "id": "unicode-normalization 0.1.26",
             "target": "unicode_normalization"
           },
           {
-            "id": "unicode-properties 0.1.4",
-            "target": "unicode_properties"
-          },
-          {
             "id": "unicode-segmentation 1.13.3",
             "target": "unicode_segmentation"
           },
           {
-            "id": "unicode-truncate 2.0.1",
-            "target": "unicode_truncate"
-          },
-          {
             "id": "unicode-width 0.2.2",
             "target": "unicode_width"
-          },
-          {
-            "id": "unicode-xid 0.2.6",
-            "target": "unicode_xid"
-          },
-          {
-            "id": "universal-hash 0.6.1",
-            "target": "universal_hash"
-          },
-          {
-            "id": "untrusted 0.9.0",
-            "target": "untrusted"
           },
           {
             "id": "url 2.5.8",
@@ -10202,36 +8323,12 @@
             "target": "urlencoding"
           },
           {
-            "id": "utf8_iter 1.0.4",
-            "target": "utf8_iter"
-          },
-          {
-            "id": "utf8parse 0.2.2",
-            "target": "utf8parse"
-          },
-          {
             "id": "uuid 1.29.0",
             "target": "uuid"
           },
           {
-            "id": "uuid-simd 0.8.0",
-            "target": "uuid_simd"
-          },
-          {
-            "id": "vcpkg 0.2.15",
-            "target": "vcpkg"
-          },
-          {
-            "id": "version_check 0.9.5",
-            "target": "version_check"
-          },
-          {
             "id": "vhost 0.18.0",
             "target": "vhost"
-          },
-          {
-            "id": "virtio-bindings 0.2.7",
-            "target": "virtio_bindings"
           },
           {
             "id": "virtio-queue 0.18.0",
@@ -10246,24 +8343,12 @@
             "target": "vmm_sys_util"
           },
           {
-            "id": "vsimd 0.8.0",
-            "target": "vsimd"
-          },
-          {
             "id": "vte 0.15.0",
             "target": "vte"
           },
           {
-            "id": "wait-timeout 0.2.1",
-            "target": "wait_timeout"
-          },
-          {
             "id": "walkdir 2.5.0",
             "target": "walkdir"
-          },
-          {
-            "id": "want 0.3.2",
-            "target": "want"
           },
           {
             "id": "wasm-bindgen 0.2.117",
@@ -10274,14 +8359,6 @@
             "target": "wasm_bindgen_futures"
           },
           {
-            "id": "wasm-bindgen-macro-support 0.2.117",
-            "target": "wasm_bindgen_macro_support"
-          },
-          {
-            "id": "wasm-bindgen-shared 0.2.117",
-            "target": "wasm_bindgen_shared"
-          },
-          {
             "id": "web-sys 0.3.94",
             "target": "web_sys"
           },
@@ -10290,404 +8367,43 @@
             "target": "web_time"
           },
           {
-            "id": "webpki-roots 1.0.10",
-            "target": "webpki_roots"
-          },
-          {
             "id": "which 8.0.6",
             "target": "which"
-          },
-          {
-            "id": "whoami 2.1.3",
-            "target": "whoami"
-          },
-          {
-            "id": "winapi 0.3.9",
-            "target": "winapi"
-          },
-          {
-            "id": "winapi-util 0.1.11",
-            "target": "winapi_util"
           },
           {
             "id": "windows 0.62.2",
             "target": "windows"
           },
           {
-            "id": "windows-collections 0.3.2",
-            "target": "windows_collections"
-          },
-          {
-            "id": "windows-core 0.62.2",
-            "target": "windows_core"
-          },
-          {
-            "id": "windows-future 0.3.2",
-            "target": "windows_future"
-          },
-          {
-            "id": "windows-link 0.2.1",
-            "target": "windows_link"
-          },
-          {
-            "id": "windows-numerics 0.3.1",
-            "target": "windows_numerics"
-          },
-          {
-            "id": "windows-result 0.4.1",
-            "target": "windows_result"
-          },
-          {
-            "id": "windows-strings 0.5.1",
-            "target": "windows_strings"
-          },
-          {
-            "alias": "windows_sys_0_59_0",
-            "id": "windows-sys 0.59.0",
-            "target": "windows_sys"
-          },
-          {
-            "alias": "windows_sys_0_60_2",
-            "id": "windows-sys 0.60.2",
-            "target": "windows_sys"
-          },
-          {
-            "alias": "windows_sys_0_61_2",
             "id": "windows-sys 0.61.2",
             "target": "windows_sys"
-          },
-          {
-            "alias": "windows_targets_0_52_6",
-            "id": "windows-targets 0.52.6",
-            "target": "windows_targets"
-          },
-          {
-            "alias": "windows_targets_0_53_5",
-            "id": "windows-targets 0.53.5",
-            "target": "windows_targets"
-          },
-          {
-            "id": "windows-threading 0.2.1",
-            "target": "windows_threading"
-          },
-          {
-            "alias": "windows_x86_64_msvc_0_52_6",
-            "id": "windows_x86_64_msvc 0.52.6",
-            "target": "windows_x86_64_msvc"
-          },
-          {
-            "alias": "windows_x86_64_msvc_0_53_1",
-            "id": "windows_x86_64_msvc 0.53.1",
-            "target": "windows_x86_64_msvc"
-          },
-          {
-            "id": "winnow 1.0.4",
-            "target": "winnow"
-          },
-          {
-            "id": "winx 0.36.4",
-            "target": "winx"
-          },
-          {
-            "id": "wnaf 0.14.1",
-            "target": "wnaf"
           },
           {
             "id": "writeable 0.6.4",
             "target": "writeable"
           },
           {
-            "id": "wyz 0.5.1",
-            "target": "wyz"
-          },
-          {
             "id": "x509-parser 0.18.1",
             "target": "x509_parser"
           },
           {
-            "id": "xattr 1.6.1",
-            "target": "xattr"
-          },
-          {
-            "id": "xdg-home 1.3.0",
-            "target": "xdg_home"
-          },
-          {
-            "id": "xxhash-rust 0.8.18",
-            "target": "xxhash_rust"
-          },
-          {
-            "id": "yasna 0.6.0",
-            "target": "yasna"
-          },
-          {
-            "id": "yoke 0.8.3",
-            "target": "yoke"
-          },
-          {
-            "id": "zbus 4.4.0",
-            "target": "zbus"
-          },
-          {
-            "id": "zbus_names 3.0.0",
-            "target": "zbus_names"
-          },
-          {
-            "id": "zerocopy 0.8.60",
-            "target": "zerocopy"
-          },
-          {
-            "id": "zerofrom 0.1.8",
-            "target": "zerofrom"
-          },
-          {
             "id": "zeroize 1.9.1",
             "target": "zeroize"
-          },
-          {
-            "id": "zerotrie 0.2.5",
-            "target": "zerotrie"
-          },
-          {
-            "id": "zerovec 0.11.8",
-            "target": "zerovec"
-          },
-          {
-            "id": "zlib-rs 0.6.8",
-            "target": "zlib_rs"
-          },
-          {
-            "id": "zmij 1.0.23",
-            "target": "zmij"
-          },
-          {
-            "id": "zune-core 0.5.3",
-            "target": "zune_core"
-          },
-          {
-            "id": "zune-jpeg 0.5.15",
-            "target": "zune_jpeg"
-          },
-          {
-            "id": "zvariant 4.2.0",
-            "target": "zvariant"
-          },
-          {
-            "id": "zvariant_utils 2.1.0",
-            "target": "zvariant_utils"
           }
         ],
         "edition": "2018",
         "proc_macro_deps": [
           {
-            "id": "asn1-rs-derive 0.6.0",
-            "target": "asn1_rs_derive"
-          },
-          {
-            "id": "asn1-rs-impl 0.2.0",
-            "target": "asn1_rs_impl"
-          },
-          {
-            "id": "async-stream-impl 0.3.6",
-            "target": "async_stream_impl"
-          },
-          {
             "id": "async-trait 0.1.92",
             "target": "async_trait"
-          },
-          {
-            "id": "borsh-derive 1.8.1",
-            "target": "borsh_derive"
-          },
-          {
-            "id": "clap_derive 4.6.7",
-            "target": "clap_derive"
-          },
-          {
-            "id": "const-random-macro 0.1.16",
-            "target": "const_random_macro"
-          },
-          {
-            "id": "curve25519-dalek-derive 0.1.1",
-            "target": "curve25519_dalek_derive"
-          },
-          {
-            "id": "darling_macro 0.24.1",
-            "target": "darling_macro"
-          },
-          {
-            "id": "defmt-macros 1.1.1",
-            "target": "defmt_macros"
-          },
-          {
-            "id": "derive_more-impl 2.1.1",
-            "target": "derive_more_impl"
-          },
-          {
-            "id": "displaydoc 0.2.7",
-            "target": "displaydoc"
-          },
-          {
-            "id": "divan-macros 0.1.21",
-            "target": "divan_macros"
-          },
-          {
-            "id": "document-features 0.2.12",
-            "target": "document_features"
-          },
-          {
-            "id": "enumflags2_derive 0.7.12",
-            "target": "enumflags2_derive"
-          },
-          {
-            "id": "futures-macro 0.3.34",
-            "target": "futures_macro"
-          },
-          {
-            "id": "indoc 2.0.8",
-            "target": "indoc"
-          },
-          {
-            "id": "instability 0.3.14",
-            "target": "instability"
-          },
-          {
-            "id": "jiff-static 0.2.37",
-            "target": "jiff_static"
-          },
-          {
-            "id": "multiversion_no_op 1.0.0",
-            "target": "multiversion_no_op"
           },
           {
             "id": "napi-derive 3.6.13",
             "target": "napi_derive"
           },
           {
-            "id": "num_enum_derive 0.7.6",
-            "target": "num_enum_derive"
-          },
-          {
-            "id": "openssl-macros 0.1.1",
-            "target": "openssl_macros"
-          },
-          {
-            "id": "oxc_ast_macros 0.156.0",
-            "target": "oxc_ast_macros"
-          },
-          {
-            "id": "palette_derive 0.7.7",
-            "target": "palette_derive"
-          },
-          {
-            "id": "pastey 0.2.3",
-            "target": "pastey"
-          },
-          {
-            "id": "phf_macros 0.14.0",
-            "target": "phf_macros"
-          },
-          {
-            "id": "pin-project-internal 1.1.13",
-            "target": "pin_project_internal"
-          },
-          {
-            "id": "prost-derive 0.14.4",
-            "target": "prost_derive"
-          },
-          {
-            "id": "ref-cast-impl 1.0.27",
-            "target": "ref_cast_impl"
-          },
-          {
-            "id": "rustversion 1.0.23",
-            "target": "rustversion"
-          },
-          {
-            "id": "schemars_derive 1.2.3",
-            "target": "schemars_derive"
-          },
-          {
-            "id": "seq-macro 0.3.6",
-            "target": "seq_macro"
-          },
-          {
             "id": "serde_derive 1.0.229",
             "target": "serde_derive"
-          },
-          {
-            "id": "serde_repr 0.1.21",
-            "target": "serde_repr"
-          },
-          {
-            "id": "strum_macros 0.28.0",
-            "target": "strum_macros"
-          },
-          {
-            "alias": "thiserror_impl_1_0_69",
-            "id": "thiserror-impl 1.0.69",
-            "target": "thiserror_impl"
-          },
-          {
-            "alias": "thiserror_impl_2_0_21",
-            "id": "thiserror-impl 2.0.21",
-            "target": "thiserror_impl"
-          },
-          {
-            "id": "time-macros 0.2.32",
-            "target": "time_macros"
-          },
-          {
-            "id": "tokio-macros 2.7.2",
-            "target": "tokio_macros"
-          },
-          {
-            "id": "tracing-attributes 0.1.31",
-            "target": "tracing_attributes"
-          },
-          {
-            "id": "tsify-macros 0.5.8",
-            "target": "tsify_macros"
-          },
-          {
-            "id": "wasm-bindgen-macro 0.2.117",
-            "target": "wasm_bindgen_macro"
-          },
-          {
-            "id": "windows-implement 0.60.2",
-            "target": "windows_implement"
-          },
-          {
-            "id": "windows-interface 0.59.3",
-            "target": "windows_interface"
-          },
-          {
-            "id": "yoke-derive 0.8.4",
-            "target": "yoke_derive"
-          },
-          {
-            "id": "zbus_macros 4.4.0",
-            "target": "zbus_macros"
-          },
-          {
-            "id": "zerocopy-derive 0.8.60",
-            "target": "zerocopy_derive"
-          },
-          {
-            "id": "zerofrom-derive 0.1.8",
-            "target": "zerofrom_derive"
-          },
-          {
-            "id": "zeroize_derive 1.5.0",
-            "target": "zeroize_derive"
-          },
-          {
-            "id": "zerovec-derive 0.11.6",
-            "target": "zerovec_derive"
-          },
-          {
-            "id": "zvariant_derive 4.2.0",
-            "target": "zvariant_derive"
           }
         ]
       },
@@ -11374,9 +9090,6 @@
     },
     "embedded-io 0.4.0": {
       "common_attrs": {
-        "crate_features": [
-          "alloc"
-        ],
         "edition": "2021"
       },
       "library_target_name": "embedded_io",
@@ -11406,9 +9119,6 @@
     },
     "embedded-io 0.6.1": {
       "common_attrs": {
-        "crate_features": [
-          "alloc"
-        ],
         "edition": "2021"
       },
       "library_target_name": "embedded_io",
@@ -11589,10 +9299,6 @@
     },
     "endi 1.1.1": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
         "edition": "2021"
       },
       "library_target_name": "endi",
@@ -11621,15 +9327,6 @@
     },
     "enumflags2 0.7.12": {
       "common_attrs": {
-        "crate_features": [
-          "serde"
-        ],
-        "deps": [
-          {
-            "id": "serde 1.0.229",
-            "target": "serde"
-          }
-        ],
         "edition": "2018",
         "proc_macro_deps": [
           {
@@ -11799,16 +9496,7 @@
     },
     "event-listener 5.4.2": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "parking",
-          "std"
-        ],
         "deps": [
-          {
-            "id": "parking 2.2.1",
-            "target": "parking"
-          },
           {
             "id": "pin-project-lite 0.2.17",
             "target": "pin_project_lite"
@@ -11843,10 +9531,6 @@
     },
     "event-listener-strategy 0.5.4": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
         "deps": [
           {
             "id": "event-listener 5.4.2",
@@ -13020,10 +10704,16 @@
     },
     "futures-io 0.3.34": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
+        "crate_features": {
+          "common": [
+            "std"
+          ],
+          "selects": {
+            "x86_64-pc-windows-msvc": [
+              "default"
+            ]
+          }
+        },
         "edition": "2018"
       },
       "library_target_name": "futures_io",
@@ -13053,31 +10743,10 @@
     },
     "futures-lite 2.6.1": {
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "default",
-          "fastrand",
-          "futures-io",
-          "parking",
-          "race",
-          "std"
-        ],
         "deps": [
-          {
-            "id": "fastrand 2.5.0",
-            "target": "fastrand"
-          },
           {
             "id": "futures-core 0.3.34",
             "target": "futures_core"
-          },
-          {
-            "id": "futures-io 0.3.34",
-            "target": "futures_io"
-          },
-          {
-            "id": "parking 2.2.1",
-            "target": "parking"
           },
           {
             "id": "pin-project-lite 0.2.17",
@@ -13503,8 +11172,7 @@
       "build_script_attrs": {},
       "common_attrs": {
         "crate_features": [
-          "std",
-          "wasm_js"
+          "std"
         ],
         "deps": {
           "common": [
@@ -16866,10 +14534,6 @@
     },
     "jiff-static 0.2.37": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "tz-fat"
-        ],
         "deps": [
           {
             "alias": "jcore",
@@ -18888,21 +16552,32 @@
     },
     "mio 1.2.4": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "log",
-          "net",
-          "os-ext",
-          "os-poll"
-        ],
-        "deps": {
+        "crate_features": {
           "common": [
-            {
-              "id": "log 0.4.34",
-              "target": "log"
-            }
+            "net",
+            "os-ext",
+            "os-poll"
           ],
           "selects": {
+            "aarch64-apple-darwin": [
+              "default",
+              "log"
+            ],
+            "x86_64-unknown-linux-gnu": [
+              "default",
+              "log"
+            ]
+          }
+        },
+        "deps": {
+          "common": [],
+          "selects": {
+            "aarch64-apple-darwin": [
+              {
+                "id": "log 0.4.34",
+                "target": "log"
+              }
+            ],
             "cfg(any(unix, target_os = \"hermit\", target_os = \"wasi\"))": [
               {
                 "id": "libc 0.2.191",
@@ -18919,6 +16594,12 @@
               {
                 "id": "windows-sys 0.61.2",
                 "target": "windows_sys"
+              }
+            ],
+            "x86_64-unknown-linux-gnu": [
+              {
+                "id": "log 0.4.34",
+                "target": "log"
               }
             ]
           }
@@ -19331,13 +17012,6 @@
         ]
       },
       "common_attrs": {
-        "crate_features": [
-          "feature",
-          "memoffset",
-          "socket",
-          "uio",
-          "user"
-        ],
         "deps": [
           {
             "id": "bitflags 2.13.2",
@@ -19350,10 +17024,6 @@
           {
             "id": "libc 0.2.191",
             "target": "libc"
-          },
-          {
-            "id": "memoffset 0.9.1",
-            "target": "memoffset"
           }
         ],
         "edition": "2021",
@@ -19800,11 +17470,17 @@
     },
     "num 0.4.3": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "num-bigint",
-          "std"
-        ],
+        "crate_features": {
+          "common": [
+            "num-bigint",
+            "std"
+          ],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              "default"
+            ]
+          }
+        },
         "deps": [
           {
             "id": "num-bigint 0.4.8",
@@ -20873,10 +18549,6 @@
         ]
       },
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "vendored"
-        ],
         "deps": [
           {
             "id": "bitflags 2.13.2",
@@ -21014,10 +18686,6 @@
     },
     "openssl-src 300.6.1+3.6.3": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "legacy"
-        ],
         "deps": [
           {
             "id": "cc 1.10.0",
@@ -21059,10 +18727,6 @@
             "target": "cc"
           },
           {
-            "id": "openssl-src 300.6.1+3.6.3",
-            "target": "openssl_src"
-          },
-          {
             "id": "pkg-config 0.3.34",
             "target": "pkg_config"
           },
@@ -21074,10 +18738,6 @@
         "links": "openssl"
       },
       "common_attrs": {
-        "crate_features": [
-          "openssl-src",
-          "vendored"
-        ],
         "deps": [
           {
             "id": "libc 0.2.191",
@@ -22844,16 +20504,7 @@
     },
     "palette 0.7.7": {
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "libm",
-          "std"
-        ],
         "deps": [
-          {
-            "id": "libm 0.2.16",
-            "target": "libm"
-          },
           {
             "id": "palette_math 0.7.7",
             "target": "palette_math"
@@ -22941,17 +20592,6 @@
     },
     "palette_math 0.7.7": {
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "libm",
-          "std"
-        ],
-        "deps": [
-          {
-            "id": "libm 0.2.16",
-            "target": "libm"
-          }
-        ],
         "edition": "2021"
       },
       "library_target_name": "palette_math",
@@ -24038,10 +21678,6 @@
     "portable-atomic 1.15.0": {
       "build_script_attrs": {},
       "common_attrs": {
-        "crate_features": [
-          "require-cas",
-          "std"
-        ],
         "edition": "2018",
         "extra_deps": [
           ":build_script_build"
@@ -25559,12 +23195,6 @@
         ]
       },
       "common_attrs": {
-        "crate_features": [
-          "ring",
-          "runtime-tokio",
-          "rustls",
-          "rustls-ring"
-        ],
         "deps": {
           "common": [
             {
@@ -25588,10 +23218,6 @@
             {
               "id": "rustc-hash 2.1.3",
               "target": "rustc_hash"
-            },
-            {
-              "id": "rustls 0.23.46",
-              "target": "rustls"
             },
             {
               "id": "thiserror 2.0.21",
@@ -25659,10 +23285,6 @@
     },
     "quinn-proto 0.11.19": {
       "common_attrs": {
-        "crate_features": [
-          "ring",
-          "rustls-ring"
-        ],
         "deps": {
           "common": [
             {
@@ -25682,16 +23304,8 @@
               "target": "rand_pcg"
             },
             {
-              "id": "ring 0.17.14",
-              "target": "ring"
-            },
-            {
               "id": "rustc-hash 2.1.3",
               "target": "rustc_hash"
-            },
-            {
-              "id": "rustls 0.23.46",
-              "target": "rustls"
             },
             {
               "id": "slab 0.4.12",
@@ -25715,6 +23329,10 @@
               {
                 "id": "getrandom 0.4.3",
                 "target": "getrandom"
+              },
+              {
+                "id": "ring 0.17.14",
+                "target": "ring"
               },
               {
                 "id": "rustls-pki-types 1.15.1",
@@ -25764,18 +23382,11 @@
         ]
       },
       "common_attrs": {
-        "crate_features": [
-          "tracing"
-        ],
         "deps": {
           "common": [
             {
               "id": "libc 0.2.191",
               "target": "libc"
-            },
-            {
-              "id": "tracing 0.1.44",
-              "target": "tracing"
             }
           ],
           "selects": {
@@ -27241,10 +24852,6 @@
     },
     "relative-path 2.0.3": {
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "std"
-        ],
         "edition": "2021"
       },
       "library_target_name": "relative_path",
@@ -28427,22 +26034,33 @@
     "rustix 1.1.6": {
       "build_script_attrs": {},
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "default",
-          "event",
-          "fs",
-          "mm",
-          "net",
-          "pipe",
-          "process",
-          "pty",
-          "std",
-          "stdio",
-          "system",
-          "termios",
-          "time"
-        ],
+        "crate_features": {
+          "common": [
+            "alloc",
+            "default",
+            "event",
+            "fs",
+            "mm",
+            "net",
+            "process",
+            "std",
+            "system",
+            "termios"
+          ],
+          "selects": {
+            "aarch64-apple-darwin": [
+              "pipe",
+              "stdio",
+              "time"
+            ],
+            "x86_64-unknown-linux-gnu": [
+              "pipe",
+              "pty",
+              "stdio",
+              "time"
+            ]
+          }
+        },
         "deps": {
           "common": [
             {
@@ -28787,9 +26405,7 @@
         "crate_features": [
           "alloc",
           "default",
-          "std",
-          "web",
-          "web-time"
+          "std"
         ],
         "deps": [
           {
@@ -29922,18 +27538,7 @@
     },
     "secret-service 4.0.0": {
       "common_attrs": {
-        "crate_features": [
-          "crypto-rust"
-        ],
         "deps": [
-          {
-            "id": "aes 0.8.4",
-            "target": "aes"
-          },
-          {
-            "id": "cbc 0.1.2",
-            "target": "cbc"
-          },
           {
             "id": "futures-util 0.3.34",
             "target": "futures_util"
@@ -29941,10 +27546,6 @@
           {
             "id": "generic-array 0.14.7",
             "target": "generic_array"
-          },
-          {
-            "id": "hkdf 0.12.4",
-            "target": "hkdf"
           },
           {
             "id": "num 0.4.3",
@@ -29961,10 +27562,6 @@
           {
             "id": "serde 1.0.229",
             "target": "serde"
-          },
-          {
-            "id": "sha2 0.10.9",
-            "target": "sha2"
           },
           {
             "id": "zbus 4.4.0",
@@ -30108,14 +27705,15 @@
     },
     "security-framework-sys 2.17.0": {
       "common_attrs": {
-        "crate_features": [
-          "OSX_10_10",
-          "OSX_10_11",
-          "OSX_10_12",
-          "OSX_10_13",
-          "OSX_10_9",
-          "default"
-        ],
+        "crate_features": {
+          "common": [],
+          "selects": {
+            "aarch64-apple-darwin": [
+              "OSX_10_13",
+              "default"
+            ]
+          }
+        },
         "deps": [
           {
             "id": "core-foundation-sys 0.8.7",
@@ -31857,7 +29455,6 @@
       "common_attrs": {
         "crate_features": [
           "aarch64_neon",
-          "default",
           "public_imp",
           "std"
         ],
@@ -32319,74 +29916,6 @@
         }
       ],
       "version": "0.5.5"
-    },
-    "sse-stream 0.3.0": {
-      "common_attrs": {
-        "crate_features": [
-          "default",
-          "memchr",
-          "simdutf8"
-        ],
-        "deps": [
-          {
-            "id": "bytes 1.12.1",
-            "target": "bytes"
-          },
-          {
-            "id": "futures-util 0.3.34",
-            "target": "futures_util"
-          },
-          {
-            "id": "http-body 1.1.0",
-            "target": "http_body"
-          },
-          {
-            "id": "http-body-util 0.1.5",
-            "target": "http_body_util"
-          },
-          {
-            "id": "memchr 2.8.3",
-            "target": "memchr"
-          },
-          {
-            "id": "pin-project-lite 0.2.17",
-            "target": "pin_project_lite"
-          },
-          {
-            "id": "simdutf8 0.1.5",
-            "target": "simdutf8"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          }
-        ],
-        "edition": "2021"
-      },
-      "library_target_name": "sse_stream",
-      "license": "MIT OR Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "sse-stream",
-      "package_url": "https://github.com/4t145/sse-stream/",
-      "repository": {
-        "Http": {
-          "sha256": "d385160fc0fba84f7b9cc8ef3263e410d0e3ca7ab4927f1356df33145ace69a4",
-          "url": "https://static.crates.io/crates/sse-stream/0.3.0/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "sse_stream",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.3.0"
     },
     "stable_deref_trait 1.2.1": {
       "common_attrs": {
@@ -33549,53 +31078,28 @@
           "alloc",
           "default",
           "formatting",
-          "local-offset",
           "macros",
           "parsing",
           "std"
         ],
-        "deps": {
-          "common": [
-            {
-              "id": "deranged 0.5.8",
-              "target": "deranged"
-            },
-            {
-              "id": "num-conv 0.2.2",
-              "target": "num_conv"
-            },
-            {
-              "id": "powerfmt 0.2.1",
-              "target": "powerfmt"
-            },
-            {
-              "id": "time-core 0.1.9",
-              "target": "time_core"
-            }
-          ],
-          "selects": {
-            "aarch64-apple-darwin": [
-              {
-                "id": "libc 0.2.191",
-                "target": "libc"
-              },
-              {
-                "id": "num_threads 0.1.7",
-                "target": "num_threads"
-              }
-            ],
-            "x86_64-unknown-linux-gnu": [
-              {
-                "id": "libc 0.2.191",
-                "target": "libc"
-              },
-              {
-                "id": "num_threads 0.1.7",
-                "target": "num_threads"
-              }
-            ]
+        "deps": [
+          {
+            "id": "deranged 0.5.8",
+            "target": "deranged"
+          },
+          {
+            "id": "num-conv 0.2.2",
+            "target": "num_conv"
+          },
+          {
+            "id": "powerfmt 0.2.1",
+            "target": "powerfmt"
+          },
+          {
+            "id": "time-core 0.1.9",
+            "target": "time_core"
           }
-        },
+        ],
         "edition": "2024",
         "proc_macro_deps": [
           {
@@ -33829,29 +31333,35 @@
     },
     "tokio 1.54.1": {
       "common_attrs": {
-        "crate_features": [
-          "bytes",
-          "default",
-          "fs",
-          "io-std",
-          "io-util",
-          "libc",
-          "macros",
-          "mio",
-          "net",
-          "parking_lot",
-          "process",
-          "rt",
-          "rt-multi-thread",
-          "signal",
-          "signal-hook-registry",
-          "socket2",
-          "sync",
-          "test-util",
-          "time",
-          "tokio-macros",
-          "windows-sys"
-        ],
+        "crate_features": {
+          "common": [
+            "bytes",
+            "default",
+            "fs",
+            "io-std",
+            "io-util",
+            "libc",
+            "macros",
+            "mio",
+            "net",
+            "parking_lot",
+            "process",
+            "rt",
+            "rt-multi-thread",
+            "signal",
+            "signal-hook-registry",
+            "socket2",
+            "sync",
+            "test-util",
+            "time",
+            "tokio-macros"
+          ],
+          "selects": {
+            "x86_64-pc-windows-msvc": [
+              "windows-sys"
+            ]
+          }
+        },
         "deps": {
           "common": [
             {
@@ -36230,38 +33740,6 @@
       ],
       "version": "0.2.2"
     },
-    "unicode-xid 0.2.6": {
-      "common_attrs": {
-        "crate_features": [
-          "default"
-        ],
-        "edition": "2015"
-      },
-      "library_target_name": "unicode_xid",
-      "license": "MIT OR Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "unicode-xid",
-      "package_url": "https://github.com/unicode-rs/unicode-xid",
-      "repository": {
-        "Http": {
-          "sha256": "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853",
-          "url": "https://static.crates.io/crates/unicode-xid/0.2.6/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "unicode_xid",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.2.6"
-    },
     "universal-hash 0.6.1": {
       "common_attrs": {
         "deps": [
@@ -37624,16 +35102,10 @@
         "crate_features": [
           "AbortController",
           "AbortSignal",
-          "BinaryType",
           "Blob",
-          "BlobPropertyBag",
-          "BroadcastChannel",
-          "CloseEvent",
           "Document",
           "DomException",
-          "DomStringList",
           "Element",
-          "Event",
           "EventTarget",
           "File",
           "FileSystemDirectoryHandle",
@@ -37642,65 +35114,23 @@
           "FileSystemGetFileOptions",
           "FileSystemHandle",
           "FileSystemWritableFileStream",
-          "FormData",
           "Headers",
           "History",
           "HtmlElement",
           "HtmlHeadElement",
-          "IdbDatabase",
-          "IdbFactory",
-          "IdbKeyRange",
-          "IdbObjectStore",
-          "IdbObjectStoreParameters",
-          "IdbOpenDbRequest",
-          "IdbRequest",
-          "IdbRequestReadyState",
-          "IdbTransaction",
-          "IdbTransactionMode",
-          "IdbVersionChangeEvent",
           "Location",
-          "MessageChannel",
-          "MessageEvent",
-          "MessagePort",
           "Navigator",
           "Node",
-          "Performance",
-          "QueuingStrategy",
-          "ReadableByteStreamController",
-          "ReadableStream",
-          "ReadableStreamByobReader",
-          "ReadableStreamByobRequest",
-          "ReadableStreamDefaultController",
-          "ReadableStreamDefaultReader",
-          "ReadableStreamGetReaderOptions",
-          "ReadableStreamReadResult",
-          "ReadableStreamReaderMode",
-          "ReadableStreamType",
-          "ReadableWritablePair",
           "ReferrerPolicy",
           "Request",
           "RequestCache",
           "RequestCredentials",
           "RequestInit",
-          "RequestMode",
           "RequestRedirect",
           "Response",
-          "ServiceWorkerGlobalScope",
           "StorageManager",
-          "StreamPipeOptions",
-          "TransformStream",
-          "TransformStreamDefaultController",
-          "Transformer",
-          "UnderlyingSink",
-          "UnderlyingSource",
-          "Url",
-          "WebSocket",
           "Window",
-          "WorkerGlobalScope",
           "WritableStream",
-          "WritableStreamDefaultController",
-          "WritableStreamDefaultWriter",
-          "console",
           "default",
           "std"
         ],
@@ -38259,7 +35689,6 @@
     "windows-core 0.62.2": {
       "common_attrs": {
         "crate_features": [
-          "default",
           "std"
         ],
         "deps": [
@@ -38518,10 +35947,16 @@
     },
     "windows-result 0.4.1": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "std"
-        ],
+        "crate_features": {
+          "common": [
+            "std"
+          ],
+          "selects": {
+            "x86_64-pc-windows-msvc": [
+              "default"
+            ]
+          }
+        },
         "deps": [
           {
             "id": "windows-link 0.2.1",
@@ -38595,20 +36030,6 @@
     },
     "windows-sys 0.52.0": {
       "common_attrs": {
-        "crate_features": [
-          "Win32",
-          "Win32_Foundation",
-          "Win32_NetworkManagement",
-          "Win32_NetworkManagement_IpHelper",
-          "Win32_Networking",
-          "Win32_Networking_WinSock",
-          "Win32_Security",
-          "Win32_Security_Authorization",
-          "Win32_System",
-          "Win32_System_Memory",
-          "Win32_System_Threading",
-          "default"
-        ],
         "deps": [
           {
             "id": "windows-targets 0.52.6",
@@ -38651,7 +36072,6 @@
           "Win32_Storage",
           "Win32_Storage_FileSystem",
           "Win32_System",
-          "Win32_System_Com",
           "Win32_System_Console",
           "Win32_System_Diagnostics",
           "Win32_System_Diagnostics_Debug",
@@ -38668,7 +36088,6 @@
           "Win32_UI",
           "Win32_UI_Input",
           "Win32_UI_Input_KeyboardAndMouse",
-          "Win32_UI_Shell",
           "default"
         ],
         "deps": [
@@ -38752,52 +36171,54 @@
     },
     "windows-sys 0.61.2": {
       "common_attrs": {
-        "crate_features": [
-          "Wdk",
-          "Wdk_Foundation",
-          "Wdk_Storage",
-          "Wdk_Storage_FileSystem",
-          "Wdk_System",
-          "Wdk_System_IO",
-          "Wdk_System_Threading",
-          "Win32",
-          "Win32_Foundation",
-          "Win32_Globalization",
-          "Win32_Networking",
-          "Win32_Networking_WinSock",
-          "Win32_Security",
-          "Win32_Security_Authentication",
-          "Win32_Security_Authentication_Identity",
-          "Win32_Security_Credentials",
-          "Win32_Security_Cryptography",
-          "Win32_Storage",
-          "Win32_Storage_FileSystem",
-          "Win32_Storage_Packaging",
-          "Win32_Storage_Packaging_Appx",
-          "Win32_System",
-          "Win32_System_Com",
-          "Win32_System_Console",
-          "Win32_System_Diagnostics",
-          "Win32_System_Diagnostics_Debug",
-          "Win32_System_Diagnostics_ToolHelp",
-          "Win32_System_IO",
-          "Win32_System_Ioctl",
-          "Win32_System_JobObjects",
-          "Win32_System_Kernel",
-          "Win32_System_LibraryLoader",
-          "Win32_System_Memory",
-          "Win32_System_Pipes",
-          "Win32_System_Power",
-          "Win32_System_ProcessStatus",
-          "Win32_System_SystemInformation",
-          "Win32_System_SystemServices",
-          "Win32_System_Threading",
-          "Win32_System_WindowsProgramming",
-          "Win32_UI",
-          "Win32_UI_Shell",
-          "Win32_UI_WindowsAndMessaging",
-          "default"
-        ],
+        "crate_features": {
+          "common": [
+            "Wdk",
+            "Wdk_Foundation",
+            "Wdk_Storage",
+            "Wdk_Storage_FileSystem",
+            "Wdk_System",
+            "Wdk_System_Threading",
+            "Win32",
+            "Win32_Foundation",
+            "Win32_Globalization",
+            "Win32_Security",
+            "Win32_Security_Cryptography",
+            "Win32_Storage",
+            "Win32_Storage_FileSystem",
+            "Win32_Storage_Packaging",
+            "Win32_Storage_Packaging_Appx",
+            "Win32_System",
+            "Win32_System_Console",
+            "Win32_System_Diagnostics",
+            "Win32_System_Diagnostics_ToolHelp",
+            "Win32_System_IO",
+            "Win32_System_Ioctl",
+            "Win32_System_JobObjects",
+            "Win32_System_LibraryLoader",
+            "Win32_System_Pipes",
+            "Win32_System_Power",
+            "Win32_System_ProcessStatus",
+            "Win32_System_SystemInformation",
+            "Win32_System_Threading",
+            "Win32_UI",
+            "Win32_UI_WindowsAndMessaging",
+            "default"
+          ],
+          "selects": {
+            "x86_64-pc-windows-msvc": [
+              "Wdk_System_IO",
+              "Win32_Networking",
+              "Win32_Networking_WinSock",
+              "Win32_System_Com",
+              "Win32_System_Diagnostics_Debug",
+              "Win32_System_Kernel",
+              "Win32_System_SystemServices",
+              "Win32_System_WindowsProgramming",
+              "Win32_UI_Shell"
+            ]
+          }
+        },
         "deps": [
           {
             "id": "windows-link 0.2.1",
@@ -39896,9 +37317,7 @@
     "x509-parser 0.18.1": {
       "common_attrs": {
         "crate_features": [
-          "default",
-          "ring",
-          "verify"
+          "default"
         ],
         "deps": [
           {
@@ -39924,10 +37343,6 @@
           {
             "id": "oid-registry 0.8.1",
             "target": "oid_registry"
-          },
-          {
-            "id": "ring 0.17.14",
-            "target": "ring"
           },
           {
             "id": "rusticata-macros 4.1.0",
@@ -40649,19 +38064,30 @@
     },
     "zeroize 1.9.1": {
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "default",
-          "derive",
-          "zeroize_derive"
-        ],
-        "edition": "2024",
-        "proc_macro_deps": [
-          {
-            "id": "zeroize_derive 1.5.0",
-            "target": "zeroize_derive"
+        "crate_features": {
+          "common": [
+            "alloc",
+            "default"
+          ],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              "derive",
+              "zeroize_derive"
+            ]
           }
-        ]
+        },
+        "edition": "2024",
+        "proc_macro_deps": {
+          "common": [],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              {
+                "id": "zeroize_derive 1.5.0",
+                "target": "zeroize_derive"
+              }
+            ]
+          }
+        }
       },
       "library_target_name": "zeroize",
       "license": "Apache-2.0 OR MIT",
@@ -40873,10 +38299,6 @@
     },
     "zlib-rs 0.6.8": {
       "common_attrs": {
-        "crate_features": [
-          "rust-allocator",
-          "std"
-        ],
         "edition": "2021"
       },
       "library_target_name": "zlib_rs",
@@ -41018,17 +38440,10 @@
     },
     "zvariant 4.2.0": {
       "common_attrs": {
-        "crate_features": [
-          "enumflags2"
-        ],
         "deps": [
           {
             "id": "endi 1.1.1",
             "target": "endi"
-          },
-          {
-            "id": "enumflags2 0.7.12",
-            "target": "enumflags2"
           },
           {
             "id": "serde 1.0.229",
@@ -41165,441 +38580,93 @@
     }
   },
   "direct_deps": [
-    "adler2 2.0.1",
-    "aead 0.6.1",
-    "aes 0.8.4",
-    "ahash 0.8.12",
-    "aho-corasick 1.1.5",
     "alacritty_terminal 0.26.0",
-    "allocator-api2 0.2.21",
-    "ambient-authority 0.0.2",
-    "annotate-snippets 0.12.16",
-    "anstream 1.0.0",
-    "anstyle 1.0.14",
-    "anstyle-parse 1.0.0",
-    "anstyle-query 1.1.5",
-    "anstyle-wincon 3.0.11",
-    "anyhow 1.0.104",
-    "approx 0.5.1",
-    "arbitrary 1.5.0",
     "arc-swap 1.9.2",
-    "arraydeque 0.5.1",
     "arrayvec 0.7.8",
     "arrow-array 60.1.0",
-    "arrow-buffer 60.1.0",
-    "arrow-cmp 60.1.0",
-    "arrow-data 60.1.0",
     "arrow-ipc 60.1.0",
     "arrow-schema 60.1.0",
-    "arrow-select 60.1.0",
-    "asn1-rs 0.7.2",
-    "asn1-rs-derive 0.6.0",
-    "asn1-rs-impl 0.2.0",
-    "assoc 0.1.3",
-    "async-broadcast 0.7.2",
-    "async-lock 3.4.2",
     "async-stream 0.3.6",
-    "async-stream-impl 0.3.6",
     "async-trait 0.1.92",
-    "atoi 3.1.0",
-    "atomic-waker 1.1.2",
-    "autocfg 1.5.1",
     "axum 0.8.9",
-    "axum-core 0.5.6",
-    "base16ct 1.0.0",
     "base64 0.22.1",
     "base64 0.23.1",
-    "base64-simd 0.8.0",
-    "bit-set 0.8.0",
-    "bit-set 0.11.1",
-    "bit-vec 0.8.0",
-    "bit-vec 0.9.1",
-    "bit-vec 0.10.1",
-    "bitflags 1.3.2",
     "bitflags 2.13.2",
-    "bitvec 1.1.1",
     "blake3 1.8.7",
-    "block-buffer 0.10.4",
-    "block-buffer 0.12.1",
-    "block-padding 0.3.3",
-    "borrow-or-share 0.2.4",
-    "borsh 1.8.1",
-    "borsh-derive 1.8.1",
-    "bumpalo 3.20.3",
-    "by_address 1.2.1",
-    "bytecount 0.6.9",
-    "bytemuck 1.25.2",
-    "byteorder 1.5.0",
-    "byteorder-lite 0.1.0",
     "bytes 1.12.1",
-    "bytestring 1.5.1",
-    "camino 1.2.6",
     "cap-fs-ext 4.0.3",
     "cap-primitives 4.0.3",
     "cap-std 4.0.3",
-    "cargo-platform 0.3.3",
     "cargo_metadata 0.23.1",
     "caseless 0.2.2",
-    "castaway 0.2.4",
-    "cbc 0.1.2",
     "cc 1.10.0",
-    "cfg-if 1.0.5",
-    "cfg_aliases 0.2.2",
-    "chacha20 0.10.2",
     "chacha20poly1305 0.11.0",
-    "chrono 0.4.45",
-    "cipher 0.4.4",
-    "cipher 0.5.2",
     "clap 4.6.7",
-    "clap_builder 4.6.7",
-    "clap_derive 4.6.7",
-    "clap_lex 1.1.1",
-    "cmov 0.5.4",
-    "cobs 0.3.0",
-    "colorchoice 1.0.5",
-    "compact_str 0.9.1",
-    "compact_str 0.10.0",
     "compio-buf 0.8.3",
     "compio-driver 0.12.5",
-    "compio-log 0.2.1",
-    "compio-send-wrapper 0.7.2",
-    "concurrent-queue 2.5.0",
-    "condtype 1.3.0",
-    "console 0.15.11",
-    "const-oid 0.10.2",
-    "const-random 0.1.18",
-    "const-random-macro 0.1.16",
-    "const-siphasher 1.0.2",
-    "constant_time_eq 0.4.2",
-    "convert_case 0.10.0",
-    "convert_case 0.12.0",
-    "core-foundation 0.10.1",
-    "core-foundation-sys 0.8.7",
-    "core_detect 1.0.0",
-    "corosensei 0.3.4",
-    "cow-utils 0.1.3",
-    "cpubits 0.1.1",
-    "cpufeatures 0.2.17",
-    "cpufeatures 0.3.1",
     "crc-fast 1.10.0",
-    "crc32fast 1.5.3",
-    "crossbeam-queue 0.3.14",
-    "crossbeam-utils 0.8.23",
     "crossterm 0.29.0",
-    "crossterm_winapi 0.9.1",
-    "crunchy 0.2.4",
-    "crypto-bigint 0.7.10",
-    "crypto-common 0.1.7",
-    "crypto-common 0.2.2",
     "ctor 1.0.13",
-    "ctutils 0.4.8",
-    "cursor-icon 1.2.0",
-    "curve25519-dalek 5.0.0",
-    "curve25519-dalek-derive 0.1.1",
-    "darling 0.24.1",
-    "darling_core 0.24.1",
-    "darling_macro 0.24.1",
-    "data-encoding 2.11.1",
-    "dbus 0.9.12",
-    "dbus-secret-service 4.1.0",
-    "defmt 1.1.1",
-    "defmt-macros 1.1.1",
-    "defmt-parser 1.0.0",
-    "der 0.8.3",
-    "der-parser 10.0.0",
-    "deranged 0.5.8",
-    "derive_more 2.1.1",
-    "derive_more-impl 2.1.1",
     "diffy 0.5.2",
-    "digest 0.10.7",
-    "digest 0.11.3",
     "dirs 7.0.0",
-    "dirs-sys 0.5.0",
-    "displaydoc 0.2.7",
     "divan 0.1.21",
-    "divan-macros 0.1.21",
-    "document-features 0.2.12",
-    "dragonbox_ecma 0.1.12",
-    "dyn-clone 1.0.20",
-    "ecdsa 0.17.0",
-    "ed25519 3.0.0",
     "ed25519-dalek 3.0.0",
-    "either 1.19.0",
-    "elliptic-curve 0.14.3",
-    "email_address 0.2.9",
-    "embedded-io 0.4.0",
-    "embedded-io 0.6.1",
-    "encode_unicode 1.0.0",
-    "encoding_rs 0.8.42",
-    "encoding_rs_io 0.1.8",
-    "endi 1.1.1",
-    "enumflags2 0.7.12",
-    "enumflags2_derive 0.7.12",
-    "equivalent 1.0.2",
-    "errno 0.3.14",
-    "event-listener 5.4.2",
-    "event-listener-strategy 0.5.4",
-    "fallible-iterator 0.2.0",
-    "fallible-iterator 0.3.0",
-    "fallible-streaming-iterator 0.1.9",
     "fancy-regex 0.20.2",
-    "fastrand 2.5.0",
-    "ff 0.14.0",
-    "filetime 0.2.29",
-    "find-msvc-tools 0.1.15",
-    "fixedbitset 0.5.7",
     "flatbuffers 25.12.19",
     "flate2 1.1.10",
-    "fluent-uri 0.4.1",
-    "flume 0.12.0",
     "fnv 1.0.7",
-    "foldhash 0.1.5",
-    "foldhash 0.2.0",
-    "foreign-types 0.3.2",
-    "foreign-types-shared 0.1.1",
-    "form_urlencoded 1.2.2",
-    "fraction 0.17.0",
-    "fs-set-times 0.20.3",
-    "funty 2.0.0",
     "fuser 0.18.0",
     "futures 0.3.34",
-    "futures-channel 0.3.34",
     "futures-core 0.3.34",
-    "futures-executor 0.3.34",
-    "futures-io 0.3.34",
-    "futures-macro 0.3.34",
-    "futures-sink 0.3.34",
-    "futures-task 0.3.34",
     "futures-util 0.3.34",
-    "generator 0.8.10",
-    "generic-array 0.14.7",
-    "getrandom 0.2.17",
-    "getrandom 0.3.4",
     "getrandom 0.4.3",
-    "gloo-utils 0.2.0",
-    "granit-parser 2.0.0",
-    "group 0.14.0",
     "h2 0.4.20",
-    "half 2.7.1",
-    "hashbag 0.1.13",
-    "hashbrown 0.15.5",
-    "hashbrown 0.16.1",
-    "hashbrown 0.17.1",
-    "hashlink 0.12.2",
     "heck 0.5.0",
     "hex 0.4.3",
-    "hex-simd 0.8.0",
-    "hkdf 0.12.4",
-    "hmac 0.12.1",
     "hmac 0.13.0",
-    "hmac-sha1-compact 1.1.8",
-    "home 0.5.12",
     "http 1.5.0",
     "http-body 1.1.0",
     "http-body-util 0.1.5",
-    "httparse 1.10.1",
     "httpdate 1.0.3",
     "humantime 2.4.0",
-    "hybrid-array 0.4.15",
     "hyper 1.12.0",
-    "hyper-rustls 0.27.10",
-    "hyper-timeout 0.5.2",
     "hyper-util 0.1.21",
-    "iana-time-zone 0.1.65",
     "icu_casemap 2.3.0",
-    "icu_casemap_data 2.3.0",
-    "icu_collections 2.3.0",
-    "icu_locale_core 2.3.0",
-    "icu_locale_fallback 2.3.0",
-    "icu_locale_fallback_data 2.3.0",
-    "icu_normalizer 2.3.0",
-    "icu_normalizer_data 2.3.0",
-    "icu_properties 2.3.0",
-    "icu_properties_data 2.3.0",
-    "icu_provider 2.3.1",
-    "icu_segmenter 2.3.0",
-    "icu_segmenter_data 2.3.0",
-    "ident_case 1.0.1",
-    "idna 1.1.0",
-    "idna_adapter 1.2.2",
     "image 0.25.10",
     "indexmap 2.14.2",
-    "indoc 2.0.8",
-    "inotify 0.11.5",
-    "inotify-sys 0.1.8",
-    "inout 0.1.4",
-    "inout 0.2.6",
-    "instability 0.3.14",
-    "io-extras 0.19.0",
-    "io-lifetimes 2.0.4",
-    "io-lifetimes 3.0.1",
-    "io-uring 0.7.15",
-    "ipnet 2.12.2",
-    "is_terminal_polyfill 1.70.2",
-    "itertools 0.14.0",
-    "itertools 0.15.0",
-    "itoa 1.0.18",
-    "jiff 0.2.37",
-    "jiff-core 0.1.1",
-    "jiff-static 0.2.37",
-    "jiff-tzdb 0.1.8",
-    "jiff-tzdb-platform 0.1.3",
-    "jobserver 0.1.35",
     "js-sys 0.3.94",
     "jsonschema 0.61.2",
-    "jsonschema-regex 0.61.2",
-    "jsonschema-value 0.61.2",
-    "kasuari 0.4.12",
     "keyring 3.6.3",
-    "kqueue 1.2.1",
-    "kqueue-sys 1.1.2",
-    "lazy_static 1.5.1",
     "libc 0.2.191",
-    "libdbus-sys 0.2.7",
     "libfuzzer-sys 0.4.13",
-    "libloading 0.9.0",
-    "libm 0.2.16",
-    "libsqlite3-sys 0.39.1",
-    "line-clipping 0.3.8",
     "linux-keyutils 0.2.5",
-    "linux-raw-sys 0.12.1",
-    "litemap 0.8.3",
-    "litrs 1.0.1",
-    "lock_api 0.4.14",
-    "lock_api 0.5.0",
-    "log 0.4.34",
     "loom 0.7.3",
-    "lru 0.18.5",
-    "lru-slab 0.1.3",
-    "matchers 0.2.0",
-    "matchit 0.8.4",
-    "maybe-owned 0.3.4",
-    "md-5 0.11.0",
     "memchr 2.8.3",
-    "memoffset 0.9.1",
-    "micromap 0.3.0",
-    "mime 0.3.17",
-    "minimal-lexical 0.2.1",
-    "miniz_oxide 0.9.1",
-    "mio 1.2.4",
-    "miow 0.6.1",
-    "mod_use 0.2.3",
-    "moxcms 0.8.1",
-    "multimap 0.10.1",
-    "multiversion_no_op 1.0.0",
     "napi-build 2.6.0",
     "napi-derive 3.6.13",
-    "napi-derive-backend 6.1.6",
     "napi-sys 3.4.1",
-    "nix 0.29.0",
     "nix 0.31.3",
     "nohash-hasher 0.2.0",
-    "nom 7.1.3",
-    "nom 8.0.0",
-    "nonmax 0.5.5",
     "notify 8.2.2",
-    "notify-types 2.1.0",
-    "nu-ansi-term 0.50.3",
-    "num 0.4.3",
-    "num-bigint 0.4.8",
-    "num-bigint 0.5.1",
-    "num-cmp 0.1.0",
-    "num-complex 0.4.6",
-    "num-conv 0.2.2",
-    "num-integer 0.1.47",
-    "num-iter 0.1.46",
-    "num-rational 0.4.2",
-    "num-traits 0.2.19",
-    "num_enum 0.7.6",
-    "num_enum_derive 0.7.6",
-    "num_threads 0.1.7",
-    "numeric_cast 0.3.0",
-    "oauth2 5.0.0",
-    "objc2-core-foundation 0.3.2",
-    "objc2-system-configuration 0.3.2",
     "object_store 0.14.2",
-    "oid-registry 0.8.1",
     "once_cell 1.21.4",
-    "once_cell_polyfill 1.70.2",
-    "openssl 0.10.81",
-    "openssl-macros 0.1.1",
-    "openssl-probe 0.2.1",
-    "openssl-src 300.6.1+3.6.3",
-    "openssl-sys 0.9.117",
-    "option-ext 0.2.0",
-    "ordered-float 2.10.1",
-    "ordered-stream 0.2.0",
-    "outref 0.5.2",
-    "owo-colors 4.4.0",
-    "oxc-browserslist 5.0.1",
     "oxc_allocator 0.156.0",
-    "oxc_ast 0.156.0",
-    "oxc_ast_macros 0.156.0",
-    "oxc_ast_visit 0.156.0",
     "oxc_codegen 0.156.0",
-    "oxc_compat 0.156.0",
-    "oxc_data_structures 0.156.0",
-    "oxc_diagnostics 0.156.0",
-    "oxc_ecmascript 0.156.0",
-    "oxc_estree 0.156.0",
-    "oxc_index 5.0.0",
     "oxc_parser 0.156.0",
-    "oxc_regular_expression 0.156.0",
     "oxc_semantic 0.156.0",
     "oxc_span 0.156.0",
-    "oxc_str 0.156.0",
-    "oxc_syntax 0.156.0",
     "oxc_transformer 0.156.0",
-    "oxc_traverse 0.156.0",
-    "oxilangtag 0.1.6",
-    "oxiri 0.2.11",
     "oxrdf 0.3.5",
     "oxttl 0.2.5",
     "p256 0.14.0",
-    "page_size 0.6.0",
-    "palette 0.7.7",
-    "palette_derive 0.7.7",
-    "palette_math 0.7.7",
-    "parking 2.2.1",
-    "parking_lot 0.12.5",
     "parking_lot 0.13.0",
-    "parking_lot_core 0.9.12",
-    "parking_lot_core 0.10.0",
     "parquet 60.1.0",
-    "pastey 0.2.3",
-    "pem 4.0.0",
-    "percent-encoding 2.3.2",
-    "petgraph 0.8.3",
-    "phf 0.13.1",
-    "phf 0.14.0",
-    "phf_generator 0.14.0",
-    "phf_macros 0.14.0",
-    "phf_shared 0.13.1",
-    "phf_shared 0.14.0",
-    "pin-project 1.1.13",
-    "pin-project-internal 1.1.13",
     "pin-project-lite 0.2.17",
-    "piper 0.2.5",
-    "pkg-config 0.3.34",
-    "polling 3.11.0",
-    "poly1305 0.9.1",
-    "portable-atomic 1.15.0",
-    "postcard 1.1.3",
-    "postgres-protocol 0.6.12",
-    "postgres-types 0.2.14",
-    "potential_utf 0.1.6",
-    "powerfmt 0.2.1",
-    "ppv-lite86 0.2.21",
-    "prettyplease 0.2.37",
     "prettyplease 0.3.0",
-    "primefield 0.14.0",
-    "primeorder 0.14.0",
-    "proc-macro-crate 3.5.0",
     "proc-macro2 1.0.107",
     "proptest 1.12.0",
     "prost 0.14.4",
     "prost-build 0.14.4",
-    "prost-derive 0.14.4",
     "prost-reflect 0.16.5",
     "prost-types 0.14.4",
     "protoc-bin-vendored-linux-aarch_64 3.3.0",
@@ -41612,287 +38679,95 @@
     "protoc-bin-vendored-win32 3.3.0",
     "public-api 0.52.2",
     "pulldown-cmark 0.13.6",
-    "pulldown-cmark-to-cmark 22.0.3",
-    "pxfm 0.1.30",
-    "quick-error 1.2.3",
     "quick-xml 0.41.0",
-    "quick-xml 0.42.0",
-    "quinn 0.11.12",
-    "quinn-proto 0.11.19",
-    "quinn-udp 0.5.16",
     "quote 1.0.47",
-    "radium 0.7.0",
-    "rand 0.8.8",
-    "rand 0.9.5",
-    "rand 0.10.3",
-    "rand_chacha 0.3.1",
-    "rand_chacha 0.9.0",
-    "rand_core 0.6.4",
-    "rand_core 0.9.5",
-    "rand_core 0.10.1",
-    "rand_pcg 0.3.1",
-    "rand_pcg 0.10.2",
-    "rand_xorshift 0.5.0",
     "ratatui 0.30.2",
-    "ratatui-core 0.1.2",
-    "ratatui-crossterm 0.1.2",
-    "ratatui-widgets 0.3.2",
     "rcgen 0.14.10",
-    "ref-cast 1.0.27",
-    "ref-cast-impl 1.0.27",
-    "referencing 0.61.2",
-    "regex 1.13.1",
-    "regex-automata 0.4.18",
     "regex-lite 0.1.9",
     "regex-syntax 0.8.11",
-    "relative-path 2.0.3",
     "reqwest 0.12.28",
     "reqwest 0.13.5",
-    "rfc6979 0.6.0",
     "ring 0.17.14",
     "rmcp 3.9.0",
-    "rmp 0.8.15",
     "rmp-serde 1.3.1",
-    "ropey 1.6.1",
     "rquickjs 0.14.0",
     "rusqlite 0.41.0",
     "rustc-hash 2.1.3",
-    "rustc_version 0.4.1",
-    "rustdoc-types 0.59.0",
     "rustdoc-types 0.60.0",
-    "rusticata-macros 4.1.0",
     "rustix 1.1.6",
-    "rustix-linux-procfs 0.1.1",
     "rustix-openpty 0.2.0",
     "rustls 0.23.46",
-    "rustls-native-certs 0.8.4",
-    "rustls-pki-types 1.15.1",
     "rustls-platform-verifier 0.7.1",
-    "rustls-webpki 0.103.16",
-    "rustversion 1.0.23",
-    "rusty-fork 0.3.1",
     "ruzstd 0.9.1",
-    "ryu 1.0.23",
     "s3s 0.17.0",
-    "s3s-multipart 0.17.0",
-    "s3s-rfc2047 0.17.0",
-    "s3s-sigv2 0.17.0",
-    "s3s-sigv4 0.17.0",
     "same-file 1.0.6",
     "schemars 1.2.3",
-    "schemars_derive 1.2.3",
-    "scoped-tls 1.0.1",
-    "scopeguard 1.2.0",
-    "sec1 0.8.1",
-    "secret-service 4.0.0",
     "security-framework 3.7.0",
-    "security-framework-sys 2.17.0",
-    "self_cell 1.3.0",
     "semver 1.0.28",
-    "seq-macro 0.3.6",
     "serde 1.0.229",
     "serde-saphyr 2.0.0",
-    "serde-value 0.7.0",
     "serde-wasm-bindgen 0.6.5",
     "serde_bytes 0.11.19",
-    "serde_core 1.0.229",
     "serde_derive 1.0.229",
-    "serde_derive_internals 0.29.1",
     "serde_derive_internals 0.30.0",
     "serde_json 1.0.154",
     "serde_path_to_error 0.1.20",
-    "serde_repr 0.1.21",
-    "serde_spanned 1.1.1",
     "serde_urlencoded 0.7.1",
-    "sha1 0.10.7",
-    "sha1 0.11.0",
-    "sha2 0.10.9",
     "sha2 0.11.1",
-    "sharded-slab 0.1.7",
     "shell-words 1.1.1",
-    "shlex 2.0.1",
     "shuttle 0.9.8",
-    "shuttle-engine 0.1.6",
-    "shuttle-schedulers 0.1.1",
-    "shuttle-std 0.1.4",
-    "signal-hook 0.3.18",
     "signal-hook 0.4.5",
-    "signal-hook-mio 0.2.5",
-    "signal-hook-registry 1.4.8",
-    "signature 3.0.0",
-    "simd-adler32 0.3.10",
-    "simdutf8 0.1.5",
-    "similar 2.7.0",
-    "similar-asserts 1.7.0",
-    "siphasher 1.0.4",
-    "slab 0.4.12",
     "smallvec 1.16.2",
-    "smawk 0.3.3",
-    "snapshot-testing 0.1.8",
-    "socket2 0.6.5",
-    "spin 0.9.9",
-    "spin 0.10.1",
-    "sse-stream 0.3.0",
-    "stable_deref_trait 1.2.1",
-    "static_assertions 1.1.0",
-    "std-next 0.1.9",
-    "str_indices 0.4.4",
-    "stringprep 0.1.5",
-    "strsim 0.11.1",
     "strum 0.28.0",
-    "strum_macros 0.28.0",
     "subtle 2.6.1",
     "syn 2.0.119",
     "syn 3.0.9",
     "sync_wrapper 1.0.2",
-    "synchrony 0.1.9",
-    "synstructure 0.13.2",
-    "synstructure 0.14.0",
-    "tap 1.0.1",
     "tar 0.4.46",
     "tempfile 3.27.0",
     "termcolor 1.4.1",
-    "terminal_size 0.4.4",
-    "textwrap 0.16.4",
-    "thin-cell 0.2.1",
-    "thiserror 1.0.69",
     "thiserror 2.0.21",
-    "thiserror-impl 1.0.69",
-    "thiserror-impl 2.0.21",
-    "thread_local 1.1.10",
     "time 0.3.55",
-    "time-core 0.1.9",
-    "time-macros 0.2.32",
-    "tiny-keccak 2.0.2",
-    "tinystr 0.8.4",
-    "tinyvec 1.13.3",
     "tokio 1.54.1",
-    "tokio-macros 2.7.2",
     "tokio-postgres 0.7.18",
     "tokio-rustls 0.26.6",
     "tokio-stream 0.1.19",
-    "tokio-tungstenite 0.29.0",
     "tokio-util 0.7.20",
     "toml 1.1.6+spec-1.1.0",
-    "toml_datetime 1.1.1+spec-1.1.0",
-    "toml_edit 0.25.15+spec-1.1.0",
-    "toml_parser 1.1.3+spec-1.1.0",
-    "toml_writer 1.1.2+spec-1.1.0",
     "tonic 0.14.9",
-    "tonic-build 0.14.6",
     "tonic-prost 0.14.6",
     "tonic-prost-build 0.14.6",
     "tonic-web 0.14.6",
     "tower 0.5.3",
     "tower-http 0.6.11",
-    "tower-layer 0.3.3",
-    "tower-service 0.3.3",
     "tracing 0.1.44",
-    "tracing-attributes 0.1.31",
     "tracing-core 0.1.36",
-    "tracing-log 0.2.0",
     "tracing-subscriber 0.3.23",
-    "transform-stream 0.3.1",
-    "try-lock 0.2.5",
     "ts-rs 12.0.1",
     "tsify 0.5.8",
-    "tsify-macros 0.5.8",
-    "tungstenite 0.29.0",
-    "twox-hash 2.1.5",
-    "typenum 1.20.1",
-    "unarray 0.1.4",
     "unicase 2.10.0",
-    "unicode-bidi 0.3.18",
-    "unicode-general-category 1.1.0",
-    "unicode-id-start 1.5.0",
-    "unicode-ident 1.0.26",
     "unicode-normalization 0.1.26",
-    "unicode-properties 0.1.4",
     "unicode-segmentation 1.13.3",
-    "unicode-truncate 2.0.1",
     "unicode-width 0.2.2",
-    "unicode-xid 0.2.6",
-    "universal-hash 0.6.1",
-    "untrusted 0.9.0",
     "url 2.5.8",
     "urlencoding 2.1.3",
-    "utf8_iter 1.0.4",
-    "utf8parse 0.2.2",
     "uuid 1.29.0",
-    "uuid-simd 0.8.0",
-    "vcpkg 0.2.15",
-    "version_check 0.9.5",
     "vhost 0.18.0",
-    "virtio-bindings 0.2.7",
     "virtio-queue 0.18.0",
     "vm-memory 0.18.0",
     "vmm-sys-util 0.15.0",
-    "vsimd 0.8.0",
     "vte 0.15.0",
-    "wait-timeout 0.2.1",
     "walkdir 2.5.0",
-    "want 0.3.2",
     "wasm-bindgen 0.2.117",
     "wasm-bindgen-futures 0.4.67",
-    "wasm-bindgen-macro 0.2.117",
-    "wasm-bindgen-macro-support 0.2.117",
-    "wasm-bindgen-shared 0.2.117",
     "web-sys 0.3.94",
     "web-time 1.1.0",
-    "webpki-roots 1.0.10",
     "which 8.0.6",
-    "whoami 2.1.3",
-    "winapi 0.3.9",
-    "winapi-util 0.1.11",
     "windows 0.62.2",
-    "windows-collections 0.3.2",
-    "windows-core 0.62.2",
-    "windows-future 0.3.2",
-    "windows-implement 0.60.2",
-    "windows-interface 0.59.3",
-    "windows-link 0.2.1",
-    "windows-numerics 0.3.1",
-    "windows-result 0.4.1",
-    "windows-strings 0.5.1",
-    "windows-sys 0.59.0",
-    "windows-sys 0.60.2",
     "windows-sys 0.61.2",
-    "windows-targets 0.52.6",
-    "windows-targets 0.53.5",
-    "windows-threading 0.2.1",
-    "windows_x86_64_msvc 0.52.6",
-    "windows_x86_64_msvc 0.53.1",
-    "winnow 1.0.4",
-    "winx 0.36.4",
-    "wnaf 0.14.1",
     "writeable 0.6.4",
-    "wyz 0.5.1",
     "x509-parser 0.18.1",
-    "xattr 1.6.1",
-    "xdg-home 1.3.0",
-    "xxhash-rust 0.8.18",
-    "yasna 0.6.0",
-    "yoke 0.8.3",
-    "yoke-derive 0.8.4",
-    "zbus 4.4.0",
-    "zbus_macros 4.4.0",
-    "zbus_names 3.0.0",
-    "zerocopy 0.8.60",
-    "zerocopy-derive 0.8.60",
-    "zerofrom 0.1.8",
-    "zerofrom-derive 0.1.8",
-    "zeroize 1.9.1",
-    "zeroize_derive 1.5.0",
-    "zerotrie 0.2.5",
-    "zerovec 0.11.8",
-    "zerovec-derive 0.11.6",
-    "zlib-rs 0.6.8",
-    "zmij 1.0.23",
-    "zune-core 0.5.3",
-    "zune-jpeg 0.5.15",
-    "zvariant 4.2.0",
-    "zvariant_derive 4.2.0",
-    "zvariant_utils 2.1.0"
+    "zeroize 1.9.1"
   ],
   "direct_dev_deps": [],
   "workspace_members": {

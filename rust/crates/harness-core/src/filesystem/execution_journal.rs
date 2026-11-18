@@ -39,6 +39,50 @@ mod checkpoint_maps;
 pub mod codec_fuzz {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn check_decode_custody(
+        check: impl FnOnce(&PreparationIo) -> Result<()>,
+    ) -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes()?;
+        let result = check(&PreparationIo::from_native_work(&work)?);
+        assert_eq!(
+            work.live_allocation_bytes()?,
+            baseline,
+            "codec custody was retained"
+        );
+        result
+    }
+
+    pub(super) fn check_versioned_frame<T>(
+        bytes: &[u8],
+        versions: impl IntoIterator<Item = u8>,
+        decode: impl Fn(&[u8]) -> super::Result<T>,
+    ) -> super::Result<()> {
+        use crate::wire::ErrorCode;
+
+        let [first, second, third, version, ..] = bytes else {
+            return Err(crate::Error::Invalid(
+                "admitted journal frame has no header".into(),
+            ));
+        };
+        for unsupported in versions {
+            let header = [*first, *second, *third, unsupported];
+            assert!(decode(&header).is_err_and(|error| error.code() == ErrorCode::Unsupported));
+        }
+        let header = [*first, *second, *third, *version];
+        assert!(decode(&header).is_err_and(|error| error.code() != ErrorCode::Unsupported));
+        let mut trailing = bytes.to_vec();
+        trailing.push(0);
+        assert!(decode(&trailing).is_err());
+        Ok(())
+    }
+
     /// Check metadata syntax without granting checkpoint signature authority.
     pub fn check(bytes: &[u8]) {
         observations::codec_fuzz::check(bytes);
@@ -125,6 +169,10 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
+    /// Signs this journal's execution checkpoints under its current custody.
+    execution_checkpoint_verifier: AuthorityVerifier,
+    /// The other custody identity the same journal may have signed under.
+    execution_checkpoint_alternate: Option<AuthorityVerifier>,
     scope: Scope,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     /// The one model context an agent turn may dispatch, built by its turn host
@@ -148,6 +196,13 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[cfg(test)]
+impl<P: ?Sized, A: 'static, O: 'static> FilesystemExecutionJournal<P, A, O> {
+    pub(crate) fn execution_checkpoint_authority(&self) -> &AuthorityVerifier {
+        &self.execution_checkpoint_verifier
+    }
 }
 
 fn canonical_boundary(

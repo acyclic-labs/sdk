@@ -144,10 +144,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &io,
             workspaces::FilePublication::Replace(None),
             Some((
-                acyclic_fs::Digest::from_bytes(*blake3::hash(DOMAIN).as_bytes()),
+                acyclic_fs_format::identity::Digest::from_bytes(*blake3::hash(DOMAIN).as_bytes()),
                 acyclic_stream::OwnedBytes::from_static(DOMAIN),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )),
+            self.clock_handle(),
         )?;
         let generation = publication.await?;
         self.generation_ref_id(generation.id(), Some(&io))

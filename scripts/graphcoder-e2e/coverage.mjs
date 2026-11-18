@@ -1,7 +1,7 @@
 // The roadmap is a release contract, not a count of green component tests.
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const rows = Array.from({ length: 26 }, (_, index) => `A${index + 1}`);
@@ -63,7 +63,7 @@ export function readCoverage(cases = inventory(), root = directory) {
   return coverage(JSON.parse(readFileSync(join(root, "coverage.json"), "utf8")), cases);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const report = readCoverage();
   console.log(JSON.stringify(report, null, 2));
   process.exitCode = report.pass ? 0 : 1;

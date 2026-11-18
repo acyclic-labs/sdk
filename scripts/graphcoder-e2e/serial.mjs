@@ -256,7 +256,7 @@ async function main() {
   process.exitCode = report.pass ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   try { await main(); }
   catch (error) {
     console.error(JSON.stringify({ ...failureReport(error), step: "serial matrix admission or collection",

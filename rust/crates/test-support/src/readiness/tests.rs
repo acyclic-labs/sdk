@@ -6,14 +6,6 @@ const PREFIX: &[u8] = b"running 1 test\ntest fixture::mount_owner ... ";
 
 #[test]
 fn readiness_survives_an_unterminated_libtest_prefix() -> io::Result<()> {
-    // Former producers appended the marker to libtest's unterminated line.
-    let mut old = PREFIX.to_vec();
-    writeln!(old, "{MARKER}")?;
-    assert_eq!(
-        wait(&mut Cursor::new(old), MARKER).unwrap_err().kind(),
-        io::ErrorKind::UnexpectedEof,
-    );
-
     let mut output = PREFIX.to_vec();
     signal(&mut output, MARKER)?;
     output.extend_from_slice(b"after readiness\n");

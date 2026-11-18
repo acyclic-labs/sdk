@@ -74,7 +74,7 @@ async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> Test
                 (head, root)
             );
             assert_eq!(
-                accounting.spent().authority_records_read,
+                accounting.spent().unwrap().authority_records_read,
                 0,
                 "proposal normalization resampled its receipt-owned publication root"
             );
@@ -244,9 +244,9 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
             .any(|mutation| matches!(mutation,
         acyclic_stream::CommittedMutation::Append(append) if append.path == authority_path))
     );
-    let filter = FollowFilter::new(acyclic_stream::wire::SessionFilter {
+    let filter = FollowFilter::new(acyclic_stream_wire::wire::SessionFilter {
         all_of: vec![],
-        keys: vec![acyclic_stream::wire::KeyRange {
+        keys: vec![acyclic_stream_wire::wire::KeyRange {
             start: Bytes::from_static(b"public-"),
             end: Bytes::from_static(b"public."),
         }],
@@ -544,9 +544,9 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
         else {
             panic!("the original empty stream must accept its one atomic append");
         };
-        let filter = FollowFilter::new(acyclic_stream::wire::SessionFilter {
+        let filter = FollowFilter::new(acyclic_stream_wire::wire::SessionFilter {
             all_of: vec![],
-            keys: vec![acyclic_stream::wire::KeyRange {
+            keys: vec![acyclic_stream_wire::wire::KeyRange {
                 start: Bytes::from_static(b"key-000"),
                 end: Bytes::from_static(b"key-001"),
             }],

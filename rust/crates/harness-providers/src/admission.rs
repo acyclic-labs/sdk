@@ -91,7 +91,7 @@ pub(crate) fn send<'a>(
         #[cfg(not(target_arch = "wasm32"))]
         let trace_custody = work.map(|work| work.claim(
             (crate::http::phase::NAME.len() + crate::http::phase::GUARANTEE.len()) as u64,
-            2, acyclic_fs::WorkCounters::UNCHARGED,
+            2, acyclic_fs_work::performance::WorkCounters::UNCHARGED,
         )).transpose()?;
         let phase = crate::http::phase::HeadersPhase::new();
         if let Some(phase) = &phase { yield Event::Trace(phase.started()); }
@@ -212,7 +212,13 @@ impl Gate {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let custody = work
-            .map(|work| work.claim(QUEUED_BYTES, 1, acyclic_fs::WorkCounters::UNCHARGED))
+            .map(|work| {
+                work.claim(
+                    QUEUED_BYTES,
+                    1,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )
+            })
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let custody = {

@@ -65,7 +65,7 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
             .stdout(ProcessStdio::piped())
             .stderr(ProcessStdio::piped());
         process.spawn(&mut command, None)?;
-        let before = work.receipt().output_bytes;
+        let before = work.receipt().unwrap().output_bytes;
         if queued {
             process.io(&meter)?.queue_stdin(prompt.to_vec())?;
             while !process.io(&meter)?.pump_stdin()? {
@@ -96,7 +96,10 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
                 .any(|bytes| bytes == b"WINDOW_PROMPT_ACCEPTED")
         );
         assert!(process.is_reaped());
-        assert_eq!(work.receipt().output_bytes - before, prompt.len() as u64);
+        assert_eq!(
+            work.receipt().unwrap().output_bytes - before,
+            prompt.len() as u64
+        );
         assert_eq!(
             window.remaining().unwrap().output_bytes,
             budget().output_bytes - prompt.len() as u64
@@ -153,7 +156,7 @@ fn every_run_of_a_long_session_gets_its_own_full_window() {
     for _ in 0..RUNS {
         run(&session).unwrap();
     }
-    let receipt = session.receipt();
+    let receipt = session.receipt().unwrap();
     // The shared ledger still records every run: only the checks are windowed.
     assert_eq!(receipt.authority_records_appended, RUNS * 2 * APPENDS);
     assert_eq!(receipt.bytes_copied, RUNS * 2 * COPIED);
@@ -289,7 +292,7 @@ fn live_allocation_is_never_forgotten_by_a_new_window() {
     let held = first.claim(PEAK / 2, 1, WorkCounters::UNCHARGED).unwrap();
     drop(first);
     let second = session.invocation_window().unwrap();
-    let live = second.live_allocation_bytes();
+    let live = second.live_allocation_bytes().unwrap();
     assert!(live >= PEAK / 2);
     assert!(
         second
@@ -303,14 +306,14 @@ fn live_allocation_is_never_forgotten_by_a_new_window() {
 #[test]
 fn window_layout_matches_its_claim() {
     let session = root();
-    let before = session.live_allocation_bytes();
+    let before = session.live_allocation_bytes().unwrap();
     let window = session.invocation_window().unwrap();
     let expected =
         crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<NativeWorkWindow>()).unwrap()
             as u64;
-    assert_eq!(session.live_allocation_bytes(), before + expected);
+    assert_eq!(session.live_allocation_bytes().unwrap(), before + expected);
     drop(window);
-    assert_eq!(session.live_allocation_bytes(), before);
+    assert_eq!(session.live_allocation_bytes().unwrap(), before);
 }
 
 fn left(window: &NativeMaterializationWork) -> u64 {
@@ -451,7 +454,7 @@ fn unbounded_windows_reserve_complete_and_refund_exactly() {
     drop(refunded);
     window.record_admitted(appends(1)).unwrap();
     assert_eq!(
-        session.receipt().authority_records_appended,
+        session.receipt().unwrap().authority_records_appended,
         3,
         "every completed and admitted append is recorded once"
     );
@@ -524,7 +527,7 @@ fn native_io_of_a_view_is_charged_to_the_window_opened_on_it() {
         .unwrap();
     exceeded(&copied(&third, 1).unwrap_err(), "bytes_copied");
     // A recorded overrun is still work done; a refused native charge is not.
-    assert_eq!(session.receipt().bytes_copied, 3 * COPIED + 1);
+    assert_eq!(session.receipt().unwrap().bytes_copied, 3 * COPIED + 1);
 }
 
 #[test]

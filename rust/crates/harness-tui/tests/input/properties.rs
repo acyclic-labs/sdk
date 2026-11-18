@@ -1,6 +1,6 @@
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::{
-    ClipboardContent, InputKeymap, KEYMAP, PromptHistory, PromptInput, prepare_image,
+    ClipboardContent, InputEffect, InputKeymap, KEYMAP, PromptInput, prepare_image,
     unix_editor_command,
 };
 use proptest::prelude::*;
@@ -11,9 +11,13 @@ proptest! {
     fn history_snapshots_and_keymap_overrides_round_trip(
         text in "[a-z界\r\n]{0,48}", owner in "[a-z]{1,8}", target in prop::sample::select(KEYMAP)
     ) {
-        let history = PromptHistory::snapshot([format!("{owner}:{text}")]);
-        prop_assert_eq!(history.entries().first(), Some(&format!("{owner}:{}", text.replace("\r\n", "\n").replace('\r', "\n"))));
-        prop_assert!(history.entries().iter().all(|entry| !entry.contains('\r')));
+        let mut input = PromptInput::default();
+        let effects = input.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 0, 80);
+        let [InputEffect::History { request, .. }] = effects.as_slice() else { return Err(TestCaseError::fail("history request missing")); };
+        let recalled = format!("{owner}:{text}");
+        prop_assert!(input.resolve_history(*request, "", Some(&recalled), true, 0));
+        prop_assert_eq!(input.editor.text(), &format!("{owner}:{}", text.replace("\r\n", "\n").replace('\r', "\n")));
+        prop_assert!(!input.editor.text().contains('\r'));
         let json = serde_json::json!({"bindings":{"Ctrl+l":target.action.name()}}).to_string();
         let map = InputKeymap::parse(&json).unwrap();
         prop_assert_eq!(InputKeymap::parse(&map.encode()).unwrap(), map);
@@ -57,27 +61,22 @@ proptest! {
         prop_assert_eq!(input.editor.text(), text);
     }
     #[test]
-    fn edited_and_normal_submissions_share_one_history_projection(
+    fn edited_and_normal_submissions_keep_the_original_query_contract(
         submissions in prop::collection::vec((any::<bool>(), any::<bool>(), "[a-z界\r\n]{0,16}"), 0..24)
     ) {
-        use acyclic_harness_tui::{Editor, InputEffect};
+        use acyclic_harness_tui::Editor;
         let mut input = PromptInput::new(Editor::new("draft"));
-        let mut expected: Vec<String> = vec![];
         for (step, (edit, cancel, raw)) in submissions.into_iter().enumerate() {
             let text = format!("entry:{raw}");
             let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
             if edit { input.edit_message("message".into(), &text); }
             else { input.editor.set_text(&text, step as u64); }
-            // Live snapshots replace the projection, never a saved editor's history.
-            input.replace_history(PromptHistory::snapshot(input.history().entries().to_vec()));
             if edit && cancel {
                 input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), step as u64, 80);
             } else {
                 let effects = input.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), step as u64, 80);
-                prop_assert_eq!(effects, vec![InputEffect::Submit { text: normalized.clone(), queued: false, edit: edit.then(|| "message".into()) }]);
-                if expected.last() != Some(&normalized) { expected.push(normalized); }
+                prop_assert_eq!(effects, vec![InputEffect::Submit { text: normalized, queued: false, edit: edit.then(|| "message".into()) }]);
             }
-            prop_assert_eq!(input.history().entries(), expected.as_slice());
         }
     }
 
@@ -87,65 +86,35 @@ proptest! {
         let draft = format!("draft:{raw}");
         let expected = draft.replace("\r\n", "\n").replace('\r', "\n");
         let mut input = PromptInput::new(Editor::new(&draft));
-        let mut history = acyclic_harness_tui::PromptHistory::default();
-        history.push("older".into()); history.push("newer".into());
-        input.replace_history(history);
-        for (at, code, mods) in [(0, KeyCode::Home, KeyModifiers::CONTROL), (1, KeyCode::Up, KeyModifiers::NONE),
-            (2, KeyCode::End, KeyModifiers::NONE), (3, KeyCode::Char('r'), KeyModifiers::CONTROL)] {
-            input.key(KeyEvent::new(code, mods), at, 80);
-        }
-        input.committed_text(if matches { "older" } else { "missing" }, 4);
-        if matches { prop_assert_eq!(input.editor.text(), "older"); }
+        input.editor.set_cursor(0, false);
+        let effects = input.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 0, 80);
+        let [InputEffect::History { request, .. }] = effects.as_slice() else { return Err(TestCaseError::fail("history request missing")); };
+        prop_assert!(input.resolve_history(*request, &expected, Some("newer"), true, 1));
+        input.editor.set_cursor(5, false);
+        input.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), 2, 80);
+        let effects = input.committed_text(if matches { "older" } else { "missing" }, 3);
+        let [InputEffect::History { request, .. }] = effects.as_slice() else { return Err(TestCaseError::fail("search request missing")); };
+        prop_assert!(input.resolve_history(*request, "newer", matches.then_some("older"), true, 4));
         input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 5, 80);
         prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("newer", 5));
-        input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
+        let effects = input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
+        let [InputEffect::History { request, .. }] = effects.as_slice() else { return Err(TestCaseError::fail("draft request missing")); };
+        prop_assert!(input.resolve_history(*request, "newer", Some(&expected), false, 7));
         prop_assert_eq!(input.editor.text(), expected);
     }
 
     #[test]
-    fn restored_navigation_never_survives_a_history_snapshot_reload(
-        search in any::<bool>(), replacements in prop::collection::vec("[a-z界\r\n]{0,12}", 0..8),
-        reloads in 1usize..8
+    fn replacing_history_source_invalidates_in_flight_replies(
+        draft in "[a-z界\r\n]{0,24}", stale in "[a-z界]{0,12}", reloads in 1usize..8
     ) {
         use acyclic_harness_tui::Editor;
-        for replacements in [
-            vec![], vec!["replacement".to_owned()],
-            vec!["first".to_owned(), "second".to_owned(), "third".to_owned()], replacements
-        ] {
-            let mut input = PromptInput::new(Editor::new("draft"));
-            input.replace_history(PromptHistory::snapshot(["first", "second", "third"].map(String::from)));
-            for (at, code, mods) in [(0, KeyCode::Home, KeyModifiers::CONTROL),
-                (1, KeyCode::Up, KeyModifiers::NONE), (2, KeyCode::Up, KeyModifiers::NONE),
-                (3, KeyCode::End, KeyModifiers::CONTROL)] {
-                input.key(KeyEvent::new(code, mods), at, 80);
-            }
-            prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
-            if search {
-                input.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), 4, 80);
-                input.committed_text("first", 4);
-                prop_assert_eq!(input.editor.text(), "first");
-            } else { input.edit_message("message".into(), "editing"); }
-            let before = input.history().generation();
-            for _ in 0..reloads {
-                let snapshot = PromptHistory::snapshot(replacements.clone());
-                prop_assert!(snapshot.generation() > 0);
-                input.replace_history(snapshot);
-            }
-            prop_assert_eq!(input.history().generation(), before + reloads as u64);
-            let entries = input.history().entries().to_vec();
-            input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 5, 80);
-            prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
-            let mut recall = input.clone();
-            recall.key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), 6, 80);
-            recall.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 7, 80);
-            prop_assert_eq!(recall.editor.text(), entries.last().map_or("second", String::as_str));
-            input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
-            prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("second", 6));
-            prop_assert_eq!(input.history().entries(), entries.as_slice());
-            input.key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL), 7, 80);
-            input.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 8, 80);
-            prop_assert_eq!(input.editor.text(), entries.last().map_or("second", String::as_str));
-        }
+        let mut input = PromptInput::new(Editor::new(&draft));
+        input.editor.set_cursor(0, false);
+        let expected = input.editor.text().to_owned();
+        let effects = input.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 0, 80);
+        let [InputEffect::History { request, .. }] = effects.as_slice() else { return Err(TestCaseError::fail("history request missing")); };
+        for _ in 0..reloads { input.reset_history_source(); }
+        prop_assert!(!input.resolve_history(*request, &expected, Some(&stale), true, 1));
+        prop_assert_eq!(input.editor.text(), expected);
     }
-
 }

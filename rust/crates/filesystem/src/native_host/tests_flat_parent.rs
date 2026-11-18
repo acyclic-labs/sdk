@@ -60,7 +60,7 @@ fn direct_stat(root: &HostRoot, name: &str) -> Result<(HostStat, u64), Box<dyn s
         )?;
         root.stat_file(&file, &mut &work)?
     };
-    Ok((stat, work.receipt().backend_read_operations))
+    Ok((stat, work.receipt().unwrap().backend_read_operations))
 }
 
 #[test]
@@ -105,9 +105,10 @@ fn flat_stat_matches_direct_leaf_and_exact_admission() -> Result<(), Box<dyn std
                     required,
                     limit,
                     result.is_ok(),
-                    work.receipt().backend_read_operations,
+                    work.receipt().unwrap().backend_read_operations,
                 )?;
                 work.receipt()
+                    .unwrap()
                     .verify(budget)
                     .map_err(|e| TestCaseError::fail(e.to_string()))?;
                 if let Ok(actual) = result {
@@ -135,7 +136,7 @@ fn flat_stat_matches_direct_leaf_and_exact_admission() -> Result<(), Box<dyn std
                     required,
                     u64::MAX,
                     true,
-                    legacy.receipt().backend_read_operations
+                    legacy.receipt().unwrap().backend_read_operations
                 )
                 .is_err()
             );
@@ -144,7 +145,7 @@ fn flat_stat_matches_direct_leaf_and_exact_admission() -> Result<(), Box<dyn std
                 .map_err(|(e, _)| TestCaseError::fail(e.to_string()))?;
             cancellation.cancel();
             prop_assert!(root.stat(&path, &mut &cancelled).is_err());
-            prop_assert_eq!(cancelled.receipt().backend_read_operations, 0);
+            prop_assert_eq!(cancelled.receipt().unwrap().backend_read_operations, 0);
             Ok(())
         },
     )?;

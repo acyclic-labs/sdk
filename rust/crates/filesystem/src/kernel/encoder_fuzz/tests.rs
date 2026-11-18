@@ -251,14 +251,14 @@ fn every_writer_shape_round_trips_with_exact_completed_work() {
         let mut observe = |_| Ok::<_, FsError>(());
         let page = decode_file_table_page(&input[10..], DecodeLimits::default(), &mut observe)
             .expect("canonical writer capture must be admitted");
-        check_file_table_writer(&page);
-        check(input);
+        check_file_table_writer(&page).expect("file table writer oracle");
+        check(input).expect("encoder oracle");
     }
     for kind in 0..11 {
         for variant in 0..56 {
             let wire = fixture(kind, b"payload", variant);
             for mode in modes() {
-                check(&input(kind, mode, &wire));
+                check(&input(kind, mode, &wire)).expect("encoder oracle");
             }
             // Emit canonical inputs for fuzz corpus capture.
             eprintln!(
@@ -280,32 +280,32 @@ proptest! {
         let wire = fixture(kind, &payload, number);
         for mode in modes() {
             let mut data = input(kind, mode, &wire);
-            check(&data);
+            check(&data).expect("encoder oracle");
             // Every relevant dimension succeeds at its exact complete receipt.
             let (_, receipt, _, _) = reference(kind, &wire, WorkBudget::UNBOUNDED, mode >= 3, 0, usize::MAX);
             for axis in [1,3,5,9] {
                 let exact = match axis { 1 => receipt.bytes_encoded, 3 => receipt.bytes_copied, 5 => receipt.items_examined, _ => receipt.page_writes };
                 if axis == 1 || axis == 3 { data[axis..axis+2].copy_from_slice(&(exact as u16).to_le_bytes()); }
                 else { data[axis] = exact as u8; }
-                check(&data);
+                check(&data).expect("encoder oracle");
                 if exact != 0 {
                     if axis == 1 || axis == 3 { data[axis..axis+2].copy_from_slice(&((exact-1) as u16).to_le_bytes()); }
                     else { data[axis] = (exact-1) as u8; }
-                    check(&data);
+                    check(&data).expect("encoder oracle");
                 }
                 data = input(kind, mode, &wire);
             }
             data[1..3].copy_from_slice(&encoded.to_le_bytes());
             data[3..5].copy_from_slice(&copied.to_le_bytes()); data[5] = items; data[9] = pages;
             data[7] = fault; data[8] = at;
-            check(&data);
+            check(&data).expect("encoder oracle");
         }
     }
     #[test]
     fn malformed_wire_lengths_and_truncation_remain_bounded(
         wire in prop::collection::vec(any::<u8>(), 0..512), controls in any::<[u8;10]>(),
     ) {
-        let mut data = controls.to_vec(); data.extend_from_slice(&wire); check(&data);
+        let mut data = controls.to_vec(); data.extend_from_slice(&wire); check(&data).expect("encoder oracle");
     }
 }
 
@@ -315,19 +315,15 @@ fn prefix_control<const MUTANT: u8>() {
         let mut data = input(0, mode, &wire);
         data[7] = 2;
         data[8] = 7; // Cancel at the real header completion.
-        check(&data);
-        let panic = std::panic::catch_unwind(|| check_inner::<MUTANT, true>(&data))
+        check(&data).expect("encoder oracle");
+        let error = check_inner::<MUTANT, true>(&data)
             .expect_err("wrong error position must fail the prefix oracle");
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("");
+        let message = error.to_string();
         assert!(
             message.contains("independent encoding failure prefix"),
             "{message}"
         );
-        check_inner::<MUTANT, false>(&data);
+        check_inner::<MUTANT, false>(&data).expect("encoder oracle");
     }
 }
 #[test]

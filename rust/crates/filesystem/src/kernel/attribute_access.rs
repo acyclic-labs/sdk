@@ -33,7 +33,7 @@ pub async fn lookup_attributes<S: AsyncObjectStore>(
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> AttributeLookupFailure {
-    OperationFailure::new(map_batch_error(failure.error), *failure.work)
+    failure.map_error(map_batch_error)
 }
 
 fn map_batch_error(error: persistent_batch::Error) -> AttributeLookupError {
@@ -69,13 +69,20 @@ pub async fn lookup_attribute<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Option<AttributeEntry>>, AttributeLookupFailure> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    lookup_attribute_async_with_accounting(store, root, name, limits, &mut accounting, cancellation)
-        .await
-        .map(|(value, _)| OperationReceipt {
-            value,
-            work: accounting.spent(),
-        })
-        .map_err(|error| failed(project_scalar_error(error), accounting.spent()))
+    let result = lookup_attribute_async_with_accounting(
+        store,
+        root,
+        name,
+        limits,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map(|(value, _)| value)
+    .map_err(project_scalar_error);
+    crate::performance::finish_measured(result, accounting.spent(), |error| {
+        AttributeLookupError::Storage(ObjectStoreError::WorkObservation(error))
+    })
 }
 
 pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
@@ -127,6 +134,9 @@ fn project_scalar_error(error: crate::FsError) -> AttributeLookupError {
         crate::FsError::AttributeLookup(error) => error,
         crate::FsError::Cancelled(_) => AttributeLookupError::Cancelled,
         crate::FsError::Work(error) => AttributeLookupError::Work(error),
+        crate::FsError::WorkObservation(error) => {
+            AttributeLookupError::Storage(ObjectStoreError::WorkObservation(error))
+        }
         crate::FsError::Object(error) => map_storage(error),
         crate::FsError::Decode(error) => AttributeLookupError::Decode(error),
         #[cfg(not(target_arch = "wasm32"))]
@@ -144,10 +154,6 @@ fn map_storage(error: ObjectStoreError) -> AttributeLookupError {
         ObjectStoreError::Cancelled => AttributeLookupError::Cancelled,
         error => AttributeLookupError::Storage(error),
     }
-}
-
-fn failed(error: AttributeLookupError, work: WorkCounters) -> AttributeLookupFailure {
-    OperationFailure::new(error, work)
 }
 
 /// Authenticated named-attribute lookup failures.

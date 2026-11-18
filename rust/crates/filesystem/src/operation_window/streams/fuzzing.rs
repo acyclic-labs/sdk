@@ -6,10 +6,11 @@ use super::*;
 /// payload mutation. Its upper two bits omit optional parent fields. Remaining
 /// bytes supply the arbitrary payload or byte edit.
 pub fn check_persisted_window(input: &[u8]) {
-    futures::executor::block_on(check(input));
+    let result = futures::executor::block_on(check(input));
+    assert!(result.is_ok(), "persisted window oracle failed: {result:?}");
 }
 
-async fn check(input: &[u8]) {
+async fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let selector = input.first().copied().unwrap_or(0);
     let case = selector % 16;
     let workspace = WorkspaceId::from_bytes([161; 16]);
@@ -58,21 +59,19 @@ async fn check(input: &[u8]) {
     assert!(
         store
             .compare_and_swap(workspace, 0, original.clone())
-            .await
-            .expect("original public writer must admit the valid state")
+            .await?
     );
     assert_eq!(
-        store.load(workspace).await.unwrap(),
+        store.load(workspace).await?,
         Some(original.clone()),
         "persisted window must preserve original fields"
     );
-    let path = stream_window_path(workspace).unwrap();
+    let path = stream_window_path(workspace)?;
     let wire = provider
         .head(path.clone())
-        .await
-        .unwrap()
+        .await?
         .last
-        .unwrap()
+        .ok_or("original window record is missing")?
         .value;
     let mut changed = original.clone();
     match case {
@@ -81,9 +80,11 @@ async fn check(input: &[u8]) {
         5 => changed.revision += 1,
         6..=10 => {
             let OperationWindowPhase::Active { leases, .. } = &mut changed.phase else {
-                unreachable!();
+                return Err("active window phase is missing".into());
             };
-            let mut lease = leases.remove(&lease_id).unwrap();
+            let mut lease = leases
+                .remove(&lease_id)
+                .ok_or("original lease is missing")?;
             let key = match case {
                 7 => {
                     lease.id = OperationLeaseId::from_bytes([0; 16]);
@@ -104,7 +105,7 @@ async fn check(input: &[u8]) {
         }
         11 => {
             let OperationWindowPhase::Reconciling { ticket, .. } = &mut changed.phase else {
-                unreachable!();
+                return Err("reconciling window phase is missing".into());
             };
             *ticket = OperationId::from_bytes([0; 16]);
         }
@@ -120,13 +121,13 @@ async fn check(input: &[u8]) {
             payload
         }
         14 => wire[..edit_position(input) % wire.len()].to_vec(),
-        _ => serde_json::to_vec(&changed).unwrap(),
+        _ => serde_json::to_vec(&changed)?,
     };
     // Reopen through a different public store owner. Its head is supplied by
     // the actual backend, not a mock head with invented sequence metadata.
     let reopened = Arc::new(acyclic_stream::MemoryStream::default());
     let path = if case == 15 {
-        acyclic_stream::StreamPath::new(format!("{}/child", path.as_str())).unwrap()
+        acyclic_stream::StreamPath::new(format!("{}/child", path.as_str()))?
     } else {
         path
     };
@@ -135,14 +136,13 @@ async fn check(input: &[u8]) {
             path,
             records: vec![payload.into()],
             if_tail: Some(0),
-            idempotency_key: acyclic_stream::IdempotencyKey::new(b"window-input".to_vec()).unwrap(),
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"window-input".to_vec())?,
         })
-        .await
-        .unwrap();
+        .await?;
     let store = StreamOperationWindowStore::new(reopened);
     let observed = store.load(workspace).await;
     match case {
-        0..=2 => assert_eq!(observed.unwrap(), Some(original)),
+        0..=2 => assert_eq!(observed?, Some(original)),
         3..=11 | 15 => assert!(
             matches!(observed, Err(StreamOperationWindowStoreError::Corrupt(_))),
             "persisted window must retain its typed corruption refusal: {observed:?}"
@@ -158,14 +158,19 @@ async fn check(input: &[u8]) {
                 assert!(
                     round_trip
                         .compare_and_swap(workspace, 0, snapshot.clone())
-                        .await
-                        .unwrap()
+                        .await?
                 );
-                assert_eq!(round_trip.load(workspace).await.unwrap(), Some(snapshot));
+                assert_eq!(round_trip.load(workspace).await?, Some(snapshot));
             }
-            other => panic!("present window must decode or retain typed corruption: {other:?}"),
+            other => {
+                return Err(format!(
+                    "present window must decode or retain typed corruption: {other:?}"
+                )
+                .into());
+            }
         },
     }
+    Ok(())
 }
 
 fn edit_position(input: &[u8]) -> usize {

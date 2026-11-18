@@ -28,6 +28,7 @@ rust_proc_macro(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -43,8 +44,10 @@ rust_proc_macro(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/ingress.rs",
+        "tests/main.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -55,6 +58,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -82,7 +86,20 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-contract-derive::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-contract-derive::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -92,9 +109,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/authorization.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

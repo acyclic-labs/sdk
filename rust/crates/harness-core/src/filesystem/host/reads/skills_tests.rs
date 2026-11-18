@@ -79,7 +79,7 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
     let bindings = fixture.capture_bindings().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -313,7 +313,7 @@ async fn pending_capture_replay_reads_the_native_body_once() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let native_work = || {
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
@@ -473,12 +473,12 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     let bindings = fixture.capture_bindings().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work_a = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let work_b = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

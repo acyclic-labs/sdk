@@ -36,7 +36,25 @@ async fn anchor_validation_uses_original_read_credit_before_opening()
         .await;
         assert_eq!(cursor.is_ok(), read_limit == 2);
         assert_eq!(meter.read.load(Ordering::SeqCst), read_limit);
-        drop(cursor);
+        if let Ok(mut cursor) = cursor {
+            meter.examination_limit.store(0, Ordering::SeqCst);
+            let provider = provider.with_context(crate::native::Work::new(meter.original())?);
+            let filter = crate::FollowFilter::default();
+            let mut anchor = Some(receipt.commit_id);
+            assert!(
+                provider
+                    .next_checked_record(&path, &mut cursor, &mut anchor, &filter)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                provider
+                    .next_follow_update(&path, &mut cursor, &mut anchor, &filter)
+                    .await
+                    .is_err(),
+                "progress must not bypass the original lookup refusal"
+            );
+        }
         meter.assert_refunded();
     }
     Ok(())

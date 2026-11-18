@@ -3,7 +3,7 @@ index 62a5dc369dd..de2ae5138e8 100644
 --- a/rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs
 +++ b/rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs
 @@ -108,7 +108,7 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
-     let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+     let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
      let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
          .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
 -    let io = PreparationIo::from_native_work(&work.invocation_window()?)?;

@@ -266,12 +266,12 @@ mod tests {
                             &cancel,
                         )
                         .map_err(|(error, _)| error)?;
-                        let baseline = original.live_allocation_bytes();
+                        let baseline = original.live_allocation_bytes().unwrap();
                         let value = RetainedArc::new(
                             73_u64,
                             &mut KernelAccounting::native(&original, &cancel),
                         )?;
-                        let funded = original.live_allocation_bytes();
+                        let funded = original.live_allocation_bytes().unwrap();
                         assert!(funded > baseline);
                         let mut strong = [Some(value.clone()), Some(value)];
                         let mut weak = [
@@ -301,7 +301,7 @@ mod tests {
                                 );
                             }
                             assert_eq!(
-                                original.live_allocation_bytes(),
+                                original.live_allocation_bytes().unwrap(),
                                 if step == 3 { baseline } else { funded },
                                 "funding mismatch for retirement order {order:?}, step {step}"
                             );

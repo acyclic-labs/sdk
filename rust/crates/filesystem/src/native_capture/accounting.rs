@@ -17,15 +17,18 @@ impl CaptureWorkScope {
     pub(super) fn new(
         native: &crate::NativeMaterializationWork,
     ) -> Result<Self, OperationFailure<CaptureError>> {
-        let custody = crate::demand::CaptureTransientCustody::new_native(native)
-            .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
+        let custody =
+            crate::demand::CaptureTransientCustody::new_native(native).map_err(|error| {
+                OperationFailure::observed(CaptureError::from(error), native.receipt())
+            })?;
         // Capture is also a standalone entry point: metered native I/O cannot
         // depend on a previous mount or materialization warming the services.
-        acyclic_native_runtime::initialize_native_io_services()
-            .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
-        let view = native
-            .with_capture_custody(&custody)
-            .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
+        acyclic_native_runtime::initialize_native_io_services().map_err(|error| {
+            OperationFailure::observed(CaptureError::from(error), native.receipt())
+        })?;
+        let view = native.with_capture_custody(&custody).map_err(|error| {
+            OperationFailure::observed(CaptureError::from(error), native.receipt())
+        })?;
         Ok(Self {
             native: view,
             custody: Some(custody),
@@ -51,13 +54,11 @@ pub(super) fn capture_scope_result<T>(
         .admit(WorkCounters::UNCHARGED)
         .map_err(CaptureError::from);
     let completed = scope.native.receipt();
-    result
-        .and_then(|value| released.and(checked).map(|()| value))
-        .map(|value| OperationReceipt {
-            value,
-            work: completed,
-        })
-        .map_err(|error| OperationFailure::new(error, completed))
+    crate::performance::finish_measured(
+        result.and_then(|value| released.and(checked).map(|()| value)),
+        completed,
+        CaptureError::from,
+    )
 }
 
 pub(super) fn capture_demand_error(error: DemandError) -> CaptureError {

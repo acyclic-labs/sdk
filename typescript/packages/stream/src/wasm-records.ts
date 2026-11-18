@@ -1,3 +1,4 @@
+import { validateByteLimit } from "@acyclic-labs/core";
 import { fromBinary } from "@bufbuild/protobuf";
 import type { WasmOpened, WasmProviderRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
@@ -63,9 +64,7 @@ export function wasmRecords(
   operation: "read" | "follow" | "session",
   read?: ReadOptions, signal?: AbortSignal, maximumResponseBytes?: number,
 ): Opened {
-  if (maximumResponseBytes !== undefined && (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1)) {
-    throw new RangeError("maximumResponseBytes must be a positive safe integer");
-  }
+  validateByteLimit(maximumResponseBytes, "maximumResponseBytes");
   return new Opened(async signal => {
     let owned: Awaited<ReturnType<typeof openWasmCursor>> | undefined;
     try {

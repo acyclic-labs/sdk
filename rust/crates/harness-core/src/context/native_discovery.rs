@@ -23,7 +23,7 @@ pub type DiscoveryView = acyclic_fs::LazyWorkspace<
 /// belongs to; the catalog as a whole is bounded only by its caller's limits.
 #[doc(hidden)]
 pub fn native_work(cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
-    NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, cancellation)
+    NativeMaterializationWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, cancellation)
         .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })
 }
 

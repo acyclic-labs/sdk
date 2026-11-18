@@ -378,9 +378,9 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
     {
         let cancel = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: 1_000_000,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &cancel,
         )
@@ -394,22 +394,22 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
                 ToolRegistry::default(),
             ))
         };
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes()?;
         let bound = configuration()?.into_step_binding(Some(&io))?;
-        assert!(work.live_allocation_bytes() > before);
+        assert!(work.live_allocation_bytes()? > before);
         drop(bound);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         let occupied = work.claim(
             work.remaining()?.peak_allocation_bytes,
             1,
-            acyclic_fs::WorkCounters::UNCHARGED,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
         )?;
         let refused = configuration()?.into_step_binding(Some(&io));
         assert!(matches!(
             refused,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded {
+                    acyclic_fs_work::performance::WorkError::BudgetExceeded {
                         counter: "peak_allocation_bytes",
                         ..
                     }
@@ -418,13 +418,13 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             })
         ));
         drop(occupied);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         cancel.cancel();
         let refused = configuration()?.into_step_binding(Some(&io));
         assert!(
             matches!(refused, Err(ref error) if error.code() == crate::wire::ErrorCode::Cancelled)
         );
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
     }
     Ok(())
 }

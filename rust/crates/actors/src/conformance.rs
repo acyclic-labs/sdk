@@ -15,7 +15,7 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, CommitCondition, CommitEffect, CommitMutation, IdempotencyKey,
-    ProviderPlatform, StreamError, StreamPath, StreamProvider,
+    ProviderPlatform, StreamCategory, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryFutureExt as _;
@@ -87,9 +87,6 @@ pub trait Backend: ProviderPlatform {
     /// Stop and restart the host; the next placement takes a new epoch.
     fn restart(&self) -> BoxProviderFuture<'_, std::result::Result<(), Error>>;
 }
-
-/// Compatibility spelling for the same backend contract.
-pub use Backend as Target;
 
 /// Register the complete suite using an async factory for a fresh running host.
 /// The backend must keep every runtime and disposable storage resource alive.
@@ -365,7 +362,7 @@ async fn observe<P: StreamProvider + ?Sized>(
     count: usize,
     budget_ms: u64,
 ) -> Result<Vec<String>, Failure> {
-    let mut deadline = clock.sleep_until(clock.now_unix_ms().saturating_add(budget_ms));
+    let mut deadline = clock.sleep_until(clock.now_unix_millis().saturating_add(budget_ms));
     request.when_absent = acyclic_stream::WhenAbsent::Wait;
     let mut follow = provider
         .follow(request)
@@ -516,9 +513,9 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         fired: &[&str],
     ) -> Result<(), Failure> {
         let clock = self.target.clock();
-        let due = clock.now_unix_ms() >= deadline;
+        let due = clock.now_unix_millis() >= deadline;
         let observed = self.outbox(pending.len().max(fired.len())).await?;
-        let before = clock.now_unix_ms() < deadline;
+        let before = clock.now_unix_millis() < deadline;
         if (observed == pending && !due) || (observed == fired && !before) {
             return Ok(());
         }
@@ -710,7 +707,7 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
 /// The separate activation root lets this check drive the actual Store without
 /// racing an already-running host's placement of the new actors.
 pub async fn fork_uniform<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     let store = Store::new(provider, root);
@@ -891,7 +888,7 @@ impl Handler for BindsRequests {
 /// A pre-bound capability bridge admits the first delivery, with a distinct
 /// request per attempt, and refuses every request after its attempt finishes.
 pub async fn request_ledger<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     let suite = Isolated::new(provider, root, "request-ledger")?;
@@ -942,7 +939,7 @@ struct Isolated<P: StreamProvider + ?Sized> {
 
 impl<P: StreamProvider + ?Sized> Isolated<P> {
     fn new(
-        provider: std::sync::Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         root: StreamPath,
         case: &'static str,
     ) -> Result<Self, Failure> {
@@ -1109,7 +1106,7 @@ fn under(root: &StreamPath, leaf: &str) -> Result<StreamPath, Error> {
 /// an explicit per-actor placement command moves an actor's fence, a deposed
 /// node never claims back, and a fork child gets its own first command.
 pub async fn placement<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     let lab = Isolated::new(provider, root, "placement")?;
@@ -1236,7 +1233,7 @@ pub async fn placement<P: StreamProvider + ?Sized>(
 /// the provider's authority time and nothing is published. The same answers
 /// for an alarm the authority holds due are consumed (the positive control).
 pub async fn early_alarm<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     // The node starts at the Unix epoch, behind any authority, then jumps
@@ -1557,7 +1554,7 @@ async fn lineage<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failu
 
 /// One operation survives queued retries, pause, restart and a lost response.
 /// Both invocation and ordinary sends run through the original Package.
-async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn invoked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     use crate::invocation::Invocation;
     let mut fixture = Fixture::create(target, run, "invoked").await?;
     fixture.send("clear").await?;
@@ -1588,7 +1585,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     .map_err(Error::from)?;
     if !matches!(
         target.store().enqueue_invoke(&changed).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("operation accepted changed request bytes".into());
     }
@@ -1620,7 +1617,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     }
     if !matches!(
         target.store().enqueue_invoke(&changed).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("completed operation accepted changed bytes".into());
     }
@@ -1813,7 +1810,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
 
 /// Every backend uses the same reservation accounting and generation fences.
 /// Expiry is a logical fence, never an assertion of external execution death.
-async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn reserved<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     use crate::reservation::{Decision, OwnerEvidence, Pool};
     let mut fixture = Fixture::create(target, run, "reserved").await?;
     fixture.send("pool 2").await?;
@@ -1829,7 +1826,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
         Bytes::from_static(b"admitted-owner-proof"),
     )
     .map_err(Error::from)?;
-    let deadline = target.clock().now_unix_ms().saturating_add(BUDGET_MS);
+    let deadline = target.clock().now_unix_millis().saturating_add(BUDGET_MS);
     let first_id = Bytes::from_static(b"first");
     let first = pool
         .reserve(2, first_id.clone(), owner.clone(), deadline)
@@ -1857,7 +1854,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
         return fixture.violation("grant released a different pool actor".into());
     }
     let another_root = Store::new(
-        std::sync::Arc::clone(target.store().provider()),
+        target.store().provider().clone(),
         StreamPath::new(format!("{}/other-root", target.store().root())).map_err(Error::from)?,
     );
     if first_grant.state_path() != &target.store().path(&fixture.actor)?
@@ -1886,7 +1883,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     if !matches!(
         pool.reserve(1, first_id.clone(), owner.clone(), deadline)
             .await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("reserve accepted changed units under one request id".into());
     }
@@ -1897,7 +1894,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     .map_err(Error::from)?;
     if !matches!(
         pool.reserve(2, first_id.clone(), another, deadline).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("reserve accepted changed owner evidence".into());
     }
@@ -1951,7 +1948,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
             2,
             Bytes::from_static(b"third"),
             owner.clone(),
-            target.clock().now_unix_ms().saturating_add(BUDGET_MS),
+            target.clock().now_unix_millis().saturating_add(BUDGET_MS),
         )
         .await?;
     let Decision::Granted(third_grant) = third.decision() else {
@@ -1971,7 +1968,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
 }
 
 /// Observe only committed checkpoint records; this does not poll or advance work.
-async fn wait_pool_used<T: Target + ?Sized>(
+async fn wait_pool_used<T: Backend + ?Sized>(
     fixture: &Fixture<'_, T>,
     expected: u64,
 ) -> Result<(), Failure> {
@@ -2022,7 +2019,7 @@ async fn wait_pool_used<T: Target + ?Sized>(
 
 /// A committed input cut is observed through the same original state stream.
 /// Waiting neither executes a paused input nor weakens its source anchor.
-async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn applied<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut fixture = Fixture::create(target, run, "applied").await?;
     fixture.send("emit").await?;
     fixture.expect(&["r0"]).await?;
@@ -2083,7 +2080,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
                 AppliedCut::through("inbox".into(), fixture.inbox.clone(), &foreign_input)?
             )
             .await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::PrefixNotRetained
+        Err(Error::Stream(error)) if error.category() == StreamCategory::PrefixNotRetained
     ) {
         return fixture.violation("a consumed cursor accepted a different input history".into());
     }
@@ -2092,7 +2089,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
 
 /// A later control interrupts the current handler without consuming the
 /// intervening record or the control. Restart preserves all three cursors.
-async fn interrupted<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn interrupted<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut actor = Fixture::create(target, run, "interrupted").await?;
     actor.send("wait").await?;
     actor.send("emit").await?;

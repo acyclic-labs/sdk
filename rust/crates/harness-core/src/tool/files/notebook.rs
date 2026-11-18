@@ -32,7 +32,7 @@ where
         let decoded = io.decode_seed(
             seed,
             source.as_bytes(),
-            crate::executor::json::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::NONE,
             crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES,
             crate::wire::ErrorCode::Invalid,
         )?;
@@ -53,7 +53,7 @@ where
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,
-            Some(crate::executor::json::JsonValueSchema::None),
+            Some(crate::executor::json::JsonValueSchema::NONE),
             &mut |_| Ok(()),
         )?,
         _hold: None,

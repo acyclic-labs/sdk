@@ -36,7 +36,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 (200, RESPONSE.into()),
             ])?;
             let work = NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -156,7 +156,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 .iter()
                 .filter(|request| request.url.ends_with("/responses"))
             {
-                let body = crate::json(&request.body)?;
+                let body = acyclic_harness_provider_response::json(&request.body)?;
                 assert_eq!(body["instructions"], "system");
                 assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
                 assert_eq!(body["store"], false);
@@ -181,8 +181,11 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                         .any(|bytes| bytes == continuity.as_bytes()),
                     "native bytes survive the request serializer"
                 );
-                let body = crate::json(&requests[index].body)?;
-                assert_eq!(body["input"][1], crate::json(continuity.as_bytes())?);
+                let body = acyclic_harness_provider_response::json(&requests[index].body)?;
+                assert_eq!(
+                    body["input"][1],
+                    acyclic_harness_provider_response::json(continuity.as_bytes())?
+                );
                 assert_eq!(body["input"][2]["type"], "function_call");
                 assert_eq!(body["input"][3]["type"], "function_call_output");
             }

@@ -13,8 +13,20 @@ fn acting() -> bool {
     Path::new(MARKER).exists()
 }
 
+/// The SDK's repository in a consumer's runfiles, as `isolated_test` names it there.
+const EXTERNAL_SOURCE: &str = "../acyclic_sdk+";
+
+/// Run by the runner, the case resolves SDK files from the SDK's runfiles repository, not the
+/// consuming workspace's directory the runner starts in.
 #[test]
-fn fixture_selected() {}
+fn fixture_selected() {
+    if acting() {
+        assert_eq!(
+            env::var_os("ACYCLIC_TEST_SOURCE_ROOT").map(std::path::PathBuf::from),
+            Some(env::current_dir().unwrap().join(EXTERNAL_SOURCE))
+        );
+    }
+}
 
 #[test]
 fn fixture_excluded() {
@@ -42,7 +54,10 @@ fn the_runner_selects_cases_from_its_arguments() {
         .env("ACYCLIC_TEST_BINARY", env::current_exe().unwrap())
         .env("ACYCLIC_TEST_ID", "arguments")
         .env("ACYCLIC_TEST_PACKAGE", &dir)
+        .env("ACYCLIC_TEST_SOURCE", EXTERNAL_SOURCE)
         .env("ACYCLIC_TEST_LIMIT_SECONDS", "10")
+        .env("ACYCLIC_TEST_TEMP_ROOT", "memory")
+        .env("ACYCLIC_TEST_CPUS", "1")
         .env("TEST_TMPDIR", &dir)
         .env_remove("TESTBRIDGE_TEST_ONLY")
         .current_dir(&dir)

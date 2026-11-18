@@ -50,7 +50,9 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                     .then(|| crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel))
                     .transpose()
                     .map_err(|(error, _)| error)?;
-                let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
+                let baseline = original
+                    .as_ref()
+                    .map(|work| work.live_allocation_bytes().unwrap());
                 let observed = match (&original, exact) {
                     (Some(work), false) => workspace.head(work, &cancel).await?,
                     (Some(work), true) => workspace.generation(id, work, &cancel).await?,
@@ -119,8 +121,8 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                 drop((account, workspace));
                 close_local(fs).await?;
                 if let Some(work) = &original {
-                    work.receipt().verify(WorkBudget::UNBOUNDED)?;
-                    assert_eq!(Some(work.live_allocation_bytes()), baseline);
+                    work.receipt().unwrap().verify(WorkBudget::UNBOUNDED)?;
+                    assert_eq!(Some(work.live_allocation_bytes().unwrap()), baseline);
                 }
             }
         }
@@ -306,7 +308,7 @@ async fn a_publication_straddling_an_epoch_switch_stays_retained() -> Result<(),
         let collection = fs.local_collection();
         // A merge join retains its source parent, then its merged closure:
         // the second retain is the one that straddles.
-        let pause = epoch.hooks.pause_at(2);
+        let pause = epoch.hooks.pause_at(2).await;
         let join = plan.apply(
             ApplyOptions {
                 if_target: plan.target_head(),
@@ -398,7 +400,7 @@ async fn a_dropped_publication_never_holds_a_collection() -> Result<(), Box<dyn 
     main.write_text("/kept.txt", "kept").await?;
     let epoch = fs.local_epoch();
     let collection = fs.local_collection();
-    let _pause = epoch.hooks.pause();
+    let _pause = epoch.hooks.pause().await;
     let mut abandoned = Box::pin(main.write_text("/abandoned.txt", "never published"));
     tokio::select! {
         _ = &mut abandoned => return Err("the paused publication finished".into()),
@@ -577,7 +579,7 @@ async fn a_publication_during_an_epoch_switch_never_waits_on_the_collector()
     let second = unbounded!(fs, create_workspace("second"))?;
     let epoch = fs.local_epoch();
     let collection = fs.local_collection();
-    let pause = epoch.hooks.pause();
+    let pause = epoch.hooks.pause().await;
     let in_flight = first.write_text("/in-flight.txt", "admitted before the switch");
     let collector = async {
         epoch.hooks.retained.notified().await;
@@ -626,7 +628,7 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
     let main = unbounded!(fs, create_workspace("repo"))?;
     let epoch = fs.local_epoch();
     let collection = fs.local_collection();
-    let pause = epoch.hooks.pause();
+    let pause = epoch.hooks.pause().await;
     let in_flight = main.write_text("/in-flight.txt", "retained under epoch 0");
     let collector = async {
         epoch.hooks.retained.notified().await;

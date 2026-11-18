@@ -27,10 +27,12 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness:acyclic_harness",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//prost-0.14.4",
@@ -45,6 +47,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

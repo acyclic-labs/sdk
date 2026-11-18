@@ -7,19 +7,22 @@
     reason = "test fixtures use explicit fatal assertions to keep exhaustive state-machine cases readable"
 )]
 
-use acyclic_fs::{
-    Digest, GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
-    MaterializationError, MaterializationIntent, MaterializationJournal,
-    MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
-    MaterializationPreimage, MaterializationRecovery, OperationId, OperationWindowCoordinator,
-    OperationWindowError, OperationWindowFinish, OperationWindowPhase, OperationWindowSnapshot,
-    OperationWindowStore, WorkspaceId,
-};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::sync::Barrier;
+use {
+    acyclic_fs::{
+        GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
+        MaterializationError, MaterializationIntent, MaterializationJournal,
+        MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
+        MaterializationPreimage, MaterializationRecovery, OperationWindowCoordinator,
+        OperationWindowError, OperationWindowFinish, OperationWindowPhase, OperationWindowSnapshot,
+        OperationWindowStore, WorkspaceId,
+    },
+    acyclic_fs_format::identity::{Digest, OperationId},
+};
 
 fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
@@ -32,8 +35,9 @@ fn permit()
 
 use acyclic_fs as sdk;
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork, NativeTreeMaterializationBackend, WorkBudget,
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationBackend},
+    acyclic_fs_work::performance::WorkBudget,
 };
 #[path = "../src/materializer/memory.rs"]
 mod memory;

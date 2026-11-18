@@ -40,10 +40,10 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
             for native in [false, true] {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let budget =
-                    acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+                    acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
                 let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let baseline = work.live_allocation_bytes();
+                let baseline = work.live_allocation_bytes()?;
                 let io = if native {
                     PreparationIo::from_native_work(&work)?
                 } else {
@@ -62,12 +62,12 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
                     "accepted malformed {pointer}"
                 );
                 assert!(
-                    physical.bytes_max <= io.receipt().peak_allocation_bytes,
+                    physical.bytes_max <= io.receipt()?.peak_allocation_bytes,
                     "unfunded diagnostic at {pointer}: {physical:?}"
                 );
                 assert_eq!(io.owned_bytes()?, 0);
                 drop(io);
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes()?, baseline);
             }
         }
     }
@@ -90,10 +90,10 @@ fn check_scratch_control<T: PreparationRecord + Serialize>(value: &T) -> Result<
     let bytes = crate::contract::canonical_json_bytes(value)?;
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -117,7 +117,7 @@ fn check_scratch_control<T: PreparationRecord + Serialize>(value: &T) -> Result<
         drop(hold);
         assert_eq!(io.owned_bytes()?, 0);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -149,10 +149,11 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
             let bytes =
                 serde_json::to_vec(&wire).map_err(|error| Error::Invalid(error.to_string()))?;
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let io = if native {
                 PreparationIo::from_native_work(&work)?
             } else {
@@ -168,7 +169,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
             });
             let result = result.ok_or_else(|| invalid(None))?;
             assert_eq!(result.is_ok(), !malformed);
-            let peak = io.receipt().peak_allocation_bytes;
+            let peak = io.receipt()?.peak_allocation_bytes;
             assert!(physical.count_total > 0);
             assert!(
                 physical.bytes_max <= peak,
@@ -221,7 +222,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
                     );
                 });
                 let (decoded, hold) = result.ok_or_else(|| invalid(None))??;
-                assert!(physical.bytes_max <= work.receipt().peak_allocation_bytes - baseline);
+                assert!(physical.bytes_max <= work.receipt()?.peak_allocation_bytes - baseline);
                 let funded = i64::try_from(hold.bytes())
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 assert!(physical.bytes_current <= funded);
@@ -230,7 +231,7 @@ fn check_decode_with_field<T: PreparationRecord + Serialize>(
                 assert_eq!(io.owned_bytes()?, 0);
             }
             drop(io);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
@@ -434,7 +435,8 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
         .await?;
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = if native {

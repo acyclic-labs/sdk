@@ -270,33 +270,33 @@ impl Index {
         Ok(offset)
     }
 
-    fn occupy_spill(&mut self, offset: u64, length: u64) {
+    fn occupy_spill(&mut self, offset: u64, length: u64) -> Result<(), ObjectStoreError> {
         if length == 0 {
-            return;
+            return Ok(());
         }
         let end = offset
             .checked_add(length)
-            .expect("spill range checked before physical write");
+            .ok_or(crate::WorkError::Overflow)?;
         if offset >= self.spill_end {
             if offset > self.spill_end {
                 self.free.insert((offset - self.spill_end, self.spill_end));
             }
             self.spill_end = end;
-            return;
+            return Ok(());
         }
         let &(available, start) = self
             .free
             .range((length, 0)..)
             .next()
-            .expect("exclusive spill lease retains the selected free span");
-        assert_eq!(
-            start, offset,
-            "selected spill span changed before completion"
-        );
+            .ok_or(ObjectStoreError::Corrupt)?;
+        if start != offset {
+            return Err(ObjectStoreError::Corrupt);
+        }
         self.free.remove(&(available, start));
         if available > length {
             self.free.insert((available - length, end));
         }
+        Ok(())
     }
 
     /// Neighboring live extents identify both bordering holes, so a second
@@ -343,8 +343,8 @@ impl Index {
         victims: &[(ObjectId, OwnedBytes)],
         mut offset: u64,
         length: u64,
-    ) {
-        self.occupy_spill(offset, length);
+    ) -> Result<(), ObjectStoreError> {
+        self.occupy_spill(offset, length)?;
         for (object_id, bytes) in victims {
             let stored_length = byte_length(bytes);
             if let Some(staged) = self.objects.get_mut(object_id) {
@@ -365,6 +365,7 @@ impl Index {
             }
             offset = offset.saturating_add(stored_length);
         }
+        Ok(())
     }
 
     /// Forgets one object the durable provider has acknowledged, and
@@ -398,6 +399,58 @@ impl Index {
 
 #[cfg(test)]
 #[test]
+fn invalid_spill_ranges_leave_the_index_unchanged() {
+    let mut index = Index::default();
+    let first = HashedObject::new(crate::ObjectKind::BlobChunk, vec![1; 64].into());
+    let second = HashedObject::new(crate::ObjectKind::BlobChunk, vec![2; 64].into());
+    let pending = HashedObject::new(crate::ObjectKind::BlobChunk, vec![3; 8].into());
+    let victims = [
+        (first.object_id(), first.stored_bytes().clone()),
+        (second.object_id(), second.stored_bytes().clone()),
+    ];
+    index.admit_resident(first.clone()).unwrap();
+    index.admit_resident(second.clone()).unwrap();
+    index.order.clear();
+    index.mark_spilled(&victims, 0, 128).unwrap();
+    index.remove(first.object_id());
+    index.admit_resident(pending.clone()).unwrap();
+    let free = index.free.clone();
+    let spilled = index.spilled.clone();
+    let order = index.order.clone();
+    let resident_bytes = index.resident_bytes;
+    let spill_end = index.spill_end;
+    for (offset, length) in [(1, 128), (1, 8)] {
+        assert!(matches!(
+            index.mark_spilled(
+                &[(pending.object_id(), pending.stored_bytes().clone())],
+                offset,
+                length
+            ),
+            Err(ObjectStoreError::Corrupt)
+        ));
+        assert_eq!(index.free, free);
+        assert_eq!(index.spilled, spilled);
+        assert_eq!(index.order, order);
+        assert_eq!(index.resident_bytes, resident_bytes);
+        assert_eq!(index.spill_end, spill_end);
+        let Some(Staged::Resident { object, .. }) = index.objects.get(&pending.object_id()) else {
+            panic!("pending object lost its resident state");
+        };
+        assert_eq!(object.stored_bytes(), pending.stored_bytes());
+        assert_eq!(index.objects.len(), 2);
+        assert!(matches!(
+            index.objects.get(&second.object_id()),
+            Some(Staged::Spilled {
+                offset: 64,
+                length: 64,
+                stored_length: 64
+            })
+        ));
+    }
+}
+
+#[cfg(test)]
+#[test]
 fn free_range_collection_finishes_while_a_producer_keeps_coalescing_holes() {
     for erase_budget in [false, true] {
         let mut index = Index::default();
@@ -411,7 +464,7 @@ fn free_range_collection_finishes_while_a_producer_keeps_coalescing_holes() {
             index.admit_resident(object).unwrap();
         }
         index.order.clear();
-        index.mark_spilled(&victims, 0, medium.len() as u64);
+        assert!(index.mark_spilled(&victims, 0, medium.len() as u64).is_ok());
         index.remove(victims[0].0);
         let mut pages = index.free_pages();
         let initial_work = pages.remaining;
@@ -529,7 +582,7 @@ fn spill_range_simulation_preserves_bytes_across_reuse_and_promotion() {
             medium.resize(medium.len().max(end), 0);
             medium[offset as usize..end].copy_from_slice(&bytes);
             let length = byte_length(&bytes);
-            index.mark_spilled(&[(id, bytes)], offset, length);
+            assert!(index.mark_spilled(&[(id, bytes)], offset, length).is_ok());
         }
         for object in &live {
             let id = object.object_id();

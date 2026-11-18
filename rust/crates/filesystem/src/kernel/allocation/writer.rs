@@ -14,7 +14,7 @@ pub(crate) struct ImageWriter<'w, 'a> {
 
 struct TextWork<'w, 'a>(&'w mut KernelAccounting<'a>);
 
-impl crate::text_merge::admitted::Work for TextWork<'_, '_> {
+impl acyclic_fs_base::text_merge::admitted::Work for TextWork<'_, '_> {
     type Allocation = super::retained::RetainedAllocation;
     type Error = FsError;
 
@@ -42,7 +42,7 @@ pub(crate) fn text_merge(
     theirs: &str,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<acyclic_stream::OwnedBytes, FsError> {
-    let output = crate::text_merge::admitted::merge(
+    let output = acyclic_fs_base::text_merge::admitted::merge(
         base,
         ours,
         theirs,
@@ -51,11 +51,11 @@ pub(crate) fn text_merge(
         &mut TextWork(accounting),
     )
     .map_err(|error| match error {
-        crate::text_merge::admitted::Error::Work(error) => error,
-        crate::text_merge::admitted::Error::Allocation(error) => {
+        acyclic_fs_base::text_merge::admitted::Error::Work(error) => error,
+        acyclic_fs_base::text_merge::admitted::Error::Allocation(error) => {
             FsError::EncodedAllocationFailed(error)
         }
-        crate::text_merge::admitted::Error::Overflow => WorkError::Overflow.into(),
+        acyclic_fs_base::text_merge::admitted::Error::Overflow => WorkError::Overflow.into(),
     })?;
     let bytes = super::retained::Retained {
         value: output.content.into_bytes(),

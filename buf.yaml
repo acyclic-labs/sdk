@@ -10,7 +10,7 @@ modules:
       - rust/crates/filesystem-wire/proto/protocol
   - path: rust/crates/inference/proto
   - path: rust/crates/harness-core/proto
-  - path: rust/crates/stream/proto
+  - path: rust/crates/stream-wire/proto
 lint:
   use:
     - STANDARD

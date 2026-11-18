@@ -1,0 +1,227 @@
+load(":node_test.bzl", "node_test")
+load("//:typescript_consumer.bzl", "typescript_consumer")
+
+node_test(
+    name = "objects_http_contract_test",
+    srcs = ["//:wasm_objects_node_modules"],
+    links = {"//:scripts/fixture-server.mjs": "wasm_objects_node_modules/scripts/fixture-server.mjs"},
+    entry = "wasm_objects_node_modules/node_modules/@acyclic-labs/objects/test/v1-conformance.mjs",
+    name_pattern = "Objects v1 HTTP serves every canonical route, typed errors and authentication",
+    preserve_symlinks = True,
+)
+
+node_test(
+    name = "machines_http2_test",
+    srcs = ["//:wasm_machines_node_modules"],
+    links = {"//:scripts/fixture-server.mjs": "wasm_machines_node_modules/scripts/fixture-server.mjs"},
+    entry = "wasm_machines_node_modules/node_modules/@acyclic-labs/machines/test/grpc.test.mjs",
+    name_pattern = "RPC bridge distinguishes server refusal from expired response custody",
+    preserve_symlinks = True,
+)
+
+typescript_consumer(
+    name = "package_entrypoints_types",
+    packages = {
+        "//:wasm_auth_node_modules": "@acyclic-labs/auth",
+        "//:wasm_actors_node_modules": "@acyclic-labs/actors",
+        "//:wasm_inference_node_modules": "@acyclic-labs/inference",
+    },
+)
+
+node_test(
+    name = "package_entrypoints_test",
+    srcs = [
+        "package-entrypoints.test.mjs",
+        ":package_entrypoints_types",
+        "//:wasm_auth_node_modules",
+        "//:wasm_actors_node_modules",
+        "//:wasm_inference_node_modules",
+    ],
+    entry = "scripts/policy/package-entrypoints.test.mjs",
+)
+
+# Source-only consumers query labels(srcs, ...) to resolve this immutable closure.
+# No executable build or installed npm package is needed.
+filegroup(
+    name = "source_policy_runtime",
+    srcs = [
+        "//:scripts/source-policy/check.mjs",
+        "//:scripts/source-policy/index.mjs",
+        "//:scripts/source-policy/project.mjs",
+        "@typescript_parser//:lib/typescript.js",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+node_test(
+    name = "wasm_metadata_test",
+    srcs = [
+        "wasm-metadata.test.mjs",
+        "//compatibility:native-families/actors.json",
+        "//compatibility:native-families/stream.json",
+        "//:scripts/bazel-executables.mjs",
+        "//:scripts/generated-bindings.mjs",
+        "//:scripts/native-family.mjs",
+        "//:scripts/native-family-metadata.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/proto-codegen.mjs",
+        "//:scripts/wasm-packages.mjs",
+    ],
+    entry = "scripts/policy/wasm-metadata.test.mjs",
+)
+
+node_test(
+    name = "source_policy_consumer_test",
+    srcs = [
+        "//:scripts/source-policy/index.mjs",
+        "//:scripts/source-policy/project.mjs",
+        "//:scripts/source-policy/consumer.test.mjs",
+        "//:scripts/source-policy/check.mjs",
+        "//:scripts/no-polling.fuzz.mjs",
+        "//:scripts/fixtures/no-polling/actor-project.json",
+        "//:scripts/fixtures/no-polling/powershell-comments.json",
+        "//:scripts/fixtures/no-polling/yaml-comments.json",
+        "//:scripts/fixtures/no-polling/yaml-scripts.json",
+        "//:scripts/fixtures/no-polling/shell-words.json",
+    ],
+    preserve_symlinks = True,
+    links = {
+        "@typescript_parser//:package.json": "node_modules/typescript-parser/package.json",
+        "@typescript_parser//:lib/typescript.js": "node_modules/typescript-parser/lib/typescript.js",
+    },
+    entry = "scripts/source-policy/consumer.test.mjs",
+)
+
+node_test(
+    name = "bazel_build_files_test",
+    srcs = [
+        "//:rust-toolchain.toml",
+        "//:scripts/bazel-build-files.mjs",
+        "//:scripts/bazel-build-files.test.mjs",
+        "//:scripts/bazel-executables.mjs",
+        "//:scripts/check-bazel-lockfile.mjs",
+        "//:scripts/generate-stream-token-operations.mjs",
+        "//:scripts/jsonc.mjs",
+        "//:scripts/protobuf-bindings.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+    ],
+    entry = "scripts/bazel-build-files.test.mjs",
+    name_pattern = "a patched crate uses crate-universe spokes",
+)
+
+node_test(
+    name = "workspace_model_test",
+    srcs = [
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-defaults.mjs",
+        "//:scripts/workspace-model.mjs",
+        "//:scripts/workspace-model.test.mjs",
+        "//:scripts/workspace-profile-metadata.mjs",
+    ],
+    entry = "scripts/workspace-model.test.mjs",
+)
+
+node_test(
+    name = "cargo_lock_test",
+    srcs = [
+        "//:scripts/check-cargo-lock.mjs",
+        "//:scripts/check-cargo-lock.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+    ],
+    entry = "scripts/check-cargo-lock.test.mjs",
+)
+
+test_suite(
+    name = "workspace_metadata_test",
+    tests = [":cargo_lock_test", ":workspace_model_test"],
+)
+
+node_test(
+    name = "test_features_test",
+    srcs = [
+        "//:scripts/policy-core.mjs",
+        "//:scripts/check-test-features.mjs",
+        "//:scripts/check-test-features.test.mjs",
+    ],
+    entry = "scripts/check-test-features.test.mjs",
+)
+
+node_test(
+    name = "test_support_test",
+    srcs = [
+        "//:scripts/check-test-support.mjs",
+        "//:scripts/check-test-support.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+        "//rust/crates/mcp:build.rs",
+    ],
+    entry = "scripts/check-test-support.test.mjs",
+    name_pattern = "missing forwarding fails",
+)
+
+node_test(
+    name = "native_lexer_test",
+    srcs = [
+        "//:scripts/source-policy/index.mjs",
+        "//:scripts/source-policy/native.test.mjs",
+        "//:scripts/graphcoder-conpty.cs",
+    ],
+    entry = "scripts/source-policy/native.test.mjs",
+)
+
+node_test(
+    name = "static_ci_test",
+    bun = "@bunjs//:bun",
+    srcs = [
+        "//:.gitattributes",
+        "//:scripts/static-ci.mjs",
+        "//:scripts/static-ci.test.mjs",
+        "//:scripts/check-incremental.mjs",
+        "//:scripts/static-policy.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/javascript-syntax.mjs",
+        "//:scripts/vendor/yaml.cjs",
+        "//:scripts/fixtures/static-ci-b7333953cb.mjs.txt",
+    ],
+    entry = "scripts/static-ci.test.mjs",
+)
+
+node_test(
+    name = "git_pins_test",
+    srcs = [
+        "git-pins.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/check-git-pins.mjs",
+    ],
+    entry = "scripts/policy/git-pins.test.mjs",
+)
+
+node_test(
+    name = "core_test",
+    srcs = [
+        "core.test.mjs",
+        "//:scripts/check-cargo-callers.mjs",
+        "//:scripts/check-incremental.mjs",
+        "//:scripts/fixtures/cargo-callers/recorded-log.txt",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-manifests.mjs",
+        "//:scripts/check-js-licenses.mjs",
+        "//:scripts/check-js-licenses.fuzz.mjs",
+        "//:scripts/test-support/license-graphs.mjs",
+    ],
+    entry = "scripts/policy/core.test.mjs",
+)
+
+node_test(
+    name = "rustfmt_test",
+    srcs = [
+        "//:rust-toolchain.toml",
+        "//:rustfmt.toml",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/qualify-rustfmt.mjs",
+        "//:scripts/qualify-rustfmt.test.mjs",
+    ],
+    entry = "scripts/qualify-rustfmt.test.mjs",
+)

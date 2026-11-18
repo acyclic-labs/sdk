@@ -1,12 +1,11 @@
+import { checkTypeScriptReferences, repositoryRoot as root } from "./policy-core.mjs";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { validateArchive } from "./validate-npm-package.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assembledDirectory = process.argv[2] === "--archives" ? resolve(process.argv[3]) : undefined;
 const packagesRoot = join(root, "typescript", "packages");
 const releasePackages = JSON.parse(await readFile(join(root, "release", "npm-packages.json"), "utf8"));
@@ -30,14 +29,7 @@ for (const entry of publishedPackageEntries) {
 const packageEntries = assembledDirectory ? publishedPackageEntries : workspacePackageEntries;
 const packageDirectories = packageEntries.map(item => item.directory);
 const rootManifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-const rootTsconfig = JSON.parse(await readFile(join(root, "tsconfig.json"), "utf8"));
-const checkedProjects = new Set(rootTsconfig.references.map(reference =>
-  relative(packagesRoot, resolve(root, reference.path)).split(sep).join("/")));
-for (const entry of packageEntries) {
-  if (!checkedProjects.has(entry.directory)) {
-    throw new Error(`TypeScript workspace package is absent from the root type check: ${entry.name}`);
-  }
-}
+checkTypeScriptReferences(root, packageDirectories);
 
 export const representativeExports = {
   "@acyclic-labs/auth": "credentialProvider",
@@ -268,7 +260,7 @@ const main = async () => {
       await writeFile(join(tempRoot, "actors-native-companion.mjs"),
         await readFile(join(packagesRoot, "actors/test/native-companion-installed.mjs")));
       const identity = join(tempRoot, "actors-test-identity.json");
-      await writeFile(identity, run("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"]));
+      await writeFile(identity, run("bazel", ["run", "//rust/crates/actors:conformance-certificate_example"]));
       const actorsEnv = { ...process.env, ACTORS_TLS_IDENTITY: identity };
       run("node", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });
       run("bun", ["actors-native-companion.mjs"], { cwd: tempRoot, env: actorsEnv });

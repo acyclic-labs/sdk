@@ -39,14 +39,14 @@ proptest! {
             1 => drop(observed.into_allocation()),
             _ => drop(observed.into_parts()),
         }
-        prop_assert_eq!(original.receipt().bytes_copied, completed);
+        prop_assert_eq!(original.receipt().unwrap().bytes_copied, completed);
         // Read remaining through the original work to include outstanding
         // root and resource reservations without creating another owner.
         let remaining = work.state(|state| state.remaining()).unwrap().bytes_copied;
         prop_assert_eq!(remaining, reserved - completed);
         if !cancel {
             work.charge(WorkCounters { bytes_copied: remaining, ..WorkCounters::UNCHARGED }).unwrap();
-            prop_assert_eq!(original.receipt().bytes_copied, reserved);
+            prop_assert_eq!(original.receipt().unwrap().bytes_copied, reserved);
         }
     }
 
@@ -74,10 +74,10 @@ proptest! {
                 2 => KernelAccounting::native(&child, &cancellation),
                 _ => KernelAccounting::native(&recheck, &cancellation),
             };
-            let before = accounting.spent();
+            let before = accounting.spent().unwrap();
             let result = name.clone_with_accounting(&mut accounting, &cancellation);
             prop_assert_eq!(result.is_err(), short);
-            let receipt = accounting.spent();
+            let receipt = accounting.spent().unwrap();
             prop_assert_eq!(receipt.bytes_copied - before.bytes_copied, if short { 0 } else { length as u64 });
             if short {
                 prop_assert_eq!(receipt.allocation_operations, before.allocation_operations);
@@ -162,7 +162,7 @@ proptest! {
         let decoded = decode_generation_root(&bytes, DecodeLimits::default(), |step| observed.observe(step)).unwrap();
         prop_assert_eq!(decoded, root);
         drop(observed.into_allocation());
-        prop_assert_eq!(original.receipt().bytes_copied, maximum);
+        prop_assert_eq!(original.receipt().unwrap().bytes_copied, maximum);
         prop_assert_eq!(work.remaining().unwrap().bytes_copied, 0);
     }
 }

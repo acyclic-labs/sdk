@@ -370,11 +370,15 @@ async fn indexed_reads_share_session_credit_and_count_delivered_records() -> Tes
             before: 4,
         });
         assert_eq!(
-            client.read(request).await.err(),
+            client
+                .read(request)
+                .await
+                .err()
+                .map(|error| error.category()),
             Some(if cancelled {
-                StreamError::Unavailable
+                StreamCategory::Unavailable
             } else {
-                StreamError::Capacity
+                StreamCategory::Capacity
             }),
         );
         assert_eq!(observed.allocations.load(Ordering::SeqCst), admissions);
@@ -520,8 +524,16 @@ async fn bounded_follow_delivers_exactly_the_read_range_and_closes() -> TestResu
         read("events/0", 0, 0)?,
     ] {
         assert_eq!(
-            client.read(request.clone()).await.err(),
-            provider.read(request).await.err()
+            client
+                .read(request.clone())
+                .await
+                .err()
+                .map(|error| error.category()),
+            provider
+                .read(request)
+                .await
+                .err()
+                .map(|error| error.category())
         );
     }
     assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
@@ -653,7 +665,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
     assert!(tails > 1, "repeated filter construction must be observable");
     let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
     let mut construction = acyclic_test_support::AllocationInfo::default();
-    let mut saved_owners = acyclic_test_support::AllocationInfo::default();
+    let mut saved_owners = acyclic_test_support::AllocationInfo::<()>::default();
     for (follow, predicate) in [(false, false), (false, true), (true, true), (true, false)] {
         let credential = acyclic_auth::testing::root(|block| {
             let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
@@ -1057,13 +1069,23 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
         for (index, record) in records.iter().enumerate() {
             let preserved = filter.preserves(record);
             assert_eq!(
-                preserved,
+                preserved
+                    .as_ref()
+                    .map(|value| *value)
+                    .map_err(|error| error.category()),
                 filter
                     .project(record.clone())
                     .map(|projected| projected == Some(record.clone()))
+                    .map_err(|error| error.category())
             );
             if index == 0 {
-                assert_eq!(preserved, Ok(complete));
+                assert_eq!(
+                    preserved
+                        .as_ref()
+                        .map(|value| *value)
+                        .map_err(|error| error.category()),
+                    Ok(complete)
+                );
             } else if index >= 2 {
                 assert_eq!(
                     preserved.map_err(|error| error.category()),
@@ -1199,8 +1221,15 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
     assert_eq!(fixture.counts.follows.load(Ordering::Relaxed), 1);
     for request in [read("absent", 0, 1)?, read("events", 5, 1)?] {
         assert_eq!(
-            StreamProvider::read(&client, request.clone()).await.err(),
-            provider.read(request).await.err()
+            StreamProvider::read(&client, request.clone())
+                .await
+                .err()
+                .map(|error| error.category()),
+            provider
+                .read(request)
+                .await
+                .err()
+                .map(|error| error.category())
         );
     }
     assert!(

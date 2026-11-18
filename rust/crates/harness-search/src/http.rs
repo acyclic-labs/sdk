@@ -52,11 +52,11 @@ impl HttpSearch {
     ) -> Result<(Vec<u8>, acyclic_fs::NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            work.admit(acyclic_fs::WorkCounters {
+            work.admit(acyclic_fs_work::performance::WorkCounters {
                 source_bytes_read: 1,
                 ..Default::default()
             })?;
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 backend_read_operations: 1,
                 bytes_copied: self.key.as_bytes().len() as u64,
                 items_examined: 1,
@@ -101,7 +101,7 @@ impl Exa {
         let _endpoint = crate::tool::edit::allocation(work, self.0.endpoint.as_str().len())?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 allocation_operations: 1,
                 ..Default::default()
             })?;
@@ -149,7 +149,7 @@ impl TinyFish {
         if let Some(work) = work {
             // Cloning and geometric growth of the serializer's private String.
             let bound = self.0.endpoint.as_str().len() + 7 + request.query.len() * 3;
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 allocation_operations: u64::from(usize::BITS - bound.leading_zeros()) + 1,
                 ..Default::default()
             })?;

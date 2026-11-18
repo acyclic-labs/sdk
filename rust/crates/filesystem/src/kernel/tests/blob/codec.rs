@@ -253,7 +253,7 @@ async fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
-    let before = accounting.spent();
+    let before = accounting.spent().unwrap();
     assert_eq!(before.allocation_operations, 1);
     let failure = (put_blob_page(&mut batch, &page, options, &mut accounting, &cancellation))
         .await
@@ -266,7 +266,7 @@ async fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
             maximum: 1,
         }) if observed > 1
     ));
-    assert_eq!(accounting.spent(), before);
+    assert_eq!(accounting.spent().unwrap(), before);
     batch.release(&mut accounting)?;
     Ok(())
 }

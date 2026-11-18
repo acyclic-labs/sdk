@@ -61,9 +61,9 @@ proptest! {
             let updated = next.unwrap_or(expected);
             for accounting in [&mut standalone, &mut borrowed] {
                 prop_assert_eq!(status(accounting.admit(delta)), expected_status.clone());
-                prop_assert_eq!(accounting.spent(), expected);
+                prop_assert_eq!(accounting.spent().unwrap(), expected);
                 prop_assert_eq!(status(accounting.charge(delta)), expected_status.clone());
-                prop_assert_eq!(accounting.spent(), updated);
+                prop_assert_eq!(accounting.spent().unwrap(), updated);
             }
             expected = updated;
         }

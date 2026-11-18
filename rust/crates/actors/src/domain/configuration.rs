@@ -30,7 +30,7 @@ impl Header {
 }
 
 /// Resource binding admitted by the canonical create/update validators.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = Binding::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = Binding::validate_admission)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
 #[ts(rename_all = "camelCase")]
@@ -111,8 +111,8 @@ impl Binding {
                 }
             }
             (Some(namespace), None) => {
-                crate::addressing::AccountId::new(&self.target_account)?;
-                crate::addressing::NamespaceId::new(namespace.as_bytes())?;
+                crate::addressing::validate_account(&self.target_account)?;
+                crate::addressing::NamespaceId::validate(namespace.as_bytes())?;
                 if self.resource
                     != format!(
                         "actors:/{}",
@@ -123,7 +123,7 @@ impl Binding {
                 }
             }
             (None, Some(worker)) => {
-                crate::addressing::AccountId::new(&self.target_account)?;
+                crate::addressing::validate_account(&self.target_account)?;
                 crate::addressing::validate_dns_label(worker.as_bytes())
                     .map_err(|_| DomainError::InvalidBinding)?;
                 if self.resource
@@ -138,11 +138,6 @@ impl Binding {
             (Some(_), Some(_)) => return Err(DomainError::InvalidBinding),
         }
         Ok(())
-    }
-
-    /// Re-checks a value admitted from an untrusted protobuf wire message
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        self.validate_admission()
     }
 
     /// Returns the binding name.
@@ -333,17 +328,7 @@ pub struct SubscriptionStart {
 fn parse_subscription_start(
     value: Option<subscription_start::StartProto>,
 ) -> Result<subscription_start::Start, DomainError> {
-    match value {
-        Some(subscription_start::StartProto::Cursor(cursor)) => {
-            Ok(subscription_start::Start::Cursor(cursor))
-        }
-        Some(subscription_start::StartProto::CurrentHead(true)) => Ok(
-            subscription_start::Start::CurrentHead(subscription_start::CurrentHeadMarker::new()),
-        ),
-        Some(subscription_start::StartProto::CurrentHead(false)) | None => {
-            Err(DomainError::InvalidSubscription)
-        }
-    }
+    value.ok_or(DomainError::InvalidSubscription)?.try_into()
 }
 
 pub mod subscription_start {
@@ -431,7 +416,7 @@ impl SubscriptionStart {
 }
 
 /// A subscription admitted by `validate_deployment` or `validate_add_subscription`.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_admission)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
 #[ts(rename_all = "camelCase")]
@@ -465,19 +450,10 @@ impl SubscriptionSpec {
     }
 
     fn validate_admission(&self) -> Result<(), DomainError> {
-        if self.subscription_id.is_empty()
-            || self.stream_path.is_empty()
-            || (self.start.cursor_value().is_none()
-                && self.start.current_head_value() != Some(true))
-        {
+        if self.subscription_id.is_empty() || self.stream_path.is_empty() {
             return Err(DomainError::InvalidSubscription);
         }
         Ok(())
-    }
-
-    /// Re-checks a value admitted from an untrusted protobuf wire message
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        self.validate_admission()
     }
 
     /// Returns the subscription identifier.

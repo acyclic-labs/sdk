@@ -11,7 +11,7 @@ struct Selection {
 
 impl PreparationRecord for Selection {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::AuthoredToolSelection
+        crate::executor::json::JsonValueSchema::AUTHORED_TOOL_SELECTION
     }
 }
 
@@ -57,7 +57,7 @@ impl StockExecution<'_> {
         context.model_turn = turn;
         let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.authored-call.v1");
         if let Some(io) = self.io {
-            io.preflight(acyclic_fs::WorkCounters {
+            io.preflight(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: (source.0.len() + source.1.len()) as u64 + 16,
                 ..Default::default()
             })?;
@@ -67,7 +67,7 @@ impl StockExecution<'_> {
             hash.update(text.as_bytes());
         }
         if let Some(io) = self.io {
-            io.spent(acyclic_fs::WorkCounters {
+            io.spent(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: (source.0.len() + source.1.len()) as u64 + 16,
                 ..Default::default()
             })?;

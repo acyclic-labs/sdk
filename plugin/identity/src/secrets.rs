@@ -231,7 +231,7 @@ pub(super) async fn execute(
 
 async fn read_stdin_value() -> Result<Zeroizing<String>, Error> {
     use tokio::io::AsyncReadExt as _;
-    let mut input = acyclic_native_runtime::stdin().map_err(|_| input_error())?;
+    let mut input = acyclic_native_stdin::stdin().map_err(|_| input_error())?;
     let mut value = Zeroizing::new(Vec::new());
     let mut chunk = Zeroizing::new([0; 8192]);
     loop {

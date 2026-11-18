@@ -166,14 +166,14 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let registry = slot.open(&directory, &mut &work)?;
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let same = slot.open(&directory, &mut &work)?;
     assert!(
-        crate::sync::native::Arc::ptr_eq(&registry, &same),
+        crate::native_sync::Arc::ptr_eq(&registry, &same),
         "each mount reopened the registry directory and lock"
     );
     assert_eq!(
-        work.receipt(),
+        work.receipt().unwrap(),
         before,
         "sharing re-traversed the registry path"
     );
@@ -192,7 +192,7 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
         )?;
         let guard = guard.unwrap();
         assert!(
-            crate::sync::native::Arc::ptr_eq(&registry, guard.registry_file.as_ref().unwrap()),
+            crate::native_sync::Arc::ptr_eq(&registry, guard.registry_file.as_ref().unwrap()),
             "destination guard owns a separate registry directory or lock"
         );
         guards.push(guard);
@@ -209,7 +209,10 @@ fn mount_guards_share_one_registry_directory_and_lock() -> Result<(), Box<dyn st
     // can hold this fixture's registry and counterfeit that failure.
     {
         let held = registry.lock(&mut &work)?;
-        assert!(fence_io::try_lock(&probe).is_err_and(|error| lock_is_contended(&error)));
+        assert!(
+            fence_io::try_lock(&probe)
+                .is_err_and(|error| acyclic_native_runtime::is_exclusive_lock_contention(&error))
+        );
         held.unlock(&mut &work)?;
     }
     fence_io::try_lock(&probe)?;

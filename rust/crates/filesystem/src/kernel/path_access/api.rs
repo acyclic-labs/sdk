@@ -20,7 +20,7 @@ pub async fn lookup_path<S: AsyncObjectStore>(
         None,
     )
     .await
-    .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(path_error(error), accounting.spent()))
 }
 
 /// Resolves one path and captures the exact semantic regions needed for a safe rebase.
@@ -45,7 +45,7 @@ pub async fn observe_path_async<S: AsyncObjectStore>(
     )
     .await
     .map(|result| result.0)
-    .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(path_error(error), accounting.spent()))
 }
 
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
@@ -265,5 +265,5 @@ pub(super) async fn lookup_path_queries_async<S: AsyncObjectStore>(
     )
     .await
     .map(|result| result.0)
-    .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(path_error(error), accounting.spent()))
 }

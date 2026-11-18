@@ -12,7 +12,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     /// When `streams` belongs to another backend owner.
     pub fn change_provider<P: crate::store::JournalProvider + ?Sized>(
         &self,
-        streams: Arc<P>,
+        streams: acyclic_stream::ProviderOwner<P>,
     ) -> Result<acyclic_fs::session::ChangeProvider<P, A, O>> {
         acyclic_fs::session::ChangeProvider::new(self.filesystem.clone(), streams)
             .map_err(|error| Error::Unauthorized(format!("tool output changes: {error}")))

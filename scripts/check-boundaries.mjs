@@ -1,12 +1,10 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, relative } from "node:path";
+import { repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
 
 import { assertByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const forbiddenContent = [
   /acyclic(?:[-_.:/]|\\)(?:internal|private)(?:[-_.:/\\]|$)/i,
   /(?:package|import)\s+["']?[^\s"']*(?:internal|private)[^\s"']*/i,
@@ -58,8 +56,7 @@ function inspect(path, content) {
 }
 
 async function main() {
-  const paths = execFileSync("git", ["ls-files", "-z"], { maxBuffer: Infinity, cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
-  for (const path of paths) {
+  for (const path of trackedFiles(root)) {
     try {
       const content = await readFile(join(root, path), "utf8");
       if (!content.includes("\u0000")) inspect(join(root, path), content);
@@ -70,4 +67,4 @@ async function main() {
   if (failures.length) { console.error(failures.join("\n")); process.exitCode = 1; }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (import.meta.main) await main();

@@ -19,17 +19,14 @@ use crate::{
     executor::ExecutionJournal,
     interaction::InteractionOutcome,
     resources::{GenerationRef, ProviderRef},
-    runtime::{ContentBindings, RuntimeScope},
-    tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
+    runtime::ContentBindings,
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{MemoryStream, StreamProvider};
-use serde::Deserialize;
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[cfg(test)]
 thread_local! {
@@ -128,9 +125,6 @@ pub struct MemoryHarnessStorage<
     maximum_file_bytes: Option<u64>,
 }
 
-mod listing;
-use listing::LocalListFilesTool;
-
 impl MemoryHarnessStorage {
     /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
     pub async fn new(agent: AgentId, maximum_file_bytes: impl Into<Option<u64>>) -> Result<Self> {
@@ -160,67 +154,6 @@ impl<
     O: AsyncObjectStore + 'static,
 > MemoryHarnessStorage<P, A, O>
 {
-    /// Builds an optional directory listing tool for explicit custom registration.
-    pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
-        limits.validate(&mut None)?;
-        if self
-            .maximum_file_bytes
-            .is_some_and(|maximum| limits.file_bytes.is_none_or(|limit| limit > maximum))
-        {
-            return Err(Error::Invalid(
-                "tool file limit exceeds the bound storage volume".into(),
-            ));
-        }
-        let implementation = Arc::new(LocalListFilesTool {
-            verifier: self.content_verifier.clone(),
-            volume: self.volume.clone(),
-            maximum_bytes: limits.render_bytes,
-            observed: tokio::sync::Mutex::new(BTreeMap::new()),
-        });
-        Ok(Tool {
-            hook_names: &[],
-            definition: ToolDefinition {
-                name: "acyclic.list_files".into(),
-                revision: "3".into(),
-                description: "List one bounded, generation-pinned page of the agent-private volume"
-                    .into(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "expected_generation": {"type": ["object", "null"]},
-                        "after": {"type": ["array", "null"], "items": {"type":"integer", "minimum":0, "maximum":255}},
-                        "maximum_entries": {"type": "integer", "minimum": 1, "maximum": u32::MAX}
-                    },
-                    "required": ["path", "maximum_entries"],
-                    "additionalProperties": false
-                }),
-                output_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "generation": {"type": "object"},
-                        "entries": {"type": "array", "items": {"type": "object"}},
-                        "next": {"type": ["array", "null"], "items":{"type":"integer","minimum":0,"maximum":255}}
-                    },
-                    "required": ["generation", "entries", "next"],
-                    "additionalProperties": false
-                }),
-                projection_schema: crate::tool::json_projection_schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "generation": {"type": "object"},
-                        "entries": {"type": "array", "items": {"type": "object"}},
-                        "next": {"type": ["array", "null"], "items":{"type":"integer","minimum":0,"maximum":255}}
-                    },
-                    "required": ["generation", "entries", "next"],
-                    "additionalProperties": false
-                })),
-            },
-            executor: implementation.clone(),
-            projection: implementation,
-        })
-    }
-
     /// Binds the canonical journal and files to caller-selected service providers.
     #[inline(never)]
     pub fn from_providers<'a>(

@@ -321,7 +321,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .filesystem
             .open_workspace(&name, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         if expected.is_some_and(|expected| workspace.id().into_bytes().as_slice() != expected) {
             return Err(Status::failed_precondition(
@@ -331,7 +331,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         workspace
             .bind_coarse_access(actions, &CancellationToken::new())
             .await
-            .map_err(|error| status(&error))
+            .map_err(|error| Status::from(&error))
     }
 
     fn source_provider(&self) -> Result<&Arc<dyn FilesystemSourceProvider<A, O>>, Status> {
@@ -350,7 +350,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 &workspace
                     .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(|failure| status(&failure.error))?
+                    .map_err(|failure| Status::from(&failure.error))?
                     .value,
             )),
             None => None,
@@ -382,7 +382,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         workspace
             .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|failure| status(&failure.error))
+            .map_err(|failure| Status::from(&failure.error))
             .map(|receipt| receipt.value)
     }
 
@@ -401,7 +401,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&WorkspaceError::from(failure.error)))?;
+            .map_err(|failure| Status::from(&WorkspaceError::from(failure.error)))?;
         if let Some(commit) = committed.value {
             let sequence = commit
                 .sequence
@@ -424,7 +424,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .filesystem
             .workspace_head_state(&target.volume, &mut accounting, &cancellation)
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|error| Status::from(&error))?;
         if current == expected {
             Ok(JoinTargetHead::Expected {
                 head,
@@ -435,7 +435,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 target
                     .generation(current, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(|failure| status(&failure.error))?
+                    .map_err(|failure| Status::from(&failure.error))?
                     .value,
             ))
         }
@@ -468,7 +468,6 @@ include!("wire_service/changes.rs");
 include!("wire_service/join_encoding.rs");
 include!("wire_service/output.rs");
 mod errors;
-use errors::status;
 mod mount;
 #[cfg(test)]
 mod mount_fixture;

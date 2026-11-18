@@ -1,6 +1,7 @@
 use super::*;
 use crate::NativeStreamProviderExt as _;
 use crate::StreamCategory;
+use acyclic_native_runtime::testing::drive;
 
 mod follows;
 mod headers;
@@ -14,8 +15,8 @@ fn cached_lease_result(
 ) {
     assert_eq!(observed, original, "retired receipt was re-executed");
     assert_eq!(
-        tail,
-        &Err(StreamError::NotFound),
+        tail.as_ref().map_err(|error| error.category()),
+        Err(StreamCategory::NotFound),
         "retry resurrected a durable path"
     );
 }
@@ -976,7 +977,7 @@ fn prepared_worker_retirement_ends_original_completion_without_publication()
 async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
 -> Result<(), Box<dyn std::error::Error>> {
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-    journal_lifecycle(&schedule, &mut boundaries, async {
+    drive(&schedule, &mut boundaries, |_| {}, async {
         for parked in [false, true] {
             let directory = tempfile::tempdir()?;
             let provider =
@@ -1056,7 +1057,7 @@ async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
         }
         Ok(())
     })
-    .await?
+    .await
 }
 
 #[test]
@@ -1071,7 +1072,7 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
         .build()?;
     runtime.block_on(async {
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-        journal_lifecycle(&schedule, &mut boundaries, async {
+        drive(&schedule, &mut boundaries, |_| {}, async {
             let directory = tempfile::tempdir()?;
             let provider =
                 LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -1114,7 +1115,7 @@ fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
             assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             Ok(())
         })
-        .await?
+        .await
     })
 }
 

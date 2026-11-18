@@ -81,13 +81,26 @@ isolated_test(
     name = "sdk_fixture_verification_test",
     binary = ":sdk_fixture_verification_test_cases",
     id = "sdk-fixture-verification",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "sdk_fixture_verification_test_full-cloud",
+    binary = ":sdk_fixture_verification_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "sdk-fixture-verification",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
     name = "fixture-model_cases",
     crate_root = "model.rs",
-    srcs = glob(["**/*.rs"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/sdk-docs:src/concrete_versions.rs",
         "//rust/crates/sdk-docs:src/concrete_versions/tests.rs",
         "//rust/crates/sdk-docs:src/projection.rs",
@@ -100,8 +113,9 @@ rust_test(
         "//rust/crates/sdk-docs:src/tests/scratch.rs",
         "//rust/crates/sdk-generation:src/parallel.rs",
         "//rust/crates/sdk-generation:src/shared_cache.rs",
+        "model.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    compile_data = [
         "//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json",
     ],
     edition = "2021",
@@ -132,7 +146,20 @@ isolated_test(
     name = "fixture-model",
     binary = ":fixture-model_cases",
     id = "sdk-fixture-verification::fixture-model",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "fixture-model_full-cloud",
+    binary = ":fixture-model_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "sdk-fixture-verification::fixture-model",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -141,6 +168,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

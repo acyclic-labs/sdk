@@ -136,16 +136,16 @@ fn native_batch_denial_keeps_its_actual_constructor_prefix()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     assert!(
         Machine::<AttributeFormat>::new(root, &keys, DecodeLimits::default(), &mut accounting)
             .is_err()
     );
-    assert_eq!(original.receipt().allocation_operations, 2);
-    assert_eq!(original.receipt().items_examined, 1);
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().allocation_operations, 2);
+    assert_eq!(original.receipt().unwrap().items_examined, 1);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 

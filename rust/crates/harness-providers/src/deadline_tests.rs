@@ -50,7 +50,7 @@ impl HttpTransport for Script {
                 .ok_or_else(|| crate::invalid("response was already consumed"))?
                 .await
                 .map_err(|_| {
-                    crate::transport_failure(
+                    acyclic_harness_provider_response::transport_failure(
                         false,
                         ModelTransportFailure::Interrupted,
                         "response producer disappeared",
@@ -284,7 +284,7 @@ fn native_deadline_timer_is_admitted_once_on_the_original_ledger() {
     runtime().block_on(async {
         let transport = crate::http::platform().unwrap();
         let work = Work::new(
-            acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap_or_else(|_| panic!("ledger"));

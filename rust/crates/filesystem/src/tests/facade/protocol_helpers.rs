@@ -17,7 +17,8 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
         (0, 64, b"LOCAL".as_slice(), b"REMOTE".as_slice(), true),
         (10, 12, b"local".as_slice(), b"remote".as_slice(), false),
     ] {
-        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut local =
+            open_checkout(&volume, CheckoutMode::tracking_transaction(), &cancel).await?;
         let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
         for (checkout, offset, bytes) in [
             (&mut local, local_offset, local_bytes),

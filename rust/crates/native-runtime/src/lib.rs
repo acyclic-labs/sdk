@@ -36,12 +36,6 @@ mod linux;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::{order_descriptor_once, sync_descriptor_once};
 #[cfg(not(target_arch = "wasm32"))]
-pub mod lines;
-#[cfg(not(target_arch = "wasm32"))]
-mod stdin;
-#[cfg(not(target_arch = "wasm32"))]
-pub use stdin::{Stdin, stdin};
-#[cfg(not(target_arch = "wasm32"))]
 mod output;
 #[cfg(not(target_arch = "wasm32"))]
 pub use output::InheritedOutput;
@@ -139,26 +133,22 @@ pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod file_lock;
 pub use file_lock::{FileLock, FileLockMode};
 mod recovery;
-pub use recovery::{LogFrame, LogTail, is_exclusive_lock_contention, recover_log_tail};
+pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};
 mod directory;
 pub use directory::remove_child_directory;
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
-mod command;
 #[cfg(windows)]
 mod executable;
 /// Host-authorized native execution capabilities and their OS enforcement.
 pub mod execution;
 mod service;
 mod shell;
-pub use command::ExecutableSearch;
-mod expansion;
-pub use expansion::{EnvironmentReference, expand_environment};
 pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
     process_output, process_status, spawn_service_process, take_service_ready_signal,
 };
-pub use shell::{host_command, platform_shell, shell_command};
+pub use shell::shell_command;
 mod meter;
 pub use meter::{
     NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
@@ -174,8 +164,6 @@ pub use wall_alarm::{AlarmCallback, AlarmWait, WallAlarm};
 mod blocking;
 mod blocking_future;
 pub mod cost;
-#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
-pub mod resources;
 mod task;
 pub use blocking_future::blocking_future;
 #[cfg(feature = "test-support")]
@@ -219,9 +207,6 @@ use health::{FileHealth, HealthOwner};
 
 #[cfg(test)]
 mod tests;
-
-/// Cross-platform process incarnation decisions and native identity queries.
-pub mod process_identity;
 
 /// Portable platform contracts are also available without native effects.
 pub use acyclic_host_platform::{paths, shell as shell_spec};

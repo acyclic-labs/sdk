@@ -1,19 +1,26 @@
 //! Cold-process native operations must use the production library graph.
 //! Unit-test accounting initializes IO and cannot establish this precondition.
 
-use acyclic_fs::kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath};
 use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode,
 };
-use acyclic_fs::{
-    AuthoredMutation, CancellationToken, CaptureOptions, CapturePolicy, Fs, HostPathReplacement,
-    Lifecycle, MaterializeOptions, NativeMaterializationWork, VolumeConfig, VolumeId, WorkBudget,
-    capture_baseline, capture_paths, capture_root_identity, capture_subtree, materialize_checkout,
-    materialize_checkout_paths, restore_checkout_host_path,
-};
 use std::path::Path;
+use {
+    acyclic_fs::kernel::{LogicalName, NameEncoding, NamespacePath},
+    acyclic_fs_format::metadata::FileMetadata,
+};
+use {
+    acyclic_fs::{
+        AuthoredMutation, CancellationToken, CaptureOptions, CapturePolicy, Fs,
+        HostPathReplacement, Lifecycle, MaterializeOptions, NativeMaterializationWork,
+        VolumeConfig, capture_baseline, capture_paths, capture_root_identity, capture_subtree,
+        materialize_checkout, materialize_checkout_paths, restore_checkout_host_path,
+    },
+    acyclic_fs_format::identity::VolumeId,
+    acyclic_fs_work::performance::WorkBudget,
+};
 
-const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(100_000, 64 * 1024 * 1024);
+const BUDGET: WorkBudget = acyclic_fs_work::performance::work_budget(100_000, 64 * 1024 * 1024);
 const MODE: &str = "ACYCLIC_NATIVE_IO_BOOTSTRAP";
 
 #[test]
@@ -116,7 +123,7 @@ async fn materialize_in_fresh_process(mode: &str) -> Result<(), Box<dyn std::err
         std::fs::read(output.path().join("file"))?,
         b"cold materialization"
     );
-    work.receipt().verify(BUDGET)?;
+    work.receipt()?.verify(BUDGET)?;
     Ok(())
 }
 

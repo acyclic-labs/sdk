@@ -40,10 +40,10 @@ fn owned_and_borrowed_standalone_permits_keep_the_exact_header_boundary() {
                 accounting.release_owned(&mut owner, 10).unwrap();
             }
             assert_eq!(
-                accounting.spent().bytes_encoded,
+                accounting.spent().unwrap().bytes_encoded,
                 if limit == 10 { 10 } else { 0 }
             );
-            assert_eq!(accounting.spent().allocation_operations, 1);
+            assert_eq!(accounting.spent().unwrap().allocation_operations, 1);
             assert_eq!(
                 accounting.remaining().unwrap().peak_allocation_bytes,
                 u64::MAX
@@ -76,7 +76,7 @@ fn funded_output_survives_finish_and_panic_returns_only_unperformed_credit() {
             } else {
                 root.clone()
             };
-            let baseline = root.live_allocation_bytes();
+            let baseline = root.live_allocation_bytes().unwrap();
             let mut accounting = allocation::KernelAccounting::native(&work, &cancellation);
             let operation = || {
                 super::super::encode_owned(&mut accounting, |observe, reserve| {
@@ -113,18 +113,18 @@ fn funded_output_survives_finish_and_panic_returns_only_unperformed_credit() {
             if action == 0 {
                 let (bytes, owner) = result.unwrap().unwrap();
                 assert_eq!(bytes, b"ACYFSFIL\x01\x00bytes");
-                assert_eq!(root.live_allocation_bytes(), baseline + 15);
+                assert_eq!(root.live_allocation_bytes().unwrap(), baseline + 15);
                 drop(bytes);
-                assert_eq!(root.live_allocation_bytes(), baseline + 15);
+                assert_eq!(root.live_allocation_bytes().unwrap(), baseline + 15);
                 drop(owner);
             } else if action == 1 {
                 assert!(result.is_err());
             } else {
                 assert!(result.unwrap().is_err());
             }
-            assert_eq!(root.live_allocation_bytes(), baseline);
+            assert_eq!(root.live_allocation_bytes().unwrap(), baseline);
             let completed = if action == 0 { 15 } else { 10 };
-            assert_eq!(root.receipt().bytes_encoded, completed);
+            assert_eq!(root.receipt().unwrap().bytes_encoded, completed);
             let remaining = work.state(|state| state.remaining()).unwrap();
             assert_eq!(remaining.bytes_encoded, 15 - completed);
         }

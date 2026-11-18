@@ -139,7 +139,8 @@ pub(super) fn path() -> Result<PathBuf, NativeMountError> {
 pub(super) fn with_directory<T>(
     operation: impl FnOnce(&Path) -> Result<T, NativeMountError>,
 ) -> Result<T, NativeMountError> {
-    #[cfg(all(test, loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
     {
@@ -177,7 +178,7 @@ where
 pub(super) struct Registry {
     pub(super) file: fence_io::MountLockFile,
     pub(super) directory: cap_std::fs::Dir,
-    admission: crate::sync::native::Mutex<()>,
+    admission: crate::native_sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for Registry {
@@ -195,7 +196,7 @@ impl std::fmt::Debug for Registry {
 pub(super) struct RegistryHold<'a> {
     file: &'a fence_io::MountLockFile,
     locked: bool,
-    _admitted: Option<crate::sync::native::MutexGuard<'a, ()>>,
+    _admitted: Option<crate::native_sync::MutexGuard<'a, ()>>,
 }
 
 impl Registry {
@@ -203,7 +204,7 @@ impl Registry {
         Self {
             file,
             directory,
-            admission: crate::sync::native::Mutex::new(()),
+            admission: crate::native_sync::Mutex::new(()),
         }
     }
 
@@ -216,7 +217,8 @@ impl Registry {
     where
         NativeMountError: From<W::Error>,
     {
-        #[cfg(all(test, loom, target_os = "linux"))]
+        #[cfg(test)]
+        #[cfg(all(loom, target_os = "linux"))]
         let admitted = (!super::disconnected::kernel::current()
             .is_some_and(|kernel| kernel.registry_admission_disabled()))
         .then(|| {
@@ -275,16 +277,14 @@ impl Drop for RegistryHold<'_> {
 /// registry between their threads explicitly.
 pub(super) fn shared<W: crate::native_host::NativeHostWork>(
     work: &mut W,
-) -> Result<crate::sync::native::Arc<Registry>, NativeMountError>
+) -> Result<crate::native_sync::Arc<Registry>, NativeMountError>
 where
     NativeMountError: From<W::Error>,
 {
     #[cfg(loom)]
     {
         let (directory, file) = open_with_directory(work)?;
-        return Ok(crate::sync::native::Arc::new(Registry::new(
-            directory, file,
-        )));
+        return Ok(crate::native_sync::Arc::new(Registry::new(directory, file)));
     }
     #[cfg(not(loom))]
     {

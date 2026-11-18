@@ -369,7 +369,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         ]
     }) {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = if native {
@@ -821,7 +821,7 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
         // guest reply on the same original native ledger.
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -929,35 +929,12 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     let operation = OperationId::new();
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let mut content = storage.content_bindings();
-    let host =
-        crate::filesystem::FilesystemHost::new(filesystem, content.volume.provider(), Some(&io))?;
-    let reader = crate::filesystem::FilesystemContentVerifier::new(
-        host,
-        &storage.verifier(),
-        storage.owner_scope(),
-        65536,
-        Some(&io),
-    )?;
-    reader.supports_native_directory_list(&content.volume, &work)?;
-    let unrelated = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    assert_eq!(
-        reader
-            .supports_native_directory_list(&content.volume, &unrelated)
-            .unwrap_err()
-            .code(),
-        crate::wire::ErrorCode::Unauthorized,
-    );
-    content.reader = reader;
+    let content = storage.content_bindings();
     let scope = RuntimeScope::new(
         Capabilities::new([
             "tool:call:code".into(),
@@ -975,9 +952,10 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         ..Bindings::local()
     }
     .build()?
-    .agent_context(&Capabilities::default(), content)?;
+    .agent_context(&Capabilities::default(), content)?
+    .with_execution_journal(journal.clone(), operation)?;
     executor = executor
-        .with_tool_authority(scope, policy)?
+        .with_tool_authority(task.scope().clone(), policy)?
         .with_task_context(&task, operation)?;
     let execution = StockExecution {
         io: Some(&io),
@@ -1031,6 +1009,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         .turn_outputs()
         .tool_results(operation)
         .expect("host tool-output locator");
+    let directory = format!("{}{directory}", crate::layers::OUTPUT_PATH);
     let select = format!(
         r#"import {{list, read}} from 'acyclic';
         const values = [];
@@ -1677,10 +1656,11 @@ async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Re
 
 #[cfg(feature = "test-support")]
 #[tokio::test]
-async fn real_console_frames_preserve_render_and_original_allocation_admission() {
+async fn real_console_frames_preserve_render_and_original_allocation_admission()
+-> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     crate::executor::check_code_mode(include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../harness-fuzz/corpus/code_mode/utf8-view-wide.json"
     )))
-    .await;
+    .await
 }

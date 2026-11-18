@@ -11,9 +11,9 @@ thread_local! {
 fn funded(request: &ModelRequest, maximum: u64, expected: u64, succeeds: bool) {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             bytes_hashed: maximum,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancellation,
     )

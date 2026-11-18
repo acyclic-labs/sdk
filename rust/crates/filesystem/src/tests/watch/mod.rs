@@ -7,17 +7,6 @@ fn native_watch_work() -> Result<crate::NativeMaterializationWork, Box<dyn std::
         .map_err(|(error, _)| error.into())
 }
 
-#[test]
-fn native_root_identity_encoding_is_exact_and_round_trips() {
-    let identity = NativeRootIdentity {
-        device: 0x0102_0304_0506_0708,
-        object: 0x1112_1314_1516_1718,
-    };
-    let bytes = identity.to_bytes();
-    assert_eq!(&bytes[..8], &0x0102_0304_0506_0708_u64.to_le_bytes());
-    assert_eq!(&bytes[8..], &0x1112_1314_1516_1718_u64.to_le_bytes());
-    assert_eq!(NativeRootIdentity::from_bytes(bytes), identity);
-}
 use crate::kernel::NameEncoding;
 #[cfg(target_os = "macos")]
 use notify::event::CreateKind;

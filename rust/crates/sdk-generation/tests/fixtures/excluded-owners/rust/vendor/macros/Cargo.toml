@@ -1,0 +1,17 @@
+[package]
+name = "demo-macros"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "renamed_macro_target"
+proc-macro = true
+path = "src/lib.rs"
+
+[features]
+default = ["base"]
+base = []
+extra = []
+
+[dev-dependencies]
+macro-dev-helper = { path = "../macro-dev-helper" }

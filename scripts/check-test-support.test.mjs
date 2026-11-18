@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {execFileSync} from 'node:child_process';
+import {readSources, trackedFiles} from './policy-core.mjs';
 import {readFileSync} from 'node:fs';
 import {checkDeserializedTestSupport, checkLoomOptIn, checkNoLoomCfgFlag, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
 
@@ -100,6 +100,9 @@ test('local feature chains forward, including cycles, but unrelated enabled feat
   metadata.consumer.features['test-support'] = [];
   metadata.node.features = ['test-support', 'fixtures'];
   assert.throws(() => checkTestSupport(metadata), /must forward/);
+  const implicit = fixture({alias: 'constructor', optional: true});
+  implicit.consumer.features['test-support'] = ['constructor', 'constructor?/test-support'];
+  assert.equal(checkTestSupport(implicit), 1);
 });
 
 test('dev dependency unification cannot conceal a missing production forwarding edge', () => {
@@ -154,8 +157,8 @@ test('test-visible re-exports require test-visible targets, including gated pare
   }
   assert.equal(checkTestSupportExports(fixture('#[cfg(any(test, feature = "test-support"))]')), 1);
   // A platform predicate on the export must not conceal a feature-only target.
-  assert.throws(() => checkTestSupportExports(fixture('#[cfg(feature = "test-support")]', '#[cfg(windows)]')),
-    /requires test-support/);
+  for (const cfg of ['#[cfg(windows)]', '#[cfg(not(test = "other"))]', '#[cfg(not(all(test, windows)))]'])
+    assert.throws(() => checkTestSupportExports(fixture('#[cfg(feature = "test-support")]', cfg)), /requires test-support/);
   const sources = fixture('');
   sources[0][1] = '#[cfg(any(test, feature = "test-support"))]\npub mod test_support;\n#[cfg(feature = "test-support")]\nmod answer;';
   assert.throws(() => checkTestSupportExports(sources), /demo\/src\/lib.rs::answer.*requires test-support/);
@@ -164,11 +167,10 @@ test('test-visible re-exports require test-visible targets, including gated pare
   assert.equal(checkTestSupportExports(sources), 1);
 });
 
-test('workspace exports pass and restoring the original answer cfg is rejected', () => {
-  const files = execFileSync('git', ['ls-files', '--', '*.rs'], {encoding: 'utf8'}).split('\n').filter(Boolean);
-  const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
+test('workspace exports pass and restoring the original answer cfg is rejected', async () => {
+  const sources = await readSources(process.cwd(), trackedFiles(process.cwd(), ['*.rs']));
   assert.ok(checkTestSupportExports(sources) > 0, 'workspace re-export inventory must not be empty');
-  const answer = sources.find(([file]) => file === 'rust/crates/harness/src/local/host_process/children/answer.rs');
+  const answer = sources.find(([file]) => file === 'rust/crates/harness-local/src/local/host_process/children/answer.rs');
   assert.ok(answer);
   assert.match(answer[1], /#\[cfg\(any\(test, feature = "test-support"\)\)\]/);
   answer[1] = answer[1].replace('#[cfg(any(test, feature = "test-support"))]', '#[cfg(feature = "test-support")]');

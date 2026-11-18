@@ -38,10 +38,12 @@ pub(crate) async fn read_generation_root<O: AsyncObjectStore>(
         cancellation,
     )
     .await;
-    let work = accounting.spent();
-    result
-        .map(|(root, _allocation)| (root, work))
-        .map_err(|error| OperationFailure::new(error, work))
+    crate::performance::finish_measured(
+        result.map(|(root, _allocation)| root),
+        accounting.spent(),
+        FsError::from,
+    )
+    .map(|receipt| (receipt.value, receipt.work))
 }
 
 pub(super) fn generation_from_record(

@@ -4,8 +4,6 @@
 //! through `enter`, retirement through the owner, and a concurrent insert.
 #![cfg(loom)]
 
-use crate::sync;
-
 #[path = "../src/native_mount/shared/view_table.rs"]
 mod view_table;
 #[path = "../src/native_mount/shared/views.rs"]

@@ -33,7 +33,7 @@ fn refusals_cannot_hide_fatal_errors_or_bypass_original_work_and_output_limits()
     assert!(rejection(invalid(), Some(1), None).is_err());
     for cancelled in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
         if !cancelled {
             budget.items_examined = 0;
         }

@@ -4,19 +4,15 @@ pub const SESSION_PROTOCOL_VERSION: u32 = 3;
 
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
-pub mod authorization;
-pub use authorization::{AUTHORIZATION, StreamMethod};
-pub mod body;
 pub mod completion;
 pub mod demand;
-#[cfg(feature = "serde")]
-pub mod serde_u64;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
 use std::sync::Arc;
 
 use crate::OwnedBytes as Bytes;
+use acyclic_stream_wire::wire;
 use async_trait::async_trait;
 #[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
@@ -24,10 +20,7 @@ use thiserror::Error;
 
 pub mod conformance;
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod filtered_follow_tests;
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod follow_tests;
+mod filtered_follow_fixture;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 #[cfg(test)]
@@ -97,17 +90,14 @@ mod snapshot;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 pub use follow_filter::FollowFilter;
-/// Follows signed trust Streams into the one Auth trust follower.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod trust_feed;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::js_error as wasm_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::{
-    InjectedStream, WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmStream,
-    serve_wasm_grpc_session, serve_wasm_session,
+    InjectedStream, WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmSessionService,
+    WasmStream, serve_wasm_session,
 };
 #[cfg(any(feature = "test-support", all(test, not(target_arch = "wasm32"))))]
 #[doc(hidden)]
@@ -128,21 +118,6 @@ pub use local::replay_model::{
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
 
-/// Generated canonical Stream v1 protocol.
-#[allow(
-    missing_docs,
-    clippy::pedantic,
-    clippy::allow_attributes_without_reason,
-    reason = "generated prost and tonic bindings"
-)]
-pub mod wire {
-    // All session data variants have total equality, including repeated headers.
-    impl Eq for SessionData {}
-    include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
-}
-/// Canonical public descriptor set used by compatibility gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 #[cfg(not(target_arch = "wasm32"))]
@@ -167,21 +142,6 @@ pub const RESOURCE_INDEX_PREFIX_BYTES: usize = 1024;
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
 /// Maximum canonical path text accepted by the single-command wire format.
 pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
-
-/// Route-to-response families for the hosted HTTP projection.
-pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
-    ("head", "head"),
-    ("heads", "heads"),
-    ("idempotency/inspect", "observation"),
-    ("tail", "tail"),
-    ("append", "append"),
-    ("fork", "fork"),
-    ("read", "read"),
-    ("children/page", "children_page"),
-    ("commit", "commit"),
-    ("commits/read", "envelope"),
-    ("tokens/create", "token"),
-];
 
 #[path = "lib/token.rs"]
 mod token;

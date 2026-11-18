@@ -229,16 +229,18 @@ fn error_from_status(status: &tonic::Status) -> Error {
     {
         return (*stopped).into();
     }
-    let mut error = Error::decode_status(status.code() as i32, status.details());
-    error.refusal = acyclic_auth::refusal::Refusal::capture(
-        status.code() as i32,
-        status.message(),
-        status.details(),
-        status.metadata().as_ref(),
-        error.canonical_status(&wire::ErrorDetail::from(&error).encode_to_vec()),
-        error.cause().cloned(),
-    );
-    error
+    Error::decode_status(status.code() as i32, status.details()).with_status_refusal(
+        |canonical, cause| {
+            acyclic_auth::refusal::Refusal::capture(
+                status.code() as i32,
+                status.message(),
+                status.details(),
+                status.metadata().as_ref(),
+                canonical,
+                cause,
+            )
+        },
+    )
 }
 
 fn status(error: &Error) -> tonic::Status {
@@ -259,7 +261,7 @@ fn issued(metadata: &MetadataMap) -> Result<Option<Revision>, Error> {
             let bytes = value
                 .to_bytes()
                 .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
-            acyclic_stream::wire::Revision::decode(bytes)
+            acyclic_stream_wire::wire::Revision::decode(bytes)
                 .ok()
                 .and_then(|revision| revision_from_wire(&revision).ok())
                 .ok_or_else(|| wire::ErrorCode::Unavailable.into())
@@ -327,20 +329,9 @@ impl Blobs for GrpcObjects {
 
     async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let digest = Digest::sealed(&body);
-            let body = body.into_bytes();
-            let length = body.len() as u64;
-            let reply = call!(
-                self,
-                put_blob,
-                wire::PutBlobRequest {
-                    digest: Some(digest.into()),
-                    body: bytes::Bytes::from_owner(body),
-                    references: convert::wire_digests(&references),
-                },
-                self.transfer_timeout
-            )?;
-            Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
+            let (request, (digest, length)) = convert::put_blob(body, &references);
+            let reply = call!(self, put_blob, request, self.transfer_timeout)?;
+            convert::verified_put(&reply.0, digest, length, reply.1)
         })
         .await
     }
@@ -364,17 +355,9 @@ impl Blobs for GrpcObjects {
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let digest = Digest::of(&manifest.encode()?);
-            let length = manifest.length()?;
-            let reply = call!(
-                self,
-                put_manifest,
-                wire::PutManifestRequest {
-                    manifest: Some(convert::manifest(&manifest)),
-                },
-                None
-            )?;
-            Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
+            let (request, (digest, length)) = convert::put_manifest(&manifest)?;
+            let reply = call!(self, put_manifest, request, None)?;
+            convert::verified_put(&reply.0, digest, length, reply.1)
         })
         .await
     }
@@ -389,15 +372,11 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 get_blob,
-                wire::GetBlobRequest {
-                    digest: Some(digest.into()),
-                    range: Some(convert::range(range)),
-                    maximum_bytes,
-                },
+                convert::get_request(digest, range, maximum_bytes),
                 self.transfer_timeout,
                 read
             )?;
-            Ok(convert::object(reply.0, digest, range, maximum_bytes)?.served_at(reply.1))
+            convert::object(reply.0, digest, range, maximum_bytes, reply.1)
         })
         .await
     }
@@ -413,9 +392,7 @@ impl Blobs for GrpcObjects {
                 None,
                 read
             )?;
-            let mut head = convert::headed(&reply.0, digest)?;
-            head.revision = reply.1;
-            Ok(head)
+            convert::headed(&reply.0, digest, reply.1)
         })
         .await
     }
@@ -430,9 +407,7 @@ impl Blobs for GrpcObjects {
                 },
                 None
             )?;
-            let mut deletion = convert::delete(&reply.0)?;
-            deletion.revision = reply.1;
-            Ok(deletion)
+            convert::delete(&reply.0, reply.1)
         })
         .await
     }
@@ -442,16 +417,11 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 list_blobs,
-                wire::ListBlobsRequest {
-                    after: after.map(Into::into),
-                    limit,
-                },
+                convert::list_request(after, limit),
                 None,
                 read
             )?;
-            let mut page = convert::listed(&reply.0, after, limit)?;
-            page.revision = reply.1;
-            Ok(page)
+            convert::listed(&reply.0, after, limit, reply.1)
         })
         .await
     }
@@ -466,33 +436,49 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 retain,
-                wire::RetainRequest {
-                    root: root.as_bytes().to_vec(),
-                    references: convert::wire_digests(&references),
-                },
+                convert::retain_request(root, &references),
                 None
             )?;
-            let mut retained = convert::retained(&reply.0);
-            retained.revision = reply.1;
-            Ok(retained)
+            Ok(convert::retained(&reply.0, reply.1))
         })
         .await
     }
 
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(self, release, convert::release_request(root), None)?;
+            Ok(convert::released(&reply.0, reply.1))
+        })
+        .await
+    }
+
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        crate::operation::admit(self.context.as_ref(), async {
             let reply = call!(
                 self,
-                release,
-                wire::ReleaseRequest {
-                    root: root.as_bytes().to_vec(),
-                },
+                retain_fenced,
+                convert::retain_fenced_request(root, fence, &references),
                 None
             )?;
-            Ok(crate::Released {
-                existed: reply.0.existed,
-                revision: reply.1,
-            })
+            Ok(convert::retained(&reply.0, reply.1))
+        })
+        .await
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                release_terminal,
+                convert::release_terminal_request(root, fence),
+                None
+            )?;
+            Ok(convert::released(&reply.0, reply.1))
         })
         .await
     }
@@ -505,9 +491,7 @@ impl Blobs for GrpcObjects {
                 wire::CollectRequest {},
                 self.transfer_timeout
             )?;
-            let mut collection = convert::collection(&reply.0);
-            collection.revision = reply.1;
-            Ok(collection)
+            Ok(convert::collection(&reply.0, reply.1))
         })
         .await
     }
@@ -732,6 +716,18 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         request: Request<wire::ReleaseRequest>,
     ) -> Reply<wire::ReleaseResponse> {
         serve!(self, request, release)
+    }
+    async fn retain_fenced(
+        &self,
+        request: Request<wire::RetainFencedRequest>,
+    ) -> Reply<wire::RetainResponse> {
+        serve!(self, request, retain_fenced)
+    }
+    async fn release_terminal(
+        &self,
+        request: Request<wire::ReleaseTerminalRequest>,
+    ) -> Reply<wire::ReleaseResponse> {
+        serve!(self, request, release_terminal)
     }
     async fn collect(
         &self,

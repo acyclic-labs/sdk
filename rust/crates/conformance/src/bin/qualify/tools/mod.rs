@@ -18,14 +18,17 @@ use acyclic_fs::model::{
     MutationMode, VolumeConfig,
 };
 use acyclic_fs::{
-    CancellationToken, GenerationId, LivePublicationObservation, LocalFs, LocalOptions,
-    OperationId, VolumeId, WorkCounters,
-};
-use acyclic_fs::{
     CaptureOptions, MaterializeOptions, capture_baseline, capture_root_identity,
     materialize_checkout,
 };
 use acyclic_stream::LocalDurability as StreamDurability;
+use {
+    acyclic_fs::{
+        CancellationToken, GenerationId, LivePublicationObservation, LocalFs, LocalOptions,
+    },
+    acyclic_fs_format::identity::{OperationId, VolumeId},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 pub(super) fn is_command(command: &str) -> bool {
     matches!(

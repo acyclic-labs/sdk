@@ -67,24 +67,19 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         let clock = Arc::new(clock);
         let stream = Arc::new(MemoryStream::new_with_clock(
             Default::default(),
-            Arc::new(super::preparation::JournalClock(clock.clone())),
+            clock.clone(),
         ));
         let (filesystem, binding) = private_in(&stream, &path).await?;
         let mut turns = vec![
             ScriptedTurn::Text("reply body".into()),
-            ScriptedTurn::Text("none".into()),
             wait("first-input", (reserved == 0).then_some(10)),
             wait("second-input", Some(20)),
             ScriptedTurn::Text("both waits finished".into()),
-            ScriptedTurn::Text("none".into()),
         ];
         if reserved > 0 {
-            turns.extend((0..reserved + 1).flat_map(|_| {
-                [
-                    ScriptedTurn::Text("reserved turn finished".into()),
-                    ScriptedTurn::Text("none".into()),
-                ]
-            }));
+            turns.extend(
+                (0..reserved + 1).map(|_| ScriptedTurn::Text("reserved turn finished".into())),
+            );
         }
         let model = Arc::new(ScriptedModelProvider::new(turns));
         let executors = StockExecutors::new(

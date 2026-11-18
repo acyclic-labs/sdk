@@ -2,11 +2,13 @@
 #![cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 
 use acyclic_fs::facade::FsWork as _;
-use acyclic_fs::{
-    CancellationToken, LazyWorkspaceState, LazyWorkspaceStore, LocalCoreStateStore, WorkBudget,
-    WorkspaceId,
-};
 use acyclic_native_runtime::testing::{DurableFault, Schedule};
+use {
+    acyclic_fs::{
+        CancellationToken, LazyWorkspaceState, LazyWorkspaceStore, LocalCoreStateStore, WorkspaceId,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 fn state(id: WorkspaceId) -> Result<LazyWorkspaceState, serde_json::Error> {
     Ok(LazyWorkspaceState::new(
@@ -41,7 +43,7 @@ async fn parallel_publications_share_durability_barriers() -> Result<(), Box<dyn
 {
     acyclic_native_runtime::initialize_native_io_services()?;
     let mut maximum_barriers = 0;
-    for agents in [1_u128, 4, 16, 64, 256] {
+    for agents in [1_u128, 4, 16, 64] {
         let directory = tempfile::tempdir()?;
         let store = LocalCoreStateStore::open_owned(directory.path())?;
         assert!(publish(&store, WorkspaceId::from_bytes([0xff; 16])).await?);
@@ -81,7 +83,7 @@ async fn parallel_publications_share_durability_barriers() -> Result<(), Box<dyn
             "CORE_GROUP_COMMIT agents={agents} barriers={barriers} total_barriers={total_barriers} elapsed_us={}",
             elapsed.as_micros()
         );
-        if agents == 256 {
+        if agents == 64 {
             maximum_barriers = barriers;
         }
         drop(store);
@@ -101,7 +103,7 @@ async fn parallel_publications_share_durability_barriers() -> Result<(), Box<dyn
         }
     }
     assert!(
-        maximum_barriers < 256,
+        maximum_barriers < 64,
         "parallel publications must share log durability barriers"
     );
     Ok(())

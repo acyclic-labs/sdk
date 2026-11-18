@@ -184,7 +184,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     followed = Some(path.clone());
                     let source = follow_source(
                         Follow {
-                            provider: Arc::clone(&self.provider),
+                            provider: self.provider.clone(),
                             path,
                             next: resume.next,
                             preceding,
@@ -308,7 +308,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 (
                     false,
                     pages::heads(
-                        Arc::clone(&self.provider),
+                        self.provider.clone(),
                         request,
                         context,
                         visibility,
@@ -389,8 +389,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             .authority
             .bind_list(&self.slots, credential, request.parent.as_ref(), channels)
             .map(|(binding, visibility)| {
-                let source =
-                    pages::source(Arc::clone(&self.provider), request, visibility, identity);
+                let source = pages::source(self.provider.clone(), request, visibility, identity);
                 (binding, source)
             }))
     }
@@ -442,7 +441,7 @@ impl Channel {
 
 // Provider opens run independently so a remote owner never stalls other follows.
 struct Follow<P: ?Sized> {
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     path: StreamPath,
     next: u64,
     preceding: Option<crate::CommitId>,

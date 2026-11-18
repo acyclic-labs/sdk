@@ -26,20 +26,19 @@ pub use acyclic_harness_search as search;
 /// Credential-free, bounded HTTP source retrieval.
 pub use acyclic_harness_search::url_fetch;
 
-pub mod hosting;
+pub use acyclic_harness_hosting as hosting;
 
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod completion;
-#[cfg(feature = "conformance")]
-pub mod conformance;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod local;
-pub mod preset;
+pub use acyclic_harness_local::local;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod server;
+pub use acyclic_harness_local::server;
 #[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
+pub use acyclic_harness_local::test_support;
+#[cfg(feature = "conformance")]
+pub use acyclic_harness_suite::conformance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tui;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

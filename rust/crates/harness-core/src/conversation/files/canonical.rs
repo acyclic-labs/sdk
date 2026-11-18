@@ -175,7 +175,7 @@ mod tests {
                 + crate::contract::canonical_json_bytes(&file)?.len())
                 as u64;
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(20_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(20_000, 1_048_576);
             budget.bytes_copied = expected.len() as u64;
             budget.bytes_hashed = bytes;
             let original = NativeMaterializationWork::new(budget, &cancellation)
@@ -184,8 +184,8 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&original)?,
             );
             assert_eq!(file.read_capability(&mut Some(&mut io))?, expected);
-            assert_eq!(original.receipt().bytes_hashed, bytes);
-            assert_eq!(original.receipt().bytes_copied, budget.bytes_copied);
+            assert_eq!(original.receipt()?.bytes_hashed, bytes);
+            assert_eq!(original.receipt()?.bytes_copied, budget.bytes_copied);
             cancellation.cancel();
             assert!(file.identity_digest(65_536, &mut Some(&mut io)).is_err());
             assert!(file.read_capability(&mut Some(&mut io)).is_err());
@@ -198,7 +198,7 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&denied)?,
             );
             assert!(file.identity_digest(65_536, &mut Some(&mut io)).is_err());
-            assert_eq!(denied.receipt().bytes_hashed, 0);
+            assert_eq!(denied.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }
@@ -209,7 +209,7 @@ mod tests {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         for file in files()? {
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(20_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(20_000, 1_048_576);
             budget.bytes_copied = file.read_capability(&mut None)?.len() as u64;
             let original = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -217,7 +217,7 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&original)?,
             );
             assert!(old_digest(&file, &mut Some(&mut io)).is_err());
-            assert_eq!(original.receipt().bytes_hashed, 0);
+            assert_eq!(original.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }

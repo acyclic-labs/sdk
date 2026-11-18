@@ -41,6 +41,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     pub async fn observe_policy_fence<W: crate::facade::FsWork>(
         &mut self,
         fence: crate::access::PolicyFence,
+        now: u64,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
@@ -58,7 +59,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             if !fence.matches(
                 self.checkout.generation_id(),
                 metadata.named_attributes,
-                super::access::access_time()?,
+                now,
             ) {
                 return Err(WorkspaceError::AccessDenied);
             }

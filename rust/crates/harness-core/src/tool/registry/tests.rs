@@ -116,7 +116,10 @@ fn denied_ambiguous_tools_are_filtered_before_resolution_or_copying() -> Result<
 #[test]
 fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
     use crate::filesystem::UploadRecord as _;
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    use {
+        acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        acyclic_fs_work::performance::WorkBudget,
+    };
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .expect("native registry work");
@@ -252,7 +255,7 @@ proptest::proptest! {
             proptest::prop_assert!(indexed_names(&registry));
         }
                 {
-            use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+            use {acyclic_fs::{CancellationToken, NativeMaterializationWork}, acyclic_fs_work::performance::{WorkBudget}};
             let token = CancellationToken::new();
             let work = checked(NativeMaterializationWork::new(WorkBudget {
                 bytes_copied: 16_777_216, bytes_encoded: 16_777_216,

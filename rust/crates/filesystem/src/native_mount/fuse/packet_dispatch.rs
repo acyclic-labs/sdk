@@ -44,19 +44,16 @@ impl PacketFailure {
 
     pub(super) fn from_callback(
         core: &Arc<ProjectionCore>,
-        failure: (NativeMountError, crate::WorkCounters),
+        failure: super::core::HandlerFailure,
     ) -> Self {
-        if crate::native_mount::shared::outcome::stops_mount(&failure.0) {
+        if failure.1.is_err() || crate::native_mount::shared::outcome::stops_mount(&failure.0) {
             Self::source(core, failure)
         } else {
             Self::Local(failure.0)
         }
     }
 
-    pub(super) fn source(
-        core: &Arc<ProjectionCore>,
-        failure: (NativeMountError, crate::WorkCounters),
-    ) -> Self {
+    pub(super) fn source(core: &Arc<ProjectionCore>, failure: super::core::HandlerFailure) -> Self {
         core.retain_handler_failure(failure);
         Self::from_retained(core)
     }
@@ -338,7 +335,10 @@ impl FuseProjection {
                     .retaining_payload(&mut output)
                     .retaining_optional_work(retained_work),
             ),
-            Err(failure) if crate::native_mount::shared::outcome::stops_mount(&failure.0) => {
+            Err(failure)
+                if failure.1.is_err()
+                    || crate::native_mount::shared::outcome::stops_mount(&failure.0) =>
+            {
                 Err(PacketFailure::source(&self.core, failure).retaining_work(retained_work))
             }
             Err((error, _)) => {
@@ -439,7 +439,7 @@ impl FuseProjection {
                     inode,
                     name,
                     |path, work| {
-                        let target = fuse_source_chunk(target.as_bytes(), work)?;
+                        let target = source_chunk(target.as_bytes(), work)?;
                         Ok(self
                             .core
                             .source
@@ -472,7 +472,11 @@ impl FuseProjection {
                         if request.opcode == 9 {
                             return Ok(self.core.source.create_directory(path, metadata, work)?);
                         }
-                        let (kind, device) = MountNodeKind::special(kind, u64::from(rdev))?;
+                        let (kind, device) =
+                            acyclic_fs_native_contract::device::special_mount_node(
+                                kind,
+                                u64::from(rdev),
+                            )?;
                         Ok(self
                             .core
                             .source

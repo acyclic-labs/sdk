@@ -1,9 +1,7 @@
 //! Local real-issuer qualification; no production account or credential discovery.
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
 use acyclic_harness_core::oidc;
-use acyclic_stream::{
-    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider, UnixMillisClock as _,
-};
+use acyclic_stream::{BoxProviderFuture, LocalStream, LocalStreamLimits, UnixMillisClock as _};
 use std::{path::PathBuf, sync::Arc};
 
 struct Local;
@@ -16,11 +14,11 @@ impl Storage for Directory {
         Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
     }
 
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
+    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<acyclic_agent_host_conformance::Stream>>> {
         Box::pin(async move {
             Ok(
                 Arc::new(LocalStream::open(self.0.path(), LocalStreamLimits::default()).await?)
-                    as Arc<dyn StreamProvider>,
+                    as Arc<acyclic_agent_host_conformance::Stream>,
             )
         })
     }

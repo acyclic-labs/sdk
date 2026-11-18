@@ -93,7 +93,7 @@ impl McpStdioRequest {
             Some(work.claim(
                 std::mem::size_of::<McpStdioExchange>() as u64 + maximum_bytes as u64,
                 1,
-                acyclic_fs::WorkCounters::UNCHARGED,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
             )?)
         } else {
             None

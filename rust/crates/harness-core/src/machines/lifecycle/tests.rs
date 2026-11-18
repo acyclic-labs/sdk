@@ -3,7 +3,7 @@ use crate::Error;
 use crate::agent::*;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_machines::SimulatedMachines;
-use acyclic_stream::{MemoryStream, StreamError, testing::Counted};
+use acyclic_stream::{MemoryStream, StreamCategory, testing::Counted};
 use tokio::sync::Semaphore;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -296,8 +296,9 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
                 hierarchy_version: Some(fenced.hierarchy_version),
                 limit: 64,
             })
-            .await,
-        Err(StreamError::HierarchyChanged)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::HierarchyChanged)
     );
     Ok(())
 }

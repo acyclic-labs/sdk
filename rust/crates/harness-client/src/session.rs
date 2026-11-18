@@ -4,8 +4,9 @@ use acyclic_stream::{
     BoxProviderFuture, BoxProviderStream, StreamError, StreamPath,
     runtime::{ReadySources, SourceReader},
     session::Client,
-    wire, wire_codec,
+    wire_codec,
 };
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use prost::Message as _;
 use std::{

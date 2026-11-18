@@ -26,7 +26,7 @@ fn stopping_retires_handles_and_preserves_admitted_cleanup()
         )?;
         assert!(stream.registration.is_some());
         assert!(stream.logical_owned_bytes() > 0);
-        assert_eq!(start.live_allocation_bytes(), 0);
+        assert_eq!(start.live_allocation_bytes().unwrap(), 0);
         let cancellation = crate::CancellationToken::new();
         let budget = WorkBudget {
             backend_write_operations: 4,

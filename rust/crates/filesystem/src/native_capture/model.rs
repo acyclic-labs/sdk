@@ -296,3 +296,9 @@ impl From<crate::FsError> for CaptureError {
         Self::Kernel(Box::new(error))
     }
 }
+
+impl From<crate::WorkObservationError> for CaptureError {
+    fn from(error: crate::WorkObservationError) -> Self {
+        Self::from(crate::FsError::from(error))
+    }
+}

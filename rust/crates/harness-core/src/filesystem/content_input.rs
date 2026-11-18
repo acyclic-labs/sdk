@@ -131,7 +131,7 @@ impl HashedSource<'_> {
             )
         })?;
         self.io
-            .charge(acyclic_fs::WorkCounters {
+            .charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: count as u64,
                 ..Default::default()
             })
@@ -145,7 +145,7 @@ impl acyclic_fs::kernel::AsyncBlobSource for HashedSource<'_> {
     async fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
-        budget: acyclic_fs::WorkBudget,
+        budget: acyclic_fs_work::performance::WorkBudget,
         cancellation: &'a acyclic_fs::CancellationToken,
     ) -> std::io::Result<usize> {
         self.read(destination, budget.source_bytes_read, cancellation)
@@ -162,30 +162,30 @@ mod tests {
     fn owned_content_staging_shares_only_original_custody() -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&work)?;
         let encoded = io.encode(&"q".repeat(128 * 1024), u64::MAX, false)?;
         let original = encoded.as_ptr();
-        let copied = work.receipt().bytes_copied;
+        let copied = work.receipt()?.bytes_copied;
         let mut shared = None;
         let physical = acyclic_test_support::measure(|| {
             shared = Some(encoded.mutation_bytes(Some(&io)));
         });
         let shared = shared.expect("staging ran")?;
-        assert_eq!(work.receipt().bytes_copied, copied);
+        assert_eq!(work.receipt()?.bytes_copied, copied);
         assert_eq!(physical.count_total, 0);
         assert_eq!(shared.as_ptr(), original);
         drop(encoded);
         assert!(shared.matches_meter(&work.runtime_meter()));
         assert_eq!(shared.len(), 128 * 1024 + 2);
-        assert!(work.live_allocation_bytes() > baseline);
+        assert!(work.live_allocation_bytes()? > baseline);
 
         let foreign = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(borrowed.as_ref(), shared.as_ref());
         assert_ne!(borrowed.as_ptr(), shared.as_ptr());
         assert!(borrowed.matches_meter(&work.runtime_meter()));
-        assert_eq!(work.receipt().bytes_copied, copied + shared.len() as u64);
+        assert_eq!(work.receipt()?.bytes_copied, copied + shared.len() as u64);
         drop(borrowed);
         cancellation.cancel();
         assert_eq!(
@@ -213,7 +213,7 @@ mod tests {
         );
         drop(shared);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         Ok(())
     }
 }

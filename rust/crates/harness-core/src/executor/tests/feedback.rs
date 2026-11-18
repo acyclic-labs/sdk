@@ -1,7 +1,6 @@
 use super::*;
 
-const NOTICE: &str =
-    "What slowed you down or blocked you? Append feedback records; reply none if nothing.";
+use crate::test_support::RETROSPECTIVE as NOTICE;
 
 #[tokio::test]
 async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_the_prefix()
@@ -54,6 +53,7 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
                     .into(),
                 )
             }))
+            .scripting_retrospectives()
             .with_token_counter(fixture_token_count),
         );
         let executor = uncompacted_executor(
@@ -168,6 +168,7 @@ async fn settlement_fallback_only_absorbs_definitive_provider_failures() -> Resu
                     Failure::Cancelled | Failure::Uncertain => ScriptedEvent::Pending {},
                 }]),
             ])
+            .scripting_retrospectives()
             .with_token_counter(fixture_token_count)
             .with_reconciliations([crate::test_support::ScriptedReconciliation {
                 orphan: false,

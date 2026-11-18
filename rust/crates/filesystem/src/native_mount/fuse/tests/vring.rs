@@ -342,7 +342,7 @@ fn counter() -> std::io::Result<(File, File)> {
 fn vring_events_reject_aliases_and_retain_polled_counter_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = cache_work(FINITE_CACHE_BUDGET, &crate::CancellationToken::new());
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let (socket, _frontend) = UnixStream::pair()?;
     let device = VringControl::new(
         socket,
@@ -382,16 +382,16 @@ fn vring_events_reject_aliases_and_retain_polled_counter_custody()
     // Reconcile retired fdinfo scratch custody before measuring the retained
     // counter. SET_KICK's admission performs the same canonical reconciliation.
     work.charge(crate::WorkCounters::UNCHARGED)?;
-    let retained = work.live_allocation_bytes();
+    let retained = work.live_allocation_bytes().unwrap();
     device.set_kick(0, None)?;
-    assert_eq!(work.live_allocation_bytes(), retained);
+    assert_eq!(work.live_allocation_bytes().unwrap(), retained);
     assert!(!device.queue(0)?.accepts_kick(&polled));
     drop(polled);
     work.charge(crate::WorkCounters::UNCHARGED)?;
-    assert!(work.live_allocation_bytes() < retained);
+    assert!(work.live_allocation_bytes().unwrap() < retained);
     drop(device);
     work.charge(crate::WorkCounters::UNCHARGED)?;
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -399,7 +399,7 @@ fn vring_events_reject_aliases_and_retain_polled_counter_custody()
 fn memory_replacement_keeps_original_mapping_until_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let original = cache_work(FINITE_CACHE_BUDGET, &crate::CancellationToken::new());
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     {
         let (work, _cancellation) = original.invocation_view()?;
         let (socket, _frontend) = UnixStream::pair()?;
@@ -485,6 +485,6 @@ fn memory_replacement_keeps_original_mapping_until_admission()
         unlocked();
     }
     original.charge(crate::WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }

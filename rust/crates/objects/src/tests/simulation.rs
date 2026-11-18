@@ -1,32 +1,51 @@
 //! Seeded operation histories over the shipping Objects implementation.
 use super::*;
-use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
+use acyclic_native_runtime::testing::{Schedule, drive, fill_seeded, seeded_runtime};
 
 type Failure = Box<dyn std::error::Error>;
 
 mod local;
 
-async fn drive<T>(
-    schedule: &Schedule,
-    boundaries: &mut tokio::sync::mpsc::UnboundedReceiver<
-        acyclic_native_runtime::testing::Boundary,
-    >,
-    future: impl std::future::Future<Output = T>,
-) -> T {
-    let mut turn = Box::pin(schedule.scope(future));
-    let result = loop {
-        tokio::select! {
-            result = &mut turn => break result,
-            boundary = boundaries.recv() => boundary.expect("boundary channel closed").release(),
-        }
-    };
-    drop(turn);
-    loop {
-        tokio::select! {
-            () = schedule.drained() => return result,
-            boundary = boundaries.recv() => boundary.expect("drain channel closed").release(),
-        }
+#[tokio::test]
+async fn deep_manifests_select_whole_and_partial_bytes_without_recursive_frames()
+-> Result<(), Failure> {
+    let store = Store::new(MemoryMedium::default());
+    let blobs = store.account(b"deep-selection")?;
+    let mut head = blobs
+        .put(OwnedBytes::from_static(b"abcdefgh"), Vec::new())
+        .await?
+        .verified()
+        .ok_or("leaf publication is known")?
+        .clone();
+    for _ in 0..4096 {
+        head = blobs
+            .put_manifest(crate::Manifest {
+                parts: vec![crate::Part {
+                    digest: head.digest,
+                    length: head.length,
+                }],
+                edges: Vec::new(),
+                sha256: None,
+            })
+            .await?
+            .verified()
+            .ok_or("manifest publication is known")?
+            .clone();
     }
+    for (range, expected) in [
+        (ByteRange::FULL, b"abcdefgh".as_slice()),
+        (ByteRange::new(3, 6), b"def".as_slice()),
+    ] {
+        assert_eq!(
+            blobs
+                .get(head.digest, range, u64::MAX)
+                .await?
+                .body()
+                .as_ref(),
+            expected
+        );
+    }
+    Ok(())
 }
 
 async fn history() -> Result<(), Failure> {
@@ -106,7 +125,7 @@ fn replay(seed: u64) -> Result<(), Failure> {
     seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
         let (schedule, mut boundaries) = Schedule::seeded(seed);
-        drive(&schedule, &mut boundaries, history()).await
+        drive(&schedule, &mut boundaries, |_| {}, history()).await
     })
 }
 

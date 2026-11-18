@@ -5,42 +5,12 @@ impl MemoryStream {
         from: u64,
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
-        bootstrap_head: bool,
-        until: Option<u64>,
-    ) -> Result<
-        (
-            crate::Revision,
-            crate::StreamSelection,
-            crate::change::Subscription,
-            HistoryCursor,
-        ),
-        StreamError,
-    > {
-        let state = self.state.write().await;
-        let snapshot = state.paths.get(path).cloned();
-        let revision = self.revisions.at(state.decision);
-        let selection = follow_selection(snapshot.as_ref(), from, anchor, bootstrap_head, until)?;
-        let (from, anchor) = (selection.from, selection.preceding);
-        let tail = snapshot.as_ref().map_or(0, |path| path.tail);
-        let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
-        let signals = registration.value();
-        let changed = signals.changed.subscribe()?;
-        drop(state);
-        let mut cursor = HistoryCursor::initial(
-            snapshot.as_ref(),
-            from,
-            anchor,
-            when_absent,
-            #[cfg(not(target_arch = "wasm32"))]
-            self.work.clone(),
-        )
-        .await?;
-        cursor.registration = Some(registration);
-        // Capture under the same state lock as interest registration. Even an
-        // absent waiting stream has an empty opening cut, without a tail probe.
-        cursor.opening_tail = Some(tail);
-        cursor.end = selection.end;
-        Ok((revision, selection, changed, cursor))
+        window: FollowWindow,
+    ) -> Result<PreparedFollow<crate::change::Subscription>, StreamError> {
+        self.prepare_cursor(path, from, anchor, when_absent, window, |signals, _| {
+            signals.changed.subscribe()
+        })
+        .await
     }
 
     pub(crate) async fn next_follow_update(
@@ -50,26 +20,11 @@ impl MemoryStream {
         anchor: &mut Option<CommitId>,
         filter: &crate::FollowFilter,
     ) -> Result<Option<crate::FollowUpdate>, StreamError> {
-        if cursor.end.is_none() {
-            let state = self.state.read().await;
-            let snapshot = state.paths.get(path).cloned();
-            drop(state);
-            let path = snapshot.as_ref();
-            if !cursor.observe_creation(path, *anchor).await? {
-                return Ok(cursor
-                    .opening_tail
-                    .take()
-                    .map(|tail| crate::FollowUpdate::Opening { tail }));
-            }
-            let path = path.ok_or(if anchor.is_some() {
-                StreamError::PrefixNotRetained
-            } else {
-                StreamError::NotFound
-            })?;
-            if let Some(anchor) = anchor {
-                cursor.check_anchor(path, *anchor).await?;
-            }
-            cursor.sync(path);
+        if !self.refresh_follow(path, cursor, *anchor).await? {
+            return Ok(cursor
+                .opening_tail
+                .take()
+                .map(|tail| crate::FollowUpdate::Opening { tail }));
         }
         if let Some(tail) = cursor.opening_tail.take() {
             return Ok(Some(crate::FollowUpdate::Opening { tail }));
@@ -121,14 +76,7 @@ impl MemoryStream {
         window: FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         let (snapshot, selection, changed, cursor) = self
-            .prepare_progress(
-                &path,
-                from,
-                anchor,
-                when_absent,
-                window.bootstrap_head,
-                window.until,
-            )
+            .prepare_progress(&path, from, anchor, when_absent, window)
             .await?;
         let anchor = selection.preceding;
         let state = Box::new(MemoryProgress {

@@ -5,15 +5,15 @@ use serde_json::{Map, Value};
 
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
-fn object(value: &Value) -> Result<&Map<String, Value>> {
+pub(crate) fn object(value: &Value) -> Result<&Map<String, Value>> {
     value.as_object().ok_or("expected object")
 }
 
-fn field<'a>(item: &'a Map<String, Value>, name: &str) -> Result<&'a Value> {
+pub(crate) fn field<'a>(item: &'a Map<String, Value>, name: &str) -> Result<&'a Value> {
     item.get(name).ok_or("missing field")
 }
 
-fn string(value: &Value) -> Result<&str> {
+pub(crate) fn string(value: &Value) -> Result<&str> {
     value
         .as_str()
         .filter(|value| !value.is_empty())
@@ -24,21 +24,19 @@ fn encoded_bytes(value: &Value) -> Result<&str> {
     value.as_str().ok_or("expected base64 string")
 }
 
-fn u64_string(value: &Value) -> Result<u64> {
+pub(crate) fn u64_string(value: &Value) -> Result<u64> {
     let value = string(value)?;
-    if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
-        || (value.len() > 1 && value.starts_with('0'))
-    {
+    if !acyclic_decimal_u64::is_canonical(value) {
         return Err("expected decimal uint64 string");
     }
     value.parse().map_err(|_| "expected decimal uint64 string")
 }
 
-fn boolean(value: &Value) -> Result<bool> {
+pub(crate) fn boolean(value: &Value) -> Result<bool> {
     value.as_bool().ok_or("expected boolean")
 }
 
-fn array(value: &Value) -> Result<&Vec<Value>> {
+pub(crate) fn array(value: &Value) -> Result<&Vec<Value>> {
     value.as_array().ok_or("expected array")
 }
 
@@ -52,24 +50,24 @@ fn validate_revision(value: &Value) -> Result {
     Ok(())
 }
 
-fn path(value: &Value) -> Result {
+pub(crate) fn path(value: &Value) -> Result {
     let value = string(value)?;
     crate::StreamPath::validate(value).map_err(|_| "invalid path")
 }
 
-fn bytes(value: &Value) -> Result<Vec<u8>> {
+pub(crate) fn bytes(value: &Value) -> Result<Vec<u8>> {
     STANDARD
         .decode(encoded_bytes(value)?)
         .map_err(|_| "expected base64")
 }
 
-fn id(value: &Value) -> Result {
+pub(crate) fn id(value: &Value) -> Result {
     (bytes(value)?.len() == 32)
         .then_some(())
         .ok_or("expected 32-byte id")
 }
 
-fn key(value: &Value) -> Result {
+pub(crate) fn key(value: &Value) -> Result {
     crate::IdempotencyKey::new(bytes(value)?)
         .map(|_| ())
         .map_err(|_| "invalid idempotency key")
@@ -348,7 +346,7 @@ fn validate_idempotency(value: &Value) -> Result {
 }
 
 pub fn validate(route: &str, value: &Value) -> Result {
-    match crate::HTTP_RESPONSE_CONTRACT
+    match acyclic_stream_wire::HTTP_RESPONSE_CONTRACT
         .iter()
         .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
     {

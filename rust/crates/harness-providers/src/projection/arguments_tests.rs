@@ -506,7 +506,7 @@ fn object_argument_validation_checks_literals_without_marker_interpretation() {
         r#"{"$serde_json::private::RawValue":"null","nested":[]}"#,
         r#" {"text":"quote\" newline\n slash\\"} "#,
     ] {
-        assert!(crate::protocol::strict::object(raw));
+        assert!(acyclic_model_render::strict::object(raw));
     }
     for raw in [
         "null",
@@ -515,7 +515,7 @@ fn object_argument_validation_checks_literals_without_marker_interpretation() {
         "{} trailing",
         r#"{"x":}"#,
     ] {
-        assert!(!crate::protocol::strict::object(raw), "accepted {raw}");
+        assert!(!acyclic_model_render::strict::object(raw), "accepted {raw}");
     }
 }
 

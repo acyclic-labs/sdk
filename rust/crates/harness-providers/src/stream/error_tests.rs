@@ -1,4 +1,6 @@
-use super::*;
+use crate::Adapter;
+use acyclic_harness_core::Error;
+use acyclic_harness_provider_response::stream::classify_refusal;
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -83,10 +85,14 @@ fn recognized_stream_errors_match_http_classes_across_providers() {
         ),
     ] {
         let encoded = event.to_string();
-        let mut state = crate::stream::State::new(4096);
-        let error = crate::stream::parse(&mut state, adapter, &encoded).unwrap_err();
+        let mut state = acyclic_harness_provider_response::stream::State::new(4096);
+        let error = acyclic_harness_provider_response::stream::parse(&mut state, adapter, &encoded)
+            .unwrap_err();
         assert!(error.to_string().contains(&status.to_string()));
-        assert_eq!(code(error), code(crate::http_error(status)));
+        assert_eq!(
+            code(error),
+            code(acyclic_harness_provider_response::http_error(status))
+        );
     }
     for adapter in [
         Adapter::Anthropic,
@@ -95,7 +101,7 @@ fn recognized_stream_errors_match_http_classes_across_providers() {
         Adapter::Gemini,
     ] {
         assert_eq!(
-            code(classify(
+            code(classify_refusal(
                 adapter,
                 &json!({"error":{"type":"unknown","code":"secret"}})
             )),
@@ -117,7 +123,7 @@ proptest! {
             (3u8, Adapter::Gemini, json!({"error":{"code":429,"message":message}})),
         ] {
             let expected = if adapter == Adapter::Anthropic {529} else if adapter == Adapter::Responses {500} else {429};
-            prop_assert_eq!(classify(adapter, &event).to_string(), crate::http_error(expected).to_string());
+            prop_assert_eq!(classify_refusal(adapter, &event).to_string(), acyclic_harness_provider_response::http_error(expected).to_string());
             let mut seed = vec![tag];
             seed.extend_from_slice(format!("data: {event}\n\n").as_bytes());
             crate::fuzzing::assert_stream_invariants(&seed);

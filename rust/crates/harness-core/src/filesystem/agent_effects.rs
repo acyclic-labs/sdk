@@ -385,7 +385,7 @@ mod tests {
             .filesystem
             .open_workspace(
                 volume.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -477,7 +477,7 @@ mod tests {
             let mut transaction = workspace
                 .begin_transaction(
                     acyclic_fs::IdempotencyKey::new(),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await
@@ -487,7 +487,7 @@ mod tests {
                 .write_batch(
                     &[&prefix, &reply, &older, &empty, &malformed],
                     &batch,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await
@@ -496,12 +496,12 @@ mod tests {
                 .commit::<acyclic_fs::WorkspaceError, _, _>(
                     None,
                     acyclic_fs::PublicationPermit::Unrestricted,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                     |_| async {
-                        Ok(acyclic_fs::OperationReceipt {
+                        Ok(acyclic_fs_work::performance::OperationReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::default(),
+                            work: acyclic_fs_work::performance::WorkCounters::default(),
                         })
                     },
                 )

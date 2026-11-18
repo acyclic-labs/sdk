@@ -132,8 +132,18 @@ where
         }
         crate::executor::with_history_io(io, |work| {
             let digest = crate::model::hash_bytes(&codec::state_bytes(&checkpoint.state, io)?, io)?;
-            self.verifier
+            match self
+                .execution_checkpoint_verifier
                 .verify_execution_checkpoint(digest, &checkpoint.proof, work)
+            {
+                Ok(()) => Ok(()),
+                Err(error) => match &self.execution_checkpoint_alternate {
+                    Some(alternate) => alternate
+                        .verify_execution_checkpoint(digest, &checkpoint.proof, work)
+                        .map_err(|_| error),
+                    None => Err(error),
+                },
+            }
         })
     }
 
@@ -306,7 +316,10 @@ where
         let bytes = codec::state_bytes(&state, io)?;
         let digest = crate::model::hash_bytes(&bytes, io)?;
         let proof = crate::executor::with_history_io(io, |work| {
-            Ok::<_, Error>(self.verifier.execution_checkpoint_proof(digest, work))
+            Ok::<_, Error>(
+                self.execution_checkpoint_verifier
+                    .execution_checkpoint_proof(digest, work),
+            )
         })?
         .await?;
         codec::encode_state(&bytes, &proof, io)
@@ -354,7 +367,7 @@ impl<'a> IndexPath<'a> {
             .transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(name.len() as u64)?;
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_copied: name.len() as u64,
                 ..Default::default()
             })?;

@@ -3,12 +3,15 @@
 
 use acyclic_fs::kernel::RetainedAllocation;
 use acyclic_fs::kernel::allocation::{AllocationLedger, KernelAccounting};
-use acyclic_fs::{CancellationToken, ObjectStoreError, WorkBudget, WorkCounters};
 use futures::FutureExt;
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test;
+use {
+    acyclic_fs::{CancellationToken, ObjectStoreError},
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+};
 
 #[wasm_bindgen(inline_js = r#"
 export function heldBlob(bytes) {

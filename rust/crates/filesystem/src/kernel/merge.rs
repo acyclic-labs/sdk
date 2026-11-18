@@ -21,9 +21,7 @@ use crate::FsError;
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::{CancellationError, CancellationToken};
 use crate::foundation::{FileId, GenerationId};
-use crate::performance::{
-    MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
-};
+use crate::performance::{MeasuredResult, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -327,10 +325,11 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
             cancellation,
         )
         .await;
-        let work = accounting.spent();
-        result
-            .map(|(value, _)| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(project_merge_error(error), work))
+        crate::performance::finish_measured(
+            result.map(|(value, _)| value).map_err(project_merge_error),
+            accounting.spent(),
+            |error| project_merge_error(FsError::from(error)),
+        )
     })
     .await;
     crate::obs::measured_on(&span, result, |receipt| &receipt.work)

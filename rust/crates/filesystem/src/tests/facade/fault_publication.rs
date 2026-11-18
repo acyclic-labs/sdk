@@ -24,7 +24,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     .value;
     let mut rebasing = (volume.checkout(
         GenerationSelector::Head,
-        writable_tracking(),
+        CheckoutMode::tracking_transaction(),
         B,
         &cancellation,
     ))
@@ -74,7 +74,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
                 break;
             }
             Err(failure) => {
-                assert!(failure.work.backend_read_operations > 0);
+                assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
                 assert_eq!(checkout_state(&rebasing), original);
             }
         }
@@ -187,7 +187,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
                         break;
                     }
                     Err(failure) => {
-                        assert!(failure.work.backend_read_operations > 0);
+                        assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
                         assert_eq!(checkout_state(&ours), original);
                     }
                 }
@@ -297,7 +297,8 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
             }
             Err(failure) => {
                 assert!(
-                    failure.work.backend_read_operations + failure.work.backend_write_operations
+                    failure.work.as_deref().unwrap().backend_read_operations
+                        + failure.work.as_deref().unwrap().backend_write_operations
                         > 0
                 );
                 assert_eq!(checkout_state(&checkout), original);

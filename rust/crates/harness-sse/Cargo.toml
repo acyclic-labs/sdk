@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-harness-sse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Credited SSE framing for harness HTTP adapters"
+documentation = "https://docs.rs/acyclic-harness-sse"
+
+[features]
+test-support = ["acyclic-fs/test-support", "acyclic-stream/test-support"]
+
+[dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+bytes.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

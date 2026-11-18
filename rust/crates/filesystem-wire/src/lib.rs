@@ -41,7 +41,37 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 #[cfg(test)]
 mod tests {
     use super::{FILE_DESCRIPTOR_SET, wire};
+    use acyclic_auth_action::{Action, method::Resources};
     use prost::Message as _;
+
+    #[test]
+    fn every_filesystem_rpc_resolves_to_its_declared_actions() {
+        use super::FsMethod;
+        for &method in FsMethod::ALL {
+            let row = method.authorization();
+            assert_eq!(FsMethod::from_route(row.route), Some(method));
+            let [rule] = row.rules else {
+                panic!("{method:?} must have one resource selector");
+            };
+            let actions = rule.actions();
+            assert!(
+                !actions.is_empty() && actions.iter().all(|action| matches!(action, Action::Fs(_))),
+                "{method:?}: {actions:?}"
+            );
+            if rule.admitted.is_empty() {
+                assert!(
+                    matches!(rule.resources, Resources::Extractor { .. }),
+                    "{method:?}"
+                );
+            } else {
+                assert_eq!(actions.len(), 1, "{method:?}: {actions:?}");
+            }
+        }
+        assert_eq!(
+            FsMethod::from_route("/acyclic.filesystem.v2.FilesystemService/Unmapped"),
+            None
+        );
+    }
 
     #[test]
     fn imported_handshake_round_trips_without_the_engine() -> Result<(), prost::DecodeError> {

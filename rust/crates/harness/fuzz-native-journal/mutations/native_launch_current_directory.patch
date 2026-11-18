@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_process/launch/agy.rs
-+++ b/rust/crates/harness/src/local/host_process/launch/agy.rs
+--- a/rust/crates/harness-local/src/local/host_process/launch/agy.rs
++++ b/rust/crates/harness-local/src/local/host_process/launch/agy.rs
 @@ -47,7 +47,7 @@
                          path.extend(
                              Path::new(target)

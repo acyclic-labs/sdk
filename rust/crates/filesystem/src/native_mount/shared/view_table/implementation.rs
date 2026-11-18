@@ -1,0 +1,315 @@
+use crate::native_sync::{Arc, Condvar, Mutex, RwLock};
+use std::collections::HashMap;
+use std::sync::PoisonError;
+
+/// Serial of a view in one shared instance. Serials start at 1 and are never
+/// reused for the lifetime of the table.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ViewSerial(u64);
+
+impl ViewSerial {
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// A serial issued once by [`ViewTable::reserve`] and not yet listed.
+pub(crate) struct ReservedSerial<C> {
+    serial: u64,
+    table: Arc<ViewTable<C>>,
+}
+
+impl<C> ReservedSerial<C> {
+    pub(crate) const fn get(&self) -> u64 {
+        self.serial
+    }
+}
+
+/// The table has issued every serial its identity encoding can carry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ViewSerialsExhausted;
+
+pub(crate) struct ViewTable<C> {
+    views: RwLock<Views<C>>,
+    max_serial: u64,
+}
+
+struct Views<C> {
+    next: u64,
+    live: HashMap<u64, Live<C>>,
+}
+
+struct Live<C> {
+    core: Arc<C>,
+    drain: Arc<Drain>,
+}
+
+struct Drain {
+    state: Mutex<DrainState>,
+    drained: Condvar,
+}
+
+struct DrainState {
+    leases: usize,
+    retiring: bool,
+}
+
+impl Drain {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(DrainState {
+                leases: 0,
+                retiring: false,
+            }),
+            drained: Condvar::new(),
+        }
+    }
+}
+
+impl<C> ViewTable<C> {
+    /// A table that issues serials `1..=max_serial`.
+    pub(crate) fn new(max_serial: u64) -> Self {
+        assert!(max_serial > 0, "a view table issues at least one serial");
+        Self {
+            views: RwLock::new(Views {
+                next: 1,
+                live: HashMap::new(),
+            }),
+            max_serial,
+        }
+    }
+
+    /// Adds a view and returns its only owner.
+    #[cfg(test)]
+    #[cfg(not(loom))]
+    pub(crate) fn insert(table: &Arc<Self>, core: C) -> Result<ViewOwner<C>, ViewSerialsExhausted> {
+        let serial = Self::reserve(table)?;
+        Ok(Self::insert_reserved(table, serial, core))
+    }
+
+    /// Issues the next serial without listing a view, so a core can be built
+    /// for it first. A reservation that is never inserted is never reissued.
+    pub(crate) fn reserve(table: &Arc<Self>) -> Result<ReservedSerial<C>, ViewSerialsExhausted> {
+        let mut views = table.views.write().unwrap_or_else(PoisonError::into_inner);
+        let serial = views.next;
+        if serial > table.max_serial {
+            return Err(ViewSerialsExhausted);
+        }
+        views.next = serial + 1;
+        Ok(ReservedSerial {
+            serial,
+            table: Arc::clone(table),
+        })
+    }
+
+    /// Lists a view under its reserved serial and returns its only owner.
+    pub(crate) fn insert_reserved(
+        table: &Arc<Self>,
+        serial: ReservedSerial<C>,
+        core: C,
+    ) -> ViewOwner<C> {
+        let ReservedSerial {
+            serial,
+            table: reserved_table,
+        } = serial;
+        assert!(
+            Arc::ptr_eq(table, &reserved_table),
+            "a reservation belongs to its issuing table"
+        );
+        drop(reserved_table);
+        let mut views = table.views.write().unwrap_or_else(PoisonError::into_inner);
+        assert!(serial < views.next, "a reservation comes from this table");
+        let previous = views.live.insert(
+            serial,
+            Live {
+                core: Arc::new(core),
+                drain: Arc::new(Drain::new()),
+            },
+        );
+        assert!(previous.is_none(), "view serials are never reused");
+        ViewOwner {
+            table: Some(Arc::clone(table)),
+            serial: ViewSerial(serial),
+        }
+    }
+
+    /// Admits a callback to a live view, or returns `None` for a serial that
+    /// is retired or was never issued.
+    pub(crate) fn enter(&self, serial: u64) -> Option<ViewLease<C>> {
+        let views = self.views.read().unwrap_or_else(PoisonError::into_inner);
+        let live = views.live.get(&serial)?;
+        // Admission happens under the table's read lock, which retirement's
+        // removal excludes: a view is either still listed and its lease is
+        // counted, or it is gone and nothing is admitted.
+        let mut state = live
+            .drain
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        debug_assert!(!state.retiring, "a retiring view is never listed");
+        state.leases += 1;
+        drop(state);
+        Some(ViewLease {
+            core: Arc::clone(&live.core),
+            _count: LeaseCount {
+                drain: Arc::clone(&live.drain),
+            },
+        })
+    }
+
+    /// Serials of the live views, in issue order.
+    #[cfg(test)]
+    #[cfg(not(loom))]
+    pub(crate) fn serials(&self) -> Vec<ViewSerial> {
+        let views = self.views.read().unwrap_or_else(PoisonError::into_inner);
+        let mut serials: Vec<_> = views.live.keys().copied().map(ViewSerial).collect();
+        serials.sort_unstable();
+        serials
+    }
+
+    #[cfg(test)]
+    #[cfg(not(loom))]
+    pub(crate) fn len(&self) -> usize {
+        self.views
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live
+            .len()
+    }
+
+    fn unlist(&self, serial: ViewSerial) -> RetiringView<C> {
+        let Some(live) = self
+            .views
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live
+            .remove(&serial.0)
+        else {
+            unreachable!("a view owner retires its own listed view once");
+        };
+        RetiringView { live: Some(live) }
+    }
+}
+
+/// Original core and callback drain after admission has closed. Moving this
+/// token transfers cleanup custody; finishing or dropping it drains every
+/// admitted lease before releasing the core, including during unwind.
+pub(crate) struct RetiringView<C> {
+    live: Option<Live<C>>,
+}
+
+impl<C> RetiringView<C> {
+    pub(crate) fn finish(mut self) -> Result<C, &'static str> {
+        self.drain().ok_or("retirement did not return its core")
+    }
+
+    fn drain(&mut self) -> Option<C> {
+        let Live { core, drain } = self.live.take()?;
+        let mut state = drain.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.retiring = true;
+        #[cfg(loom)]
+        let skip = faults::RETIRE_WITHOUT_DRAIN.with(std::cell::Cell::get);
+        #[cfg(not(loom))]
+        let skip = false;
+        if !skip {
+            while state.leases != 0 {
+                state = drain
+                    .drained
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+        drop(state);
+        match Arc::try_unwrap(core) {
+            Ok(core) => Some(core),
+            // Only the broken model returns before its leases drain; the last
+            // lease then drops the core.
+            Err(_) if skip => None,
+            Err(_) => unreachable!("every lease releases its core before it is counted out"),
+        }
+    }
+}
+
+impl<C> Drop for RetiringView<C> {
+    fn drop(&mut self) {
+        drop(self.drain());
+    }
+}
+
+/// The only handle that can retire a view. Dropping it retires the view.
+pub(crate) struct ViewOwner<C> {
+    table: Option<Arc<ViewTable<C>>>,
+    serial: ViewSerial,
+}
+
+impl<C> ViewOwner<C> {
+    pub(crate) fn serial(&self) -> ViewSerial {
+        self.serial
+    }
+
+    /// Unlists the view and runs `stop` without waiting for admitted callbacks.
+    /// The returned token owns their drain; a panicking stop drains here before
+    /// unwinding, so no caller can lose the original cleanup obligation.
+    pub(crate) fn begin_retirement(mut self, stop: impl FnOnce()) -> RetiringView<C> {
+        let Some(table) = self.table.take() else {
+            unreachable!("an owner retires once");
+        };
+        let retiring = table.unlist(self.serial);
+        stop();
+        retiring
+    }
+}
+
+impl<C> Drop for ViewOwner<C> {
+    fn drop(&mut self) {
+        if let Some(table) = self.table.take() {
+            drop(table.unlist(self.serial));
+        }
+    }
+}
+
+/// A callback's admission to one live view. Retirement waits for it.
+pub(crate) struct ViewLease<C> {
+    // Drop the core before counting this lease out; a retiring owner observing
+    // zero leases then owns the last core reference, without an empty state.
+    core: Arc<C>,
+    _count: LeaseCount,
+}
+
+struct LeaseCount {
+    drain: Arc<Drain>,
+}
+
+impl<C> std::ops::Deref for ViewLease<C> {
+    type Target = C;
+
+    fn deref(&self) -> &C {
+        &self.core
+    }
+}
+
+impl Drop for LeaseCount {
+    fn drop(&mut self) {
+        let mut state = self
+            .drain
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.leases -= 1;
+        let wake = state.retiring && state.leases == 0;
+        drop(state);
+        if wake {
+            self.drain.drained.notify_all();
+        }
+    }
+}
+
+#[cfg(loom)]
+pub(crate) mod faults {
+    use std::cell::Cell;
+
+    loom::thread_local! {
+        /// Negative control: retirement returns without waiting for leases.
+        pub(crate) static RETIRE_WITHOUT_DRAIN: Cell<bool> = Cell::new(false);
+    }
+}

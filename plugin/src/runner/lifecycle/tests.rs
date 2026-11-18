@@ -871,7 +871,9 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
     );
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
-        let (owner, child) = tokio::io::duplex(256);
+        // One byte of credit is smaller than any acknowledgement, so the
+        // acknowledgement is backpressured by construction.
+        let (owner, child) = tokio::io::duplex(1);
         let port = ReportPort::new(GENERATION.into(), child).unwrap();
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, held) = std::sync::mpsc::channel::<()>();
@@ -896,11 +898,6 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
             completion.as_mut().await??;
             Ok(())
         };
-        // Retain an additional live primitive so the real acknowledgement
-        // exceeds the channel credit. Reading its prefix leaves it blocked.
-        let (_sender, receiver) = tokio::sync::oneshot::channel::<()>();
-        let _held =
-            acyclic_native_runtime::obs::waiting("channel-close", "k".repeat(1024), receiver);
         let host = async {
             let mut owner = BufReader::new(owner);
             let mut line = String::new();

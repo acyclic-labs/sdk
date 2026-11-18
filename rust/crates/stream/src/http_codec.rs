@@ -1,5 +1,6 @@
 //! Hosted Stream requests shared by native and browser clients.
-use crate::{MAX_COMMAND_BYTES, TokenOperation, memory, wire, wire_codec};
+use crate::{MAX_COMMAND_BYTES, TokenOperation, memory, wire_codec};
+use acyclic_stream_wire::wire;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use prost::Message;
 use serde_json::{Value, json};

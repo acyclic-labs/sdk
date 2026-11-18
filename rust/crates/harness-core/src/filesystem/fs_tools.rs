@@ -167,7 +167,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         read_before_effect(&mut cancellation, access.require(&root)).await?;
         let request = acyclic_fs::GitRequest {
             merge_source: None,
-            operation: acyclic_fs::OperationId::from_bytes(context.operation_id().into_bytes()),
+            operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                context.operation_id().into_bytes(),
+            ),
             unanswered: Arc::new(|_| true),
         };
         let repository = acyclic_fs::GitCompatRepository::new(root.id(), self.store.clone())
@@ -196,7 +198,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         graph
             .register_root(
                 &root,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -222,7 +224,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                     .authorize_descendant(
                         selected,
                         root.id(),
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new(),
                     )
                     .await
@@ -239,11 +241,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             })
             .await?
         };
-        let root_cut = if workspace.id() != root.id() {
+        let root_cut = if workspace.id() == root.id() {
+            None
+        } else {
             Some(
                 read_before_effect(&mut cancellation, async {
                     root.capture_policy_cut(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new(),
                     )
                     .await
@@ -252,8 +256,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 })
                 .await?,
             )
-        } else {
-            None
         };
         drop(cancellation);
         let output = crate::tools::git::run_volume_with_guard(

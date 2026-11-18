@@ -103,19 +103,19 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         #[cfg(feature = "object-revisions")]
         "object_revisions" => assert!(acyclic_objects::grpc::check_revision_metadata(bytes)),
         #[cfg(not(feature = "object-revisions"))]
-        "object_revisions" => return Err("revision transport replay requires object-revisions; recovery: cargo run --features object-revisions --example replay".into()),
+        "object_revisions" => return Err("revision transport replay requires object-revisions; recovery: bazel run //rust/codec-fuzz:replay_example".into()),
         #[cfg(feature = "storage-schedules")]
         "object_schedule" => {
             object_schedule::check(bytes).map_err(|error| error.to_string())?;
         }
         #[cfg(not(feature = "storage-schedules"))]
-        "object_schedule" => return Err("physical schedule replay requires storage-schedules; recovery: cargo run --features storage-schedules --example replay".into()),
+        "object_schedule" => return Err("physical schedule replay requires storage-schedules; recovery: bazel run //rust/codec-fuzz:replay_example".into()),
         "ids" => ids(bytes),
         "auth" => auth(bytes),
         "identities" => identities(bytes),
         "actor_codecs" => actor_codecs(bytes),
         "call_record" => {
-            acyclic_actors::call::codec_fuzz::check(bytes);
+            assert!(acyclic_actors::call::codec_fuzz::check(bytes).is_ok());
             futures::executor::block_on(acyclic_actors::call::model::check(bytes))?;
         }
         "filesystem_codecs" => filesystem_codecs(bytes),
@@ -262,7 +262,7 @@ fn framed(
     bytes: &[u8],
     grpc: bool,
     chunk: usize,
-) -> Result<Vec<acyclic_stream::wire::SessionFrame>, acyclic_stream::StreamError> {
+) -> Result<Vec<acyclic_stream_wire::wire::SessionFrame>, acyclic_stream::StreamError> {
     use acyclic_stream::wire_codec::session::FrameDecoder;
     let mut decoder = if grpc {
         FrameDecoder::grpc()
@@ -302,42 +302,55 @@ pub fn stream_persistence(bytes: &[u8]) {
 }
 
 pub fn ids(bytes: &[u8]) {
-    acyclic_machines::identity_codec_fuzz::check(bytes);
-    match acyclic_fs::ObjectId::from_prefix(bytes) {
+    assert!(acyclic_machines::identity_codec_fuzz::check(bytes).is_ok());
+    match acyclic_fs_format::object_reference::ObjectId::from_prefix(bytes) {
         Ok((id, tail)) => {
             let encoded = id.to_bytes();
             assert_eq!(&bytes[..encoded.len()], encoded.as_slice());
             assert_eq!(tail, &bytes[encoded.len()..]);
             assert_eq!(tail.as_ptr(), bytes[encoded.len()..].as_ptr());
             assert_eq!(
-                acyclic_fs::ObjectId::try_from(bytes).is_ok(),
+                acyclic_fs_format::object_reference::ObjectId::try_from(bytes).is_ok(),
                 tail.is_empty()
             );
             assert_eq!(
                 acyclic_fs::GenerationId::from_bytes(bytes).is_some(),
-                tail.is_empty() && id.kind == acyclic_fs::ObjectKind::GenerationRoot
+                tail.is_empty()
+                    && id.kind == acyclic_fs_format::object_reference::ObjectKind::GenerationRoot
             );
-            assert_eq!(acyclic_fs::ObjectId::try_from(encoded.as_slice()), Ok(id));
+            assert_eq!(
+                acyclic_fs_format::object_reference::ObjectId::try_from(encoded.as_slice()),
+                Ok(id)
+            );
             for cut in 0..encoded.len() {
-                assert!(acyclic_fs::ObjectId::from_prefix(&bytes[..cut]).is_err());
+                assert!(
+                    acyclic_fs_format::object_reference::ObjectId::from_prefix(&bytes[..cut])
+                        .is_err()
+                );
             }
             // Concatenate actual writer outputs: the second identity must remain
             // borrowed in full, regardless of the first identity's seal.
-            let mut pair = [0; 2 * acyclic_fs::ObjectId::ENCODED_LEN];
+            let mut pair = [0; 2 * acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
             let width = encoded.len();
             pair[..width].copy_from_slice(encoded.as_slice());
             pair[width..2 * width].copy_from_slice(encoded.as_slice());
             let pair = &pair[..2 * width];
-            let (first, second) = acyclic_fs::ObjectId::from_prefix(pair).unwrap();
+            let (first, second) =
+                acyclic_fs_format::object_reference::ObjectId::from_prefix(pair).unwrap();
             assert_eq!(first, id);
             assert_eq!(second, encoded.as_slice());
             assert_eq!(second.as_ptr(), pair[width..].as_ptr());
-            assert!(acyclic_fs::ObjectId::try_from(pair).is_err());
+            assert!(acyclic_fs_format::object_reference::ObjectId::try_from(pair).is_err());
             assert!(acyclic_fs::GenerationId::from_bytes(pair).is_none());
-            assert!(acyclic_fs::ObjectId::try_from(id.digest.as_bytes().as_slice()).is_err());
+            assert!(
+                acyclic_fs_format::object_reference::ObjectId::try_from(
+                    id.digest.as_bytes().as_slice()
+                )
+                .is_err()
+            );
         }
         Err(_) => {
-            assert!(acyclic_fs::ObjectId::try_from(bytes).is_err());
+            assert!(acyclic_fs_format::object_reference::ObjectId::try_from(bytes).is_err());
             assert!(acyclic_fs::GenerationId::from_bytes(bytes).is_none());
         }
     }
@@ -519,7 +532,7 @@ pub fn actor_seeds()
     let invocation_bytes =
         acyclic_stream::wire_codec::record_wire(ticket.record().clone(), None).encode_to_vec();
     let record = acyclic_stream::wire_codec::record(
-        acyclic_stream::wire::Record::decode(invocation_bytes.as_slice())?,
+        acyclic_stream_wire::wire::Record::decode(invocation_bytes.as_slice())?,
         None,
     )?;
     assert_eq!(
@@ -1335,7 +1348,7 @@ pub fn actor_codecs(bytes: &[u8]) {
             canonical
         );
     }
-    if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
+    if let Ok(value) = acyclic_stream_wire::wire::Record::decode(bytes)
         && let Ok(record) = acyclic_stream::wire_codec::record(value, None)
     {
         // Both readers consume this same committed Stream wire envelope.
@@ -1366,11 +1379,11 @@ pub fn actor_codecs(bytes: &[u8]) {
 }
 
 pub fn filesystem_codecs(bytes: &[u8]) {
-    acyclic_fs::kernel::decoder_fuzz::records::check(bytes);
+    assert!(acyclic_fs::kernel::decoder_fuzz::records::check(bytes).is_ok());
     acyclic_fs::s3_http::codec_fuzz::check(bytes);
-    assert!(acyclic_fs::core_state::codec_fuzz::check(bytes));
+    assert!(acyclic_fs::core_state::codec_fuzz::check(bytes).is_ok());
     assert!(acyclic_fs::lazy_workspace::codec_fuzz::check(bytes));
-    assert!(acyclic_fs::materializer::codec_fuzz::check(bytes));
+    assert!(acyclic_fs::materializer::codec_fuzz::check(bytes).is_ok());
     assert!(acyclic_fs::native_ownership_codec::check(bytes));
     use acyclic_fs::{
         streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
@@ -1445,7 +1458,7 @@ fn historical_invocations_are_typed_format_refusals() {
         &include_bytes!("../corpus/actor_codecs/invocation-committed-v2")[..],
     ] {
         let record = acyclic_stream::wire_codec::record(
-            acyclic_stream::wire::Record::decode(bytes).unwrap(),
+            acyclic_stream_wire::wire::Record::decode(bytes).unwrap(),
             None,
         )
         .unwrap();

@@ -1,27 +1,27 @@
 [
   {
-    "package": "acyclic-harness-tui", "target": "lib",
+    "target": "//rust/crates/harness-tui:acyclic_harness_tui_test_cases",
     "class": "incremental token cache resumes inside an earlier open token",
     "fixed_by": "28d03ab1b",
     "regression": "completion::incremental_tests::delta_requests_agree_with_full_parsing",
     "controls": ["completion::incremental_tests::every_two_keystrokes_on_short_prompts_agree_with_full_parsing", "completion::incremental_tests::negative_control_resuming_inside_an_open_token_fails_the_property"]
   },
   {
-    "package": "acyclic-harness", "target": "lib",
+    "target": "//rust/crates/harness-local:acyclic_harness_local_test_cases",
     "class": "backing namespace lifetime follows all retained stores",
     "fixed_by": "ab2737528,efa4f9023",
     "regression": "local::workspace::performance_tests::standalone_core_owner_survives_clones_and_reopens_after_release",
     "controls": ["local::tests::hermetic::state_lifetime_properties::all_store_drop_orders_detect_a_missing_owner"]
   },
   {
-    "package": "acyclic-harness", "target": "lib",
+    "target": "//rust/crates/harness-local:acyclic_harness_local_test_cases",
     "class": "cached FUSE attributes and inherited open-file lock descriptions",
     "fixed_by": "efa4f9023",
     "regression": "local::workspace::volumes::recovery_tests::scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence",
     "controls": ["local::workspace::volumes::recovery_tests::scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence"]
   },
   {
-    "package": "acyclic-native-runtime", "target": "lib",
+    "target": "//rust/crates/native-runtime:acyclic_native_runtime_test_cases",
     "class": "physical Pending poll counts mistaken for seeded task progress",
     "fixed_by": "e9b3a0f92",
     "regression": "testing::host::tests::original_native_io_in_a_worker_callback_retains_seeded_task_ownership",

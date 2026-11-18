@@ -1,5 +1,5 @@
 use super::{check, id, name, text};
-use crate::protocol::{
+use acyclic_harness_provider_protocol::{
     sequence::{results_lead, tool_result, user_boundary},
     shape,
 };

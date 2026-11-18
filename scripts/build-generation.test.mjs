@@ -9,7 +9,7 @@ import fc from "fast-check";
 import { packageClosure } from "./package-closure.mjs";
 import { contractModules, keepsGenerator } from "./generate-contracts.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
-import { nativeFamily } from "./native-family.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 import ts from "typescript-parser";
 
 const source = readFileSync("scripts/package-closure.mjs", "utf8");
@@ -264,9 +264,11 @@ test("a generation key covers every crate a generator compiles and names content
       assert.ok(inputs.has(`rust/crates/${crate}/src/lib.rs`), `${crate} sources are generation inputs`);
     }
     // The compiler Cargo runs and every setting that changes its output select the entry; output directories do not.
-    const fake = join(repository, "rustc");
-    writeFileSync(fake, "#!/bin/sh\necho fake-rustc\n", { mode: 0o755 });
+    const baseline = join(repository, "baseline-rustc"), fake = join(repository, "rustc");
+    for (const compiler of [baseline, fake])
+      writeFileSync(compiler, '#!/bin/sh\nprintf "%s\\n" "$0"\n', { mode: 0o755 });
     const keyWith = async settings => {
+      settings = { RUSTC: baseline, ...settings };
       const saved = Object.fromEntries(Object.keys(settings).map(name => [name, process.env[name]]));
       Object.assign(process.env, settings);
       try { return await generationKey(process.cwd()); }
@@ -279,7 +281,7 @@ test("a generation key covers every crate a generator compiles and names content
     assert.equal(await keyWith({ CARGO_BUILD_JOBS: "6" }), base, "parallelism selects nothing");
     assert.equal(await keyWith({ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: "cc" }), base, "a linker selects nothing");
     assert.equal(await keyWith({ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: "runner" }), base, "a runner selects nothing");
-    rmSync(fake);
+    for (const compiler of [baseline, fake]) rmSync(compiler);
     const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: repository });
     git("init", "-q");
     writeFileSync(join(repository, "kept"), "kept");

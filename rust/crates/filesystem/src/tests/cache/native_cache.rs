@@ -131,7 +131,7 @@ async fn scalar_and_batch_cache_eviction_cannot_release_a_live_byte_alias()
         };
         let original =
             NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut work = AuthorityWork::native(&original, &cancel);
         let requests = [ObjectReadRequest {
             object_id: id,
@@ -145,16 +145,19 @@ async fn scalar_and_batch_cache_eviction_cannot_release_a_live_byte_alias()
         } else {
             cached.read(id, 5, &mut work).await?.bytes
         };
-        let held = original.live_allocation_bytes();
-        assert_eq!(original.receipt().items_returned, if batch { 2 } else { 0 });
+        let held = original.live_allocation_bytes().unwrap();
+        assert_eq!(
+            original.receipt().unwrap().items_returned,
+            if batch { 2 } else { 0 }
+        );
         assert!(held > baseline);
         drop(cached.read(id, 5, &mut work).await?);
         cached.clear()?;
-        assert_eq!(original.live_allocation_bytes(), held);
+        assert_eq!(original.live_allocation_bytes().unwrap(), held);
         assert_eq!(alias.as_ref(), b"owned");
         drop(alias);
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        original.receipt().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        original.receipt().unwrap().verify(budget)?;
     }
     Ok(())
 }
@@ -169,7 +172,7 @@ async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocat
             let (cached, id) = owned_cache(finish, &cancel).await?;
             let original =
                 NativeMaterializationWork::new(budget(), &cancel).map_err(|(error, _)| error)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let mut future = Box::pin(async {
                 let mut work = AuthorityWork::native(&original, &cancel);
                 if batch {
@@ -207,7 +210,7 @@ async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocat
                             .poll(&mut Context::from_waker(Waker::noop()))
                             .is_pending()
                     );
-                    assert!(original.live_allocation_bytes() > baseline);
+                    assert!(original.live_allocation_bytes().unwrap() > baseline);
                     let mut follower_work = AuthorityWork::native(&original, &cancel);
                     let mut follower = Box::pin(cached.read(id, 5, &mut follower_work));
                     assert!(
@@ -217,7 +220,7 @@ async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocat
                             .is_pending()
                     );
                     drop(future);
-                    assert!(original.live_allocation_bytes() > baseline);
+                    assert!(original.live_allocation_bytes().unwrap() > baseline);
                     assert!(matches!(
                         follower.await,
                         Err(ObjectStoreError::SharedReadUnavailable)
@@ -225,9 +228,9 @@ async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocat
                 }
                 Finish::Return => unreachable!(),
             }
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             assert_eq!(cached.stats()?.in_flight, 0);
-            original.receipt().verify(budget())?;
+            original.receipt().unwrap().verify(budget())?;
         }
         let cancel = CancellationToken::new();
         let (cached, id) = owned_cache(Finish::Return, &cancel).await?;
@@ -239,7 +242,7 @@ async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocat
         }
         let original =
             NativeMaterializationWork::new(denied, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut work = AuthorityWork::native(&original, &cancel);
         let failure = if batch {
             cached
@@ -261,9 +264,9 @@ async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocat
                 NativeTreeMaterializationError::Work(_)
             ))
         ));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(cached.stats()?.in_flight, 0);
-        original.receipt().verify(denied)?;
+        original.receipt().unwrap().verify(denied)?;
     }
     Ok(())
 }

@@ -114,9 +114,12 @@ fn windows_owned_callback_threads_retire_once_and_preserve_other_tls() -> window
                     super::run_with_meter(Some(&work), || 42).expect("nested finite callback"),
                     42
                 );
-                assert_eq!(work.receipt().backend_write_operations, 2);
-                assert_eq!(work.receipt().allocation_operations, 2);
-                assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
+                assert_eq!(work.receipt().unwrap().backend_write_operations, 2);
+                assert_eq!(work.receipt().unwrap().allocation_operations, 2);
+                assert_eq!(
+                    (&work.state).lock().live_allocation_bytes().unwrap(),
+                    payload
+                );
                 assert_eq!(super::ACTIVE_CALLBACK_FIBER.get(), outer_fiber);
                 assert_eq!(observed.load(Ordering::SeqCst), 0);
             })
@@ -157,7 +160,7 @@ fn windows_owned_refused_callback_never_bootstraps_runtime() -> windows::core::R
             &crate::CancellationToken::new(),
         )
         .expect("original accounting state is admitted");
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         let bootstrapped = std::cell::Cell::new(false);
         let result = super::run_with_runtime_bootstrap(
             Some(&work),
@@ -169,6 +172,6 @@ fn windows_owned_refused_callback_never_bootstraps_runtime() -> windows::core::R
         );
         assert!(matches!(result, Err(super::ProviderFailure::Work(_))));
         assert!(!bootstrapped.get(), "refused provider bootstrapped runtime");
-        assert_eq!(work.receipt(), before);
+        assert_eq!(work.receipt().unwrap(), before);
     })
 }

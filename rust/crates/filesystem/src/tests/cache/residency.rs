@@ -59,7 +59,7 @@ async fn cache_bounds_cancellation_and_clear_fail_before_hidden_backend_work()
         .err()
         .ok_or("cancelled cache read succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert_eq!(cached.stats()?, ObjectCacheStats::default());
     object_work!(cached, read(object_id, 7), B, &active).await?;
     cached.clear()?;

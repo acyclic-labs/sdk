@@ -189,14 +189,14 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
     state.records.push(receiver);
 }
 
-type Delivered = Result<(u64, u64, Vec<u8>), StreamError>;
+type Delivered = Result<(u64, u64, Vec<u8>), StreamCategory>;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Output {
-    results: Vec<Result<(), StreamError>>,
-    ready: Vec<Result<Result<u64, StreamError>, String>>,
+    results: Vec<Result<(), StreamCategory>>,
+    ready: Vec<Result<Result<u64, StreamCategory>, String>>,
     routes: Vec<String>,
-    frames: Vec<Result<Vec<u8>, StreamError>>,
+    frames: Vec<Result<Vec<u8>, StreamCategory>>,
     deliveries: Vec<Vec<Delivered>>,
 }
 
@@ -210,7 +210,12 @@ fn run(mut state: State, redundant: bool) -> (Output, usize, AllocationInfo) {
             if redundant {
                 assert!(state.pool.routes.get_mut(&input.channel_id).is_some());
             }
-            results.push(state.pool.receive("good", input));
+            results.push(
+                state
+                    .pool
+                    .receive("good", input)
+                    .map_err(|error| error.category()),
+            );
         });
     }
     let searches = state.pool.routes.searches() - before;
@@ -244,7 +249,11 @@ fn run(mut state: State, redundant: bool) -> (Output, usize, AllocationInfo) {
     let mut frames = Vec::new();
     while let Some(value) = state.sender.next().now_or_never() {
         let failed = value.is_err();
-        frames.push(value.map(|frame| frame.encode_to_vec()));
+        frames.push(
+            value
+                .map(|frame| frame.encode_to_vec())
+                .map_err(|error| error.category()),
+        );
         if failed {
             break;
         }
@@ -254,7 +263,7 @@ fn run(mut state: State, redundant: bool) -> (Output, usize, AllocationInfo) {
         .iter_mut()
         .map(|r| {
             r.try_recv()
-                .map(|outcome| outcome.map(|(id, _)| id))
+                .map(|outcome| outcome.map(|(id, _)| id).map_err(|error| error.category()))
                 .map_err(|error| error.to_string())
         })
         .collect();
@@ -265,7 +274,9 @@ fn run(mut state: State, redundant: bool) -> (Output, usize, AllocationInfo) {
             let mut received = Vec::new();
             while let Ok(value) = receiver.try_recv() {
                 received.push(
-                    value.map(|d| (d.sequence, d.generation, d.item.into_wire().encode_to_vec())),
+                    value
+                        .map(|d| (d.sequence, d.generation, d.item.into_wire().encode_to_vec()))
+                        .map_err(|error| error.category()),
                 );
             }
             received

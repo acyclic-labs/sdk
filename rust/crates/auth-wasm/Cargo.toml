@@ -22,7 +22,7 @@ url = "=2.5.8"
 zeroize.workspace = true
 
 [dev-dependencies]
-ed25519-dalek = "=3.0.0"
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 proptest.workspace = true
 
 [lints]

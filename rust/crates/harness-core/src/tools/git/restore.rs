@@ -19,7 +19,7 @@ where
             .current
             .operation_generation(
                 IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -47,7 +47,7 @@ where
         let current = self
             .current
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -69,13 +69,13 @@ where
                 current.id(),
                 IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 self.permit,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                        acyclic_fs::OperationReceipt {
+                    Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                        acyclic_fs_work::performance::OperationReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                         },
                     )
                 },

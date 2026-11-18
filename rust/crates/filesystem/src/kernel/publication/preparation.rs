@@ -192,7 +192,10 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
                     outcome: AppendOutcome::IdempotencyConflict {
                         committed_fingerprint: resolved.fingerprint,
                     },
-                    work: accounting.spent(),
+                    work: accounting
+                        .spent()
+                        .map_err(crate::FsError::from)
+                        .map_err(E::from)?,
                 },
                 published: None,
                 allocation: authentication.guard,
@@ -212,7 +215,10 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
                 receipt: PublicationReceipt {
                     proof: authentication.proof,
                     outcome,
-                    work: accounting.spent(),
+                    work: accounting
+                        .spent()
+                        .map_err(crate::FsError::from)
+                        .map_err(E::from)?,
                 },
                 published,
                 allocation: authentication.guard,

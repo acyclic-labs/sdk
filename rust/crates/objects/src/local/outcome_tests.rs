@@ -1,6 +1,6 @@
 //! Outcome controls at the real log's original I/O boundaries.
 use super::*;
-use acyclic_native_runtime::testing::{DurableFault, DurableWrite, Schedule};
+use acyclic_native_runtime::testing::{DurableFault, DurableWrite, Schedule, drive};
 
 fn bytes(value: &[u8]) -> OwnedBytes {
     OwnedBytes::from(value.to_vec())
@@ -13,19 +13,16 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
 
     async fn counted<T>(operation: impl Future<Output = T>) -> (T, usize) {
         let (schedule, mut events) = Schedule::new();
-        let mut operation = Box::pin(schedule.scope(operation));
         let mut jobs = 0;
-        let result = loop {
-            tokio::select! {
-                result = &mut operation => break result,
-                boundary = events.recv() => {
-                    let boundary = boundary.expect("original read producer ended before its result");
-                    jobs += usize::from(boundary.name == "native:submitted");
-                    boundary.release();
-                }
-            }
-        };
-        schedule.drained().await;
+        let result = drive(
+            &schedule,
+            &mut events,
+            |boundary| {
+                jobs += usize::from(boundary.name == "native:submitted");
+            },
+            operation,
+        )
+        .await;
         (result, jobs)
     }
 
@@ -256,18 +253,10 @@ async fn owned_close_reports_physical_completion_and_failure()
         let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
         assert!(medium.create("key", bytes(b"dirty")).await?);
         let (schedule, mut events) = Schedule::new();
-        let driver = tokio::spawn(async move {
-            while let Some(boundary) = events.recv().await {
-                boundary.release();
-            }
-        });
         if let Some((ordinal, fault)) = cut {
             schedule.cut_at(ordinal, fault);
         }
-        let result = schedule.scope(medium.close()).await;
-        schedule.drained().await;
-        driver.abort();
-        let _ = driver.await;
+        let result = drive(&schedule, &mut events, |_| {}, medium.close()).await;
         let trace = schedule.durable_writes();
         match cut {
             None => {
@@ -417,18 +406,14 @@ async fn mutation_outcome(
         Some(observation(&medium, "key").await)
     };
     let (schedule, mut events) = Schedule::new();
-    let driver = tokio::spawn(async move {
-        while let Some(boundary) = events.recv().await {
-            boundary.release();
-        }
-    });
     schedule.cut_at(0, fault);
-    let result = schedule
-        .scope(apply_mutation(&medium, operation, observed))
-        .await;
-    schedule.drained().await;
-    driver.abort();
-    let _ = driver.await;
+    let result = drive(
+        &schedule,
+        &mut events,
+        |_| {},
+        apply_mutation(&medium, operation, observed),
+    )
+    .await;
     assert!(
         matches!(result, Err(MediumError::Ambiguous(_))),
         "{operation} {fault:?}: {result:?}"
@@ -458,20 +443,6 @@ async fn mutation_outcome(
         Err(MediumError::Failed(_))
     ));
     assert_eq!(std::fs::metadata(root.path().join(LOG))?.len(), before);
-    Ok(())
-}
-
-async fn mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals()
--> Result<(), Box<dyn std::error::Error>> {
-    for operation in ["create", "replace", "remove", "remove-if"] {
-        for fault in [
-            DurableFault::After,
-            DurableFault::Torn(1),
-            DurableFault::Failed,
-        ] {
-            mutation_outcome(operation, fault).await?;
-        }
-    }
     Ok(())
 }
 
@@ -527,29 +498,20 @@ async fn compacting_mutation(
     medium.flush(&[]).await?;
     let observed = observation(&medium, "key").await;
     let (schedule, mut events) = Schedule::new();
-    let driver = tokio::spawn(async move {
-        while let Some(boundary) = events.recv().await {
-            boundary.release();
-        }
-    });
     if let Some((ordinal, fault)) = cut {
         schedule.cut_at(ordinal, fault);
     }
-    let result = schedule
-        .scope(async {
-            if remove {
-                medium.remove_if(observed).await
-            } else {
-                medium
-                    .replace(observed, bytes(b"new"))
-                    .await
-                    .map(|value| value.is_some())
-            }
-        })
-        .await;
-    schedule.drained().await;
-    driver.abort();
-    let _ = driver.await;
+    let result = drive(&schedule, &mut events, |_| {}, async {
+        if remove {
+            medium.remove_if(observed).await
+        } else {
+            medium
+                .replace(observed, bytes(b"new"))
+                .await
+                .map(|value| value.is_some())
+        }
+    })
+    .await;
     assert!(
         matches!(result, Ok(true)),
         "maintenance {cut:?}: {result:?}"
@@ -577,7 +539,7 @@ async fn compacting_mutation(
 
 async fn maintenance_failure_cannot_refuse_an_already_visible_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
-    for remove in [false, true] {
+    futures::future::try_join_all([false, true].map(|remove| async move {
         // Capture this OS's actual successful flush/rename trace, then cut its
         // original calls. No invented syscall inventory or replacement medium.
         let trace = compacting_mutation(remove, None).await?;
@@ -593,12 +555,14 @@ async fn maintenance_failure_cannot_refuse_an_already_visible_mutation()
             cuts.iter().any(|call| call.operation == "namespace:rename"),
             "{trace:?}"
         );
-        for call in cuts {
-            for fault in [DurableFault::Before, DurableFault::After] {
-                compacting_mutation(remove, Some((call.ordinal, fault))).await?;
-            }
-        }
-    }
+        futures::future::try_join_all(cuts.into_iter().flat_map(|call| {
+            [DurableFault::Before, DurableFault::After]
+                .map(move |fault| compacting_mutation(remove, Some((call.ordinal, fault))))
+        }))
+        .await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }))
+    .await?;
     Ok(())
 }
 
@@ -606,7 +570,32 @@ async fn maintenance_failure_cannot_refuse_an_already_visible_mutation()
 async fn physical_outcomes_preserve_visible_mutations_and_uncertainty()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
-    mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals().await?;
-    maintenance_failure_cannot_refuse_an_already_visible_mutation().await?;
-    Ok(())
+    let mutations: Vec<_> = ["create", "replace", "remove", "remove-if"]
+        .into_iter()
+        .flat_map(|operation| {
+            [
+                DurableFault::After,
+                DurableFault::Torn(1),
+                DurableFault::Failed,
+            ]
+            .map(move |fault| mutation_outcome(operation, fault))
+        })
+        .collect();
+    let planned = mutations.len();
+    let (schedule, mut events) = Schedule::new();
+    let mut in_flight = 0;
+    drive(
+        &schedule,
+        &mut events,
+        |_| {
+            in_flight = in_flight.max(schedule.pending_native_work());
+        },
+        futures::future::try_join_all(mutations),
+    )
+    .await?;
+    assert!(
+        in_flight >= planned,
+        "independent roots serialized: {in_flight} < {planned}"
+    );
+    maintenance_failure_cannot_refuse_an_already_visible_mutation().await
 }

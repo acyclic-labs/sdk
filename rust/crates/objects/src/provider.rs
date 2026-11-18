@@ -71,6 +71,9 @@ pub struct Head {
     pub length: u64,
     /// Outgoing references recorded outside the payload.
     pub references: Vec<Digest>,
+    /// Publisher-declared SHA-256 for a manifest's logical body. The
+    /// declaration is not verified by Objects; consumers must verify bytes.
+    pub sha256: Option<[u8; 32]>,
     /// The applied revision this read was served at, when the provider
     /// issues revisions.
     pub revision: Option<Revision>,
@@ -139,6 +142,20 @@ pub struct Page {
 pub struct RootId(Vec<u8>);
 
 impl RootId {
+    /// Builds a nonempty identity in reusable storage from a fixed prefix and suffix.
+    #[must_use]
+    pub fn from_prefix<const N: usize>(
+        prefix: &[u8; N],
+        suffix: &[u8],
+        mut bytes: Vec<u8>,
+    ) -> Self {
+        const { assert!(N > 0) };
+        bytes.clear();
+        bytes.extend_from_slice(prefix);
+        bytes.extend_from_slice(suffix);
+        Self(bytes)
+    }
+
     /// Wraps a nonempty identity.
     pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, Error> {
         let bytes = bytes.into();
@@ -358,8 +375,24 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     /// reference exists, durably. Repeating the same batch is a no-op.
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error>;
 
-    /// Drops every batch of `root`. Repeating it is a no-op.
+    /// Drops every ordinary batch of `root`. Repeating it is a no-op; an
+    /// overlapping or later ordinary retain may establish another batch.
     async fn release(&self, root: &RootId) -> Result<Released, Error>;
+
+    /// Retains a batch for one fenced intent. Once a terminal release through
+    /// this fence commits, this or a delayed retain at a lower fence fails
+    /// with [`wire::ErrorCode::TerminalFence`]. Higher fences may retain.
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error>;
+
+    /// Durably closes the fenced intent through `fence` and releases those
+    /// batches. Repeating a terminal release never reopens an older fence.
+    /// Ordinary roots and their non-terminal releases remain independent.
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error>;
 
     /// Marks from every retained root, then sweeps each other blob that the
     /// pass before the previous one already found unreferenced: a put has
@@ -593,6 +626,17 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     }
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
         (**self).release(root).await
+    }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        (**self).retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        (**self).release_terminal(root, fence).await
     }
     async fn collect(&self) -> Result<Collection, Error> {
         (**self).collect().await

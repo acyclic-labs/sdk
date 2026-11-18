@@ -4,9 +4,12 @@ use crate::{
     agent::{AgentId, AgentPath, AgentRecord, Sender},
     filesystem::MemoryHarnessStorage,
 };
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, VolumeLimits, WorkBudget};
 use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
 use std::sync::Arc;
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork, VolumeLimits},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 mod export;
 

@@ -96,7 +96,7 @@ async fn concurrent_revalidations_observe_the_same_failed_cache_clear()
             .expect_err("clear was admitted");
         assert_eq!(first.to_string(), second.to_string());
     });
-    assert_eq!(denied.receipt().backend_write_operations, 0);
+    assert_eq!(denied.receipt().unwrap().backend_write_operations, 0);
     {
         let state = lock_recover(&runtime.projector.state);
         assert_eq!(state.settlers, 0);
@@ -144,9 +144,9 @@ async fn a_failed_negative_cache_clear_is_retried_without_a_source_change()
         assert!(lock_recover(&runtime.projector.state).negative_cache_dirty);
     }
     let work = setup_work()?;
-    let before = work.receipt().backend_write_operations;
+    let before = work.receipt().unwrap().backend_write_operations;
     session.revalidate(&work)?;
-    assert!(work.receipt().backend_write_operations > before);
+    assert!(work.receipt().unwrap().backend_write_operations > before);
     assert!(!lock_recover(&runtime.projector.state).negative_cache_dirty);
     assert!(basis.still_describes(source.as_ref(), &MountPath::root(), None));
     drop(runtime);
@@ -739,7 +739,9 @@ async fn rustc_links_object_files_created_inside_projection()
     let compiler_path = path.clone();
     let output = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(
-            acyclic_native_runtime::ProcessCommand::new("rustc")
+            acyclic_native_runtime::ProcessCommand::new(
+                crate::test_support::mount_test_compiler()?,
+            )
                 .current_dir(compiler_path)
                 .args([
                     "--edition",

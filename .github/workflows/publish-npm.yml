@@ -107,14 +107,14 @@ jobs:
           cp -R "$RUNNER_TEMP/qualified/typescript" "$stage/typescript"
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
           cp scripts/registry-publication.mjs "$stage/scripts/"
-          cp scripts/generated-bindings.mjs scripts/proto-codegen.mjs scripts/bazel-executables.mjs "$stage/scripts/"
+          cp scripts/generated-bindings.mjs scripts/proto-codegen.mjs scripts/bazel-executables.mjs scripts/policy-core.mjs "$stage/scripts/"
           mkdir -p "$stage/node_modules"
           cp -RL node_modules/ignore "$stage/node_modules/ignore"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
           cp scripts/assemble-{actors,stream}-native-package.mjs scripts/build-{actors,stream}-native.mjs \
             scripts/assemble-native-family.mjs scripts/build-native-family.mjs \
-            scripts/native-family.mjs scripts/archive-utils.mjs "$stage/scripts/"
+            scripts/native-family.mjs scripts/native-family-metadata.mjs scripts/archive-utils.mjs "$stage/scripts/"
           mkdir -p "$stage/compatibility/native-families"
           cp compatibility/native-families/{actors,stream}.json "$stage/compatibility/native-families/"
           cp release/npm-packages.json "$stage/release/"

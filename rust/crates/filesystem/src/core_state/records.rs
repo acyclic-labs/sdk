@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) struct RecordPaths<'a> {
+    pub(super) directory: PathBuf,
     pub(super) current: PathBuf,
     pub(super) previous: PathBuf,
     pub(super) temporary: PathBuf,
@@ -12,7 +13,7 @@ pub(super) struct RecordPaths<'a> {
 
 impl RecordPaths<'_> {
     pub(super) fn directory(&self) -> &Path {
-        self.current.parent().expect("record paths have a family")
+        &self.directory
     }
 
     fn read<T: DeserializeOwned>(
@@ -36,7 +37,7 @@ impl RecordPaths<'_> {
             let parent = RecordDirectory::open(&self.current, work, parent)?;
             crate::native_host::sync_directory_held(parent.get(), &mut &*work)?;
         } else {
-            sync_directory(self.directory())?;
+            sync_parent(self.directory(), NativeDurability::Full)?;
         }
         Ok(())
     }
@@ -538,11 +539,6 @@ pub(super) fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
     }
 }
 
-/// Makes the entries of directory `path` durable, with the one directory
-/// synchronization every store shares; Windows flushes a directory handle.
-pub(super) fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
-    acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
-}
-
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(all(windows))]
 mod windows_publication_tests;

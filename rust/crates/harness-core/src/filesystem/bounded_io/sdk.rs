@@ -53,16 +53,17 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
                 work: WorkCounters::default(),
                 budget: self
                     .remaining()
-                    .unwrap_or_else(|_| acyclic_fs::performance::work_budget(0, 0)),
+                    .unwrap_or_else(|_| acyclic_fs_work::performance::work_budget(0, 0)),
                 cancellation,
                 construction: Default::default(),
             },
         }
     }
-    fn finish<T, E>(
+    fn finish_with<T, E>(
         &self,
         result: std::result::Result<T, E>,
         accounting: &acyclic_fs::kernel::KernelAccounting<'_>,
+        _: impl FnOnce(acyclic_fs::FsError) -> E,
     ) -> Self::Output<T, E> {
         use acyclic_fs::kernel::KernelAccounting;
         let work = match accounting {
@@ -74,9 +75,11 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
         let recorded = self
             .spent(work)
             .and_then(|()| match (result.is_ok(), self) {
-                (true, PreparationIo::Owned { budget, .. }) => {
-                    self.receipt().verify(*budget).map_err(Into::into)
-                }
+                (true, PreparationIo::Owned { budget, .. }) => self
+                    .receipt()
+                    .map_err(acyclic_fs::FsError::from)?
+                    .verify(*budget)
+                    .map_err(Into::into),
                 _ => Ok(()),
             });
         (result, recorded)
@@ -132,12 +135,15 @@ impl PreparationIo {
     /// report cumulative receipts, so only their new work is added here.
     pub(crate) fn cursor_receipt<T, E: Into<Error>>(
         &self,
-        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, E>,
+        result: acyclic_fs_work::performance::MeasuredResult<OperationReceipt<T>, E>,
         previous: &mut WorkCounters,
     ) -> Result<T> {
         let cumulative = match &result {
             Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
+            Err(failure) => **failure
+                .work
+                .as_ref()
+                .map_err(|error| acyclic_fs::FsError::from(*error))?,
         };
         if matches!(self, Self::Owned { .. }) {
             let delta = cumulative
@@ -244,7 +250,7 @@ pub(in crate::filesystem) fn version_generation(
         return Err(invalid());
     }
     let Some(format) = format else {
-        let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+        let mut bytes = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
         let decoded = bytes.get_mut(..key.len() / 2).ok_or_else(invalid)?;
         hex::decode_to_slice(key, decoded).map_err(|_| invalid())?;
         let generation = GenerationId::from_bytes(decoded).ok_or_else(invalid)?;
@@ -288,7 +294,7 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     if let Some(io) = io {
         io.preflight(encoding).map_err(LazyError::Filesystem)?;
     }
-    let mut storage = [0_u8; 19 + 2 * acyclic_fs::ObjectId::ENCODED_LEN];
+    let mut storage = [0_u8; 19 + 2 * acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
     let label = &mut storage[..label_bytes];
     label[..19].copy_from_slice(b"harness-generation-");
     hex::encode_to_slice(reference.as_slice(), &mut label[19..])

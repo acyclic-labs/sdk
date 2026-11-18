@@ -1,11 +1,16 @@
 //! Native checkout publication shared by facade and multi-root merges.
 use crate::{Error, Result};
-use acyclic_fs::{
-    CancellationToken, Generation, GenerationId, LocalAuthorityBackend, LocalCoreStateStore,
-    LocalFs, LocalObjectBackend, MaterializeOptions, MultiRootMaterializer, NativeRootIdentity,
-    OperationId, WorkBudget, Workspace, WorkspaceId, WorkspaceRootId,
-};
 use std::{collections::BTreeMap, path::PathBuf};
+use {
+    acyclic_fs::{
+        CancellationToken, Generation, GenerationId, LocalAuthorityBackend, LocalCoreStateStore,
+        LocalFs, LocalObjectBackend, MaterializeOptions, MultiRootMaterializer, Workspace,
+        WorkspaceId, WorkspaceRootId,
+    },
+    acyclic_fs_format::identity::OperationId,
+    acyclic_fs_native_contract::NativeRootIdentity,
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 /// Configured physical checkout receiving workspace publications.
 #[derive(Clone)]

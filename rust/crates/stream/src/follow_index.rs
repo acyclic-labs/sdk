@@ -310,7 +310,8 @@ thread_local! { static VISITS: std::cell::Cell<usize> = const { std::cell::Cell:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommitId, RecordHeaders, wire};
+    use crate::{CommitId, RecordHeaders};
+    use acyclic_stream_wire::wire;
     use futures::FutureExt as _;
     #[test]
     fn unrelated_publications_never_notify_filtered_interests() {

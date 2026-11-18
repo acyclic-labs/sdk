@@ -29,8 +29,8 @@ async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let before = work.receipt();
-    let live = work.live_allocation_bytes();
+    let before = work.receipt().unwrap();
+    let live = work.live_allocation_bytes().unwrap();
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
     let error = apply_tree_mutations_with_accounting(
         &store,
@@ -47,8 +47,8 @@ async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
             | crate::FsError::Work(_)
     ));
-    assert_eq!(work.receipt(), before);
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.receipt().unwrap(), before);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
     Ok(())
 }
 
@@ -107,8 +107,8 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
             maximum: 1,
         }
     ));
-    assert_eq!(work.receipt().page_writes, 1);
-    assert_eq!(work.receipt().backend_write_operations, 1);
+    assert_eq!(work.receipt().unwrap().page_writes, 1);
+    assert_eq!(work.receipt().unwrap().backend_write_operations, 1);
     assert!(
         store
             .read(
@@ -137,11 +137,11 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     // Both identities must be encoded before resynchronization can distinguish
     // an existing page from a write needing the caller's remaining credit.
     assert_eq!(
-        work.receipt().bytes_encoded,
+        work.receipt().unwrap().bytes_encoded,
         (first_page_bytes.len() + second_page_bytes.len()) as u64
     );
     assert_eq!(
-        work.receipt().object_bytes_written,
+        work.receipt().unwrap().object_bytes_written,
         first_page_bytes.len() as u64
     );
     assert!(matches!(
@@ -159,7 +159,7 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     ));
     drop(store);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -364,10 +364,10 @@ async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn 
     ));
     // Removing the following leaf's first name retains its predecessor tail
     // before checking the selected identity: root, predecessor, selected leaf.
-    assert_eq!(failure.work.page_reads, 3);
-    assert_eq!(failure.work.backend_write_operations, 0);
-    assert_eq!(failure.work.page_writes, 0);
-    assert_eq!(failure.work.bytes_encoded, 0);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 3);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().page_writes, 0);
+    assert_eq!(failure.work.as_deref().unwrap().bytes_encoded, 0);
     Ok(())
 }
 
@@ -425,7 +425,7 @@ async fn every_tree_semantic_failure_is_exact_and_non_mutating()
             "identity" => matches!(failure.error, TreeMutationError::FileIdentityConflict),
             _ => false,
         });
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     }
     Ok(())
 }
@@ -509,8 +509,8 @@ async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn
             maximum: observed_maximum,
         }) if observed > 0 && observed_maximum == 0
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -558,9 +558,9 @@ async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std:
         ),
         "{failure:?}"
     );
-    assert!(failure.work.peak_allocation_bytes <= maximum);
-    assert_eq!(failure.work.backend_write_operations, 0);
-    assert_eq!(failure.work.object_bytes_written, 0);
+    assert!(failure.work.as_deref().unwrap().peak_allocation_bytes <= maximum);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().object_bytes_written, 0);
     Ok(())
 }
 
@@ -649,8 +649,8 @@ async fn unordered_sort_work_is_admitted_before_tree_access()
             maximum: 0,
         })
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

@@ -50,6 +50,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -63,7 +64,7 @@ rust_library(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -86,6 +87,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -105,8 +107,21 @@ isolated_test(
     name = "acyclic_sdk_fuzz_test",
     binary = ":acyclic_sdk_fuzz_test_cases",
     id = "acyclic-sdk-fuzz",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_sdk_fuzz_test_full-cloud",
+    binary = ":acyclic_sdk_fuzz_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-sdk-fuzz",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(
@@ -124,6 +139,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -139,7 +155,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -165,6 +181,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -180,7 +197,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -206,6 +223,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -221,7 +239,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -247,6 +265,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -262,7 +281,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -290,6 +309,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -305,7 +325,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -331,6 +351,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -346,7 +367,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -372,6 +393,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -387,7 +409,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -413,6 +435,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -428,7 +451,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -456,6 +479,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -471,7 +495,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -500,6 +524,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -515,7 +540,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -544,6 +569,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -559,7 +585,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -587,6 +613,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -602,7 +629,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -632,6 +659,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -647,7 +675,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -673,6 +701,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -688,7 +717,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -716,6 +745,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -731,7 +761,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -757,6 +787,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -772,7 +803,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -803,6 +834,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -818,7 +850,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -853,6 +885,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -868,7 +901,7 @@ rust_binary(
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde-1.0.229",
@@ -882,11 +915,11 @@ rust_binary(
 rust_binary(
     name = "capture_native_claim_example",
     crate_root = "examples/capture_native_claim.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/native-runtime:src/claim/record.rs",
         "//rust/crates/native-runtime:tests/claim_codec/oracle.rs",
+        "examples/capture_native_claim.rs",
     ],
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -897,6 +930,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -913,7 +947,7 @@ rust_binary(
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//arrayvec-0.7.8",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
@@ -927,8 +961,9 @@ rust_binary(
 rust_binary(
     name = "capture_native_hooks_example",
     crate_root = "examples/capture_native_hooks.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/capture_native_hooks.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -939,6 +974,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -955,7 +991,7 @@ rust_binary(
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//arrayvec-0.7.8",
         "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
@@ -973,12 +1009,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/client_files/committed-snapshot",
-        "corpus/client_files/conditional-publication",
-        "corpus/client_files/mismatched-reply-path",
-        "corpus/client_files/stream-query-snapshot",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

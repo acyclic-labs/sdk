@@ -96,7 +96,7 @@ async fn storage_file_borrows_the_proven_authority_fact_without_physical_inferen
     let workspace = fs
         .create_workspace(
             "resource-storage",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancel,
         )
         .await
@@ -110,7 +110,7 @@ async fn storage_file_borrows_the_proven_authority_fact_without_physical_inferen
         AccountingCursor::genesis(),
         1,
         &mut acyclic_fs::AuthorityWork::new(
-            acyclic_fs::performance::work_budget(4096, 16 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(4096, 16 * 1024 * 1024),
             &cancel,
         ),
     )

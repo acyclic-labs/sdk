@@ -12,7 +12,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
             &cancellation,
         )
         .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let provider = Arc::new(MemoryStream::default());
         let store = StreamAuthorityStore::new(provider.clone());
         let collection = Arc::new(crate::collection::Collection::default());
@@ -43,10 +43,10 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         // original commit without retiring the caller's cached read context.
         let controls = work.vec::<u8>(19)?;
         let meter = work.native_meter()?;
-        let before_transfer = original.receipt();
+        let before_transfer = original.receipt().unwrap();
         commit.retain_native_custody(work.request_allocation.as_mut().unwrap(), &original)?;
         assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
-        assert_eq!(original.receipt(), before_transfer);
+        assert_eq!(original.receipt().unwrap(), before_transfer);
         assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
 
         // Same ledger is insufficient: a distinct invocation is not custody
@@ -55,7 +55,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         let mut foreign = AuthorityWork::native(&foreign_work, &foreign_cancellation);
         let foreign_controls = foreign.vec::<u8>(23)?;
         let paid = foreign.request_allocation.as_ref().unwrap().bytes();
-        let live = original.live_allocation_bytes();
+        let live = original.live_allocation_bytes().unwrap();
         let request_before = commit.request().clone();
         assert!(
             commit
@@ -63,7 +63,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
                 .is_err()
         );
         assert_eq!(foreign.request_allocation.as_ref().unwrap().bytes(), paid);
-        assert_eq!(original.live_allocation_bytes(), live);
+        assert_eq!(original.live_allocation_bytes().unwrap(), live);
         assert_eq!(commit.request(), &request_before);
         drop(request_before);
         drop(foreign_controls);
@@ -148,19 +148,19 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
                         return Err("original conditional decision was discarded".into());
                     };
                     assert_eq!(conflicts.as_ptr() as usize, pointer);
-                    let retained = original.live_allocation_bytes();
+                    let retained = original.live_allocation_bytes().unwrap();
                     assert!(retained >= baseline + result_bytes);
                     drop(conflicts);
-                    assert!(original.live_allocation_bytes() <= retained - result_bytes);
+                    assert!(original.live_allocation_bytes().unwrap() <= retained - result_bytes);
                 } else {
                     let FilesystemCommitOutcome::Committed(receipt) = result else {
                         return Err("original committed receipt was discarded".into());
                     };
                     assert_eq!(receipt.appends.as_ptr() as usize, pointer);
-                    assert!(original.live_allocation_bytes() >= baseline + result_bytes);
-                    let retained = original.live_allocation_bytes();
+                    assert!(original.live_allocation_bytes().unwrap() >= baseline + result_bytes);
+                    let retained = original.live_allocation_bytes().unwrap();
                     drop(receipt);
-                    assert!(original.live_allocation_bytes() <= retained - result_bytes);
+                    assert!(original.live_allocation_bytes().unwrap() <= retained - result_bytes);
                 }
             }
             Err(FilesystemCommitOutcome::Unknown { commit, .. }) if decision == "malformed" => {
@@ -175,7 +175,7 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
         drop(exact_request);
         drop(store);
         drop(provider);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     // The original cache holder may itself await this durable result. Accepted
     // completion must finish without waiting for that holder to release its lease.

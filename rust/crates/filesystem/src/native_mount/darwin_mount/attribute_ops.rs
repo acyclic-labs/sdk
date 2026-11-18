@@ -53,7 +53,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
             // SAFETY: the bridge retains each nonempty length-byte input.
             unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) }
         };
-        let bytes = copy_bytes(work, input)?;
+        let bytes = source_chunk(input, work)?;
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         context.mutate(
             || {

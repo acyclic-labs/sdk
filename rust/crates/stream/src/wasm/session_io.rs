@@ -43,9 +43,9 @@ fn owner(frame: &wire::SessionFrame) -> wire::SessionChannel {
     };
     if frame.channel_id == 0
         && let Some(interest) = interest
-        && interest.upsert.len() == 1
+        && let [subscription] = interest.upsert.as_slice()
         && interest.remove.is_empty()
-        && let Some(channel) = interest.upsert[0].channel
+        && let Some(channel) = subscription.channel
     {
         return channel;
     }
@@ -71,12 +71,12 @@ fn method(object: &JsValue, name: &str) -> Result<Function, StreamError> {
         .and_then(|value| value.dyn_into::<Function>())
         .map_err(|_| StreamError::Unavailable)
 }
-fn failure(error: JsValue) -> transport::Failure {
-    let transient = Reflect::get(&error, &JsValue::from_str("transient"))
+fn failure(error: &JsValue) -> transport::Failure {
+    let transient = Reflect::get(error, &JsValue::from_str("transient"))
         .ok()
         .and_then(|value| value.as_bool())
         == Some(true);
-    let error = coded(&error).unwrap_or(StreamError::Unavailable);
+    let error = coded(error).unwrap_or(StreamError::Unavailable);
     transport::Failure { error, transient }
 }
 
@@ -103,7 +103,7 @@ impl Connection {
     fn call(&self, method_name: &str, value: &JsValue) -> Result<JsFuture, transport::Failure> {
         let value = method(&self.io, method_name)?
             .call1(&self.io, value)
-            .map_err(failure)?;
+            .map_err(|error| failure(&error))?;
         Ok(JsFuture::from(Promise::resolve(&value)))
     }
 }
@@ -133,7 +133,7 @@ impl Responses {
                         let writing = self.writing.borrow_mut().take();
                         self.write = None;
                         if let Ok(Err(error)) = result {
-                            let error = failure(error);
+                            let error = failure(&error);
                             if let Some(writing) =
                                 writing.filter(|writing| writing.subscription && !error.transient)
                             {
@@ -154,7 +154,8 @@ impl Responses {
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Ready(Some(frame)) => {
                     let bytes = Uint8Array::from(frame.encode_to_vec().as_slice());
-                    let controller = web_sys::AbortController::new().map_err(failure)?;
+                    let controller =
+                        web_sys::AbortController::new().map_err(|error| failure(&error))?;
                     let signal = controller.signal();
                     let (abort, registration) = AbortHandle::new_pair();
                     *self.writing.borrow_mut() = Some(Writing {
@@ -186,7 +187,7 @@ impl Responses {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => {
                 self.read = None;
-                let value = result.map_err(failure)?;
+                let value = result.map_err(|error| failure(&error))?;
                 if value.is_null() || value.is_undefined() {
                     return Poll::Ready(None);
                 }
@@ -252,7 +253,7 @@ impl transport::Transport for Endpoint {
     > {
         Box::pin(async move {
             let mut connection = Connection {
-                controller: web_sys::AbortController::new().map_err(failure)?,
+                controller: web_sys::AbortController::new().map_err(|error| failure(&error))?,
                 io: JsValue::UNDEFINED,
             };
             let node = self.node.as_ref().map_or(JsValue::NULL, |node| {
@@ -261,10 +262,10 @@ impl transport::Transport for Endpoint {
             let opening = self
                 .connect
                 .call2(&JsValue::UNDEFINED, &node, &connection.controller.signal())
-                .map_err(failure)?;
+                .map_err(|error| failure(&error))?;
             connection.io = JsFuture::from(Promise::resolve(&opening))
                 .await
-                .map_err(failure)?;
+                .map_err(|error| failure(&error))?;
             let writing = Rc::new(RefCell::new(None));
             *self.writing.borrow_mut() = Rc::downgrade(&writing);
             Ok(Box::pin(Responses {
@@ -279,13 +280,13 @@ impl transport::Transport for Endpoint {
     }
 }
 pub(super) fn client(connect: Function, scope: Option<crate::RevisionScope>) -> Client {
-    let home = Arc::new(Endpoint {
+    let home = Rc::new(Endpoint {
         connect: connect.clone(),
         node: None,
         writing: Rc::new(RefCell::new(Weak::new())),
     });
-    let moved: Arc<transport::Connect> = Arc::new(move |node| {
-        let endpoint: transport::Endpoint = Arc::new(Endpoint {
+    let moved: Rc<transport::Connect> = Rc::new(move |node| {
+        let endpoint: transport::Endpoint = Rc::new(Endpoint {
             connect: connect.clone(),
             node: Some(node),
             writing: Rc::new(RefCell::new(Weak::new())),
@@ -431,7 +432,7 @@ mod tests {
             .heads(&request.encode_to_vec(), 0)
             .await
             .unwrap_err();
-        assert_eq!(failure(actual).error, reported, "public session refusal");
+        assert_eq!(failure(&actual).error, reported, "public session refusal");
 
         // Use the real authenticated server for the successful handshake and
         // replies. Reject only the second interest at the platform write boundary;
@@ -447,7 +448,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let provider = Arc::new(MemoryStream::default());
+        let provider = Rc::new(MemoryStream::default());
         append_sibling(&provider).await;
         let (requests, incoming) = futures::channel::mpsc::unbounded();
         let responses = crate::session::serve(
@@ -533,7 +534,11 @@ mod tests {
         assert_eq!(sibling.next().await.unwrap().unwrap().sequence, 0);
         reject.set(true);
         let error = session.heads(&request, 0).await.unwrap_err();
-        assert_eq!(failure(error).error, reported, "original rejected interest");
+        assert_eq!(
+            failure(&error).error,
+            reported,
+            "original rejected interest"
+        );
         append_sibling(&provider).await;
         assert_eq!(sibling.next().await.unwrap().unwrap().sequence, 1);
         session.heads(&request, 0).await.unwrap();

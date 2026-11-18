@@ -18,7 +18,7 @@ build-script-data = [
     "../crates/inference/proto",
     "../crates/machines/proto",
     "../crates/objects/proto",
-    "../crates/stream/proto",
+    "../crates/stream-wire/proto",
 ]
 
 [features]
@@ -26,6 +26,8 @@ object-revisions = []
 storage-schedules = ["acyclic-native-runtime/test-support", "dep:tempfile", "dep:tokio"]
 
 [dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../crates/filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../crates/filesystem-work" }
 acyclic-mcp = { path = "../crates/mcp", features = ["stdio"] }
 tokio-util = { version = "0.7.17", features = ["codec"] }
 acyclic-actors = { path = "../crates/actors", features = ["test-support"] }
@@ -37,10 +39,12 @@ acyclic-harness-client = { path = "../crates/harness-client" }
 acyclic-inference = { path = "../crates/inference", default-features = false, features = ["http-codec"] }
 acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support"] }
 acyclic-model-render = { path = "../crates/model-render" }
+acyclic-log-frame = { path = "../crates/log-frame" }
 acyclic-native-runtime = { path = "../crates/native-runtime" }
 acyclic-objects = { path = "../crates/objects", default-features = false, features = ["test-support"] }
 acyclic-protobuf-json = { path = "../crates/protobuf-json" }
 acyclic-stream = { path = "../crates/stream", default-features = false, features = ["test-support"] }
+acyclic-stream-wire = { path = "../crates/stream-wire" }
 libfuzzer-sys = "0.4"
 futures = "0.3.31"
 ed25519-dalek = "=3.0.0"

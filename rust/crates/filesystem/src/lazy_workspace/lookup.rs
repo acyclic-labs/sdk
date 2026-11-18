@@ -346,8 +346,13 @@ impl<
             self.overlay_fact(state.overlay, path, ctx).await?
         };
         let (source, node, used) = match fact {
+            // An observation is valid only for the source identity that made it.
+            // A fork binding can advance this workspace to a different identity
+            // while inheriting the parent's overlay; that older observation must
+            // not be handed back to the newly bound source.
             Some(LazyOverlayChange::Observe { source, node, .. })
-                if basis.retain_pinned_observation || source == state.source =>
+                if source.identity == state.source.identity
+                    && (basis.retain_pinned_observation || source == state.source) =>
             {
                 (source, Some(node), false)
             }

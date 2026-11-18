@@ -28,6 +28,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -56,6 +57,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -72,7 +74,20 @@ isolated_test(
     name = "harness_mock_model_test",
     binary = ":harness_mock_model_test_cases",
     id = "harness-mock-model",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "harness_mock_model_test_full-cloud",
+    binary = ":harness_mock_model_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "harness-mock-model",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -90,6 +105,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -123,6 +139,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -150,7 +167,20 @@ isolated_test(
     name = "harness_filesystem_fixture_test",
     binary = ":harness_filesystem_fixture_test_cases",
     id = "harness-mock-model::bin/harness-filesystem-fixture",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "harness_filesystem_fixture_test_full-cloud",
+    binary = ":harness_filesystem_fixture_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "harness-mock-model::bin/harness-filesystem-fixture",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -168,6 +198,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -201,6 +232,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -228,7 +260,20 @@ isolated_test(
     name = "harness_hook_fixture_test",
     binary = ":harness_hook_fixture_test_cases",
     id = "harness-mock-model::bin/harness-hook-fixture",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "harness_hook_fixture_test_full-cloud",
+    binary = ":harness_hook_fixture_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "harness-mock-model::bin/harness-hook-fixture",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -246,6 +291,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -279,6 +325,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -306,14 +353,31 @@ isolated_test(
     name = "harness_mock_model_bin_test",
     binary = ":harness_mock_model_bin_test_cases",
     id = "harness-mock-model::bin/harness-mock-model",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "harness_mock_model_bin_test_full-cloud",
+    binary = ":harness_mock_model_bin_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "harness-mock-model::bin/harness-mock-model",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "tests/http.rs",
+        "tests/main.rs",
+        "tests/script.rs",
+    ],
+    compile_data = [
         "//plugin:tests/hosts/fixtures/native-pi-fixture-request.json",
         "//:scripts/graphcoder-e2e/cases/installed-pi-recursive.json",
     ],
@@ -327,6 +391,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -355,7 +420,20 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":harness-filesystem-fixture":"harness-filesystem-fixture",":harness-hook-fixture":"harness-hook-fixture",":harness-mock-model":"harness-mock-model"},
     id = "harness-mock-model::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":harness-filesystem-fixture":"harness-filesystem-fixture",":harness-hook-fixture":"harness-hook-fixture",":harness-mock-model":"harness-mock-model","@nodejs//:node":"node"},
+    id = "harness-mock-model::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -364,6 +442,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

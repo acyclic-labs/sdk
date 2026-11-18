@@ -48,7 +48,11 @@ async fn followed_hook_records_retain_outcomes_and_do_not_repeat_interrupted_eff
     );
     let cancel = acyclic_fs::CancellationToken::new();
     let watched = fs
-        .create_workspace("events", acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+        .create_workspace(
+            "events",
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancel,
+        )
         .await?
         .value;
     let changes = acyclic_fs::session::changes_path(&fs, watched.id().volume_id())?;

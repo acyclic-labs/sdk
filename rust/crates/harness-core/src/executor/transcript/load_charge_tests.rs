@@ -196,7 +196,7 @@ impl Payloads {
     ) -> Result<u64> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(BUDGET, BUDGET),
+            acyclic_fs_work::performance::work_budget(BUDGET, BUDGET),
             &cancellation,
         )?;
         let bytes = journal.load(self.file(path)?, Some(&io))?.await?;
@@ -224,7 +224,7 @@ async fn a_loaded_payload_releases_only_its_single_read_charge() -> Result<()> {
         // the loaded bytes drop.
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(BUDGET, BUDGET),
+            acyclic_fs_work::performance::work_budget(BUDGET, BUDGET),
             &cancellation,
         )?;
         let loaded = journal.load(payloads.file(path)?, Some(&io))?.await?;
@@ -240,7 +240,7 @@ async fn a_loaded_payload_releases_only_its_single_read_charge() -> Result<()> {
         let expected = payloads.reference(journal, path, false).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(BUDGET, BUDGET),
+            acyclic_fs_work::performance::work_budget(BUDGET, BUDGET),
             &cancellation,
         )?;
         payloads.load(journal, path, &io).await?;

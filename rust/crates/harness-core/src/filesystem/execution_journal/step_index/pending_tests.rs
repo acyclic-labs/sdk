@@ -5,7 +5,7 @@ use super::*;
 fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() -> Result<()> {
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
@@ -18,7 +18,7 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
         let mut pending = Pending::default();
         let mut single_allocations = 0;
         for step in 0..1_000 {
-            let before = io.receipt();
+            let before = io.receipt()?;
             pending.push(
                 u64::from(step) + 1,
                 [1; 32],
@@ -27,7 +27,7 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
                 None,
                 scope.io(),
             )?;
-            let after = io.receipt();
+            let after = io.receipt()?;
             assert_eq!(
                 after.bytes_copied - before.bytes_copied,
                 if step == 1 {
@@ -44,9 +44,9 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
                 continue;
             }
             let mut selected = Funded::new(Some(&io))?;
-            let before = io.receipt();
+            let before = io.receipt()?;
             pending.collect(Some(0), None, Some(1), &mut selected, Some(&io))?;
-            let examined = io.receipt().items_examined - before.items_examined;
+            let examined = io.receipt()?.items_examined - before.items_examined;
             assert_eq!(selected.values.len(), 1);
             assert_eq!(selected.values[0].sequence, 1);
             // At most 256 radix branches, one root, one leaf, 32 key

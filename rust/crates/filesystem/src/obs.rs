@@ -131,10 +131,12 @@ pub(crate) fn measured_on_with_kind<T, E>(
     #[cfg(not(target_arch = "wasm32"))]
     if !span.is_disabled() {
         let (work, kind) = match &result {
-            Ok(value) => (work(value), None),
-            Err(failure) => (&*failure.work, Some(kind(&failure.error))),
+            Ok(value) => (Some(work(value)), None),
+            Err(failure) => (failure.work.as_deref().ok(), Some(kind(&failure.error))),
         };
-        record_work(span, work);
+        if let Some(work) = work {
+            record_work(span, work);
+        }
         record_outcome(span, kind);
     }
     result
@@ -172,7 +174,7 @@ mod worker_context_tests {
     use std::sync::{Arc, Mutex, mpsc};
     use tracing_subscriber::{layer::Context, prelude::*};
 
-    use acyclic_grpc_observability::tests::{Capture, Evidence};
+    use acyclic_test_support::trace_capture::{Capture, Evidence};
 
     #[test]
     fn measured_terminal_retains_original_work_and_native_failure()
@@ -210,7 +212,8 @@ mod worker_context_tests {
                 let original = input
                     .as_ref()
                     .err()
-                    .map(|failure| (&*failure.work) as *const WorkCounters);
+                    .and_then(|failure| failure.work.as_deref().ok())
+                    .map(|work| work as *const WorkCounters);
                 let returned = tracing::dispatcher::with_default(&dispatch, || {
                     let span = super::span!(
                         INFO,
@@ -236,8 +239,15 @@ mod worker_context_tests {
                     Ok(receipt) => assert_eq!(receipt.work, work),
                     Err(failure) => {
                         assert_eq!(failure.error.raw_os_error(), code);
-                        assert_eq!(Some((&*failure.work) as *const WorkCounters), original);
-                        assert_eq!(*failure.work, work);
+                        assert_eq!(
+                            failure
+                                .work
+                                .as_deref()
+                                .ok()
+                                .map(|work| work as *const WorkCounters),
+                            original
+                        );
+                        assert_eq!(failure.work.as_deref(), Ok(&work));
                     }
                 }
                 let Poll::Ready(Some(record)) =

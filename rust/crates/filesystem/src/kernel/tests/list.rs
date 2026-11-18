@@ -206,7 +206,7 @@ async fn output_bound_is_admitted_before_backend_work() -> Result<(), Box<dyn st
             ..
         })
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -253,7 +253,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     .err()
     .ok_or("zero directory page limit unexpectedly succeeded")?;
     assert!(matches!(zero.error, DirectoryReadError::ZeroLimit));
-    assert_eq!(*zero.work, WorkCounters::default());
+    assert_eq!(*zero.work().unwrap(), WorkCounters::default());
 
     let wrong = list_tree_entries(
         &store,
@@ -272,7 +272,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     .err()
     .ok_or("wrong directory root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, DirectoryReadError::WrongRootKind));
-    assert_eq!(*wrong.work, WorkCounters::default());
+    assert_eq!(*wrong.work().unwrap(), WorkCounters::default());
 
     let invalid = list_tree_entries(
         &store,
@@ -290,7 +290,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     .err()
     .ok_or("invalid directory limits unexpectedly succeeded")?;
     assert!(matches!(invalid.error, DirectoryReadError::InvalidLimits));
-    assert_eq!(*invalid.work, WorkCounters::default());
+    assert_eq!(*invalid.work().unwrap(), WorkCounters::default());
 
     let height = list_tree_entries(
         &store,
@@ -308,7 +308,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     .err()
     .ok_or("directory height limit unexpectedly succeeded")?;
     assert!(matches!(height.error, DirectoryReadError::HeightExceeded));
-    assert_eq!(height.work.page_reads, 1);
+    assert_eq!(height.work().unwrap().page_reads, 1);
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -325,7 +325,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     .err()
     .ok_or("cancelled directory listing unexpectedly succeeded")?;
     assert!(matches!(failure.error, DirectoryReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     let leaf = put(
         &store,
@@ -358,7 +358,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
         failure.error,
         DirectoryReadError::ChildBoundsMismatch
     ));
-    assert_eq!(failure.work.page_reads, 2);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 2);
     Ok(())
 }
 
@@ -803,7 +803,7 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
             .map_err(|(error, _)| error)?;
         let meter = std::sync::Arc::downgrade(&original.state);
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         assert_eq!(
             baseline,
             crate::NativeMaterializationWork::accounting_state_bytes()
@@ -819,10 +819,10 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
         )
         .await?;
         assert_eq!(page.values[0].name.as_bytes(), b"f");
-        assert!(original.live_allocation_bytes() > baseline);
+        assert!(original.live_allocation_bytes().unwrap() > baseline);
         drop(page);
         drop(allocation);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(accounting);
         drop(original);
         assert!(meter.upgrade().is_none());

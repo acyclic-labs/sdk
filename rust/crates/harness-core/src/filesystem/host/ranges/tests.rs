@@ -17,7 +17,7 @@ async fn original_file_progress_ignores_storage_layout_and_counts_creation() -> 
     let reference = bounded_io::content_workspace(&host.provider, volume, None)?;
     let workspace = host.open(&reference, None).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     let original = host
         .generation(&workspace, &host.file_generation(&file, None)?, None)
         .await?;
@@ -47,9 +47,9 @@ async fn original_file_progress_ignores_storage_layout_and_counts_creation() -> 
             budget,
             &cancellation,
             |_| async {
-                Ok(acyclic_fs::OperationReceipt {
+                Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 })
             },
         )
@@ -83,7 +83,7 @@ async fn original_file_progress_ignores_storage_layout_and_counts_creation() -> 
         )
         .await?;
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(16_000_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(16_000_000, 16_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -95,7 +95,7 @@ async fn original_file_progress_ignores_storage_layout_and_counts_creation() -> 
         "same bytes counted as progress after a layout change"
     );
     assert!(
-        work.receipt().source_bytes_read > 0,
+        work.receipt()?.source_bytes_read > 0,
         "partial chunk comparison lost its original byte admission"
     );
     let created = host
@@ -302,11 +302,11 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
 -> Result<()> {
     let (host, file) = published(&vec![b'x'; 2 * 1024 * 1024]).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::WorkBudget {
+    let budget = acyclic_fs_work::performance::WorkBudget {
         source_bytes_read: 64 * 1024,
         bytes_hashed: 64 * 1024,
         bytes_copied: 64 * 1024,
-        ..acyclic_fs::WorkBudget::UNBOUNDED
+        ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
     };
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -321,16 +321,16 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     assert!(matches!(
         denied,
         Err(Error::NativeWorkspace { source, .. }) if matches!(source.as_ref(),
-            acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded {
+            acyclic_fs::WorkspaceError::Work(acyclic_fs_work::performance::WorkError::BudgetExceeded {
                 counter: "bytes_hashed", maximum: 65536, ..
             })
         )
     ));
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             source_bytes_read: 64 * 1024,
             bytes_copied: 64 * 1024,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancellation,
     )
@@ -338,10 +338,11 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     let io = PreparationIo::from_native_work(&work)?;
     let bytes = host.read_pinned_range(&file, range, Some(&io)).await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
-    assert!(work.receipt().source_bytes_read < 64 * 1024);
-    assert!(work.receipt().bytes_copied < 64 * 1024);
-    assert!(work.receipt().bytes_hashed < file.descriptor().byte_length());
-    assert!(work.receipt().object_bytes_read < file.descriptor().byte_length());
+    let receipt = work.receipt()?;
+    assert!(receipt.source_bytes_read < 64 * 1024);
+    assert!(receipt.bytes_copied < 64 * 1024);
+    assert!(receipt.bytes_hashed < file.descriptor().byte_length());
+    assert!(receipt.object_bytes_read < file.descriptor().byte_length());
     Ok(())
 }
 
@@ -462,11 +463,11 @@ async fn private_metadata_does_not_materialize_file_bodies() -> Result<()> {
     let (_issuer, read) = grant(file.volume(), VolumeOperation::Read)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             source_bytes_read: 64 * 1024,
             bytes_hashed: 64 * 1024,
             bytes_copied: 64 * 1024,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancellation,
     )
@@ -487,13 +488,14 @@ async fn private_metadata_does_not_materialize_file_bodies() -> Result<()> {
         .expect("published file");
     assert_eq!(stat.kind, acyclic_fs::kernel::FileKind::Regular);
     assert_eq!(stat.logical_bytes, Some(file.descriptor().byte_length()));
-    assert!(work.receipt().source_bytes_read < 64 * 1024);
-    assert!(work.receipt().object_bytes_read < file.descriptor().byte_length());
-    assert!(work.receipt().bytes_hashed < 64 * 1024);
+    let receipt = work.receipt()?;
+    assert!(receipt.source_bytes_read < 64 * 1024);
+    assert!(receipt.object_bytes_read < file.descriptor().byte_length());
+    assert!(receipt.bytes_hashed < 64 * 1024);
     let denied_work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             bytes_copied: 0,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancellation,
     )
@@ -537,10 +539,10 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     )
     .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = || acyclic_fs::WorkBudget {
+    let budget = || acyclic_fs_work::performance::WorkBudget {
         source_bytes_read: 64 * 1024,
         bytes_copied: 64 * 1024,
-        ..acyclic_fs::WorkBudget::UNBOUNDED
+        ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
     };
     let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -566,7 +568,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         (bytes.as_ref(), length),
         (&body[offset..], body.len() as u64)
     );
-    assert!(work.receipt().source_bytes_read < 64 * 1024);
+    assert!(work.receipt()?.source_bytes_read < 64 * 1024);
     assert_eq!(selected.as_resource().provider(), volume.provider());
     host.apply(
         &workspace,
@@ -600,7 +602,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     assert_eq!(generation, selected);
     assert_eq!(pinned_length, body.len() as u64);
     assert_eq!(pinned.as_ref(), &body[offset..]);
-    assert!(pinned_work.receipt().source_bytes_read < 64 * 1024);
+    assert!(pinned_work.receipt()?.source_bytes_read < 64 * 1024);
     for (path, maximum, code) in [
         ("missing", u64::MAX, crate::wire::ErrorCode::NotFound),
         ("directory", u64::MAX, crate::wire::ErrorCode::Invalid),
@@ -701,9 +703,9 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
     let (host, file) = ordinary(&vec![b'x'; 4 * 1024 * 1024]).await?;
     let stop = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: 1024 * 1024,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &stop,
     )
@@ -719,6 +721,6 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
             .as_ref(),
         b"xxxxxxxxxxxxxxxx"
     );
-    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
+    assert!(work.receipt()?.peak_allocation_bytes < file.descriptor().byte_length());
     Ok(())
 }

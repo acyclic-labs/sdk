@@ -73,7 +73,7 @@ async fn immutable_summaries_are_cached_without_becoming_authority()
         .err()
         .ok_or("pre-cancelled asynchronous dependency probe unexpectedly succeeded")?;
     assert!(matches!(failure.error, AuthenticatedProbeError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -102,7 +102,7 @@ async fn poisoned_summary_caches_fail_closed() -> Result<(), Box<dyn std::error:
         failure.error,
         AuthenticatedProbeError::CachePoisoned
     ));
-    assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+    assert_eq!(*failure.work().unwrap(), WorkCounters::UNCHARGED);
 
     let record_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -122,7 +122,7 @@ async fn poisoned_summary_caches_fail_closed() -> Result<(), Box<dyn std::error:
         failure.error,
         AuthenticatedProbeError::CachePoisoned
     ));
-    assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+    assert_eq!(*failure.work().unwrap(), WorkCounters::UNCHARGED);
     Ok(())
 }
 

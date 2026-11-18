@@ -32,6 +32,7 @@ cargo_build_script(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV,
@@ -55,11 +56,16 @@ rust_shared_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -89,11 +95,16 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         ":build_script",
     ] + [
+        "//rust/crates/filesystem-base:acyclic_fs_base",
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
@@ -120,6 +131,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -133,8 +145,21 @@ isolated_test(
     name = "acyclic_fs_napi_test",
     binary = ":acyclic_fs_napi_test_cases",
     id = "acyclic-fs-napi",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_fs_napi_test_full-cloud",
+    binary = ":acyclic_fs_napi_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs-napi",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(
@@ -143,6 +168,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

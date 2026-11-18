@@ -23,14 +23,6 @@ mod counters;
 #[cfg(feature = "enabled")]
 pub use counters::{Counts, node, scan, snapshot, span_copy};
 
-#[cfg(all(test, not(feature = "enabled")))]
-#[test]
-fn disabled_recording_does_not_evaluate_arguments() {
-    record!(scan(panic!(
-        "production instrumentation evaluated its argument"
-    )));
-}
-
 #[cfg(all(test, feature = "enabled"))]
 #[test]
 fn snapshots_exclude_another_parsers_thread() -> Result<(), Box<dyn std::error::Error>> {

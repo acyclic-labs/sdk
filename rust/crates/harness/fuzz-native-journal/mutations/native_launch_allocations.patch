@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_process/launch.rs
-+++ b/rust/crates/harness/src/local/host_process/launch.rs
+--- a/rust/crates/harness-local/src/local/host_process/launch.rs
++++ b/rust/crates/harness-local/src/local/host_process/launch.rs
 @@ -246,4 +246,5 @@
          }
      }

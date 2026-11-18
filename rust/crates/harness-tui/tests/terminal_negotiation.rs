@@ -91,6 +91,7 @@ fn every_query_send_failure_boundary_is_cancelled_and_leaves_a_visible_prompt() 
 #[test]
 fn real_pty_query_failure_boundaries_restore_a_visible_prompt()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _terminal = crate::terminal_owner();
     use acyclic_harness_tui::term::{Environment, Probe, ProbeIo, Tty, detect};
     use std::fs::File;
     use std::io::{self, BufReader, Write};

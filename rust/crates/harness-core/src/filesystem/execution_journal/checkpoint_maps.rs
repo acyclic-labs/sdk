@@ -12,11 +12,17 @@ pub(super) mod codec_fuzz {
 
     pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
         model_cell::codec_fuzz::check(bytes);
-        if let Ok(value) = bool::decode(bytes, None) {
-            assert_eq!(value.encode(None).unwrap().as_ref(), bytes);
-        }
-        if let Ok(value) = <(u64, [u8; 32])>::decode(bytes, None) {
-            assert_eq!(value.encode(None).unwrap().as_ref(), bytes);
+        check_entry::<bool>(bytes);
+        check_entry::<(u64, [u8; 32])>(bytes);
+    }
+
+    fn check_entry<T: Entry>(bytes: &[u8]) {
+        if let Ok(value) = T::decode(bytes, None) {
+            let encoded = value.encode(None);
+            assert!(
+                matches!(&encoded, Ok(encoded) if encoded.as_ref() == bytes),
+                "journal summary entry changed on round trip: {encoded:?}"
+            );
         }
     }
 
@@ -293,10 +299,10 @@ where
                 let call = crate::model::hash_bytes(call_id.as_bytes(), io)?;
                 if !summary.tools.contains_key(&(*step, call), io)?
                     && let Some(state) =
-                        step_index::tool_state(&reader, roots[4], recovery.state.tail, *step, call)
+                        step_index::tool_entry(&reader, roots[4], recovery.state.tail, *step, call)
                             .await?
                 {
-                    summary.tools.insert((*step, call), state, io)?;
+                    summary.tools.insert((*step, call), state.settled, io)?;
                 }
             }
             ExecutionEvent::ModelOutput { step, .. } => {
@@ -480,7 +486,7 @@ mod tests {
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let path = acyclic_stream::StreamPath::new("model-cell/pages")?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
         #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

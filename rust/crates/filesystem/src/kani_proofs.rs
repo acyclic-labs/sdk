@@ -1,4 +1,4 @@
-use crate::exact_u32_from_f64;
+use acyclic_fs_base::numeric::exact_u32_from_f64;
 
 #[kani::proof]
 #[kani::unwind(1)]

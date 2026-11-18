@@ -286,6 +286,9 @@ pub fn durable_write(
         };
         write(offered)
     });
+    if let Ok(written) = &result {
+        super::ledger::charge(crate::cost::Cost::Copy, *written as u64);
+    }
     call.finish(&result)?;
     call.after(&result)?;
     result

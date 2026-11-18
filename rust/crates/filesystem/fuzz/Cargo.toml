@@ -11,10 +11,12 @@ cargo-fuzz = true
 
 [features]
 model-checking = ["dep:loom"]
-fuzz-targets = ["dep:libfuzzer-sys"]
+fuzz-targets = ["dep:libfuzzer-sys", "dep:acyclic-fs-native-contract"]
 
 [dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../../filesystem-format" }
 acyclic-stream = { path = "../../stream" }
+acyclic-stream-wire = { path = "../../stream-wire" }
 acyclic-auth = { path = "../../auth" }
 prost.workspace = true
 acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
@@ -28,7 +30,11 @@ tempfile = "3.27.0"
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["fs", "net"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+acyclic-fs-native-contract = { version = "=0.2.0", path = "../../filesystem-native-contract", optional = true, features = ["fuzzing"] }
+
 [dev-dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../../filesystem-work" }
 futures.workspace = true
 proptest.workspace = true
 loom = "0.7.3"

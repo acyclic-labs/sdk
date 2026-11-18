@@ -1,7 +1,7 @@
 //! Pure format controls; decoded facts grant no publication or closure authority.
 use super::*;
 
-pub fn check(bytes: &[u8]) {
+pub fn check(bytes: &[u8]) -> Result<(), crate::FsError> {
     let mut steps = 0;
     let Ok(value) =
         decode_publication_evidence::<CanonicalDecodeError>(bytes, u64::MAX, None, |_| {
@@ -9,14 +9,13 @@ pub fn check(bytes: &[u8]) {
             Ok(())
         })
     else {
-        return;
+        return Ok(());
     };
     let length = publication_payload_length_with_evidence(
         value.publication.generation_root,
         value.original_evidence,
         value.origin,
-    )
-    .expect("admitted publication length");
+    )?;
     let mut encoded = Vec::with_capacity(length);
     write_publication_payload(
         &mut encoded,
@@ -25,12 +24,26 @@ pub fn check(bytes: &[u8]) {
         value.original_evidence,
         value.origin,
     );
-    assert_eq!(encoded.len(), length);
-    assert_eq!(
-        encoded, bytes,
-        "retain original evidence, origin and both complete root identities"
-    );
-    assert!(steps > 0);
+    if !(&(encoded.len()) == &(length)) {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static("filesystem oracle invariant failed"),
+        )
+        .into());
+    };
+    if !(&(encoded) == &(bytes)) {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static(
+                "retain original evidence, origin and both complete root identities",
+            ),
+        )
+        .into());
+    };
+    if !(steps > 0) {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static("filesystem oracle invariant failed"),
+        )
+        .into());
+    };
     for stop in 0..steps {
         let mut calls = 0;
         let refused =
@@ -47,32 +60,57 @@ pub fn check(bytes: &[u8]) {
                     Ok(())
                 }
             });
-        assert_eq!(result.err(), Some(refused));
-        assert_eq!(calls, stop + 1);
+        if !(&(result.err()) == &(Some(refused))) {
+            return Err(CanonicalDecodeError::Invariant(
+                crate::kernel::codec::CanonicalInvariant::Static(
+                    "filesystem oracle invariant failed",
+                ),
+            )
+            .into());
+        };
+        if !(&(calls) == &(stop + 1)) {
+            return Err(CanonicalDecodeError::Invariant(
+                crate::kernel::codec::CanonicalInvariant::Static(
+                    "filesystem oracle invariant failed",
+                ),
+            )
+            .into());
+        };
     }
     let mut header = bytes[..PAYLOAD_DOMAIN.len() + 2].to_vec();
     for version in [0_u16, 1, 2, 3, 4, u16::MAX] {
         header[PAYLOAD_DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
-        assert_eq!(
-            decode_publication_evidence::<CanonicalDecodeError>(
-                &header,
-                u64::MAX,
-                None,
-                |_| Ok(())
-            )
-            .err(),
-            Some(CanonicalDecodeError::UnsupportedVersion {
+        if !(&(decode_publication_evidence::<CanonicalDecodeError>(
+            &header,
+            u64::MAX,
+            None,
+            |_| Ok(()),
+        )
+        .err())
+            == &(Some(CanonicalDecodeError::UnsupportedVersion {
                 found: version,
                 expected: 5,
-            })
-        );
+            })))
+        {
+            return Err(CanonicalDecodeError::Invariant(
+                crate::kernel::codec::CanonicalInvariant::Static(
+                    "filesystem oracle invariant failed",
+                ),
+            )
+            .into());
+        };
     }
     let mut wrong = bytes.to_vec();
     wrong[PAYLOAD_DOMAIN.len() + 2 + 16 + value.publication.generation_root.encoded_len()] = 4;
-    assert!(
-        decode_publication_evidence::<CanonicalDecodeError>(&wrong, u64::MAX, None, |_| Ok(()))
-            .is_err()
-    );
+    if !(decode_publication_evidence::<CanonicalDecodeError>(&wrong, u64::MAX, None, |_| Ok(()))
+        .is_err())
+    {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static("filesystem oracle invariant failed"),
+        )
+        .into());
+    };
+    Ok(())
 }
 
 /// Actual writer output covers all optional fields and both reference widths.
@@ -139,7 +177,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, crate::FsError> {
                 evidence,
                 origin,
             );
-            check(&bytes);
+            check(&bytes)?;
             seeds.push((name, bytes));
         }
     }

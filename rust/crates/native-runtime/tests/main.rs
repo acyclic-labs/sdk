@@ -2,9 +2,15 @@
 //! and its dependencies link once. Loom models keep their own targets because
 //! each replaces production modules with instrumented copies.
 mod cached_flush;
+mod file_lock;
 mod native_claim_record;
 mod native_owner_record;
 mod native_report_port;
 mod node_process;
+#[cfg(all(target_os = "linux", not(loom)))]
+mod output;
+mod private_file;
 mod seeded_runtime;
 mod signing_custody;
+#[path = "runtime_api/mod.rs"]
+mod tests;

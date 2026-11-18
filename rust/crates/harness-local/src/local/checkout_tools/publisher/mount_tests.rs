@@ -1,0 +1,967 @@
+use super::*;
+
+async fn fixture(
+    source: &[(&str, &[u8])],
+    mounting: crate::local::WorkspaceMounting,
+) -> Result<(
+    tempfile::TempDir,
+    tempfile::TempDir,
+    LocalHarness,
+    CheckoutPublisher,
+)> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    for (path, bytes) in source {
+        std::fs::write(directory.path().join(path), bytes).map_err(storage)?;
+    }
+    let state = tempfile::tempdir().map_err(storage)?;
+    let model = Model::new("scripted".into(), "publication".into(), "1".into())?;
+    let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model, provider))?
+            .state_directory(state.path())
+            .workspace_mounting(mounting),
+    )
+    .await?;
+    let tools = Arc::new(
+        CheckoutTools::new(
+            harness
+                .workspace
+                .as_ref()
+                .ok_or_else(|| Error::NotFound("checkout".into()))?
+                .clone(),
+            &harness.project,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
+            &harness.verifier,
+            None,
+        )
+        .await?,
+    );
+    let publisher = CheckoutPublisher::new(
+        tools,
+        harness.files.clone(),
+        &harness.project,
+        &harness.verifier,
+        harness.limits.file_bytes,
+    );
+    Ok((directory, state, harness, publisher))
+}
+
+#[tokio::test]
+async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -> Result<()> {
+    // The before-image belongs to the source that predates checkout binding.
+    let (_directory, _state, harness, initial) = fixture(
+        &[("branch.txt", b"before\n")],
+        crate::local::WorkspaceMounting::Native,
+    )
+    .await?;
+    initial
+        .stage_once(
+            OperationId::new(),
+            "branch.txt",
+            b"original",
+            "text/plain",
+            "branch.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let task = Arc::new(crate::runtime::test_context::agent_context(
+        RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?,
+        None,
+    )?);
+    let root = &initial.tools.workspace;
+    let stop = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let view = root
+        .view()
+        .open_related(
+            root.view().workspace().clone(),
+            &mut acyclic_fs::kernel::KernelAccounting::native(&work, &stop),
+        )
+        .await
+        .map_err(storage)?;
+    let mounted = root
+        .mount_task_view(
+            view,
+            &*task,
+            None,
+            &crate::filesystem::NativeMountAuthority::admitted(
+                harness.verifier.clone(),
+                harness.signed.copy(&mut None)?,
+            ),
+        )
+        .await?;
+    let tools = Arc::new(
+        CheckoutTools::new(
+            Arc::clone(&mounted),
+            &harness.project,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
+            &harness.verifier,
+            None,
+        )
+        .await?,
+    );
+    let publisher = CheckoutPublisher::new(
+        Arc::clone(&tools),
+        Arc::clone(&harness.files),
+        &harness.project,
+        &harness.verifier,
+        harness.limits.file_bytes,
+    );
+    publisher
+        .stage_once(
+            OperationId::new(),
+            "branch.txt",
+            b"original",
+            "text/plain",
+            "branch.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let context = ToolContext::new(task, OperationId::new(), "select-branch")?;
+    {
+        let mut state = lock_owned(StateArc::clone(&tools.state)).await;
+        tools
+            .fs(
+                crate::tools::parse_fs_command("checkout -b topic")?,
+                &context,
+                &mut state,
+                &mounted,
+            )
+            .await?;
+    }
+    let selected = {
+        let state = lock_owned(StateArc::clone(&tools.state)).await;
+        publisher.selected_workspace(&state)?
+    };
+    assert_ne!(selected.path, mounted.path);
+    for broken in [false, true] {
+        let operation = OperationId::new();
+        let bytes = if broken {
+            b"counterfactual".as_slice()
+        } else {
+            b"selected".as_slice()
+        };
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(broken);
+        let staged = publisher
+            .stage_once(
+                operation,
+                "branch.txt",
+                bytes,
+                "text/plain",
+                "branch.txt",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(false);
+        let (file, _) = staged?;
+        let visible = std::fs::read(selected.path.join("branch.txt")).map_err(storage)?;
+        assert_eq!(
+            visible == bytes,
+            !broken,
+            "publication advanced the wrong branch mount"
+        );
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(broken);
+        let recovered = publisher
+            .observe_staged_once(
+                operation,
+                None,
+                Some(64),
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(false);
+        assert_eq!(recovered?.0, Some(file.clone()));
+        let visible = std::fs::read(selected.path.join("branch.txt")).map_err(storage)?;
+        assert_eq!(
+            visible == bytes,
+            !broken,
+            "recovery advanced the wrong branch mount"
+        );
+        // The original observation repairs the deliberately unadvanced branch
+        // without another write or generation, and retains the immutable receipt.
+        assert_eq!(
+            publisher
+                .observe_staged_once(
+                    operation,
+                    None,
+                    Some(64),
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await?
+                .0,
+            Some(file)
+        );
+        assert_eq!(
+            std::fs::read(selected.path.join("branch.txt")).map_err(storage)?,
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(mounted.path.join("branch.txt")).map_err(storage)?,
+            b"original"
+        );
+        if !broken {
+            // The real selected branch has no import receipt. Its diff must
+            // retain the original checkout's before-image, not its fork head.
+            use futures::TryStreamExt as _;
+            let (reader, snapshot) = harness.project_diff_selection().await?;
+            let agent = snapshot.agent.clone();
+            let page = acyclic_harness_client::AgentPageRequest::new(32, 64 * 1024, None)
+                .map_err(storage)?;
+            let mut frames = crate::hosting::DiffSource::new(reader, snapshot)
+                .frames(page.clone(), crate::client::DiffProjection::Patch);
+            let mut cursor = None;
+            let mut patch = String::new();
+            while let Some(frame) = frames.try_next().await? {
+                if frame.first() != Some(&2) {
+                    continue;
+                }
+                let command = crate::client::AgentCommand::Diff {
+                    agent: agent.clone(),
+                    page: acyclic_harness_client::AgentPageRequest::new(
+                        page.items(),
+                        page.bytes(),
+                        cursor
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(storage)?,
+                    )
+                    .map_err(storage)?,
+                };
+                let crate::client::AgentReply::Diff { items } =
+                    acyclic_harness_client::decode_agent_reply(&frame[1..], &command)
+                        .map_err(storage)?
+                        .map_err(storage)?
+                else {
+                    return Err(Error::Invalid("unexpected diff reply".into()));
+                };
+                cursor = items.last().and_then(|item| item.next.clone());
+                for item in items {
+                    if item.path == "branch.txt" {
+                        patch.push_str(&item.patch);
+                    }
+                }
+            }
+            assert!(patch.contains("-before\n"), "{patch}");
+            assert!(patch.contains("+selected"), "{patch}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()> {
+    let (directory, _state, harness, publisher) =
+        fixture(&[], crate::local::WorkspaceMounting::Native).await?;
+    let (file, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "published.txt",
+            b"exact bytes",
+            "text/plain",
+            "published.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(file.volume(), &harness.project);
+    assert_eq!(
+        std::fs::read(directory.path().join("published.txt")).map_err(storage)?,
+        b"exact bytes"
+    );
+    assert!(!directory.path().join(".system").exists());
+    // Private metadata stores the publication operation, whereas the returned
+    // reference stores its immutable generation. Full reads authenticate bytes
+    // and select that generation without assuming a literal staging version.
+    let private = Publisher::new(
+        harness.files.clone(),
+        &harness.journal,
+        &harness.verifier,
+        &harness.signed,
+        harness.limits.file_bytes,
+        None,
+    )?;
+    let (published, _) = private
+        .stage_once(
+            OperationId::new(),
+            "private.txt",
+            b"private bytes",
+            "text/plain",
+            "private.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let grant = crate::conversation::ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &harness.signed,
+        &harness.journal,
+        "",
+        &mut None,
+    )?;
+    let (selected, bytes) = harness
+        .files
+        .read_private_path(
+            &harness.journal,
+            &grant,
+            "private.txt",
+            None,
+            64,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
+    assert_eq!(selected, published);
+    assert_eq!(bytes.as_ref(), b"private bytes");
+    let (auxiliary, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "volume:///home/note",
+            b"original",
+            "text/plain",
+            "note",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let mounts = &publisher.tools.workspace.mounts;
+    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+        let path = claims
+            .mounts()
+            .named(Some("home"))?
+            .1
+            .native_root
+            .override_path()
+            .expect("bound home")
+            .join("note");
+        assert_eq!(std::fs::read(&path).map_err(storage)?, b"original");
+        // A logical write never waits on a running command, and never
+        // changes the command's own view under it.
+        publisher
+            .stage_at(
+                OperationId::new(),
+                &auxiliary,
+                b"live replacement",
+                None,
+                None,
+            )?
+            .await?;
+        assert_eq!(std::fs::read(path).map_err(storage)?, b"original");
+        Ok(((), claims))
+    })
+    .await?;
+    // The command changed nothing, so its hand-back keeps the logical write.
+    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+        let path = claims
+            .mounts()
+            .named(Some("home"))?
+            .1
+            .native_root
+            .override_path()
+            .expect("bound home")
+            .join("note");
+        assert_eq!(std::fs::read(path).map_err(storage)?, b"live replacement");
+        Ok(((), claims))
+    })
+    .await?;
+    assert!(!directory.path().join(".volumes/home").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn mounted_publication_retries_and_replacements_keep_their_volume_with_negative_control()
+-> Result<()> {
+    for mounting in [
+        crate::local::WorkspaceMounting::Physical,
+        crate::local::WorkspaceMounting::Native,
+    ] {
+        check_auxiliary_publication(mounting).await?;
+    }
+    Ok(())
+}
+
+async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture(&[], mounting).await?;
+    let operation = OperationId::new();
+    let (file, _) = publisher
+        .stage_once(
+            operation,
+            "volume:///home/note",
+            b"first",
+            "text/plain",
+            "note",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(file.volume(), harness.scratch());
+    assert_eq!(file.path(), "note");
+    // The exact workspace resolver is shared with writes. Reads need neither
+    // a writer binding nor write authority, including version-token replay.
+    let context_for = |grants: Capabilities, writable: bool| -> Result<_> {
+        let content = crate::runtime::ContentBindings {
+            volume: harness.project.clone(),
+            reader: harness.client_reader()?,
+            writer: if writable {
+                Some(Arc::new(CheckoutPublisher::new(
+                    Arc::clone(&publisher.tools),
+                    Arc::clone(&harness.files),
+                    &harness.project,
+                    &harness.verifier,
+                    harness.limits.file_bytes,
+                )) as Arc<dyn ContentPublisher>)
+            } else {
+                None
+            },
+        };
+        let runtime = crate::runtime::Bindings {
+            targets: Some(crate::local::agents::home(publisher.tools.clone())?),
+            scope: RuntimeScope::new(grants, harness.limits.clone())?,
+            content: Some(content),
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?;
+        runtime
+            .agent_context(
+                &Capabilities::default(),
+                crate::runtime::ContentBindings {
+                    volume: harness.journal.clone(),
+                    reader: harness.client_reader()?,
+                    writer: Some(Publisher::new(
+                        harness.files.clone(),
+                        &harness.journal,
+                        &harness.verifier,
+                        &harness.signed,
+                        harness.limits.file_bytes,
+                        None,
+                    )?),
+                },
+            )
+            .map(Arc::new)
+    };
+    let scratch_read = Capabilities::new([
+        "tool:call:read".into(),
+        harness
+            .scratch()
+            .capability(VolumeOperation::Read, &mut None)?,
+    ]);
+    let read_context = context_for(scratch_read, false)?;
+    let read = crate::tool::files::read()?;
+    let run = |task: Arc<crate::runtime::TaskContext>, tool: crate::tool::Tool, arguments| async move {
+        let context = ToolContext::new(task, OperationId::new(), "mounted-file")?;
+        let invocation = ToolInvocation {
+            operation_id: context.operation_id(),
+            call_id: context.call_id().into(),
+            name: tool.definition.name.clone(),
+            arguments,
+        };
+        let result = tool
+            .executor
+            .execute(invocation.clone(), Some(context))
+            .await?;
+        let projected = tool.projection.project(&invocation, &result, None)?.0;
+        Ok::<_, Error>((result, projected))
+    };
+    let path = "volume:///home/note";
+    let token = serde_json::to_string(&file).map_err(storage)?;
+    for version in [serde_json::Value::Null, serde_json::json!(token)] {
+        let (result, projected) = run(
+            read_context.clone(),
+            crate::tool::files::read()?,
+            serde_json::json!({"path": path, "version": version}),
+        )
+        .await?;
+        assert_eq!(result.value["text"], "first");
+        let selected: crate::tool::files::FileReadSource =
+            serde_json::from_value(result.value["file"].clone()).map_err(storage)?;
+        match (version.is_null(), selected) {
+            (true, crate::tool::files::FileReadSource::Authored(selected)) => {
+                assert_eq!(selected.volume, *file.volume());
+                assert_eq!(selected.path, file.path());
+                assert_eq!(selected.byte_length, file.descriptor().byte_length());
+                assert_eq!(
+                    hex::encode(selected.generation.as_resource().key()),
+                    file.version()
+                );
+            }
+            (false, crate::tool::files::FileReadSource::Content(selected)) => {
+                assert_eq!(selected, file);
+            }
+            (_, selected) => panic!("read returned another source kind: {selected:?}"),
+        }
+        assert!(projected.to_string().contains(path));
+    }
+    let wrong_path = run(
+        read_context.clone(),
+        read,
+        serde_json::json!({"path": "volume:///home/other", "version": token}),
+    )
+    .await;
+    assert!(wrong_path.is_err());
+    let project_context = context_for(
+        Capabilities::new([
+            "tool:call:read".into(),
+            harness
+                .project
+                .capability(VolumeOperation::Read, &mut None)?,
+        ]),
+        false,
+    )?;
+    for version in [serde_json::Value::Null, serde_json::json!(token)] {
+        assert!(
+            run(
+                project_context.clone(),
+                crate::tool::files::read()?,
+                serde_json::json!({"path": path, "version": version})
+            )
+            .await
+            .is_err()
+        );
+    }
+    let private = Publisher::new(
+        harness.files.clone(),
+        &harness.journal,
+        &harness.verifier,
+        &harness.signed,
+        harness.limits.file_bytes,
+        None,
+    )?;
+    let (other, _) = private
+        .stage_once(
+            OperationId::new(),
+            "note",
+            b"private",
+            "text/plain",
+            "note",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let full_context = context_for(harness.signed.capabilities().clone(), true)?;
+    assert!(
+        run(
+            full_context.clone(),
+            crate::tool::files::read()?,
+            serde_json::json!({
+                "path": path, "version": serde_json::to_string(&other).map_err(storage)?,
+            })
+        )
+        .await
+        .is_err(),
+        "a same-path token from another volume must not route authority"
+    );
+    let (edit_result, _) = run(
+        full_context.clone(),
+        crate::tool::files::edit()?,
+        serde_json::json!({"path": path, "version": token,
+        "old_text": "first", "new_text": "second"}),
+    )
+    .await?;
+    assert_eq!(edit_result.value["file"]["path"], "note");
+    let changed: FileRef =
+        serde_json::from_value(edit_result.value["file"].clone()).map_err(storage)?;
+    assert!(
+        run(
+            full_context,
+            crate::tool::files::edit()?,
+            serde_json::json!({"path": path, "version": token,
+        "old_text": "first", "new_text": "stale"})
+        )
+        .await
+        .is_err()
+    );
+    let (replayed, _) = run(
+        read_context,
+        crate::tool::files::read()?,
+        serde_json::json!({"path": path, "version": token}),
+    )
+    .await?;
+    assert_eq!(replayed.value["text"], "first");
+    let project_only = Capabilities::new([
+        harness
+            .project
+            .capability(VolumeOperation::Read, &mut None)?,
+        harness
+            .project
+            .capability(VolumeOperation::Write, &mut None)?,
+    ]);
+    assert!(matches!(
+        publisher
+            .stage_once(
+                OperationId::new(),
+                "volume:///home/denied",
+                b"denied",
+                "text/plain",
+                "denied",
+                crate::conversation::ContentAccess {
+                    ceiling: Some(&project_only),
+                    io: None
+                }
+            )?
+            .await,
+        Err(Error::FilesystemAccessConfiguration(
+            "local checkout publication"
+        ))
+    ));
+    assert!(!directory.path().join(".volumes/home/denied").exists());
+    assert_eq!(
+        publisher
+            .observe_staged_once(
+                operation,
+                None,
+                Some(64),
+                crate::conversation::ContentAccess::default()
+            )?
+            .await?
+            .0,
+        Some(file.clone())
+    );
+    assert_eq!(
+        publisher
+            .stage_once(
+                operation,
+                "volume:///home/note",
+                b"first",
+                "text/plain",
+                "note",
+                crate::conversation::ContentAccess::default()
+            )?
+            .await?
+            .0,
+        file
+    );
+    let (edited, _) = publisher
+        .stage_at(OperationId::new(), &changed, b"edited", None, None)?
+        .await?;
+    assert_eq!(edited.volume(), harness.scratch());
+    // Auxiliary volumes exist physically only while a native command owns its
+    // projection. Publication must persist their bytes without leaving a mount.
+    let mounts = &harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .mounts;
+    assert!(!directory.path().join(".volumes/home").exists());
+    if mounting == crate::local::WorkspaceMounting::Native {
+        crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+            assert_eq!(
+                std::fs::read(
+                    claims
+                        .mounts()
+                        .named(Some("home"))?
+                        .1
+                        .native_root
+                        .override_path()
+                        .ok_or_else(|| Error::NotFound("bound home".into()))?
+                        .join("note")
+                )
+                .map_err(storage)?,
+                b"edited"
+            );
+            Ok(((), claims))
+        })
+        .await?;
+    } else {
+        assert!(
+            mounts
+                .named(Some("home"))?
+                .1
+                .native_root
+                .override_path()
+                .is_none()
+        );
+    }
+    assert!(!directory.path().join(".volumes/home").exists());
+    let view = harness.workspace.as_ref().unwrap().view();
+    let stop = acyclic_fs::CancellationToken::new();
+    let primary_absent = async |path: &str| -> Result<bool> {
+        let head = view
+            .workspace()
+            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &stop)
+            .await
+            .map_err(storage)?
+            .value;
+        Ok(matches!(
+            head.stat(
+                path,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &stop
+            )
+            .await,
+            Err(acyclic_fs_work::performance::OperationFailure {
+                error: acyclic_fs::WorkspaceError::NotFound,
+                ..
+            })
+        ))
+    };
+    assert!(primary_absent("/.volumes/home/note").await?);
+    assert!(primary_absent("/note").await?);
+    // The former implementation selected the project writer. This deliberately
+    // bypasses routing and must fail the same history-attribution oracle.
+    publisher
+        .writer_for(&harness.project, view.workspace())?
+        .stage_once(
+            OperationId::new(),
+            ".volumes/home/control",
+            b"wrong history",
+            "text/plain",
+            "control",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        !primary_absent("/.volumes/home/control").await?,
+        "negative control failed to expose the project-history leak"
+    );
+    assert!(
+        publisher
+            .destination(Some(&harness.journal), "nope", None)
+            .is_err()
+    );
+    assert!(
+        publisher
+            .destination(Some(&harness.project), ".volumes/home/note", None)
+            .is_ok()
+    );
+    Ok(())
+}
+
+// A caller with project-only grants recovers its own project write: a
+// publication that never committed observes as absent rather than failing
+// on the scratch mount it may not reach, and a committed one is returned.
+// Negative control: requiring access to every mount refuses the caller.
+#[tokio::test]
+async fn project_only_callers_recover_their_own_operations() -> Result<()> {
+    let (_directory, _state, harness, publisher) =
+        fixture(&[], crate::local::WorkspaceMounting::Native).await?;
+    let project_only = Capabilities::new([
+        harness
+            .project
+            .capability(VolumeOperation::Read, &mut None)?,
+        harness
+            .project
+            .capability(VolumeOperation::Write, &mut None)?,
+    ]);
+    let (publisher, project_only) = (&publisher, &project_only);
+    let access = move || crate::conversation::ContentAccess {
+        ceiling: Some(project_only),
+        io: None,
+    };
+    let observe = move |operation| async move {
+        publisher
+            .observe_staged_once(operation, None, Some(1024), access())?
+            .await
+            .map(|(file, _)| file)
+    };
+    let operation = OperationId::new();
+    let (written, _) = publisher
+        .stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes",
+            "text/plain",
+            "result.txt",
+            access(),
+        )?
+        .await?;
+    for strict in [false, true] {
+        super::tests::OBSERVE_EVERY_MOUNT.set(strict);
+        let missing = observe(OperationId::new()).await;
+        let recovered = observe(operation).await;
+        super::tests::OBSERVE_EVERY_MOUNT.set(false);
+        if strict {
+            assert!(matches!(
+                missing,
+                Err(Error::FilesystemAccessConfiguration(_) | Error::Unauthorized(_))
+            ));
+        } else {
+            assert!(missing?.is_none());
+            assert_eq!(
+                recovered?.map(|file| file.version().to_owned()),
+                Some(written.version().to_owned())
+            );
+        }
+    }
+    // A caller that may reach no mount is still refused.
+    let none = Capabilities::new(Vec::<String>::new());
+    assert!(matches!(
+        publisher
+            .observe_staged_once(
+                OperationId::new(),
+                None,
+                Some(1024),
+                crate::conversation::ContentAccess {
+                    ceiling: Some(&none),
+                    io: None
+                },
+            )?
+            .await,
+        Err(Error::FilesystemAccessConfiguration(_) | Error::Unauthorized(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut() -> Result<()> {
+    let (directory, _state, harness, publisher) =
+        fixture(&[], crate::local::WorkspaceMounting::Native).await?;
+    let publisher = Arc::new(publisher);
+    let task_for = |grants| {
+        let runtime = crate::runtime::Bindings {
+            targets: Some(crate::local::agents::home(publisher.tools.clone())?),
+            scope: RuntimeScope::new(grants, harness.limits.clone())?,
+            content: Some(crate::runtime::ContentBindings {
+                volume: harness.project.clone(),
+                reader: harness.client_reader()?,
+                writer: Some(publisher.clone() as Arc<dyn ContentPublisher>),
+            }),
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?;
+        Ok::<_, Error>(Arc::new(runtime.agent_context(
+            &Capabilities::default(),
+            crate::runtime::ContentBindings {
+                volume: harness.journal.clone(),
+                reader: harness.client_reader()?,
+                writer: Some(Publisher::new(
+                    harness.files.clone(),
+                    &harness.journal,
+                    &harness.verifier,
+                    &harness.signed,
+                    harness.limits.file_bytes,
+                    None,
+                )?),
+            },
+        )?))
+    };
+    let create_only = Capabilities::new([
+        "tool:call:edit".into(),
+        acyclic_fs::access::Capability::whole_volume(None, &[acyclic_fs::access::Action::Create])
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+    ]);
+    let task = task_for(create_only.clone())?;
+    let tool = crate::tools::variants::apply_patch()?;
+    let context = ToolContext::new(task.clone(), OperationId::new(), "atomic-patch")?;
+    let invocation = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Add File: one\n+first\n*** Add File: nested/two\n+second\n*** End Patch\n"}),
+    };
+    tool.executor
+        .authorize(None, Some(&context), &invocation, None)?;
+    let result = tool
+        .executor
+        .execute(invocation.clone(), Some(context.clone()))
+        .await?;
+    assert_eq!(result.value["files"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        std::fs::read(directory.path().join("one")).map_err(storage)?,
+        b"first\n"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("nested/two")).map_err(storage)?,
+        b"second\n"
+    );
+    let recovered_operation = invocation.operation_id;
+    let recovered = tool
+        .executor
+        .reconcile(invocation, Some(context))
+        .await?
+        .unwrap();
+    assert_eq!(result.value, recovered.value);
+    // Recovery and direct publication use the same action-aware policy boundary.
+    let (receipt, _) = publisher
+        .observe_changes(
+            &harness.project,
+            recovered_operation,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
+            crate::conversation::ContentAccess {
+                ceiling: Some(&create_only),
+                io: None,
+            },
+        )?
+        .await?;
+    let receipt = receipt.unwrap();
+    let source = receipt.files().next().unwrap();
+    let denied = publisher
+        .stage_changes(
+            &harness.project,
+            OperationId::new(),
+            &[crate::conversation::ContentChange::DeleteExpected { source }],
+            crate::conversation::ContentAccess {
+                ceiling: Some(&create_only),
+                io: None,
+            },
+        )?
+        .await;
+    assert!(matches!(denied, Err(Error::Unauthorized(_))));
+    assert_eq!(
+        std::fs::read(directory.path().join("one")).map_err(storage)?,
+        b"first\n"
+    );
+    // Neither ordinary write authority nor removal authority for another volume
+    // may remove this source, even though the owning publisher can do so.
+    let write_only = Capabilities::new(
+        harness
+            .signed
+            .capabilities()
+            .iter()
+            .filter(|label| !label.starts_with(VolumeOperation::Delete.capability_prefix())),
+    );
+    let foreign_delete = Capabilities::new(
+        write_only.iter().map(str::to_owned).chain([harness
+            .seed
+            .0
+            .capability(VolumeOperation::Delete, &mut None)?]),
+    );
+    for ceiling in [&write_only, &foreign_delete] {
+        assert!(matches!(
+            publisher
+                .stage_changes(
+                    &harness.project,
+                    OperationId::new(),
+                    &[crate::conversation::ContentChange::DeleteExpected { source }],
+                    crate::conversation::ContentAccess {
+                        ceiling: Some(ceiling),
+                        io: None
+                    },
+                )?
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(
+            std::fs::read(directory.path().join("one")).map_err(storage)?,
+            b"first\n"
+        );
+    }
+    let task = task_for(harness.signed.capabilities().clone())?;
+    let context = ToolContext::new(task.clone(), OperationId::new(), "atomic-refusal")?;
+    let invalid = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Update File: one\n@@\n-first\n+changed\n*** Update File: nested/two\n@@\n-absent\n+wrong\n*** End Patch\n"}),
+    };
+    assert!(tool.executor.execute(invalid, Some(context)).await.is_err());
+    assert_eq!(
+        std::fs::read(directory.path().join("one")).map_err(storage)?,
+        b"first\n"
+    );
+    let context = ToolContext::new(task, OperationId::new(), "atomic-move")?;
+    let moving = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Update File: one\n*** Move to: moved\n@@\n-first\n+changed\n*** Delete File: nested/two\n*** End Patch\n"}),
+    };
+    tool.executor.execute(moving, Some(context)).await?;
+    assert!(!directory.path().join("one").exists());
+    assert!(!directory.path().join("nested/two").exists());
+    assert_eq!(
+        std::fs::read(directory.path().join("moved")).map_err(storage)?,
+        b"changed\n"
+    );
+    Ok(())
+}

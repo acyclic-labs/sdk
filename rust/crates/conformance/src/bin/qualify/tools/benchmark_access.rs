@@ -20,7 +20,10 @@ where
 mod tests {
     use super::*;
     use acyclic_fs::access::{Action, ActionSet};
-    use acyclic_fs::{CancellationToken, Lifecycle, MaterializeOptions, OperationId, VolumeConfig};
+    use {
+        acyclic_fs::{CancellationToken, Lifecycle, MaterializeOptions, VolumeConfig},
+        acyclic_fs_format::identity::OperationId,
+    };
 
     #[tokio::test]
     async fn benchmark_mounts_bind_real_volume_policy() -> Result<(), Failure> {
@@ -33,7 +36,7 @@ mod tests {
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
                 OperationId::new(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 None,
             )
@@ -62,7 +65,7 @@ mod tests {
         let destination = tempfile::tempdir()?;
         let cancel = CancellationToken::new();
         let generation = workspace
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancel)
             .await
             .map_err(|failure| failure.error)?
             .value;
@@ -74,7 +77,7 @@ mod tests {
             .prepare_native_working_set(
                 &options,
                 &materialization,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancel,
             )
             .await?;

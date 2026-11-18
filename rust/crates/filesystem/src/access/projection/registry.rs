@@ -298,6 +298,7 @@ fn prefix(tree: &Tree, before: impl Fn(Key) -> bool) -> State {
     sum
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 #[path = "registry/tests.rs"]
 mod tests;

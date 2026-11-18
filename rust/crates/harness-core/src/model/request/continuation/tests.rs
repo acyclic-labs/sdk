@@ -49,9 +49,9 @@ fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<
                         text("new text"),
                         Some(io),
                     )?;
-                    let before = io.receipt();
+                    let before = io.receipt()?;
                     continuation.validate_suffix(Limits::default(), Some(io))?;
-                    let suffix_items = io.receipt().items_examined - before.items_examined;
+                    let suffix_items = io.receipt()?.items_examined - before.items_examined;
                     let (mut continued, _) = continuation.validate(Limits::default(), Some(io))?;
                     let ModelContent::Text(value) = &continued.messages.first().unwrap().content
                     else {
@@ -59,14 +59,14 @@ fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<
                     };
                     assert_eq!(value.as_ptr(), first, "continuation copied retained text");
                     assert_eq!(continued.messages.last(), Some(&text("new text")));
-                    let before = io.receipt();
+                    let before = io.receipt()?;
                     // The former suffix path also validated the unchanged
                     // declaration, traversing all three original schemas.
                     with_history_io(Some(io), |work| continued.tools[0].validate(work))?;
-                    let declaration_items = io.receipt().items_examined - before.items_examined;
-                    let before = io.receipt();
+                    let declaration_items = io.receipt()?.items_examined - before.items_examined;
+                    let before = io.receipt()?;
                     continued.validate(Limits::default(), Some(io))?;
-                    let full_items = io.receipt().items_examined - before.items_examined;
+                    let full_items = io.receipt()?.items_examined - before.items_examined;
                     Ok::<_, Error>((suffix_items, full_items, declaration_items))
                 })
                 .map_err(|(cause, _)| Error::Storage(cause))?;

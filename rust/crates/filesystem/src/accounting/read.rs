@@ -161,7 +161,10 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             watermark_digest: head.digest,
             watermark_settled_at_micros,
             complete: true,
-            work: work.spent(),
+            work: work
+                .spent()
+                .map_err(crate::FsError::from)
+                .map_err(AccountingError::Filesystem)?,
         });
     }
     let mut records = replay(
@@ -348,7 +351,10 @@ async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         watermark_digest: head.digest,
         watermark_settled_at_micros,
         complete,
-        work: work.spent(),
+        work: work
+            .spent()
+            .map_err(crate::FsError::from)
+            .map_err(AccountingError::Filesystem)?,
     })
 }
 

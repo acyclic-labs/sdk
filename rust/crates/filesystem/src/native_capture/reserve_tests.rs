@@ -57,13 +57,13 @@ fn run(mut fixture: Fixture, additional: usize, old: bool) -> (Output, Allocatio
         // These operations can return only typed work/cancellation errors;
         // Debug retains their wrappers, counter names, limits and actual values.
         error: result.unwrap().err().map(|error| format!("{error:?}")),
-        work: fixture.original.receipt(),
-        live: fixture.original.live_allocation_bytes(),
+        work: fixture.original.receipt().unwrap(),
+        live: fixture.original.live_allocation_bytes().unwrap(),
     };
     drop(fixture.values);
     drop(fixture.scope);
     assert_eq!(
-        fixture.original.live_allocation_bytes(),
+        fixture.original.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
     (output, heap)

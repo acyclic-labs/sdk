@@ -17,7 +17,7 @@ fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary()
                     for cancelled in [false, true] {
                         for invalid_ledger in [false, true] {
                             let cancellation = CancellationToken::new();
-                            let budget = acyclic_fs::performance::work_budget(8, 8);
+                            let budget = acyclic_fs_work::performance::work_budget(8, 8);
                             let fast = PreparationIo::from_budget(budget, &cancellation)?;
                             let reference = PreparationIo::from_budget(budget, &cancellation)?;
                             let mut initial_json = serde_json::to_value(WorkCounters::default())?;
@@ -33,7 +33,8 @@ fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary()
                                     .map_err(|_| "initial accounting ledger poisoned")?;
                                 state.0 = initial;
                                 if invalid_ledger {
-                                    state.1 = Err(acyclic_fs::WorkError::Overflow);
+                                    state.1 =
+                                        Err(acyclic_fs_work::performance::WorkError::Overflow);
                                 }
                             }
                             let mut delta_json = serde_json::to_value(WorkCounters::default())?;
@@ -49,7 +50,7 @@ fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary()
                                     delta.peak_allocation_bytes = delta
                                         .peak_allocation_bytes
                                         .checked_add(allocations.live_bytes())
-                                        .ok_or(acyclic_fs::WorkError::Overflow)?;
+                                        .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
                                 }
                                 accounting.charge(delta)
                             });

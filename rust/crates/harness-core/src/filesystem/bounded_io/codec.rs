@@ -310,7 +310,7 @@ impl PreparationIo {
         )?;
         let code = self.original_native_work().is_some().then_some(code);
         self.decode_guarded(
-            (schema != Schema::Root).then_some(diagnostic_labels),
+            (schema != Schema::ROOT).then_some(diagnostic_labels),
             code,
             |observe| {
                 crate::executor::json::json_from_slice_bounded(
@@ -365,7 +365,7 @@ impl PreparationIo {
         crate::executor::json::json_owned_value_shape_bounded(
             value,
             bounds,
-            Schema::None,
+            Schema::NONE,
             &mut |charge| self.codec_charge(charge, false),
         )?;
         crate::executor::json::count_json_bytes_trusted(
@@ -436,7 +436,7 @@ impl PreparationIo {
         }
         let bounds = self.bounds(None, 128)?;
         self.decode_guarded(
-            (schema != Schema::Root).then_some(labels),
+            (schema != Schema::ROOT).then_some(labels),
             Some(code),
             |observe| {
                 crate::executor::json::json_from_value_bounded(

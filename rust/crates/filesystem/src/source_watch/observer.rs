@@ -218,7 +218,8 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(all(target_os = "macos"))]
 #[test]
 fn moved_original_root_ends_callback_delivery_without_a_fence()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -248,7 +249,8 @@ fn moved_original_root_ends_callback_delivery_without_a_fence()
     Ok(())
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux"))]
 #[test]
 fn original_callback_failure_and_producer_panic_settle_once()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -295,7 +297,8 @@ fn original_callback_failure_and_producer_panic_settle_once()
     Ok(())
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(all(windows))]
 #[test]
 fn windows_held_root_watch_tells_names_from_in_place_changes()
 -> Result<(), Box<dyn std::error::Error>> {

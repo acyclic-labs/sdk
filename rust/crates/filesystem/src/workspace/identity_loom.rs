@@ -39,8 +39,8 @@ fn assert_completed(
 ) {
     let copied = actual[0].load(Ordering::Relaxed);
     let hashed = actual[1].load(Ordering::Relaxed);
-    assert_eq!(root.receipt().bytes_copied, copied);
-    assert_eq!(root.receipt().bytes_hashed, hashed);
+    assert_eq!(root.receipt().map(|work| work.bytes_copied), Ok(copied));
+    assert_eq!(root.receipt().map(|work| work.bytes_hashed), Ok(hashed));
     let unreserved = root.state(|state| {
         state.budget.bytes_copied == state.original_budget().bytes_copied
             && state.budget.bytes_hashed == state.original_budget().bytes_hashed

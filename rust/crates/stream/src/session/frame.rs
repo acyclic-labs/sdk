@@ -1,6 +1,7 @@
 //! Nonserialized custody accompanying one immutable physical session frame.
 
-use crate::{Record, StreamError, StreamPath, wire, wire_codec};
+use crate::{Record, StreamError, StreamPath, wire_codec};
+use acyclic_stream_wire::wire;
 
 /// One received frame and the original value it still owns.
 ///

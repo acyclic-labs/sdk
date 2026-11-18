@@ -37,11 +37,16 @@ mod tests {
     use super::*;
     #[test]
     fn native_error_keeps_its_cause_and_original_allocation() -> crate::Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
+        use {
+            acyclic_fs::{CancellationToken, NativeMaterializationWork},
+            acyclic_fs_work::performance::WorkCounters,
+        };
         let cancellation = CancellationToken::new();
-        let work =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let custody = work.claim(123, 1, WorkCounters::UNCHARGED)?;
         let error = run_error::<acyclic_fs::StreamGitCompatStore<acyclic_stream::MemoryStream>>(

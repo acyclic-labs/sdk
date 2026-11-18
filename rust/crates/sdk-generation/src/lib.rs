@@ -67,11 +67,9 @@ struct GenerateArgs {
     version: String,
     channel: Channel,
     skip_scenarios: bool,
-    execute_profiles: bool,
     historical_archives: Option<PathBuf>,
     historical_source: HistoricalSource,
-    registry_frontier_repository: Option<PathBuf>,
-    registry_frontier_revisions: BTreeSet<String>,
+    registry_frontier: Option<(PathBuf, BTreeSet<String>)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -161,7 +159,7 @@ fn run_inner(
 
 fn print_help(stdout: &mut dyn Write) -> Result<(), CliError> {
     writeln!(stdout,
-        "sdk-generation generate --root ROOT --output DIR --version VERSION [--rustdoc-dir DIR | --execute-profiles] [--channel preview|release] [--skip-scenarios] [--historical-archives DIR] [--historical-source git|registry-archives] [--registry-frontier-repository REPO --registry-frontier-revisions SHA,...]\nHistorical archives require --channel release --execute-profiles.\nsdk-generation drift --root ROOT --output DIR --rustdoc-dir DIR"
+        "sdk-generation generate --root ROOT --output DIR --version VERSION [--rustdoc-dir DIR | --execute-profiles] [--channel preview|release] [--skip-scenarios] [--historical-archives DIR] [--historical-source git|registry-archives] [--registry-frontier-repository REPO --registry-frontier-revisions SHA,...]\nOmit --rustdoc-dir to execute profiles. Use --rustdoc-dir only with preview. Historical archives require --channel release.\nsdk-generation drift --root ROOT --output DIR --rustdoc-dir DIR"
     ).map_err(io_error)
 }
 
@@ -208,15 +206,14 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         value => return Err(CliError(format!("unknown channel `{value}`"))),
     };
     let rustdoc_dir = flags.get("rustdoc-dir").map(PathBuf::from);
-    let execute_profiles = flags.contains_key("execute-profiles") || rustdoc_dir.is_none();
     if rustdoc_dir.is_some() && flags.contains_key("execute-profiles") {
         return Err(CliError(
             "--rustdoc-dir and --execute-profiles are mutually exclusive".into(),
         ));
     }
-    if channel == Channel::Release && !execute_profiles {
+    if channel == Channel::Release && rustdoc_dir.is_some() {
         return Err(CliError(
-            "release generation requires --execute-profiles; hand-supplied Rustdoc receipts are preview-only".into(),
+            "release generation does not accept --rustdoc-dir; omit it to execute profiles".into(),
         ));
     }
     let historical_archives = flags.get("historical-archives").map(PathBuf::from);
@@ -235,9 +232,7 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         ));
     }
     if historical_archives.is_some()
-        && (channel != Channel::Release
-            || !execute_profiles
-            || flags.contains_key("skip-scenarios"))
+        && (channel != Channel::Release || flags.contains_key("skip-scenarios"))
     {
         return Err(CliError(
             "historical archives require executed release profiles and all actual Cargo examples"
@@ -256,19 +251,23 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
             "registry frontier inputs require registry-archives mode".into(),
         ));
     }
-    if registry_frontier_repository.is_some() != !registry_frontier_revisions.is_empty() {
-        return Err(CliError(
-            "complete registry admission requires both source repository and history anchors"
-                .into(),
-        ));
-    }
-    if historical_source == HistoricalSource::RegistryArchives
-        && registry_frontier_repository.is_none()
-    {
-        return Err(CliError(
-            "new registry-archive generation requires a complete registry corpus".into(),
-        ));
-    }
+    let registry_frontier = match (registry_frontier_repository, registry_frontier_revisions) {
+        (Some(repository), revisions) if !revisions.is_empty() => Some((repository, revisions)),
+        (None, revisions) if revisions.is_empty() => {
+            if historical_source == HistoricalSource::RegistryArchives {
+                return Err(CliError(
+                    "new registry-archive generation requires a complete registry corpus".into(),
+                ));
+            }
+            None
+        }
+        _ => {
+            return Err(CliError(
+                "complete registry admission requires both source repository and history anchors"
+                    .into(),
+            ))
+        }
+    };
     Ok(GenerateArgs {
         root: required("root")?.into(),
         output: required("output")?.into(),
@@ -276,11 +275,9 @@ fn parse_generate(values: Vec<String>) -> Result<GenerateArgs, CliError> {
         version: required("version")?,
         channel,
         skip_scenarios: flags.contains_key("skip-scenarios"),
-        execute_profiles,
         historical_archives,
         historical_source,
-        registry_frontier_repository,
-        registry_frontier_revisions,
+        registry_frontier,
     })
 }
 

@@ -74,10 +74,7 @@ async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
         host.send(
             &root,
             &user(),
-            &InboxRecord::ApprovalRequested(ApprovalRequested {
-                child: child.clone(),
-                id: intent("turn"),
-            }),
+            &InboxRecord::Approval(Approval { id: intent("turn") }),
         )
         .await?;
         let failures = host.runtime().drain().await;
@@ -1392,7 +1389,9 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     assert!(matches!(
         handler
             .on_record(foreign, Some(checkpoint), CancellationToken::new())
-            .await,
+            .await
+            .as_ref()
+            .map_err(acyclic_actors::guest::GuestError::category),
         Err(acyclic_actors::guest::GuestError::Handler(_))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -1926,6 +1925,62 @@ async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
 }
 
 #[tokio::test]
+async fn host_spawn_requests_obey_the_child_cap() -> Result {
+    struct Forced(acyclic_harness_core::topology::Topology);
+    impl SpawnTemplates for Forced {
+        fn topology(&self) -> Option<&acyclic_harness_core::topology::Topology> {
+            Some(&self.0)
+        }
+        fn child<'a>(
+            &'a self,
+            _: &'a CreationConfig,
+            _: &'a AgentPath,
+            _: &'a [WorkspaceEntry],
+            _: &'a str,
+            _: Option<&'a acyclic_harness_core::Capabilities>,
+        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<CreationConfig>>
+        {
+            Box::pin(async {
+                Err(acyclic_harness_core::Error::Unsupported(
+                    "no model-driven spawn in this schedule".into(),
+                ))
+            })
+        }
+    }
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider,
+        Spawner {
+            calls: AtomicUsize::new(1),
+            ..Default::default()
+        },
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?
+    .with_templates(Arc::new(Forced(
+        acyclic_harness_core::topology::Topology::select("swarm")?.with_limits(Some(0), None),
+    )));
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let Wake::Inbox { record, .. } = super::spawn_request(1) else {
+        unreachable!()
+    };
+    let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
+        return Err("spawn not committed".into());
+    };
+    assert!(host.runtime().drain().await.is_empty());
+    let (spawn, _) = requested_child(&root, inbox)?;
+    assert_eq!(
+        host.spawned(&root, inbox, &spawn).await?,
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Topology,
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint() -> Result {
     // The original actor runtime commits membership roots, not its population.
     let provider = Arc::new(MemoryStream::default());
@@ -2200,5 +2255,47 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     // parent's committed ChildDone through its existing event-owned drain.
     host.drain(&root).await?;
     assert!(host.state(&root).await?.open_children.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn normal_child_completion_does_not_cancel_its_pending_archive() -> Result {
+    let root = AgentPath::root(&id(70));
+    let child = root.child(&id(u8::try_from(kernel::MAX_FANOUT)?))?;
+    let mut state = AgentState::adopted(root.clone(), &adopted(root.id()))?;
+    // A prior archive step sent its first fan-out. Those children have
+    // settled; this final child completes normally before its archive is sent.
+    for byte in 0..=kernel::MAX_FANOUT {
+        state
+            .spawned_children
+            .insert(&root.child(&id(u8::try_from(byte)?))?)
+            .await?;
+    }
+    state.open_children.insert(&child).await?;
+    state.archive_pending.insert(&child).await?;
+    state.closed = true;
+    state.dropped_before = 1;
+    let result = step(
+        &super::script(Vec::new()),
+        &root,
+        Some(state),
+        (3, 0),
+        Wake::Inbox {
+            sequence: 2,
+            record: InboxRecord::ChildDone(ChildDone {
+                child: child.clone(),
+                outcome: AgentOutcome::Succeeded { result: None },
+            }),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(
+        result
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Archive { target, .. } if target == &child)),
+        "normal completion cancelled an unsent archive request"
+    );
     Ok(())
 }

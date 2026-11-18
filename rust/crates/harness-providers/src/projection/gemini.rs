@@ -17,7 +17,7 @@ mod tests {
             let raw = format!(r#"{{"functionCall":{{"name":"read","args":{{"nested":["\u{surrogate:04x}"]}}}},"thoughtSignature":"original=="}}"#);
             // Negative control: skipping functionCall alone accepts malformed
             // nested string tokens. Native replay must validate the whole part.
-            prop_assert!(serde_json::from_str::<crate::protocol::gemini::Part<&RawValue>>(&raw).is_ok());
+            prop_assert!(serde_json::from_str::<acyclic_harness_provider_protocol::gemini::Part<&RawValue>>(&raw).is_ok());
             prop_assert!(part(raw.as_bytes()).is_err());
         }
     }
@@ -29,13 +29,19 @@ mod tests {
 /// One retained part's exact bytes, validated without re-encoding.
 pub(crate) fn part(
     bytes: &[u8],
-) -> acyclic_harness_core::Result<(&RawValue, crate::protocol::gemini::NativePart<'_>)> {
+) -> acyclic_harness_core::Result<(
+    &RawValue,
+    acyclic_harness_provider_protocol::gemini::NativePart<'_>,
+)> {
     let raw: &RawValue = serde_json::from_slice(bytes)
         .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
-    if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
+    if raw.get().as_bytes() != bytes || !acyclic_model_render::strict::valid(raw.get()) {
         return Err(crate::invalid("invalid retained Gemini part"));
     }
-    Ok((raw, crate::protocol::gemini::native_part(raw)?))
+    Ok((
+        raw,
+        acyclic_harness_provider_protocol::gemini::native_part(raw).map_err(crate::invalid)?,
+    ))
 }
 
 fn decode<'a>(raw: &'a RawValue) -> acyclic_harness_core::Result<Cow<'a, str>> {
@@ -47,7 +53,9 @@ fn decode<'a>(raw: &'a RawValue) -> acyclic_harness_core::Result<Cow<'a, str>> {
 /// A retained thought: any part but a call.
 pub fn thought(bytes: &[u8]) -> acyclic_harness_core::Result<&RawValue> {
     match part(bytes)? {
-        (raw, crate::protocol::gemini::NativePart { function: None, .. }) => Ok(raw),
+        (raw, acyclic_harness_provider_protocol::gemini::NativePart { function: None, .. }) => {
+            Ok(raw)
+        }
         _ => Err(crate::invalid("retained Gemini thought carries a call")),
     }
 }
@@ -80,7 +88,7 @@ pub fn call<'a>(
         return Err(crate::invalid("retained Gemini call carries no call"));
     };
     let same_arguments = match original.args {
-        Some(raw) => crate::json(raw.get().as_bytes())? == *arguments,
+        Some(raw) => acyclic_harness_provider_response::json(raw.get().as_bytes())? == *arguments,
         None => arguments.as_object().is_some_and(|args| args.is_empty()),
     };
     if original.id.map(decode).transpose()?.as_deref() != id

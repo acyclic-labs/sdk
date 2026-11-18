@@ -2,7 +2,10 @@ use super::*;
 
 #[test]
 fn native_attribute_rejects_deep_source_before_schema_compilation_or_copy() {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    use {
+        acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        acyclic_fs_work::performance::WorkBudget,
+    };
     let cancellation = CancellationToken::new();
     let budget = WorkBudget {
         allocation_operations: 1024,

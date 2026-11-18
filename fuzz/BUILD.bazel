@@ -31,6 +31,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -64,6 +65,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -96,6 +98,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -125,6 +128,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -154,6 +158,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -171,8 +176,9 @@ rust_binary(
 rust_binary(
     name = "guest_metadata_corpus_example",
     crate_root = "examples/guest_metadata_corpus.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/guest_metadata_corpus.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -183,6 +189,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -199,8 +206,9 @@ rust_binary(
 rust_binary(
     name = "stream_error_corpus_example",
     crate_root = "examples/stream_error_corpus.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/stream_error_corpus.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -211,6 +219,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -230,6 +239,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree/corpus/guest_json",

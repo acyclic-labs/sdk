@@ -182,13 +182,16 @@ fn recovery_ownership_receipts_are_exact_and_durable() -> Result<(), Box<dyn std
     assert_eq!(guard.owned_root(&work)?, None);
     let (leaf, identity) =
         super::open_recovery_leaf(&parent, std::path::Path::new("projection"), &work)?.unwrap();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     guard.publish_root_ownership(identity, volume, &work)?;
     assert_eq!(
-        work.receipt().durability_operations - before.durability_operations,
+        work.receipt().unwrap().durability_operations - before.durability_operations,
         3
     );
-    assert_eq!(work.receipt().bytes_encoded - before.bytes_encoded, 124);
+    assert_eq!(
+        work.receipt().unwrap().bytes_encoded - before.bytes_encoded,
+        124
+    );
     assert_eq!(guard.owned_root(&work)?, Some(identity));
     let file = guard.file.as_ref().unwrap();
     use std::os::windows::fs::FileExt as _;
@@ -277,14 +280,14 @@ fn copied_or_malformed_receipts_cannot_substitute_physical_custody()
         for length in [124, 16] {
             assert_eq!(original.seek_write(&unsupported, 0)?, unsupported.len());
             original.set_len(length)?;
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             assert!(matches!(
                 guards[0].owned_root(&work),
                 Err(NativeMountError::Materialization(
                     crate::NativeTreeMaterializationError::UnsupportedFormat
                 ))
             ));
-            assert_eq!(work.receipt().bytes_hashed, before.bytes_hashed);
+            assert_eq!(work.receipt().unwrap().bytes_hashed, before.bytes_hashed);
         }
     }
     for name in ["original", "copied"] {
@@ -328,16 +331,16 @@ fn ownership_publication_requires_encoding_and_every_durable_flush()
             &CancellationToken::new(),
         )
         .map_err(|(error, _)| error)?;
-        let before = limited.receipt();
+        let before = limited.receipt().unwrap();
         let result = guard.publish_root_ownership(identity, volume, &limited);
         assert_eq!(result.is_ok(), encoded == 124 && flushes == 3);
         assert_eq!(
-            limited.receipt().durability_operations - before.durability_operations,
+            limited.receipt().unwrap().durability_operations - before.durability_operations,
             if encoded == 0 { 0 } else { flushes }
         );
         if encoded == 0 {
             assert_eq!(
-                limited.receipt().backend_write_operations,
+                limited.receipt().unwrap().backend_write_operations,
                 before.backend_write_operations
             );
             assert_eq!(guard.owned_root(&work)?, None);
@@ -563,10 +566,10 @@ fn custody_control(
         recovery_path.clone()
     };
     if drop_owner {
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         crate::native_mount::recovery::wait_for_retirement(owner)?;
         assert_eq!(
-            work.receipt().durability_operations - before.durability_operations,
+            work.receipt().unwrap().durability_operations - before.durability_operations,
             2,
             "LastDrop flushes both held directories on the original acquisition ledger"
         );

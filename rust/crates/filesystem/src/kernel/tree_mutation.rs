@@ -230,7 +230,7 @@ pub async fn apply_tree_mutations<S: crate::AsyncObjectStore>(
         cancellation,
     )
     .await
-    .map_err(|error| OperationFailure::new(project_tree_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(project_tree_error(error), accounting.spent()))
 }
 
 pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectStore>(

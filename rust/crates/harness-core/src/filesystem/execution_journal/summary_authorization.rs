@@ -19,7 +19,7 @@ where
                 return Ok(false);
             }
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters {
+                io.charge(acyclic_fs_work::performance::WorkCounters {
                     items_examined: file.path().len() as u64,
                     ..Default::default()
                 })?;

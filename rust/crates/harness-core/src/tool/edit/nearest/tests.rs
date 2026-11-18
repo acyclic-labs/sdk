@@ -86,7 +86,7 @@ proptest! {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn long_line_advice_keeps_addressable_ends_within_the_original_allocation() -> Result<()> {
-    let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 16_384;
     budget.items_examined = 2_000_000;
     let work =
@@ -131,7 +131,7 @@ fn long_line_advice_keeps_addressable_ends_within_the_original_allocation() -> R
 fn portable_and_native_miss_search_do_not_multiply_file_and_needle_lengths() -> Result<()> {
     let source = "a".repeat(100_000);
     let needle = "b".repeat(10_000);
-    let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     budget.items_examined = 2_000_000;
     assert!(source.len() * needle.len() > budget.items_examined as usize);
     let work =
@@ -141,7 +141,7 @@ fn portable_and_native_miss_search_do_not_multiply_file_and_needle_lengths() -> 
     let mut custody = allocation(Some(&work), 0)?;
     let native = closest(&source, &needle, &mut custody)?;
     assert_eq!(closest(&source, &needle, &mut None)?, native);
-    assert!(work.receipt().items_examined < budget.items_examined);
+    assert!(work.receipt()?.items_examined < budget.items_examined);
     drop(custody);
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
@@ -152,7 +152,7 @@ fn portable_and_native_miss_search_do_not_multiply_file_and_needle_lengths() -> 
 fn refused_edits_retain_a_replayable_diagnostic_without_changing_exact_semantics() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

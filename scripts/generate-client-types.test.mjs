@@ -5,12 +5,12 @@ import { render as renderTokens } from "./generate-stream-token-operations.mjs";
 import { render as renderWidths, rust as widthSource } from "./generate-inference-widths.mjs";
 
 test("Stream HTTP generator keeps route result types without a runtime contract export", () => {
-  assert.deepEqual(httpSource, [["acyclic-stream", "bin", "stream-http-contract"]]);
+  assert.deepEqual(httpSource, ["//rust/crates/stream-wire:stream-http-contract"]);
   const source = renderHttp([JSON.stringify([["tail", "tail"], ["read", "read"]])])["typescript/packages/stream/src/http-contract.ts"];
   assert.match(source, /type HttpResponseContract = \{\n  "tail": "tail";\n  "read": "read";\n\};/);
   assert.match(source, /export type HttpRoute = keyof HttpResponseContract;/);
   assert.match(source, /HttpResponseByKind\[HttpResponseContract\[Route\]\]/);
-  assert.doesNotMatch(source, /HTTP_RESPONSE_CONTRACT|Object\.freeze|export const/);
+  assert.doesNotMatch(source, /HTTP_RESPONSE_CONTRACT|Object\.freeze|export (?:const|function)|import \{/);
 });
 
 test("Stream token generation preserves captured authorization rows and derives the operation type", () => {
@@ -48,7 +48,7 @@ test("Stream generators retain malformed source inventory rejection", () => {
 });
 
 test("inference generator retains named Rust widths without publishing the unused raw dump", () => {
-  assert.deepEqual(widthSource, [["acyclic-inference-wasm", "example", "inference-typescript-widths"]]);
+  assert.deepEqual(widthSource, ["//rust/crates/inference-wasm:inference-typescript-widths_example"]);
   const files = renderWidths([JSON.stringify({ runId: 16, contextRevision: 32, futureWidth: 7 })]);
   assert.deepEqual(Object.keys(files).sort(), [
     "typescript/packages/inference/generated/widths.d.ts", "typescript/packages/inference/generated/widths.js",

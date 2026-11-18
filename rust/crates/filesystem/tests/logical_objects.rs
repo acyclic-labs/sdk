@@ -4,13 +4,17 @@
 #[path = "support/provider_receipt.rs"]
 mod provider_receipt;
 
-use acyclic_fs::storage::{
-    ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest,
-};
-use acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore, WorkBudget};
 use acyclic_objects::{Blobs, Delete, MemoryObjects};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
+use {
+    acyclic_fs::storage::{ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest},
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
+};
+use {
+    acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "logical_objects/sealed.rs"]
@@ -76,7 +80,7 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
     }
     .err()
     .ok_or("zero backend budget admitted a batch")?;
-    assert_eq!(denied.work.backend_read_operations, 0);
+    assert_eq!(denied.work().unwrap().backend_read_operations, 0);
     assert!(matches!(denied.error, ObjectStoreError::Work(_)));
     assert_eq!(
         result
@@ -135,7 +139,7 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
     )
     .err()
     .ok_or("oversized put succeeded")?;
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work().unwrap().backend_write_operations, 0);
     assert!(matches!(
         failure.error,
         ObjectStoreError::TooLarge {

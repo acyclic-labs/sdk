@@ -796,13 +796,13 @@ fn denial_without_probe(action: Action, path: &str) -> Result<(), Box<dyn std::e
         None,
     )?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
-    let before = work.receipt().backend_read_operations;
+    let before = work.receipt().unwrap().backend_read_operations;
     assert!(
         source
             .authorize_with_meter(&[(action, &native_test_path(path))], &work)
             .is_err()
     );
-    assert_eq!(work.receipt().backend_read_operations, before);
+    assert_eq!(work.receipt().unwrap().backend_read_operations, before);
     Ok(())
 }
 

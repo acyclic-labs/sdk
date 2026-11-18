@@ -27,7 +27,7 @@ proptest! {
         let cancellation = CancellationToken::new();
         let budget = crate::performance::work_budget(100_000, 8 * 1024 * 1024);
         let work = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let paths = components.iter().map(|names| selection_path(names)).collect::<Vec<_>>();
         let mut expected = paths.iter().collect::<Vec<_>>();
         expected.sort_unstable();
@@ -45,7 +45,7 @@ proptest! {
             }
         }
         drop(receipt);
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 
         // The old reverse insertion needs n(n-1)/2 comparisons and n(n+1)/2
         // pointer copies. This original item/copy credit cannot fund it.
@@ -59,14 +59,14 @@ proptest! {
             ..budget
         }).unwrap();
         let mut receipt = GenerationReceipt::from_work(&bounded).unwrap();
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         let selected = select_materialization_paths(&paths, &mut receipt).unwrap();
         prop_assert!(selected.windows(2).all(|pair| pair[0] < pair[1]));
         prop_assert_eq!(selected.len(), paths.len());
-        prop_assert!(work.receipt().items_examined - before.items_examined <= bound);
-        prop_assert!(work.receipt().bytes_copied - before.bytes_copied <= 128 * 1024);
+        prop_assert!(work.receipt().unwrap().items_examined - before.items_examined <= bound);
+        prop_assert!(work.receipt().unwrap().bytes_copied - before.bytes_copied <= 128 * 1024);
         drop((selected, receipt, bounded));
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 
         // Refusal and cancellation retire the same selection backing. Neither
         // can reach the destination preparation following selection.
@@ -82,7 +82,7 @@ proptest! {
                 Err(MaterializeError::Work(_)),
             ));
             drop((receipt, denied));
-            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         }
         let mut receipt = GenerationReceipt::from_work(&work).unwrap();
         cancellation.cancel();
@@ -91,6 +91,6 @@ proptest! {
             Err(MaterializeError::Cancelled(_)),
         ));
         drop(receipt);
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     }
 }

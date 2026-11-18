@@ -1,5 +1,6 @@
 //! ALL/LATEST wire admission has an independent shrinking and fuzz oracle.
-use acyclic_stream::{StreamError, wire, wire_codec::session::follow_sequence};
+use acyclic_stream::{StreamCategory, wire_codec::session::follow_sequence};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use proptest::prelude::*;
 use prost::Message;
@@ -143,19 +144,19 @@ fn corpus_delivery_seeds_reach_their_named_outcomes() {
             include_bytes!("../fuzz/corpus/session/latest-empty-key").as_slice(),
             2,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamCategory::Unavailable),
         ),
         (
             include_bytes!("../fuzz/corpus/session/latest-impossible-durable").as_slice(),
             2,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamCategory::Unavailable),
         ),
         (
             include_bytes!("../fuzz/corpus/session/all-short-commit").as_slice(),
             1,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamCategory::Unavailable),
         ),
     ]
     .into_iter()
@@ -196,7 +197,10 @@ fn corpus_delivery_seeds_reach_their_named_outcomes() {
             }
             _ => panic!("seed item does not match its intended case"),
         }
-        assert_eq!(follow_sequence(delivery, next, &data), expected);
+        assert_eq!(
+            follow_sequence(delivery, next, &data).map_err(|error| error.category()),
+            expected
+        );
         assert_eq!(check(delivery, next, &data, Fault::None), Ok(()));
     }
 }
@@ -226,7 +230,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             10,
             8,
             0,
-            Err(StreamError::Unavailable),
+            Err(StreamCategory::Unavailable),
         ),
         (
             seed!("latest-impossible-durable"),
@@ -235,7 +239,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             10,
             11,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamCategory::Unavailable),
         ),
         (seed!("all-held-flush"), 1, 1, 4, 0, 32, Ok(0)),
         (
@@ -245,7 +249,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             4,
             0,
             31,
-            Err(StreamError::Unavailable),
+            Err(StreamCategory::Unavailable),
         ),
     ] {
         let frame = wire::SessionFrame::decode(seed).unwrap();
@@ -267,15 +271,23 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             }
             _ => panic!("{name} has the wrong item"),
         }
-        assert_eq!(follow_sequence(delivery, 0, &data), expected, "{name}");
+        assert_eq!(
+            follow_sequence(delivery, 0, &data).map_err(|error| error.category()),
+            expected,
+            "{name}"
+        );
         assert_eq!(check(delivery, 0, &data, Fault::None), Ok(()));
     }
     for ((name, seed), confirmation, expected) in [
-        (seed!("opened-empty"), vec![], Err(StreamError::Unsupported)),
+        (
+            seed!("opened-empty"),
+            vec![],
+            Err(StreamCategory::Unsupported),
+        ),
         (
             seed!("opened-foreign"),
             vec![9; 32],
-            Err(StreamError::Unsupported),
+            Err(StreamCategory::Unsupported),
         ),
         (seed!("opened-matching"), vec![7; 32], Ok(())),
     ] {
@@ -285,7 +297,8 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
         };
         assert_eq!(opened.preceding_commit_id.as_ref(), confirmation, "{name}");
         assert_eq!(
-            confirm_follow(Some(CommitId::from_bytes([7; 32])), &opened),
+            confirm_follow(Some(CommitId::from_bytes([7; 32])), &opened)
+                .map_err(|error| error.category()),
             expected,
             "{name}"
         );

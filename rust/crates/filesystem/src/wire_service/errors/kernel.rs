@@ -164,6 +164,7 @@ project!(AuthenticatedProbeError, {
     E::Context(error) => filesystem_code(error),
 });
 project!(RebaseError<AuthenticatedProbeError>, {
+    E::WorkObservation(_) => Code::Internal,
     E::Cancelled => Code::Cancelled,
     E::DependenciesChanged => Code::Aborted,
     E::ZeroConflictLimit => Code::InvalidArgument,

@@ -1,8 +1,9 @@
-use crate::{Adapter, invalid, stream::family};
+use crate::{Adapter, invalid};
 use acyclic_harness_core::{
     Result,
     model::{ModelContentPart, ModelRequest},
 };
+use acyclic_harness_provider_response::stream::family;
 use std::{
     borrow::Cow,
     collections::{HashMap, hash_map::Entry},
@@ -54,7 +55,7 @@ fn ids(
 }
 
 fn unchanged(id: &str) -> bool {
-    !id.starts_with(PREFIX) && crate::protocol::name::CALL_ID.accepts(id)
+    !id.starts_with(PREFIX) && acyclic_harness_provider_protocol::name::CALL_ID.accepts(id)
 }
 
 impl<'a> CallIds<'a> {

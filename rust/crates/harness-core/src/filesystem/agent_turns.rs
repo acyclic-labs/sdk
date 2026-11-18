@@ -1608,19 +1608,24 @@ where
                 .filesystem
                 .open_workspace(
                     binding.volume()?.storage_name(&mut None)?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
                 .await
                 .map_err(|failure| Error::Storage(failure.error.to_string()))?
                 .value;
-            let view =
-                super::access::access_view(&workspace, &authority.scope, None, payload, None, &io)
-                    .await?;
-            if !view
-                .0
-                .allows_every_path(actions, super::access::access_now()?)
-            {
+            let now = self.host.access_now()?;
+            let view = super::access::access_view(
+                &workspace,
+                &authority.scope,
+                None,
+                payload,
+                None,
+                &io,
+                now,
+            )
+            .await?;
+            if !view.0.allows_every_path(actions, now) {
                 return Err(Error::Unauthorized(
                     "project selection requires authority over the whole volume".into(),
                 ));
@@ -2190,6 +2195,9 @@ struct SettledTurn {
     steering: Option<FileRef>,
     steered: Vec<ModelMessage>,
     transcript: Vec<ModelMessage>,
+    /// Whether a completed turn's output text replays as its reply. A failed
+    /// or cancelled turn keeps only the steps that completed.
+    replay_text: bool,
     notices: Option<crate::agent::NoticeSelection>,
 }
 
@@ -2267,6 +2275,7 @@ impl<'a> TurnContext<'a> {
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
                     transcript: Vec::new(),
+                    replay_text: entry.outcome.is_completed(),
                     notices: entry.notices,
                 })
             })
@@ -2289,17 +2298,35 @@ impl<'a> TurnContext<'a> {
     /// their ordered exact references for both grant derivation and the
     /// eventual model selection.
     async fn expand_inputs(&mut self, reader: &dyn ContentResidencyVerifier) -> Result<()> {
-        for SettledTurn {
-            input,
-            output,
-            transcript,
-            steered,
-            ..
-        } in &mut self.settled
-        {
-            let original = std::mem::replace(input, ModelContent::Text(String::new()));
-            *input = crate::agent::expand_attachments(original, reader).await?;
-            *transcript = staged_transcript(reader, output, std::mem::take(steered)).await?;
+        let mut index = 0;
+        while let Some(settled) = self.settled.get_mut(index) {
+            let original = std::mem::replace(&mut settled.input, ModelContent::Text(String::new()));
+            settled.input = crate::agent::expand_attachments(original, reader).await?;
+            settled.transcript = staged_transcript(
+                reader,
+                &settled.output,
+                std::mem::take(&mut settled.steered),
+                settled.replay_text,
+            )
+            .await?;
+            // A failed or cancelled turn with no completed step has no model
+            // item to replay. It is not history: the next request starts from
+            // the same prefix the failed one did.
+            if !settled.replay_text && settled.transcript.is_empty() {
+                self.settled.remove(index);
+                if let Some(fork) = &mut self.fork
+                    && *fork > index
+                {
+                    *fork -= 1;
+                }
+                for (opened, _) in &mut self.ancestors {
+                    if *opened > index {
+                        *opened -= 1;
+                    }
+                }
+            } else {
+                index += 1;
+            }
         }
         let original = std::mem::replace(&mut self.input, ModelContent::Text(String::new()));
         self.input = crate::agent::expand_attachments(original, reader).await?;
@@ -2523,6 +2550,11 @@ impl<'a> TurnContext<'a> {
         if fork == Some(forked) {
             directive(&mut messages, &mut message_ids);
         }
+        for (opened, ancestor) in &ancestors {
+            if *opened == forked {
+                place(&mut messages, &mut message_ids, ancestor);
+            }
+        }
         if !announcements.is_empty() {
             for (part, content) in
                 crate::agent::announcement_messages(announcements, journal_reader, content_limits)
@@ -2591,6 +2623,7 @@ async fn staged_transcript(
     reader: &dyn ContentResidencyVerifier,
     output: &FileRef,
     mut fallback: Vec<ModelMessage>,
+    replay_text: bool,
 ) -> Result<Vec<ModelMessage>> {
     let bytes = reader
         .read(output, output.descriptor().byte_length(), None, None)?
@@ -2598,11 +2631,18 @@ async fn staged_transcript(
     let output = serde_json::from_slice::<TurnOutput>(&bytes)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
     Ok(if output.transcript.is_empty() {
-        fallback.push(ModelMessage {
-            role: ModelRole::Assistant,
-            content: ModelContent::Text(output.text),
-        });
-        fallback
+        // Only a completed turn's reply is a model item. A failed or
+        // cancelled turn keeps its partial stream for observation, never as
+        // history the next request must carry.
+        if replay_text {
+            fallback.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(output.text),
+            });
+            fallback
+        } else {
+            Vec::new()
+        }
     } else {
         output.transcript
     })
@@ -3012,7 +3052,7 @@ where
                     agent.clone(),
                     (turn, inbox, initial_through),
                     Arc::clone(&bindings.journal.files),
-                    crate::executor::ExecutionJournal::output_content(&journal, turn)?
+                    crate::executor::ExecutionJournal::output_content(&journal, turn, None)?
                         .and_then(|content| content.writer)
                         .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
                     self.executors.content_limits().render_bytes,
@@ -3439,7 +3479,7 @@ where
                         .ok_or_else(|| Error::Storage("diagnostic prefix is incomplete".into()))?;
                     let slice = range.take_record(&record).map_err(Error::from)?;
                     if let Some(io) = io {
-                        io.charged(acyclic_fs::WorkCounters {
+                        io.charged(acyclic_fs_work::performance::WorkCounters {
                             bytes_copied: slice.len() as u64,
                             ..Default::default()
                         })?;

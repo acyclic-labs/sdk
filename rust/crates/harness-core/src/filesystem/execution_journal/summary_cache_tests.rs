@@ -22,7 +22,7 @@ fn cache_storage_keeps_its_original_ledger_and_releases_only_its_own_pool() -> R
     for promote in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
             &cancellation,
         )?;
         let observer = io.scoped()?;
@@ -90,7 +90,7 @@ fn ledger_live(io: &PreparationIo) -> Result<u64> {
 #[test]
 fn incomplete_refresh_and_ledger_changes_discard_the_authenticated_prefix() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let first = PreparationIo::from_budget(budget, &cancellation)?;
     let second = PreparationIo::from_budget(budget, &cancellation)?;
     let operation = OperationId::new();
@@ -113,24 +113,24 @@ fn incomplete_refresh_and_ledger_changes_discard_the_authenticated_prefix() -> R
 fn native_cache_custody_survives_temporary_io_and_returns_to_the_original_ledger() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let mut cache = SummaryCache::default();
     let operation = OperationId::new();
     {
         let io = PreparationIo::from_native_work(&work)?;
         seed(&mut cache, operation, &io)?;
     }
-    assert!(work.live_allocation_bytes() > baseline);
+    assert!(work.live_allocation_bytes()? > baseline);
     let io = PreparationIo::from_native_work(&work)?;
     cache.bind(operation, Some(&io))?;
     assert_eq!(cache.summary().tail, 1);
     assert_eq!(io.owned_bytes()?, 0);
     drop(cache);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -139,7 +139,7 @@ fn native_cache_custody_survives_temporary_io_and_returns_to_the_original_ledger
 fn a_fresh_invocation_reuses_storage_with_current_cancellation_and_work() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -177,7 +177,7 @@ fn a_fresh_invocation_reuses_storage_with_current_cancellation_and_work() -> Res
     retained.check_cancellation()?;
     let outside_window = work.remaining()?.bytes_hashed;
     let before_second = second.remaining()?.bytes_hashed;
-    retained.charge(acyclic_fs::WorkCounters {
+    retained.charge(acyclic_fs_work::performance::WorkCounters {
         bytes_hashed: 17,
         ..Default::default()
     })?;

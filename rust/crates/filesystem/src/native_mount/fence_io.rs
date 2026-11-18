@@ -72,14 +72,16 @@ impl Drop for MountLockFile {
 }
 
 pub(super) fn try_lock(file: &MountLockFile) -> io::Result<()> {
-    #[cfg(all(test, loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(loom, target_os = "linux"))]
     return file.1.try_lock(file, file.2);
     #[cfg(not(all(test, loom, target_os = "linux")))]
     file.0.try_lock(FileLockMode::Exclusive)
 }
 
 pub(super) fn unlock(file: &MountLockFile) -> io::Result<()> {
-    #[cfg(all(test, loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(loom, target_os = "linux"))]
     {
         file.1.unlock(file, file.2);
         return Ok(());
@@ -91,14 +93,15 @@ pub(super) fn unlock(file: &MountLockFile) -> io::Result<()> {
 // A blocking OS lock is one admitted syscall, independent of contention.
 // The model replaces that syscall with the same kernel-owned wait queue.
 pub(super) fn lock(file: &MountLockFile) -> io::Result<()> {
-    #[cfg(all(test, loom, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(loom, target_os = "linux"))]
     loop {
         if file.2 == 0 && file.1.registry_wait_disabled() {
             return file.1.try_lock(file, file.2);
         }
         match file.1.try_lock(file, file.2) {
             Ok(()) => return Ok(()),
-            Err(error) if super::lock_is_contended(&error) => {
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
                 file.1.wait_for_unlock(file, file.2);
             }
             Err(error) => return Err(error),

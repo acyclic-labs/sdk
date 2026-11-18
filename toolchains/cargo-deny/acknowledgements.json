@@ -1,0 +1,27 @@
+{
+  "RUSTSEC-2026-0543": {
+    "crate": "chrono",
+    "reason": "Unmaintained notice; the advisory identifies no vulnerable function and no patched release.",
+    "evidence": "cargo-bazel-lock.json: chrono 0.4.45 is reached by arrow-array 60.1.0, oauth2 5.0.0, object_store 0.14.2, parquet 60.1.0, rmcp 3.9.0 and s3s 0.17.0."
+  },
+  "RUSTSEC-2026-0542": {
+    "crate": "humantime",
+    "reason": "Unmaintained notice; the advisory identifies no vulnerable function and no patched release.",
+    "evidence": "rust/crates/harness-core/Cargo.toml directly requires humantime 2.4.0; cargo-bazel-lock.json also lists object_store 0.14.2 as a consumer."
+  },
+  "RUSTSEC-2026-0371": {
+    "crate": "zbus_names",
+    "reason": "Unmaintained standalone crate notice; the advisory identifies no vulnerable function and no patched release.",
+    "evidence": "cargo-bazel-lock.json: zbus 4.4.0 -> zbus_names 3.0.0."
+  },
+  "RUSTSEC-2026-0370": {
+    "crate": "zvariant",
+    "reason": "Unmaintained standalone crate notice; the advisory identifies no vulnerable function and no patched release.",
+    "evidence": "cargo-bazel-lock.json: zbus 4.4.0 -> zvariant 4.2.0 and zbus_names 3.0.0 -> zvariant 4.2.0."
+  },
+  "RUSTSEC-2026-0372": {
+    "crate": "zvariant_derive",
+    "reason": "Unmaintained standalone crate notice; the advisory identifies no vulnerable function and no patched release.",
+    "evidence": "cargo-bazel-lock.json: zbus 4.4.0 -> zvariant 4.2.0 -> zvariant_derive 4.2.0 (procedural macro)."
+  }
+}

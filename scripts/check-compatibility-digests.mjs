@@ -1,12 +1,11 @@
+import { checkFileCopies, repositoryRoot, repositoryUrl as root } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, packagedSourceCopies } from "./generated-bindings.mjs";
 
-const root = new URL("..", import.meta.url);
 // Writing is explicit: ordinary imports and checks never bless changed inputs.
-const write = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] === "write";
+const write = import.meta.main && process.argv[2] === "write";
+if (!write) checkFileCopies(repositoryRoot, packagedSourceCopies);
 const manifest = JSON.parse(readFileSync(new URL("compatibility/manifest.json", root), "utf8"));
 for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
   for (const [field, path] of Object.entries(artifacts)) {

@@ -359,9 +359,10 @@ impl AuthorityRoot {
         reference: &acyclic_native_runtime::signing_key::SigningKeyReference,
         custody: acyclic_native_runtime::signing_key::SigningCustody<'_>,
         audience: Authority,
+        clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<Self> {
         reference
-            .with_seed(custody, |seed| Self::new(id, *seed, audience))
+            .with_seed(custody, |seed| Self::with_clock(id, *seed, audience, clock))
             .map_err(|error| Error::Unauthorized(error.to_string()))
     }
 

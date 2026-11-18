@@ -5,6 +5,8 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_shared_l
 
 FEATURES = []
 
+WASM_FEATURES = []
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-inference-wasm","CARGO_PKG_DESCRIPTION":"WebAssembly contract validation for @acyclic-labs/inference","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
@@ -28,6 +30,7 @@ rust_shared_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -55,6 +58,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -79,6 +83,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -93,14 +98,28 @@ isolated_test(
     name = "acyclic_inference_wasm_test",
     binary = ":acyclic_inference_wasm_test_cases",
     id = "acyclic-inference-wasm",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_inference_wasm_test_full-cloud",
+    binary = ":acyclic_inference_wasm_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-inference-wasm",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
     name = "inference-typescript-http-routes_example",
     crate_root = "examples/inference-typescript-http-routes.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/inference-typescript-http-routes.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -111,6 +130,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -123,13 +143,15 @@ rust_binary(
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//wasm-bindgen-0.2.117",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(
     name = "inference-typescript-terminal-metadata_example",
     crate_root = "examples/inference-typescript-terminal-metadata.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/inference-typescript-terminal-metadata.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -140,6 +162,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -152,13 +175,15 @@ rust_binary(
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//wasm-bindgen-0.2.117",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(
     name = "inference-typescript-widths_example",
     crate_root = "examples/inference-typescript-widths.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/inference-typescript-widths.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -169,6 +194,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -181,6 +207,67 @@ rust_binary(
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//wasm-bindgen-0.2.117",
     ],
+    visibility = ["//visibility:public"],
+)
+
+rust_shared_library(
+    name = "acyclic_inference_wasm_wasm_cdylib",
+    crate_name = "acyclic_inference_wasm",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
+    deps = [
+        "//rust/crates/inference:acyclic_inference_wasm",
+        "@wasm_crates//js-sys-0.3.94",
+        "@wasm_crates//prost-0.14.4",
+        "@wasm_crates//prost-reflect-0.16.5",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "acyclic_inference_wasm_wasm",
+    crate_name = "acyclic_inference_wasm",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
+    deps = [
+        "//rust/crates/inference:acyclic_inference_wasm",
+        "@wasm_crates//js-sys-0.3.94",
+        "@wasm_crates//prost-0.14.4",
+        "@wasm_crates//prost-reflect-0.16.5",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(
@@ -189,6 +276,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

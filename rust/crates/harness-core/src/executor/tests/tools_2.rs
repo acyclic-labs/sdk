@@ -239,13 +239,17 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
     #[cfg(not(target_arch = "wasm32"))]
     let native_accounting: fn() -> Error = || {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(16_384, 16 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .unwrap();
-        work.claim(u64::MAX, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .unwrap_err()
-            .into()
+        work.claim(
+            u64::MAX,
+            0,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+        )
+        .unwrap_err()
+        .into()
     };
     for stage in [Stage::Authorize, Stage::Execute] {
         for (error, expected) in [
@@ -444,7 +448,10 @@ async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepare
 #[tokio::test]
 async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_stays_strict()
 -> Result<()> {
-    struct Rejected(bool);
+    struct Rejected {
+        broken: bool,
+        authorizations: AtomicUsize,
+    }
     impl ToolExecutor for Rejected {
         fn authorize(
             &self,
@@ -453,7 +460,8 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
             _: &ToolInvocation,
             _: acyclic_fs::NativeWork<'_>,
         ) -> Result<()> {
-            Err(if self.0 {
+            self.authorizations.fetch_add(1, Ordering::SeqCst);
+            Err(if self.broken {
                 Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "invalid selection",
@@ -478,8 +486,12 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
         }
     }
     for broken in [false, true] {
+        let rejected = Arc::new(Rejected {
+            broken,
+            authorizations: AtomicUsize::new(0),
+        });
         let tools = echo_tools(
-            Arc::new(Rejected(broken)),
+            rejected.clone(),
             json!({"type":"object"}),
             json!({}),
             crate::tool::json_projection_schema(json!({})),
@@ -517,35 +529,35 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
                 &mut Vec::new(),
             )
             .await;
+        let mut replayed = vec![call_message(&invocation)];
+        let replay = StockExecution::ordinary(&executor)
+            .settle_tool_call(
+                &journal,
+                operation,
+                0,
+                (invocation.clone(), None),
+                0,
+                &mut replayed,
+                &mut Vec::new(),
+            )
+            .await;
+        assert_eq!(
+            super::tools_1::tool_error_text(&messages, &invocation.call_id).is_some(),
+            !broken,
+        );
         if broken {
-            // Negative control: the former boundary classification aborts before a record.
             assert!(matches!(result, Err(Error::NativeBoundary { .. })));
-            assert!(journal.0.lock().unwrap().is_empty());
+            assert!(matches!(replay, Err(Error::NativeBoundary { .. })));
         } else {
             assert!(matches!(result?, ExecutionProgress::Ready(None)));
-            let mut replayed = vec![call_message(&invocation)];
-            StockExecution::ordinary(&executor)
-                .settle_tool_call(
-                    &journal,
-                    operation,
-                    0,
-                    (invocation, None),
-                    0,
-                    &mut replayed,
-                    &mut Vec::new(),
-                )
-                .await?;
-            assert_eq!(messages, replayed);
-            let records = journal.0.lock().unwrap();
-            assert_eq!(records.len(), 1);
-            assert!(matches!(
-                records[0].event,
-                ExecutionEvent::ToolFailed {
-                    reason: ToolFailureKind::InvalidInput,
-                    ..
-                }
-            ));
+            assert!(matches!(replay?, ExecutionProgress::Ready(None)));
         }
+        assert_eq!(messages, replayed);
+        assert_eq!(
+            rejected.authorizations.load(Ordering::SeqCst),
+            if broken { 2 } else { 1 },
+            "settled semantic refusal must replay without fresh authorization",
+        );
     }
     Ok(())
 }

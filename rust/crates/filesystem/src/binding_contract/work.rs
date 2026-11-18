@@ -63,24 +63,34 @@ pub fn work_counters_json(work: &WorkCounters) -> Result<String, serde_json::Err
     serde_json::to_string(&DecimalWorkCounters(work))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use proptest::prelude::*;
 
     // The original binding encoder is the independent precision/shape oracle.
-    fn original_json(work: &WorkCounters) -> String {
-        let mut value = serde_json::to_value(work).unwrap();
-        for value in value.as_object_mut().unwrap().values_mut() {
-            *value = serde_json::Value::String(value.as_u64().unwrap().to_string());
+    fn original_json(work: &WorkCounters) -> Result<String, Box<dyn std::error::Error>> {
+        let mut value = serde_json::to_value(work)?;
+        for value in value
+            .as_object_mut()
+            .ok_or("work receipt is not an object")?
+            .values_mut()
+        {
+            *value = serde_json::Value::String(
+                value
+                    .as_u64()
+                    .ok_or("work counter is not an integer")?
+                    .to_string(),
+            );
         }
-        serde_json::to_string(&value).unwrap()
+        Ok(serde_json::to_string(&value)?)
     }
 
-    fn check(work: &WorkCounters) {
+    fn check(work: &WorkCounters) -> Result<(), Box<dyn std::error::Error>> {
         let (json, [before, after]) = acyclic_test_support::differential(
-            || original_json(work),
-            || work_counters_json(work).unwrap(),
+            || original_json(work).expect("original receipt encoding"),
+            || work_counters_json(work).expect("receipt encoding"),
         );
         assert!(
             after.count_total < before.count_total,
@@ -93,7 +103,8 @@ mod tests {
         assert_eq!(after.count_current, 1, "only the returned buffer remains");
         // Reinstating the canonical numeric encoding loses the binding's exact
         // string-valued contract, even when the numbers happen to be small.
-        assert_ne!(json, serde_json::to_string(work).unwrap());
+        assert_ne!(json, serde_json::to_string(work)?);
+        Ok(())
     }
 
     proptest! {
@@ -103,20 +114,20 @@ mod tests {
         fn decimal_receipts_preserve_original_precision_with_less_allocation(
             counters in any::<[u64; 24]>(),
         ) {
-            let mut canonical = serde_json::to_value(WorkCounters::default()).unwrap();
-            let object = canonical.as_object_mut().unwrap();
+            let mut canonical = serde_json::to_value(WorkCounters::default())?;
+            let object = canonical.as_object_mut().expect("work receipt is an object");
             prop_assert_eq!(object.len(), counters.len());
             for (value, number) in object.values_mut().zip(counters) {
                 *value = number.into();
             }
-            check(&serde_json::from_value(canonical.clone()).unwrap());
+            check(&serde_json::from_value(canonical.clone())?).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
             // Every field, including zero and values not representable by a
             // JavaScript number, traverses the actual codec in each control.
             for number in [0, 9_007_199_254_740_993, u64::MAX] {
-                for value in canonical.as_object_mut().unwrap().values_mut() {
+                for value in canonical.as_object_mut().expect("work receipt is an object").values_mut() {
                     *value = number.into();
                 }
-                check(&serde_json::from_value(canonical.clone()).unwrap());
+                check(&serde_json::from_value(canonical.clone())?).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
             }
         }
     }

@@ -37,7 +37,10 @@ proptest! {
 async fn unreadable_dispatch_history_preserves_its_failure() -> Result<()> {
     let journal = Journal::default();
     let cancellation = acyclic_fs::CancellationToken::new();
-    let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
+    let io = PreparationIo::from_budget(
+        acyclic_fs_work::performance::WorkBudget::default(),
+        &cancellation,
+    )?;
     let progress = DispatchPhase::new()
         .finish::<()>(
             Err(Error::Invalid("preparation failed".into())),

@@ -1,7 +1,8 @@
 use super::*;
+use acyclic_executable_search::ExecutableSearch;
 use acyclic_native_runtime::{
-    CaptureHandler, CaptureSchedule, ExecutableSearch, OwnedCaptureInput, ProcessCommand,
-    ProcessInput, ProcessOutput, ProcessStdio, ProcessTree, run_blocking_io, shell_command,
+    CaptureHandler, CaptureSchedule, OwnedCaptureInput, ProcessCommand, ProcessInput,
+    ProcessOutput, ProcessStdio, ProcessTree, run_blocking_io, shell_command,
 };
 use std::{
     collections::BTreeMap,
@@ -256,7 +257,7 @@ pub(super) fn expand_exec_path<'a>(
     workspace: &Path,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<std::borrow::Cow<'a, std::ffi::OsStr>> {
-    acyclic_native_runtime::expand_environment(value, |reference| {
+    acyclic_host_platform::expansion::expand_environment(value, |reference| {
         let Some(reference) = reference else {
             return Ok(None);
         };
@@ -326,18 +327,16 @@ mod tests {
             Path::new("workspace"),
             |_| None,
         )?;
+        let expected = shell_command("echo literal-source", None).map_err(Error::process_io)?;
+        assert_eq!(command.get_program(), expected.get_program());
         assert_eq!(
             Path::new(command.get_program()),
-            acyclic_native_runtime::platform_shell().map_err(Error::process_io)?
+            acyclic_executable_search::platform_shell().map_err(Error::process_io)?
         );
-        let args: Vec<_> = command.get_args().collect();
-        let mut expected: Vec<_> = acyclic_native_runtime::shell_spec::PLATFORM
-            .arguments
-            .iter()
-            .map(std::ffi::OsStr::new)
-            .collect();
-        expected.push(std::ffi::OsStr::new("echo literal-source"));
-        assert_eq!(args, expected);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            expected.get_args().collect::<Vec<_>>()
+        );
         Ok(())
     }
 

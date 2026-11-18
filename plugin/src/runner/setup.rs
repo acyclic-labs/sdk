@@ -97,62 +97,6 @@ pub(super) fn registry(args: &Args) -> Result<Registry, Failure> {
     Ok(registry)
 }
 
-fn settings(args: &Args) -> Result<Option<SettingsConfig>, Failure> {
-    if args.default_config {
-        return Ok(None);
-    }
-    Ok(Some(match &args.settings_root {
-        Some(root) => SettingsConfig::new(&args.workspace, root).codex_home(root.join(".codex")),
-        None => SettingsConfig::new(
-            &args.workspace,
-            acyclic_harness::native_environment::home().ok_or(
-                "user settings directory is unavailable; recovery: configure --settings-root",
-            )?,
-        ),
-    }))
-}
-
-fn base_selection(
-    args: &Args,
-    registry: &Registry,
-    model: Option<&str>,
-) -> Result<String, Failure> {
-    let role = acyclic_harness::templates::root()?.model;
-    let configured = match model {
-        Some(model) => Some(model.to_owned()),
-        None => settings(args)?
-            .map(|settings| settings.configured_model())
-            .transpose()?
-            .flatten(),
-    };
-    Ok(
-        acyclic_harness::templates::resolve_model(role.as_deref(), configured.as_deref())
-            .unwrap_or_else(|| registry.default_model())
-            .to_owned(),
-    )
-}
-
-async fn selection_from(
-    args: &Args,
-    registry: &Registry,
-    model: Option<&str>,
-) -> Result<String, Failure> {
-    let base = base_selection(args, registry, model)?;
-    let home = args
-        .home_file
-        .iter()
-        .map(|(path, source)| {
-            Ok((
-                path.clone(),
-                acyclic_harness::local::read_regular_file(source)?.into(),
-            ))
-        })
-        .collect::<Result<std::collections::BTreeMap<_, _>, Failure>>()?;
-    Ok(acyclic_harness::config::agent_from_home(&home, &base)
-        .await?
-        .model)
-}
-
 const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in the configured OS keychain service, set the selected provider's API key environment variable, or pass --credentials FILE with an api_keys provider map";
 
 pub(super) async fn first_run(
@@ -171,8 +115,8 @@ pub(super) async fn first_run(
     {
         return Ok(None);
     }
-    let base = base_selection(args, registry, args.model.as_deref())?;
     let prepared = LocalHarness::prepare(configure(args, self::registry(args)?)?).await?;
+    let base = prepared.base_model_selection()?.into_owned();
     let selected = prepared.model_selection(Some(&base)).await?;
     args.model = Some(base);
     if !registry.needs_credentials(&selected)? {
@@ -231,9 +175,7 @@ pub(super) async fn first_run(
     // and admit the exact selection before making it the next launch's default.
     let refreshed = self::registry(args)?;
     refreshed.resolve(&effective)?;
-    if let Some(settings) = settings(args)? {
-        settings.set_model(&selected)?;
-    }
+    prepared.save_model_preference(&selected)?;
     args.model = Some(selected);
     *registry = refreshed;
     Ok(Some(terminal))
@@ -244,20 +186,35 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
     let mut refusals = Vec::new();
     let mut notes = Vec::new();
     let registry = doctor_registry(args, &mut refusals)?;
-    let selected = selection_from(args, &registry, args.model.as_deref()).await;
-    let needs_key =
-        doctor_provider(&registry, selected.as_deref(), &mut notes, &mut refusals).await;
-    doctor_facilities(args, needs_key, headless, &mut notes, &mut refusals);
-    let local = match configure(args, registry) {
-        Ok(config) => LocalHarness::doctor(config).await,
+    let (selected, local_refusals) = match configure(args, registry.clone()) {
+        Ok(config) => {
+            let local = LocalHarness::doctor(config).await;
+            let selected = local.model.ok_or_else(|| -> Failure {
+                local.refusals.last().map_or_else(
+                    || "local configuration did not admit a model selection".into(),
+                    |error| error.to_string().into(),
+                )
+            });
+            (Some(selected), local.refusals)
+        }
         Err(error) => {
             refusals.push(format!("local configuration: {error}; recovery: repair workspace, approval policy and settings flags"));
-            Registry::new(Credentials::explicit(Default::default()))?
-                .graphcoder(&args.workspace, args.model.clone())?
-                .preflight()
+            (
+                None,
+                Registry::new(Credentials::explicit(Default::default()))?
+                    .graphcoder(&args.workspace, args.model.clone())?
+                    .preflight(),
+            )
         }
     };
-    for error in local {
+    let needs_key = match selected.as_ref() {
+        Some(selected) => {
+            doctor_provider(&registry, selected.as_deref(), &mut notes, &mut refusals).await
+        }
+        None => false,
+    };
+    doctor_facilities(args, needs_key, headless, &mut notes, &mut refusals);
+    for error in local_refusals {
         let message = error.to_string();
         // Credential refusal already includes all three credential remedies.
         if needs_key && message.contains("API key is unavailable") {

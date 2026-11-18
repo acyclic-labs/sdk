@@ -29,7 +29,7 @@ fn root_names_validate_once_before_encoding_or_opening() -> Result<(), Box<dyn s
         .map_err(|(error, _)| error)?;
         let root = super::HostRoot::open(path, &mut &work)?;
         assert_eq!(root.identity(), expected);
-        assert_eq!(work.receipt().items_examined, units + queries);
+        assert_eq!(work.receipt().unwrap().items_examined, units + queries);
 
         // An embedded terminator is rejected while counting, before any
         // buffer or OS operation can observe the truncated name.
@@ -42,7 +42,7 @@ fn root_names_validate_once_before_encoding_or_opening() -> Result<(), Box<dyn s
         );
         let denied = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let before = denied.receipt();
+        let before = denied.receipt().unwrap();
         let (result, events): (_, Vec<&'static str>) = acyclic_test_support::differential::observe(
             || stat_probe::Probe::rescan(false),
             |probe| {
@@ -57,10 +57,13 @@ fn root_names_validate_once_before_encoding_or_opening() -> Result<(), Box<dyn s
         ));
         assert!(events.is_empty());
         assert_eq!(
-            denied.receipt().allocation_operations,
+            denied.receipt().unwrap().allocation_operations,
             before.allocation_operations
         );
-        assert_eq!(denied.receipt().bytes_encoded, before.bytes_encoded);
+        assert_eq!(
+            denied.receipt().unwrap().bytes_encoded,
+            before.bytes_encoded
+        );
     }
     Ok(())
 }
@@ -133,16 +136,16 @@ fn component_opens_respect_creation_read_and_cancellation_bounds()
             );
             assert_eq!(result.is_ok(), limit == 1);
             assert_eq!(
-                work.receipt().backend_read_operations,
+                work.receipt().unwrap().backend_read_operations,
                 if create { 0 } else { limit }
             );
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 if create { limit } else { 0 }
             );
-            work.receipt().verify(budget)?;
+            work.receipt().unwrap().verify(budget)?;
             cancellation.cancel();
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             assert!(
                 directory_path(
                     &root.directory(),
@@ -152,7 +155,7 @@ fn component_opens_respect_creation_read_and_cancellation_bounds()
                 )
                 .is_err()
             );
-            assert_eq!(work.receipt(), before);
+            assert_eq!(work.receipt().unwrap(), before);
         }
         // Cancellation must also stop a fresh ledger with room to do the IO.
         let cancellation = crate::CancellationToken::new();
@@ -168,8 +171,8 @@ fn component_opens_respect_creation_read_and_cancellation_bounds()
             )
             .is_err()
         );
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
+        assert_eq!(work.receipt().unwrap().backend_read_operations, 0);
+        assert_eq!(work.receipt().unwrap().backend_write_operations, 0);
     }
     Ok(())
 }
@@ -196,7 +199,7 @@ fn component_opens_preserve_identity_and_exact_work_for_both_dispositions()
         );
         let held = result?;
         assert_eq!(events, vec!["NtCreateFile"]);
-        let receipt = work.receipt();
+        let receipt = work.receipt().unwrap();
         assert_eq!(receipt.backend_read_operations, u64::from(!create));
         assert_eq!(receipt.backend_write_operations, u64::from(create));
         assert_eq!(
@@ -217,7 +220,7 @@ fn component_opens_preserve_identity_and_exact_work_for_both_dispositions()
         assert_eq!(identity, directory_identity(&held, &mut ordinary_work())?);
         // The frozen open-then-query route is the negative physical-work control.
         assert_eq!(
-            control.receipt().backend_read_operations,
+            control.receipt().unwrap().backend_read_operations,
             receipt.backend_read_operations + 1
         );
     }
@@ -337,7 +340,7 @@ fn held_creation_queries_only_the_returned_identity_without_dropping_barriers()
                     .count(),
                 1
             );
-            let receipt = work.receipt();
+            let receipt = work.receipt().unwrap();
             assert_eq!(receipt.durability_operations, depth);
             assert_eq!(receipt.backend_write_operations, depth);
             // One writable parent open per barrier and one final identity query.
@@ -360,10 +363,13 @@ fn held_creation_queries_only_the_returned_identity_without_dropping_barriers()
                 sync_directory_held(directory, &mut old)?;
                 held = Some(child);
             }
-            assert_eq!(old.receipt().durability_operations, depth);
-            assert_eq!(old.receipt().backend_read_operations, 2 * depth);
+            assert_eq!(old.receipt().unwrap().durability_operations, depth);
+            assert_eq!(old.receipt().unwrap().backend_read_operations, 2 * depth);
             if depth > 1 {
-                assert!(old.receipt().backend_read_operations > receipt.backend_read_operations);
+                assert!(
+                    old.receipt().unwrap().backend_read_operations
+                        > receipt.backend_read_operations
+                );
             }
         }
     }

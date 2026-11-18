@@ -4,7 +4,7 @@ use super::binary;
 
 #[test]
 fn cloud_identity_contract() -> Result<(), Box<dyn std::error::Error>> {
-    let status = std::process::Command::new("node")
+    let status = std::process::Command::new(acyclic_test_support::host_tool!("node"))
         .arg("--test")
         .arg("tests/identity-contract.test.mjs")
         .current_dir(acyclic_test_support::source_path("plugin"))

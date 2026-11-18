@@ -494,7 +494,7 @@ pub(super) fn once_key(
     let length = "filesystem-single-file:".len() + 36;
     if let Some(io) = io {
         io.retain_owned(length as u64)?;
-        io.preflight(acyclic_fs::WorkCounters {
+        io.preflight(acyclic_fs_work::performance::WorkCounters {
             bytes_encoded: length as u64,
             bytes_copied: length as u64,
             items_examined: 1,
@@ -512,7 +512,7 @@ pub(super) fn once_key(
         )
     })?;
     if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_encoded: key.len() as u64,
             bytes_copied: key.len() as u64,
             items_examined: 1,
@@ -530,7 +530,7 @@ fn replacement_key(
     let length = "filesystem-replacement:".len() + 36 + 1 + 64;
     if let Some(io) = io {
         io.retain_owned(length as u64)?;
-        io.preflight(acyclic_fs::WorkCounters {
+        io.preflight(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: path.len() as u64,
             bytes_encoded: length as u64,
             bytes_copied: length as u64,
@@ -554,7 +554,7 @@ fn replacement_key(
         )
     })?;
     if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: path.len() as u64,
             bytes_encoded: length as u64,
             bytes_copied: length as u64,
@@ -570,7 +570,7 @@ fn upload_key(
     path: &str,
     io: Option<&PreparationIo>,
 ) -> Result<IdempotencyKey> {
-    let hashing = acyclic_fs::WorkCounters {
+    let hashing = acyclic_fs_work::performance::WorkCounters {
         bytes_hashed: path.len() as u64,
         ..Default::default()
     };

@@ -20,7 +20,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         .map_err(|_| Error::Invalid("invalid dispatcher identity"))?;
         Ok((
             Store::new(
-                Arc::clone(self.store.provider()),
+                self.store.provider().clone(),
                 StreamPath::new(format!("{}/_dispatcher", self.store.root()))?,
             ),
             actor,

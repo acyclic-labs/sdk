@@ -148,7 +148,7 @@ async fn spill_bytes_with_reuse_fixture(
         let order = *order;
         index.order.remove(&order);
     }
-    index.mark_spilled(&[(id, bytes.clone())], offset, byte_length(&bytes));
+    index.mark_spilled(&[(id, bytes.clone())], offset, byte_length(&bytes))?;
     Ok((id, bytes))
 }
 

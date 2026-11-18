@@ -257,7 +257,7 @@ async fn head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await
         .map(|receipt| receipt.value.id())
         .map_err(|failure| {
-            let mut status = super::status(&failure.error);
+            let mut status = Status::from(&failure.error);
             status.set_source(Arc::new(failure.error));
             status
         })

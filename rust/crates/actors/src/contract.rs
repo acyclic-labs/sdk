@@ -2,18 +2,23 @@
 use crate::wire;
 use std::collections::HashSet;
 
-fn valid_idempotency_key(value: &str) -> bool {
+pub(super) fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
 }
 
-fn valid_actor_scope(account: &[u8], namespace: Option<&str>, id: &str) -> bool {
-    (account.is_empty() || crate::addressing::AccountId::new(account).is_ok())
-        && crate::addressing::NamespaceId::new(
-            namespace
-                .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
-                .as_bytes(),
-        )
-        .is_ok()
+pub(super) fn validate_idempotency_key(value: &str) -> Result<(), ContractError> {
+    valid_idempotency_key(value)
+        .then_some(())
+        .ok_or(ContractError::InvalidArgument)
+}
+
+fn valid_actor_scope(namespace: Option<&str>, id: &str) -> bool {
+    crate::addressing::NamespaceId::validate(
+        namespace
+            .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+            .as_bytes(),
+    )
+    .is_ok()
         && crate::addressing::validate_actor_id(id.as_bytes()).is_ok()
 }
 
@@ -47,11 +52,10 @@ impl From<std::convert::Infallible> for ContractError {
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
     !value.subscription_id.is_empty()
         && !value.stream_path.is_empty()
-        && matches!(
-            value.start.as_ref().and_then(|start| start.start.as_ref()),
-            Some(wire::subscription_start::Start::Cursor(_))
-                | Some(wire::subscription_start::Start::CurrentHead(true))
-        )
+        && value
+            .start
+            .as_ref()
+            .is_some_and(|start| domain::SubscriptionStart::try_from(start.clone()).is_ok())
 }
 
 fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
@@ -61,6 +65,14 @@ fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
             && source.length > 0
             && domain::EntrySource::validate_selection(&source.environment, &source.entry).is_ok()
     })
+}
+
+pub(super) fn valid_jurisdiction(jurisdiction: &str, worker: bool) -> bool {
+    if worker {
+        jurisdiction.is_empty()
+    } else {
+        matches!(jurisdiction, "" | "eu" | "us" | "fedramp")
+    }
 }
 
 /// Validates an explicit namespace or named script deployment before admission.
@@ -79,10 +91,8 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
             return Err(ContractError::InvalidArgument);
         }
     }
-    if (!request.account_id.is_empty()
-        && crate::addressing::AccountId::new(&request.account_id).is_err())
-        || !matches!(request.jurisdiction.as_str(), "" | "eu" | "us" | "fedramp")
-        || !domain::valid_code_sha256(&request.code_sha256)
+    if !valid_jurisdiction(&request.jurisdiction, request.worker_limits.is_some())
+        || domain::CodeSha256::new(&request.code_sha256).is_err()
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
@@ -92,11 +102,8 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
             }
             (None, Some(limits)) => {
                 crate::addressing::validate_dns_label(request.name.as_bytes()).is_ok()
-                    && limits.cpu_millis > 0
-                    && limits.memory_bytes > 0
-                    && limits.timeout_millis > 0
+                    && domain::WorkerLimits::try_from(limits.clone()).is_ok()
                     && request.subscriptions.is_empty()
-                    && request.jurisdiction.is_empty()
             }
             _ => false,
         }
@@ -117,29 +124,19 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
     if anchors > 1 {
         return Err(ContractError::InvalidArgument);
     }
-    names.clear();
-    for item in &request.bindings {
-        if domain::Binding::try_from(item.clone()).is_err()
-            || (item.state_transaction && request.worker_limits.is_some())
-        {
-            return Err(ContractError::InvalidArgument);
-        }
-        if !names.insert(&item.name) {
-            return Err(ContractError::DuplicateName);
-        }
-    }
-    validate_secret_selections(&request.secrets, &request.bindings)?;
-    validate_fetch_selection(request.fetch.as_ref(), &request.secrets, &request.bindings)?;
-    Ok(())
+    drop(names);
+    validate_configuration(
+        &request.bindings,
+        &request.secrets,
+        request.fetch.as_ref(),
+        request.worker_limits.is_some(),
+    )
 }
 
 /// Validates a full compare-and-replace Actor configuration mutation.
 pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), ContractError> {
-    if (!request.account_id.is_empty()
-        && crate::addressing::AccountId::new(&request.account_id).is_err())
-        || crate::addressing::NamespaceId::validate_deployment(request.namespace_id.as_bytes())
-            .is_err()
-        || !domain::valid_code_sha256(&request.code_sha256)
+    if crate::addressing::NamespaceId::validate_deployment(request.namespace_id.as_bytes()).is_err()
+        || domain::CodeSha256::new(&request.code_sha256).is_err()
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.namespace_id)
         || !request
@@ -149,46 +146,42 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
     {
         return Err(ContractError::InvalidArgument);
     }
-    let mut names = HashSet::new();
-    for item in &request.bindings {
-        if domain::Binding::try_from(item.clone()).is_err() {
+    validate_configuration(
+        &request.bindings,
+        &request.secrets,
+        request.fetch.as_ref(),
+        false,
+    )
+}
+
+fn validate_configuration(
+    bindings: &[wire::Binding],
+    secrets: &[wire::SecretSelection],
+    fetch: Option<&wire::FetchBinding>,
+    worker: bool,
+) -> Result<(), ContractError> {
+    let mut names = HashSet::with_capacity(bindings.len() + secrets.len());
+    for binding in bindings {
+        if domain::Binding::try_from(binding.clone()).is_err()
+            || (worker && binding.state_transaction)
+        {
             return Err(ContractError::InvalidArgument);
         }
-        if !names.insert(&item.name) {
+        if !names.insert(binding.name.as_str()) {
             return Err(ContractError::DuplicateName);
         }
     }
-    validate_secret_selections(&request.secrets, &request.bindings)?;
-    validate_fetch_selection(request.fetch.as_ref(), &request.secrets, &request.bindings)?;
-    Ok(())
-}
-
-fn validate_fetch_selection(
-    fetch: Option<&wire::FetchBinding>,
-    secrets: &[wire::SecretSelection],
-    bindings: &[wire::Binding],
-) -> Result<(), ContractError> {
-    if let Some(fetch) = fetch {
-        domain::FetchBinding::try_from(fetch.clone())
-            .map_err(|_| ContractError::InvalidArgument)?;
-        if secrets.iter().any(|secret| secret.name == fetch.name)
-            || bindings.iter().any(|binding| binding.name == fetch.name)
-        {
-            return Err(ContractError::DuplicateName);
-        }
-    }
-    Ok(())
-}
-
-fn validate_secret_selections(
-    secrets: &[wire::SecretSelection],
-    bindings: &[wire::Binding],
-) -> Result<(), ContractError> {
-    let mut names: HashSet<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
     for secret in secrets {
         domain::SecretSelection::try_from(secret.clone())
             .map_err(|_| ContractError::InvalidArgument)?;
-        if !names.insert(&secret.name) {
+        if !names.insert(secret.name.as_str()) {
+            return Err(ContractError::DuplicateName);
+        }
+    }
+    if let Some(fetch) = fetch {
+        domain::FetchBinding::try_from(fetch.clone())
+            .map_err(|_| ContractError::InvalidArgument)?;
+        if names.contains(fetch.name.as_str()) {
             return Err(ContractError::DuplicateName);
         }
     }
@@ -197,26 +190,18 @@ fn validate_secret_selections(
 
 /// Validates a Actor storage deletion, leaving the address reusable. Identity and idempotency rules match
 pub fn validate_delete(request: &wire::DeleteAllRequest) -> Result<(), ContractError> {
-    if !valid_actor_scope(
-        &request.account_id,
-        request.namespace.as_deref(),
-        &request.actor_id,
-    ) || !valid_idempotency_key(&request.idempotency_key)
-    {
+    if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id) {
         return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_idempotency_key(&request.idempotency_key)
 }
 
 /// Validates a newly authored subscription; its cursor may not later be rewound.
 pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {
-    if !valid_actor_scope(
-        &request.account_id,
-        request.namespace.as_deref(),
-        &request.actor_id,
-    ) || !valid_idempotency_key(&request.idempotency_key)
+    if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id)
+        || !valid_idempotency_key(&request.idempotency_key)
         || !request.subscription.as_ref().is_some_and(subscription)
     {
         return Err(ContractError::InvalidArgument);
@@ -229,7 +214,6 @@ pub fn validate_remove_subscription(
     request: &wire::RemoveSubscriptionRequest,
 ) -> Result<(), ContractError> {
     validate_subscription_control(
-        &request.account_id,
         request.namespace.as_deref(),
         &request.actor_id,
         &request.subscription_id,
@@ -242,7 +226,6 @@ pub fn validate_resume_subscription(
     request: &wire::ResumeSubscriptionRequest,
 ) -> Result<(), ContractError> {
     validate_subscription_control(
-        &request.account_id,
         request.namespace.as_deref(),
         &request.actor_id,
         &request.subscription_id,
@@ -251,42 +234,63 @@ pub fn validate_resume_subscription(
 }
 
 fn validate_subscription_control(
-    account: &[u8],
     namespace: Option<&str>,
     actor: &str,
     subscription: &str,
     identity: &str,
 ) -> Result<(), ContractError> {
-    if !valid_actor_scope(account, namespace, actor)
-        || !valid_idempotency_key(identity)
-        || subscription.is_empty()
-    {
+    if !valid_actor_scope(namespace, actor) {
         return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_subscription_identity(subscription, identity)
+}
+
+pub(super) fn validate_subscription_identity(
+    subscription: &str,
+    key: &str,
+) -> Result<(), ContractError> {
+    if subscription.is_empty() {
+        return Err(ContractError::InvalidArgument);
+    }
+    validate_idempotency_key(key)
 }
 
 /// Validates a fork: both Actors share one account and namespace, the child
 /// differs from the parent, and each child subscription id occurs once.
 pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractError> {
     let namespace = request.namespace.as_deref();
-    if !valid_actor_scope(&request.account_id, namespace, &request.actor_id)
-        || !valid_actor_scope(&request.account_id, namespace, &request.child_actor_id)
-        || request.actor_id == request.child_actor_id
-        || !valid_idempotency_key(&request.idempotency_key)
+    if !valid_actor_scope(namespace, &request.actor_id)
+        || crate::addressing::validate_actor_id(request.child_actor_id.as_bytes()).is_err()
         || !request.subscriptions.iter().all(subscription)
     {
         return Err(ContractError::InvalidArgument);
     }
-    let mut seen = HashSet::new();
-    if !request
-        .subscriptions
-        .iter()
-        .all(|value| seen.insert(value.subscription_id.as_str()))
-    {
-        return Err(ContractError::DuplicateName);
+    validate_fork_identity(
+        &request.actor_id,
+        &request.child_actor_id,
+        &request.idempotency_key,
+        request
+            .subscriptions
+            .iter()
+            .map(|value| value.subscription_id.as_str()),
+    )
+}
+
+pub(super) fn validate_fork_identity<'a>(
+    parent: &str,
+    child: &str,
+    key: &str,
+    mut subscriptions: impl Iterator<Item = &'a str>,
+) -> Result<(), ContractError> {
+    if parent == child {
+        return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_idempotency_key(key)?;
+    let mut seen = HashSet::new();
+    subscriptions
+        .all(|id| seen.insert(id))
+        .then_some(())
+        .ok_or(ContractError::DuplicateName)
 }
 
 mod generated {

@@ -95,9 +95,10 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
             .checked_add(paths.get(index).depth())
             .ok_or(WorkError::Overflow)?;
     }
+    // Size the cache exactly as a single path's: by every component's frontier.
+    // Its slots grow on demand, so this bounds entries without reserving them.
     let cache_entries = maximum_cache_entries_for_components(total_components, config)
-        .map_err(|failure| crate::FsError::Path(failure.error))?
-        .min(4096);
+        .map_err(|failure| crate::FsError::Path(failure.error))?;
     let initial_scratch = standalone_scratch(accounting)?;
     let result = {
         let mut frame_guard = None;
@@ -178,11 +179,11 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     current.value.resize(count, None);
                     done.value.clear();
                     done.value.resize(count, 0);
-                    for index in 0..count {
+                    for (index, entry) in entries.iter_mut().enumerate() {
                         let is_root =
                             examine_item(accounting, None, || paths.get(index).is_root())?;
                         if is_root {
-                            entries[index].record = Some(root);
+                            entry.record = Some(root);
                             done.value[index] = 1;
                             if observe && capture_terminal {
                                 let expected =
@@ -208,7 +209,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     for depth in 0..maximum_depth {
                         pending.value.clear();
                         active.value.clear();
-                        for index in 0..count {
+                        for (index, entry) in entries.iter_mut().enumerate() {
                             let finished = examine_item(accounting, None, || {
                                 done.value[index] != 0 || paths.get(index).depth() <= depth
                             })?;
@@ -221,7 +222,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 .payload
                             else {
                                 if matches!(mode, PathBatchMode::Optional) {
-                                    entries[index] = PathBatchEntry {
+                                    *entry = PathBatchEntry {
                                         record: None,
                                         parent: None,
                                         resolved_components: usize_to_u64(depth),
@@ -433,7 +434,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         lookup: PathBatchLookup {
                             entries,
                             retained_allocation_bytes,
-                            work: accounting.spent(),
+                            work: accounting.spent()?,
                         },
                         dependencies,
                     },
@@ -463,8 +464,8 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
         };
         cleanup_standalone(accounting, initial_scratch, retained)?;
     }
-    result.map(|mut result| {
-        result.0.lookup.work = accounting.spent();
-        result
+    result.and_then(|mut result| {
+        result.0.lookup.work = accounting.spent()?;
+        Ok(result)
     })
 }

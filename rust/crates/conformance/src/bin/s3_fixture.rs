@@ -75,7 +75,7 @@ impl FilesystemS3Resolver<LocalAuthorityBackend, LocalObjectBackend> for Resolve
             .filesystem
             .create_workspace(
                 format!("s3-{}", hex::encode(IdempotencyKey::new().into_bytes())),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -148,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = filesystem
         .create_workspace(
             "s3-fixture-initial",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

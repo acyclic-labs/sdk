@@ -70,9 +70,68 @@ fn code<T: std::fmt::Debug>(result: &Result<T, Error>) -> Option<ErrorCode> {
 /// against one service stay independent.
 pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<(), Failure> {
     verify_availability(first, second, run).await?;
+    verify_terminal_fence(first, run).await?;
     let primary = verify_primary(first, run).await?;
     let root = verify_delete_collection_list_usage(first, run, &primary).await?;
     verify_isolation(first, second, run, &primary, &root).await
+}
+
+async fn verify_terminal_fence(first: &dyn Blobs, run: &str) -> Result<(), Failure> {
+    let case = "terminal-fence";
+    let root =
+        RootId::new(format!("{run}/terminal").into_bytes()).map_err(|error| fail(case, error))?;
+    let digest = put(
+        first,
+        case,
+        bytes(&format!("{run}/terminal"), 32),
+        Vec::new(),
+    )
+    .await?;
+    first
+        .retain_fenced(&root, 3, vec![digest])
+        .await
+        .map_err(|error| fail(case, error))?;
+    first
+        .release_terminal(&root, 3)
+        .await
+        .map_err(|error| fail(case, error))?;
+    for fence in [0, 3] {
+        let result = first.retain_fenced(&root, fence, vec![digest]).await;
+        expect!(
+            "terminal-fence",
+            code(&result) == Some(ErrorCode::TerminalFence),
+            result
+        );
+    }
+    first
+        .retain_fenced(&root, 4, vec![digest])
+        .await
+        .map_err(|error| fail(case, error))?;
+    first
+        .release_terminal(&root, 3)
+        .await
+        .map_err(|error| fail(case, error))?;
+    first
+        .release(&root)
+        .await
+        .map_err(|error| fail(case, error))?;
+    let retained = first.delete(digest).await;
+    expect!(
+        "terminal-fence",
+        matches!(&retained, Ok(value) if value.outcome == Delete::Referenced),
+        retained
+    );
+    first
+        .release_terminal(&root, 4)
+        .await
+        .map_err(|error| fail(case, error))?;
+    let removed = first.delete(digest).await;
+    expect!(
+        "terminal-fence",
+        matches!(&removed, Ok(value) if value.outcome == Delete::Deleted),
+        removed
+    );
+    Ok(())
 }
 
 async fn verify_availability(
@@ -339,6 +398,14 @@ async fn verify_batches_and_manifest(
         Vec::new(),
     )
     .await?;
+    let mut checksum = crate::ContentHasher::default();
+    checksum
+        .update(&left)
+        .map_err(|error| fail("manifest-checksum", error))?;
+    checksum
+        .update(&right)
+        .map_err(|error| fail("manifest-checksum", error))?;
+    let checksum = *checksum.finish().sha256();
     let manifest = Manifest {
         parts: vec![
             Part {
@@ -351,6 +418,7 @@ async fn verify_batches_and_manifest(
             },
         ],
         edges: vec![parent],
+        sha256: Some(checksum),
     };
     let published = first.put_manifest(manifest.clone()).await;
     let Ok(Put::Created { verified }) = published else {
@@ -359,6 +427,12 @@ async fn verify_batches_and_manifest(
     let encoded = manifest
         .encode()
         .map_err(|error| fail("manifest-ranges-select-intersecting-parts", error))?;
+    let head = first.head(verified.digest).await;
+    expect!(
+        "manifest-checksum",
+        matches!(&head, Ok(head) if head.sha256 == Some(checksum)),
+        head
+    );
     expect!(
         "manifest-ranges-select-intersecting-parts",
         verified.digest == Digest::of(&encoded) && verified.length == 2500,
@@ -389,6 +463,7 @@ async fn verify_batches_and_manifest(
                 length: 999,
             }],
             edges: Vec::new(),
+            sha256: None,
         })
         .await;
     expect!(

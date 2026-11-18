@@ -267,7 +267,7 @@ fn sampled(
     };
     use futures::TryStreamExt as _;
     let events = futures::executor::block_on(
-        crate::stream::events(adapter, crate::tests::chunks(&call, 1), 4096, dispatch)
+        crate::event_driver::events(adapter, crate::tests::chunks(&call, 1), 4096, dispatch)
             .try_collect::<Vec<_>>(),
     )
     .unwrap();

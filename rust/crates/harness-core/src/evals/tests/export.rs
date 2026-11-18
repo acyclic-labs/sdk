@@ -25,7 +25,7 @@ pub(super) async fn selected_case_export(
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             access_policy: None,
         },
-        acyclic_fs::OperationId::new(),
+        acyclic_fs_format::identity::OperationId::new(),
         &mut accounting(work),
     )
     .await?;
@@ -133,7 +133,7 @@ pub(super) async fn selected_case_export(
     let restored = destination
         .restore_volume(
             &manifest,
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             WorkBudget::UNBOUNDED,
             cancel,
         )

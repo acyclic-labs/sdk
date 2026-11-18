@@ -252,7 +252,7 @@ impl ResolvedModel {
         key: Option<&str>,
         account: Option<&str>,
     ) -> acyclic_harness_core::model::ReasoningOrigin {
-        let family = crate::stream::family(self.config.adapter);
+        let family = acyclic_harness_provider_response::stream::family(self.config.adapter);
         // Native continuity belongs to whoever authenticates the request. An
         // anonymous route sends no credential of ours: the endpoint and its
         // configured headers (a gateway or proxy that injects credentials)
@@ -410,12 +410,12 @@ impl ModelProvider for ResolvedModel {
                     match event? {
                         crate::admission::Event::Wait(wait) => {
                             let event = ModelEvent::Wait(wait);
-                            let custody = work.claim(event.logical_owned_bytes()?, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+                            let custody = work.claim(event.logical_owned_bytes()?, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
                             yield (event, custody);
                         }
                         crate::admission::Event::Trace(record) => {
                             let event = ModelEvent::Trace { record };
-                            let custody = work.claim(event.logical_owned_bytes()?, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+                            let custody = work.claim(event.logical_owned_bytes()?, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
                             yield (event, custody);
                         }
                         crate::admission::Event::Ready((count, custody)) => {
@@ -464,7 +464,10 @@ impl ModelProvider for ResolvedModel {
         >,
     > {
         acyclic_fs::NativeFutureBundle::new(work, || async move {
-            Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
+            Ok((
+                None,
+                work.claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?,
+            ))
         })
     }
 

@@ -7,8 +7,11 @@ thread_local! {
 mod native {
     use super::*;
     use crate::executor::json::canonical_json_digest;
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters, WorkError};
     use proptest::prelude::*;
+    use {
+        acyclic_fs::{CancellationToken, NativeMaterializationWork},
+        acyclic_fs_work::performance::{WorkCounters, WorkError},
+    };
 
     const LIMIT: u64 = 65_536;
     // One array and one string, examined by serialization and index construction.
@@ -24,7 +27,7 @@ mod native {
         }
         let _reset = Reset(old);
         let native = NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(LIMIT, 4 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(LIMIT, 4 * 1024 * 1024),
             &CancellationToken::new(),
         )
         .unwrap();
@@ -34,19 +37,22 @@ mod native {
                 ..WorkCounters::UNCHARGED
             })
             .unwrap();
-        let baseline = native.live_allocation_bytes();
+        let baseline = native
+            .live_allocation_bytes()
+            .map_err(|error| error.to_string())?;
         let value = serde_json::json!(["x".repeat(4096)]);
         let expected = serde_json::to_vec(&value).unwrap();
         let mut history = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
         );
         let result = canonical_json_digest(&value, Some(LIMIT), &mut Some(&mut history));
+        let receipt = native.receipt().map_err(|error| error.to_string())?;
         if prior + ITEMS <= LIMIT {
             let digest = result
                 .map_err(|error| format!("admitted total {} rejected: {error:?}", prior + ITEMS))?;
             if digest != *blake3::hash(&expected).as_bytes()
-                || native.receipt().items_examined != prior + ITEMS
-                || native.receipt().bytes_hashed != expected.len() as u64
+                || receipt.items_examined != prior + ITEMS
+                || receipt.bytes_hashed != expected.len() as u64
             {
                 return Err("canonical bytes or exact native work differ".into());
             }
@@ -68,15 +74,19 @@ mod native {
                 }
             }
             // Each admission is atomic: no rejected work is charged.
-            if native.receipt().items_examined > LIMIT {
+            if receipt.items_examined > LIMIT {
                 return Err("denied work changed the original ledger".into());
             }
-            if prior + ITEMS == LIMIT + 1 && native.receipt().items_examined != prior + 2 {
+            if prior + ITEMS == LIMIT + 1 && receipt.items_examined != prior + 2 {
                 return Err("denied index scan changed the admitted serialization prefix".into());
             }
         }
         drop(history);
-        if native.live_allocation_bytes() != baseline {
+        if native
+            .live_allocation_bytes()
+            .map_err(|error| error.to_string())?
+            != baseline
+        {
             return Err("canonical digest leaked native custody".into());
         }
         Ok(())

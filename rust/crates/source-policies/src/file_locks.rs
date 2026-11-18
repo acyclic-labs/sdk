@@ -25,11 +25,27 @@ const RAW_LOCKS: [&str; 12] = [
 ];
 
 /// Exact remaining raw spellings: (file, spelling, count).
-const ALLOWED: [(&str, &str, usize); 4] = [
-    // The guard itself.
+const ALLOWED: [(&str, &str, usize); 8] = [
+    // FileLock owns the Unix descriptor lock and Windows byte-range lock.
+    ("rust/crates/native-runtime/src/file_lock.rs", "flock(", 1),
+    (
+        "rust/crates/native-runtime/src/file_lock.rs",
+        "FlockOperation",
+        2,
+    ),
     (
         "rust/crates/native-runtime/src/file_lock.rs",
         "LockFileEx",
+        7,
+    ),
+    (
+        "rust/crates/native-runtime/src/file_lock.rs",
+        "UnlockFile",
+        3,
+    ),
+    (
+        "rust/crates/native-runtime/src/file_lock.rs",
+        "File::lock",
         1,
     ),
     (

@@ -90,8 +90,8 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
                 } else {
                     None
                 };
-                let before = work.receipt();
-                let live = work.live_allocation_bytes();
+                let before = work.receipt().unwrap();
+                let live = work.live_allocation_bytes().unwrap();
                 if cancelled {
                     cancellation.cancel();
                 }
@@ -177,8 +177,8 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
                         ..WorkCounters::UNCHARGED
                     })
                     .unwrap();
-                prop_assert_eq!(work.receipt(), expected_work);
-                prop_assert_eq!(work.live_allocation_bytes(), live);
+                prop_assert_eq!(work.receipt().unwrap(), expected_work);
+                prop_assert_eq!(work.live_allocation_bytes().unwrap(), live);
                 let expected_heap = u64::from(allocated) + u64::from(!success);
                 prop_assert_eq!(heap.count_total, expected_heap);
                 prop_assert_eq!(
@@ -208,10 +208,10 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
                     minimal(trace, heap.count_total),
                     !(old && success && !fallback)
                 );
-                outcomes.push((result, work.receipt()));
+                outcomes.push((result, work.receipt().unwrap()));
                 drop(reader);
                 prop_assert_eq!(
-                    work.live_allocation_bytes(),
+                    work.live_allocation_bytes().unwrap(),
                     NativeMaterializationWork::accounting_state_bytes()
                 );
             }
@@ -286,8 +286,8 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 )
                 .unwrap();
                 let scope = CaptureWorkScope::new(&work).unwrap();
-                let before = work.receipt();
-                let live = work.live_allocation_bytes();
+                let before = work.receipt().unwrap();
+                let live = work.live_allocation_bytes().unwrap();
                 let cancel = cancellation.clone();
                 let action: Option<(u64, Box<dyn FnOnce()>)> = match edit {
                     1 => Some((0, Box::new(move || file.set_len(65538 + growth).unwrap()))),
@@ -365,8 +365,8 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                         ..WorkCounters::UNCHARGED
                     })
                     .unwrap();
-                prop_assert_eq!(work.receipt(), expected);
-                prop_assert_eq!(work.live_allocation_bytes(), live);
+                prop_assert_eq!(work.receipt().unwrap(), expected);
+                prop_assert_eq!(work.live_allocation_bytes().unwrap(), live);
                 let oracle = |old| {
                     let mut bits = 1;
                     for (start, eligible) in [
@@ -408,7 +408,7 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 outcomes.push((result, expected));
                 drop(scope);
                 prop_assert_eq!(
-                    work.live_allocation_bytes(),
+                    work.live_allocation_bytes().unwrap(),
                     NativeMaterializationWork::accounting_state_bytes()
                 );
             }

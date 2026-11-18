@@ -216,7 +216,7 @@ impl<T: Invoker> Stub<T> {
             body,
             headers,
         )
-        .with_reference(self.id.reference())?
+        .with_reference(self.id.reference())
         .with_location_hint(self.location_hint.clone())?;
         let request = if let Some(name) = &self.binding_name {
             request.with_binding(name.clone())?
@@ -238,7 +238,7 @@ impl<T: Invoker> Stub<T> {
             payload,
             vec![],
         )
-        .with_reference(self.id.reference())?
+        .with_reference(self.id.reference())
         .with_location_hint(self.location_hint.clone())?
         .with_rpc(method)?;
         let request = if let Some(name) = &self.binding_name {

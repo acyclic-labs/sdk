@@ -319,7 +319,7 @@ struct Pool {
     connections: super::Connections,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
     identity: Bytes,
-    connect: std::sync::Arc<transport::Connect>,
+    connect: transport::Shared<transport::Connect>,
     home: String,
     routes: Routes,
     links: BTreeMap<String, Link>,
@@ -410,7 +410,7 @@ impl Client {
     /// Shares one protocol pool across platform endpoints and every logical follow.
     pub fn with_transport(
         channel: Endpoint,
-        connect: std::sync::Arc<transport::Connect>,
+        connect: transport::Shared<transport::Connect>,
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
     ) -> Self {
         Self::tracking(channel, connect, executor, Arc::default())
@@ -420,7 +420,7 @@ impl Client {
     /// Retain it across pool or credential changes to keep read-your-writes.
     pub fn tracking(
         channel: Endpoint,
-        connect: std::sync::Arc<transport::Connect>,
+        connect: transport::Shared<transport::Connect>,
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
         revisions: Arc<crate::RevisionTracker>,
     ) -> Self {

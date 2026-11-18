@@ -27,7 +27,8 @@ struct CancellationState {
 
 enum CancellationWake {
     Future(Waker),
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(target_arch = "wasm32")))]
     Notification(fn()),
 }
 
@@ -35,7 +36,8 @@ impl CancellationWake {
     fn wake(self) {
         match self {
             Self::Future(waker) => waker.wake(),
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(not(target_arch = "wasm32")))]
             Self::Notification(notify) => notify(),
         }
     }
@@ -43,7 +45,8 @@ impl CancellationWake {
     fn will_wake(&self, other: &Waker) -> bool {
         match self {
             Self::Future(waker) => waker.will_wake(other),
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(not(target_arch = "wasm32")))]
             Self::Notification(_) => false,
         }
     }
@@ -54,12 +57,31 @@ struct CancellationWaiter {
     // Acquired without the head or links; no locks span waker clone/drop/calls.
     waker: Mutex<Option<CancellationWake>>,
     // State lock protects list edits; the waiting future owns the node.
-    links: Mutex<Option<(Weak<Self>, Weak<Self>)>>,
+    links: Mutex<WaiterLinks>,
     #[cfg(not(target_arch = "wasm32"))]
     // Head may precede cleanup; links and waker guards never span cleanup.
     cleanup: Mutex<Option<crate::materializer::NativeWorkReservation>>,
     // Last: the node and waker retire before their original allocation.
     _allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
+}
+
+#[derive(Default)]
+struct WaiterLinks {
+    previous: Weak<CancellationWaiter>,
+    next: Weak<CancellationWaiter>,
+    linked: bool,
+}
+
+impl WaiterLinks {
+    fn take(&mut self) -> Option<(Weak<CancellationWaiter>, Weak<CancellationWaiter>)> {
+        if !std::mem::replace(&mut self.linked, false) {
+            return None;
+        }
+        Some((
+            std::mem::take(&mut self.previous),
+            std::mem::take(&mut self.next),
+        ))
+    }
 }
 
 /// Cloneable, monotonic cancellation source and observation token.
@@ -87,19 +109,16 @@ impl Drop for PreparedCancellation {
                 let Some(waiter) = head.upgrade() else {
                     break;
                 };
-                let (_, next) = waiter
-                    .links
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take()
-                    .expect("active cancellation head");
+                let mut links = waiter.links.lock().unwrap_or_else(PoisonError::into_inner);
+                let next = std::mem::take(&mut links.next);
+                links.previous = Weak::new();
+                links.linked = false;
+                drop(links);
                 if let Some(next) = next.upgrade() {
                     next.links
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .as_mut()
-                        .expect("active successor")
-                        .0 = Weak::new();
+                        .previous = Weak::new();
                 }
                 *head = next;
                 waiter
@@ -312,8 +331,8 @@ impl CancellationToken {
                 .links
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .and_then(|(_, next)| next.upgrade());
+                .next
+                .upgrade();
         }
         Ok(self.detach())
     }
@@ -412,10 +431,13 @@ impl CancellationToken {
         budget: crate::WorkBudget,
     ) -> Result<Cancelled<'static>, CancellationWaitError> {
         let mut future = self.cancelled();
+        let registration = *work;
         future.meter = Some(WaitMeter {
             allocations,
             work,
             budget,
+            registration,
+            cleanup: registration,
         });
         future.register(None)?;
         Ok(future.detach_meter())

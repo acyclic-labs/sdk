@@ -208,7 +208,7 @@ impl Transport for Endpoint {
                             Either::Left(Some(frame)) => {
                                 // Admission occurs at consumption, before copying
                                 // or decoding the queued browser buffer.
-                                let frame = decode_frame(frame)?;
+                                let frame = decode_frame(&frame)?;
                                 return Ok(Some((
                                     frame.into(),
                                     (guard, receiver, source, incoming, changed),
@@ -247,19 +247,19 @@ impl Transport for Endpoint {
         })
     }
 }
-fn decode_frame(data: js_sys::ArrayBuffer) -> Result<wire::SessionFrame, StreamError> {
-    let bytes = Uint8Array::new(&data);
+fn decode_frame(data: &js_sys::ArrayBuffer) -> Result<wire::SessionFrame, StreamError> {
+    let bytes = Uint8Array::new(data);
     wire_codec::session::decode_frame(&bytes.to_vec())
 }
 
 pub(super) fn sessions(endpoint: Endpoint) -> crate::session::Client {
     let moved = endpoint.clone();
     crate::session::Client::with_transport(
-        Arc::new(endpoint),
-        Arc::new(move |node| {
+        Rc::new(endpoint),
+        Rc::new(move |node| {
             let credential = moved.credential.clone();
             Box::pin(async move {
-                Ok(Arc::new(Endpoint::new(&node.endpoint, credential)?)
+                Ok(Rc::new(Endpoint::new(&node.endpoint, credential)?)
                     as crate::session::transport::Endpoint)
             })
         }),

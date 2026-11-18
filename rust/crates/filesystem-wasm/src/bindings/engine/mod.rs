@@ -168,14 +168,18 @@ impl BrowserFs {
                     fs.create_volume_with_id(
                         volume_id,
                         config,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &cancellation,
                     )
                     .await
                 }
                 None => {
-                    fs.create_volume(config, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-                        .await
+                    fs.create_volume(
+                        config,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
                 }
             }
             .map_err(js_error)?;
@@ -194,7 +198,11 @@ impl BrowserFs {
         let (engine, acquisition_work) = {
             let fs = self.engine.as_ref().ok_or_else(closed_error)?;
             let receipt = fs
-                .open_volume(volume_id, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .open_volume(
+                    volume_id,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
                 .map_err(js_error)?;
             (receipt.value, receipt.work)
@@ -220,7 +228,7 @@ impl BrowserFs {
             .export_object(
                 object_id,
                 maximum_bytes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -247,7 +255,7 @@ impl BrowserFs {
             .import_object(
                 object_id,
                 bytes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -278,7 +286,7 @@ impl BrowserFs {
                 TransferCursor::new(cursor),
                 maximum_objects,
                 maximum_object_bytes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -324,7 +332,7 @@ impl BrowserFs {
                 TransferCursor::new(cursor),
                 &objects,
                 maximum_objects,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -352,7 +360,7 @@ impl BrowserFs {
                 .restore_volume(
                     &manifest,
                     operation_id,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await
@@ -450,8 +458,8 @@ pub(in crate::bindings) fn memory_engine(
     maximum_memory_bytes: Option<u64>,
     cache: ObjectCacheOptions,
 ) -> Result<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>, JsValue> {
-    let streams: Arc<dyn acyclic_stream::StreamProvider> =
-        Arc::new(acyclic_stream::MemoryStream::default());
+    let streams: acyclic_stream::ProviderOwner<dyn acyclic_stream::StreamProvider> =
+        acyclic_stream::ProviderOwner::new(acyclic_stream::MemoryStream::default());
     if maximum_object_bytes.is_some_and(|bytes| bytes == 0 || usize::try_from(bytes).is_err())
         || maximum_memory_bytes == Some(0)
         || maximum_object_bytes

@@ -122,7 +122,7 @@ impl HttpTransport for Bounded {
             let custody = work.claim(
                 std::mem::size_of::<Guarded>() as u64,
                 1,
-                acyclic_fs::WorkCounters::UNCHARGED,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
             )?;
             let mut guarded = Guarded::new(response.body, deadline);
             guarded.custody = Some(custody);
@@ -134,7 +134,7 @@ impl HttpTransport for Bounded {
 
 /// The typed failure of an explicitly selected request deadline.
 fn timeout(native: bool, total_ms: u64) -> Error {
-    crate::transport_failure(
+    acyclic_harness_provider_response::transport_failure(
         native,
         ModelTransportFailure::Timeout,
         format_args!("exchange exceeded {total_ms} ms"),

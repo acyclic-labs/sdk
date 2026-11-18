@@ -88,9 +88,10 @@ impl StockExecution<'_> {
             .await
     }
 
-    /// Records `error` as the call's failure. Callers pass only a definitive cause the model
-    /// can act on, including a settled process failure. Native accounting and uncertain
-    /// effects retain their original custody instead of becoming model feedback.
+    /// Records the model-visible call failure. Callers pass a definitive cause,
+    /// or an inconclusive reconciliation after redelivery: that failure retains
+    /// the original effect identity and warns that the effect may still complete.
+    /// Native accounting failures retain their original custody.
     pub(super) async fn settle_tool_failure(
         &self,
         journal: &dyn ExecutionJournal,
@@ -149,7 +150,7 @@ impl StockExecution<'_> {
         with_history_io(self.io, |work| {
             content.validate_limits(self.stock.limits, work)
         })?;
-        let key = tool_settlement_key(step, call_id, ToolTerminalOutcome::Failed, self.io)?;
+        let key = tool_settlement_key(step, call_id, self.io)?;
         let event = ExecutionEvent::ToolFailed {
             step,
             call_id: stock_string_copy(call_id, self.io)?,

@@ -124,9 +124,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let recovered = self
             .recovered_upload(original, recorded, &request, io)
             .await?;
-        super::super::access::require_current(&workspace, &view.0, io).await?;
+        super::super::access::require_current(&workspace, &view.0, io, self.clock()).await?;
         if let Some(view) = root_view {
-            super::super::access::require_current(&root, &view.0, io).await?;
+            super::super::access::require_current(&root, &view.0, io, self.clock()).await?;
         }
         Ok(Some(recovered))
     }
@@ -180,6 +180,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             scope.capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
+        let now = self.access_now()?;
         let view = crate::filesystem::access::access_view(
             workspace,
             scope,
@@ -195,40 +196,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?,
             ceiling,
             io,
+            now,
         )
         .await?;
         if write_receipt {
             if !view
                 .0
-                .decide(
-                    acyclic_fs::access::Action::Create,
-                    file.path(),
-                    super::super::access::access_now()?,
-                )
+                .decide(acyclic_fs::access::Action::Create, file.path(), now)
                 .allowed
             {
-                super::super::access::require(
-                    &view.0,
-                    acyclic_fs::access::Action::Write,
-                    file.path(),
-                    io,
-                )?;
+                self.require(&view.0, acyclic_fs::access::Action::Write, file.path(), io)?;
             }
         } else {
-            super::super::access::require(
-                &view.0,
-                acyclic_fs::access::Action::List,
-                file.path(),
-                io,
-            )?;
+            self.require(&view.0, acyclic_fs::access::Action::List, file.path(), io)?;
         }
         if purpose == PublicationPurpose::Content {
-            super::super::access::require(
-                &view.0,
-                acyclic_fs::access::Action::Read,
-                file.path(),
-                io,
-            )?;
+            self.require(&view.0, acyclic_fs::access::Action::Read, file.path(), io)?;
         }
         Ok(view)
     }

@@ -32,15 +32,21 @@ async fn a_shared_source_registers_watches_from_different_original_ledgers()
     acyclic_native_runtime::initialize_native_io_services()?;
     let temp = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
-    let source_work =
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-            .expect("source ledger");
-    let first_work =
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-            .expect("first view ledger");
-    let second_work =
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-            .expect("second view ledger");
+    let source_work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .expect("source ledger");
+    let first_work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .expect("first view ledger");
+    let second_work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .expect("second view ledger");
     let source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(temp.path()),
         FilesystemProfile::Portable,
@@ -62,11 +68,11 @@ async fn a_shared_source_registers_watches_from_different_original_ledgers()
     first.stop(&mut (&first_work).accounting(&cancellation))?;
     second.stop(&mut (&second_work).accounting(&cancellation))?;
     let ledgers = [&source_work, &first_work, &second_work];
-    let retained = ledgers.map(|work| work.live_allocation_bytes());
+    let retained = ledgers.map(|work| work.live_allocation_bytes().unwrap());
     drop((first, second, source));
     for (work, before) in ledgers.into_iter().zip(retained) {
         assert!(
-            work.live_allocation_bytes() < before,
+            work.live_allocation_bytes().unwrap() < before,
             "original payload custody must retire"
         );
     }

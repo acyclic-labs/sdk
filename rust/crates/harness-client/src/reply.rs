@@ -322,7 +322,7 @@ mod envelope {
         #[prost(string, tag = "2")]
         Refused(String),
         #[prost(message, tag = "3")]
-        Unknown(acyclic_stream::wire::CommitRequest),
+        Unknown(acyclic_stream_wire::wire::CommitRequest),
     }
 }
 

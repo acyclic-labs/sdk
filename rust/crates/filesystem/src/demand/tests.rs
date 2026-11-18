@@ -551,8 +551,8 @@ async fn native_device_metadata_preserves_the_host_number() -> Result<(), Box<dy
     let node = lookup_node(&source, reference.clone(), &path("/null")?, &cancellation).await?;
     assert_eq!(node.kind, SourceNodeKind::CharacterDevice);
     let (major, minor) = node.device.ok_or("device number absent")?;
-    let native =
-        crate::native_host::join_device(major, minor).map_err(std::io::Error::from_raw_os_error)?;
+    let native = acyclic_fs_native_contract::device::join_device(major, minor)
+        .map_err(std::io::Error::from_raw_os_error)?;
     assert_eq!(
         native as u64,
         std::fs::symlink_metadata("/dev/null")?.rdev()
@@ -856,7 +856,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     let peer_stop = CancellationToken::new();
     let peer_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &peer_stop)
         .map_err(|(error, _)| error)?;
-    let baseline = peer_work.live_allocation_bytes();
+    let baseline = peer_work.live_allocation_bytes().unwrap();
     let mut peers = Vec::new();
     for _ in 0..1024 {
         let mut peer = source
@@ -937,7 +937,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     drop(first);
     peer_stop.cancel();
     drop(peers);
-    assert_eq!(peer_work.live_allocation_bytes(), baseline);
+    assert_eq!(peer_work.live_allocation_bytes().unwrap(), baseline);
     assert!(matches!(
         source.list_page(reference.clone(), &directory, Some(SourceCursor::detached(reference.clone(), token)),
             1, WorkBudget::UNBOUNDED, &cancellation).await,
@@ -1203,9 +1203,9 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                 let answer = futures::executor::block_on(
                     caller_schedule.scope(async { file.read_range(0, 6, &mut frame.accounting()) }),
                 );
-                let authority_prefix = frame.spent();
+                let authority_prefix = frame.spent().unwrap();
                 drop(frame);
-                let prefix = accounting.spent();
+                let prefix = accounting.spent().unwrap();
                 let fenced = matches!(
                     accounting.remaining(),
                     Err(crate::FsError::AccountingHandoffActive)
@@ -1220,7 +1220,7 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                 let meter: Arc<NativeDemandReadMeter> = inspect_after_drain.recv().unwrap();
                 #[cfg(not(loom))]
                 let receipt = {
-                    let (receipt, locks) = meter.count_locks(|| accounting.spent());
+                    let (receipt, locks) = meter.count_locks(|| accounting.spent().unwrap());
                     assert_eq!(
                         locks,
                         usize::from(native || outcome == "cancel"),
@@ -1229,7 +1229,7 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                     receipt
                 };
                 #[cfg(loom)]
-                let receipt = accounting.spent();
+                let receipt = accounting.spent().unwrap();
                 drop(meter);
                 let _ = observed.send(receipt);
                 retire_caller.recv().unwrap();
@@ -1269,7 +1269,7 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                     );
                     assert_eq!(
                         prefix,
-                        meter.with_original_leaf(|state| state.receipt()),
+                        meter.with_original_leaf(|state| state.receipt().unwrap()),
                         "cancelled caller reported a stale original prefix"
                     );
                     assert!(futures::poll!(std::pin::pin!(schedule.drained())).is_pending());
@@ -1296,7 +1296,7 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
                 }
             };
             schedule.drained().await;
-            let terminal = meter.with_original_leaf(|state| state.receipt());
+            let terminal = meter.with_original_leaf(|state| state.receipt().unwrap());
             inspect.send(meter)?;
             assert_eq!(
                 observation.await?,

@@ -44,7 +44,7 @@ async fn native_prepared_packet(
         .claim(
             std::mem::size_of::<MaterializationEdit>() as u64,
             u64::from((std::mem::size_of::<MaterializationEdit>() as u64) != 0),
-            acyclic_fs::WorkCounters::default(),
+            acyclic_fs_work::performance::WorkCounters::default(),
         )
         .expect("admit plan vector before allocation");
     let mut edits = Vec::with_capacity(1);
@@ -104,12 +104,12 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                 .open(&file)
                 .expect("fixture output before admission");
             store.fail_at_relative_write(1, after_write);
-            let before_admission = original.receipt();
+            let before_admission = original.receipt().unwrap();
             let completion = store
                 .prepare_action(journal)
                 .await
                 .expect("genuine Memory completion accepted before the physical action");
-            assert!(original.receipt().bytes_copied > before_admission.bytes_copied);
+            assert!(original.receipt().unwrap().bytes_copied > before_admission.bytes_copied);
             assert_eq!(
                 std::fs::read(&file).expect("unchanged before acceptance"),
                 b"before"
@@ -124,11 +124,11 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
             if cancel_after_action {
                 cancellation.cancel();
             }
-            let live_prefix = original.receipt();
+            let live_prefix = original.receipt().unwrap();
             let durable_prefix = work.journal_work().expect("pure original durable prefix");
             let error = completion.await.expect_err("real before/after write seam");
             assert_eq!(
-                original.receipt(),
+                original.receipt().unwrap(),
                 live_prefix,
                 "no allocation, copy, or admission after action"
             );
@@ -187,10 +187,10 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                         .shares_allocation_context(&work)
                 );
             }
-            let live_bytes = original.live_allocation_bytes();
+            let live_bytes = original.live_allocation_bytes().unwrap();
             drop(packet);
             assert_eq!(
-                original.live_allocation_bytes(),
+                original.live_allocation_bytes().unwrap(),
                 live_bytes - retained_packet_bytes
             );
         }
@@ -230,12 +230,12 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
         .await
         .expect("genuine competing CAS");
     assert!(stored);
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let error = completion
         .await
         .expect_err("actual accepted CAS sees the winner");
     assert_eq!(
-        original.receipt(),
+        original.receipt().unwrap(),
         before,
         "conflict performs no late copy or allocation"
     );
@@ -258,6 +258,7 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
     assert_eq!(&retained, &competitor);
     original
         .receipt()
+        .unwrap()
         .verify(budget)
         .expect("actual whole conflict prefix");
 }

@@ -250,32 +250,28 @@ async fn typescript_modules(
     code: String,
     io: Option<&crate::filesystem::PreparationIo>,
 ) -> std::result::Result<Vec<(String, String)>, LoadFailure> {
-    let prepared = config::prepare(hook, code.as_bytes(), tree)
-        .await
-        .map_err(LoadFailure::Operational)?;
-    let mut code = Some(code);
     let mut modules = Vec::new();
-    for read in prepared.reads() {
-        let source = if read.path == hook
-            && let Some(code) = code.take()
-        {
-            code
-        } else {
-            read_hook(tree, identity.as_deref_mut(), &read.path, io)
-                .await?
-                .ok_or_else(|| {
-                    LoadFailure::Semantic(Error::Invalid(format!(
-                        "{MANIFEST}: {hook} imports {}, which does not exist",
-                        read.path
-                    )))
-                })?
-        };
-        let path = stock_string_copy(&read.path, io).map_err(LoadFailure::Operational)?;
-        stock_vec_push(&mut modules, (path, source), io).map_err(LoadFailure::Operational)?;
-    }
-    if let Some(code) = code {
-        stock_retire_text(code, io).map_err(LoadFailure::Operational)?;
-    }
+    config::visit_module_sources(hook, code.as_bytes(), tree, &mut |path, bytes| {
+        // The caller already owns and observed the root. Imports are copied
+        // directly from their original read; the compiler judges invalid UTF-8.
+        if path != hook {
+            observe(identity.as_deref_mut(), path, bytes);
+            if let Some(bytes) = bytes
+                && let Ok(source) = std::str::from_utf8(bytes)
+            {
+                let path = stock_string_copy(path, io)?;
+                let source = stock_string_copy(source, io)?;
+                stock_vec_push(&mut modules, (path, source), io)?;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(LoadFailure::Operational)?
+    .map_err(|reason| LoadFailure::Semantic(Error::Invalid(format!("{MANIFEST}: {reason}"))))?;
+    let path = stock_string_copy(hook, io).map_err(LoadFailure::Operational)?;
+    stock_vec_push(&mut modules, (path, code), io).map_err(LoadFailure::Operational)?;
+    modules.rotate_right(1);
     Ok(modules)
 }
 
@@ -306,7 +302,7 @@ async fn load_enabled(
                     work.claim(
                         std::mem::size_of::<EnabledData>() as u64,
                         1,
-                        acyclic_fs::WorkCounters::UNCHARGED,
+                        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     )
                 })
                 .transpose()
@@ -517,7 +513,11 @@ async fn load_enabled(
             std::mem::size_of::<std::sync::Arc<acyclic_fs::NativeAllocation>>() as u64,
         ])?;
         let mut shared = work
-            .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
+            .claim(
+                bytes,
+                1,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+            )
             .map_err(|cause| LoadFailure::Operational(cause.into()))?;
         custody
             .absorb(&mut shared)

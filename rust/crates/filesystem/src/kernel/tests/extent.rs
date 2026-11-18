@@ -287,7 +287,7 @@ fn original_extent_decode_records_only_the_completed_item_prefix()
     let original =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let error =
         decode_extent_page_with_accounting(&bytes, DecodeLimits::default(), &mut accounting)
@@ -299,9 +299,9 @@ fn original_extent_decode_records_only_the_completed_item_prefix()
             super::super::ExtentReadError::Decode(_)
         ))
     ));
-    assert_eq!(original.receipt().items_examined, 1);
-    assert_eq!(original.receipt().bytes_copied, 40);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().items_examined, 1);
+    assert_eq!(original.receipt().unwrap().bytes_copied, 40);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 

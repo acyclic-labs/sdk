@@ -58,13 +58,15 @@ pub fn check(bytes: &[u8]) -> bool {
     let Ok(work) = work(&cancellation) else {
         return false;
     };
-    let baseline = work.live_allocation_bytes();
+    let Ok(baseline) = work.live_allocation_bytes() else {
+        return false;
+    };
     let valid = PROFILES
         .into_iter()
         .all(|profile| check_profile(bytes, profile, &work).is_ok());
     assert_eq!(
         work.live_allocation_bytes(),
-        baseline,
+        Ok(baseline),
         "cursor retained decode custody"
     );
     valid
@@ -75,6 +77,7 @@ fn seeded_continuations_preserve_scalar_and_composite_cuts() {
     let cancellation = CancellationToken::new();
     let work = work(&cancellation).unwrap();
     let baseline = work.live_allocation_bytes();
+    assert!(baseline.is_ok());
     for (_, seed) in seeds().unwrap() {
         let mut decoded = false;
         for profile in PROFILES {
@@ -100,7 +103,7 @@ fn seeded_continuations_preserve_scalar_and_composite_cuts() {
 pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     let cancellation = CancellationToken::new();
     let work = work(&cancellation)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().map_err(crate::FsError::from)?;
     let mut ctx = KernelAccounting::native(&work, work.cancellation());
     let limits = crate::VolumeLimits::default();
     let source = SourceReference {
@@ -188,7 +191,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     }
     assert_eq!(
         work.live_allocation_bytes(),
-        baseline,
+        Ok(baseline),
         "cursor writer retained custody"
     );
     Ok(seeds)

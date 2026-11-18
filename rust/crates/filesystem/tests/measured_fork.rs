@@ -7,16 +7,19 @@
 mod unbounded;
 
 use acyclic_fs::storage::ObjectWrite;
-use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions, Fs, IdempotencyKey,
-    MemoryAuthorityBackend, MemoryObjectBackend, ObjectId, ObjectReadRequest, WorkBudget,
-    WorkCounters, WorkspaceError,
-};
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
+};
+use {
+    acyclic_fs::{
+        AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions, Fs, IdempotencyKey,
+        MemoryAuthorityBackend, MemoryObjectBackend, ObjectReadRequest, WorkspaceError,
+    },
+    acyclic_fs_format::object_reference::ObjectId,
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 
 fn finite_budget() -> Result<WorkBudget, Box<dyn Error>> {
@@ -49,9 +52,9 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
             WorkBudget::default(),
             &cancellation,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -68,9 +71,9 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
             budget,
             &cancellation,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -86,9 +89,9 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
             budget,
             &cancellation,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -109,9 +112,9 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
                 acyclic_fs::PublicationPermit::Unrestricted,
                 budget,
                 &cancellation,
-                &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                &mut |_| std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default()
+                    work: acyclic_fs_work::performance::WorkCounters::default()
                 }))
             )
             .await
@@ -137,9 +140,9 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
             finite_budget()?,
             &cancellation,
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -149,7 +152,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
         Ok(_) => return Err("precancelled fork unexpectedly succeeded".into()),
     };
     assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*cancelled.work, WorkCounters::default());
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
     assert!(unbounded!(fs, open_workspace("cancel-child")).is_err());
     assert_eq!(unbounded!(parent, head())?.id(), pinned.id());
     let other = unbounded!(fs, create_workspace("foreign-source"))?;
@@ -161,9 +164,9 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
             finite_budget()?,
             &CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -173,8 +176,8 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
         Ok(_) => return Err("foreign fork unexpectedly succeeded".into()),
     };
     assert!(matches!(foreign.error, WorkspaceError::ForeignGeneration));
-    assert_eq!(foreign.work.backend_read_operations, 0);
-    assert_eq!(foreign.work.backend_write_operations, 0);
+    assert_eq!(foreign.work().unwrap().backend_read_operations, 0);
+    assert_eq!(foreign.work().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -273,9 +276,9 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
                 acyclic_fs::PublicationPermit::Unrestricted,
                 finite_budget()?,
                 &cancellation,
-                &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                &mut |_| std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default()
+                    work: acyclic_fs_work::performance::WorkCounters::default()
                 }))
             )
             .await
@@ -293,9 +296,9 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
             finite_budget()?,
             &CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -309,9 +312,9 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
             finite_budget()?,
             &CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )

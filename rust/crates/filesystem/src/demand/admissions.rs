@@ -28,7 +28,10 @@ pub(crate) struct Admissions {
     paid_non_native: u64,
 }
 impl Admissions {
-    pub(super) fn live_bytes(&self, live: u64) -> u64 {
+    pub(super) fn live_bytes(&self, live: u64) -> Result<u64, crate::WorkObservationError> {
+        if self.poisoned {
+            return Err(crate::WorkObservationError::Poisoned);
+        }
         let (released, unrecorded) = if let Some(shared) = &self.allocation_accounting {
             let actual = shared.non_native.load(Ordering::Acquire);
             (
@@ -36,7 +39,7 @@ impl Admissions {
                     .retired
                     .load(Ordering::Acquire)
                     .checked_add(self.paid_non_native.saturating_sub(actual))
-                    .expect("balanced retirement"),
+                    .ok_or(crate::WorkError::Overflow)?,
                 actual.saturating_sub(self.paid_non_native),
             )
         } else {
@@ -44,7 +47,7 @@ impl Admissions {
         };
         live.checked_sub(released)
             .and_then(|live| live.checked_add(unrecorded))
-            .expect("balanced retained bytes")
+            .ok_or(crate::WorkError::Overflow.into())
     }
 }
 impl DemandWork {
@@ -54,7 +57,13 @@ impl DemandWork {
             .allocation_accounting
             .as_ref()
             .map_or(0, Arc::strong_count);
-        self.reconcile_native_controls_for_owners(owners)
+        let result = self.reconcile_native_controls_for_owners(owners);
+        if result.is_err() {
+            // Reconciliation drains deferred events as it proceeds. A failure
+            // cannot be retried as though the original ledger were intact.
+            self.roots.poisoned = true;
+        }
+        result
     }
     fn reconcile_native_controls_for_owners(
         &mut self,
@@ -143,7 +152,8 @@ impl DemandWork {
             return Ok(shared.clone());
         }
         let bytes = NativeAllocationAccounting::ALLOCATION_BYTES;
-        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
         let bytes = metadata_tests::admitted_bytes(bytes);
         // This shared control belongs to the original ledger, not the first
         // resource or capture that needs deferred retirement.

@@ -4,9 +4,9 @@ use unicode_segmentation::UnicodeSegmentation;
 mod completion_edit;
 
 use crate::{
-    Layout, PromptHistory,
+    Layout,
     buffer::{Buffer, normalize, slice},
-    history::{Delta, Edit},
+    history::{Delta, Edit, Selection},
 };
 
 /// Cursor motion, independent of terminal key encodings.
@@ -264,6 +264,21 @@ impl Editor {
         );
     }
 
+    /// Load a prompt as one undo step and retain its initial cursor on redo.
+    pub fn set_text_at_start(&mut self, text: &str, now_ms: u64) {
+        let changed = !self.text().is_empty() || !text.is_empty();
+        self.set_text(text, now_ms);
+        self.set_cursor(0, false);
+        if changed
+            && let Some(delta) = self
+                .undo
+                .last_mut()
+                .and_then(|edit| edit.changes.last_mut())
+        {
+            delta.after = Selection::of(&self.buffer);
+        }
+    }
+
     /// Delete selection, or one grapheme backwards/forwards.
     pub fn delete(&mut self, backwards: bool, now_ms: u64) {
         let mut range = self.selection();
@@ -471,40 +486,6 @@ impl Editor {
             }
             self.invalidate_layout();
             self.undo.push(edit);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Recall history only at the corresponding buffer edge.
-    pub fn recall(&mut self, history: &mut PromptHistory, previous: bool, now_ms: u64) -> bool {
-        if !self.selection().is_empty()
-            || self.cursor() != if previous { 0 } else { self.text().len() }
-        {
-            return false;
-        }
-        let text = if previous {
-            history.previous(&self.buffer.text)
-        } else {
-            history.next_entry()
-        };
-        if let Some(text) = text {
-            let text = normalize(&text);
-            if self.text().is_empty() && text.is_empty() {
-                return true;
-            }
-            let range = 0..self.text().len();
-            let size = self.text().graphemes(true).count() + text.graphemes(true).count();
-            let mut delta = Delta::capture(&self.buffer, range.clone(), &text);
-            self.buffer.replace(range, &text, false);
-            // Keep previous-history navigation at the start for repeated Up.
-            if previous {
-                self.buffer.cursor = 0;
-                self.buffer.anchor = 0;
-            }
-            delta.finish(&self.buffer);
-            self.record(delta, now_ms, 1, size, true);
             true
         } else {
             false

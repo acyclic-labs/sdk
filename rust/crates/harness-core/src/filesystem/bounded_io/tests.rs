@@ -25,11 +25,11 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         let bytes =
             serde_json::to_vec(&policy).map_err(|error| Error::Invalid(error.to_string()))?;
         let native = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
             &CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&native)?;
         let mut decoded = None;
         let physical = acyclic_test_support::measure(|| {
@@ -53,7 +53,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         assert_eq!(actual_capability.layers.len(), 1);
         assert!(physical.count_total > 0, "allocation observer is active");
         assert!(
-            physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+            physical.bytes_max <= native.receipt()?.peak_allocation_bytes - baseline,
             "physical={physical:?}; receipt={:?}",
             native.receipt()
         );
@@ -64,7 +64,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         drop((actual_capability, actual_policy));
         drop((capability_custody, policy_custody));
         drop(io);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
 
         // Every strict prefix of this real policy record is incomplete. The
         // same native Value entrance used by tool arguments must own the
@@ -72,11 +72,11 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         for length in 0..bytes.len() {
             let cancellation = CancellationToken::new();
             let native = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+                acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = native.live_allocation_bytes();
+            let baseline = native.live_allocation_bytes()?;
             let io = PreparationIo::from_native_work(&native)?;
             let mut refused = None;
             let physical = acyclic_test_support::measure(|| {
@@ -114,15 +114,15 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
                 "native diagnostic must retain its physical storage: prefix={length}; physical={physical:?}; custody={retained}"
             );
             assert!(
-                physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+                physical.bytes_max <= native.receipt()?.peak_allocation_bytes - baseline,
                 "prefix={length}; physical={physical:?}; receipt={:?}",
                 native.receipt()
             );
             drop(io);
-            assert_eq!(native.live_allocation_bytes(), baseline + retained);
+            assert_eq!(native.live_allocation_bytes()?, baseline + retained);
             cancellation.cancel();
             drop(refusal);
-            assert_eq!(native.live_allocation_bytes(), baseline);
+            assert_eq!(native.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
@@ -130,7 +130,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
 
 #[test]
 fn denied_vector_growth_does_not_retain_storage() -> Result<()> {
-    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     budget.bytes_copied = 0;
     let io = PreparationIo::from_budget(budget, &CancellationToken::new())?;
     let mut values = vec![1_u8];
@@ -155,7 +155,7 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
                 _failure,
                 Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded {
+                        acyclic_fs_work::performance::WorkError::BudgetExceeded {
                             counter: "allocation_operations",
                             ..
                         }
@@ -167,7 +167,7 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
         observer.reserve_text(&mut text, 0)?;
         Ok(())
     }
-    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     budget.allocation_operations = 0;
     let io = PreparationIo::from_budget(budget, &CancellationToken::new())?;
     denied(&mut io.history_io())?;
@@ -178,11 +178,11 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
         budget.allocation_operations = 1;
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let before = native.live_allocation_bytes();
+        let before = native.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&native)?;
         denied(&mut io.history_io())?;
         denied(&mut crate::store::HistoryWork::new(io.scoped()?))?;
-        assert_eq!(native.live_allocation_bytes(), before);
+        assert_eq!(native.live_allocation_bytes()?, before);
     }
     Ok(())
 }
@@ -190,7 +190,7 @@ fn denied_text_growth_releases_its_preclaim() -> Result<()> {
 #[tokio::test]
 async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
     let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
         &CancellationToken::new(),
     )?;
     let before = io.owned_bytes()?;
@@ -383,58 +383,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
     Ok(())
 }
 
-#[test]
-fn dropping_charged_bytes_releases_budget_capacity_but_forget_does_not() -> Result<()> {
-    let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
-        &CancellationToken::new(),
-    )?;
-    let before = io.owned_bytes()?;
-    let bytes = acyclic_stream::OwnedBytes::from(vec![7_u8; 17]);
-    let capacity = u64::try_from(bytes.retained_capacity().unwrap_or(0))
-        .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
-    drop(io.retain_read_bytes(bytes.clone())?);
-    assert_eq!(io.owned_bytes()?, before);
-    std::mem::forget(io.retain_read_bytes(bytes)?);
-    assert_eq!(io.owned_bytes()?, before + capacity);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn dropping_charged_bytes_releases_native_capacity_but_forget_does_not() -> Result<()> {
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
-        &CancellationToken::new(),
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = PreparationIo::from_native_work(&work)?;
-    let native_bytes = || -> Result<_> {
-        let bytes = acyclic_stream::OwnedBytes::from(vec![7_u8; 17]);
-        let (mut bytes, custody) = work.copy_bytes(&bytes)?;
-        acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
-            &mut bytes,
-            &mut Some(custody),
-            &work.runtime_meter(),
-        )
-        .map_err(|error| Error::Invalid(error.to_string()))
-    };
-    let before = work.live_allocation_bytes();
-    drop(io.retain_read_bytes(native_bytes()?)?);
-    assert_eq!(work.live_allocation_bytes(), before);
-    let charged = io.retain_read_bytes(native_bytes()?)?;
-    let charged_size = core::mem::size_of_val(&charged);
-    let capacity = u64::try_from(charged.retained_capacity().unwrap_or(0))
-        .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
-    std::mem::forget(charged);
-    assert_eq!(work.live_allocation_bytes(), before + capacity);
-    println!(
-        "size_of Charged<OwnedBytes>={charged_size}, DecodeReservation={}",
-        core::mem::size_of::<DecodeReservation<'static>>()
-    );
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<()> {
@@ -452,7 +400,7 @@ async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<(
     for native in [false, true] {
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -460,7 +408,7 @@ async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<(
             PreparationIo::from_native_work(&work)?
         } else {
             PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
                 &cancellation,
             )?
         };
@@ -487,14 +435,17 @@ async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<(
     Ok(())
 }
 
-/// The ledger bytes a held read gives back when its holder drops it.
-fn released_on_drop(io: &PreparationIo, bytes: crate::conversation::Custody) -> Result<u64> {
-    let held = io.owned_bytes()?;
+/// Bytes the retained output retires on its original native ledger.
+#[cfg(not(target_arch = "wasm32"))]
+fn released_on_drop(
+    work: &acyclic_fs::NativeMaterializationWork,
+    bytes: crate::conversation::Custody,
+) -> Result<u64> {
+    let held = work.live_allocation_bytes()?;
     drop(bytes);
-    held.checked_sub(io.owned_bytes()?)
-        .ok_or_else(|| Error::Invalid("dropping a read grew its ledger".into()))
+    held.checked_sub(work.live_allocation_bytes()?)
+        .ok_or_else(|| Error::Invalid("dropping a read grew its original ledger".into()))
 }
-
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
@@ -517,10 +468,12 @@ async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
         )
         .await?;
     let bindings = storage.content_bindings();
-    let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
         &CancellationToken::new(),
-    )?;
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
     let mut released = Vec::new();
     for site in [hold as fn(Custody) -> Custody, drop_early] {
         let (_, bytes, _) = bindings
@@ -540,7 +493,7 @@ async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
             .ok_or_else(|| Error::Invalid("test value is absent".into()))?;
         let bytes = site(bytes);
         assert_eq!(bytes.as_ref(), b"selected");
-        released.push(released_on_drop(&io, bytes)?);
+        released.push(released_on_drop(&work, bytes)?);
     }
     // Held bytes keep their charge outstanding until dropped, then release it.
     assert!(released[0] >= b"selected".len() as u64, "{released:?}");
@@ -549,17 +502,21 @@ async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
     Ok(())
 }
 
-/// The unmeasured constructor occurs exactly once inside each of the two
+/// The unmeasured constructor occurs exactly once inside each of the three
 /// private read entry points of the host reader, and nowhere else.
 fn unmeasured_sites_confined(
     sources: &[(String, String)],
     needle: &str,
 ) -> std::result::Result<(), String> {
     const HOST: &str = "filesystem/host/reads.rs";
-    const ENTRY_POINTS: [(&str, &str); 2] = [
+    const ENTRY_POINTS: [(&str, &str); 3] = [
         (
-            "pub async fn read_private_path<'io>",
+            "pub(in crate::filesystem) async fn read_private_cut_retained(",
+            "pub(in crate::filesystem) async fn read_pinned_private(",
+        ),
+        (
             "pub async fn read_private_path_indexed<'io>",
+            "async fn read_private_path_indexed_measured<'io>",
         ),
         (
             "pub(in crate::filesystem) async fn read_private_range<'io>",
@@ -622,7 +579,7 @@ fn unmeasured_constructor_is_confined_to_private_read_entry_points() -> Result<(
         Ok(())
     }
     let needle = [".into_", "unmeasured("].concat();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = acyclic_test_support::source_path("rust/crates/harness-core").join("src");
     let mut sources = Vec::new();
     visit(&root, &root, &mut sources)?;
     assert_eq!(unmeasured_sites_confined(&sources, &needle), Ok(()));
@@ -649,7 +606,7 @@ fn unmeasured_constructor_is_confined_to_private_read_entry_points() -> Result<(
 fn fired_cancellation_stays_cancelled_through_preparation_and_history() -> Result<()> {
     use crate::store::history::HistoryIo as _;
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let history =
         crate::store::HistoryWork::new(PreparationIo::from_budget(budget, &cancellation)?);

@@ -1,10 +1,13 @@
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, MountOptions, WorkBudget,
-    Workspace,
-    access::*,
-    model::{CheckoutMode, GenerationSelector},
-};
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, MountOptions,
+        Workspace,
+        access::*,
+        model::{CheckoutMode, GenerationSelector},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 /// Compile every native fixture view with one stable caller binding.
 pub fn compile_view(
@@ -13,7 +16,9 @@ pub fn compile_view(
     context: Context,
     capability: &Capability,
     head: acyclic_fs::GenerationId,
-    revision: acyclic_fs::kernel::MetadataField<acyclic_fs::ObjectId>,
+    revision: acyclic_fs_format::metadata::MetadataField<
+        acyclic_fs_format::object_reference::ObjectId,
+    >,
 ) -> Result<PathTrie, InvalidPolicy> {
     let principal = Principal {
         kind: PrincipalKind::Service,

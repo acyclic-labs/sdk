@@ -1,6 +1,3 @@
-#[path = "fixtures.rs"]
-mod fixtures;
-
 use super::*;
 
 #[tokio::test]
@@ -24,7 +21,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
         .await?
         .value;
     base_tx.write_text("/file.txt", "base\n").await?;
-    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx).await?.value else {
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx).await? else {
         return Err("base did not commit".into());
     };
     let child = parent
@@ -54,8 +51,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
     child_tx
         .write_text("/file.txt", "discarded child\n")
         .await?;
-    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx).await?.value
-    else {
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx).await? else {
         return Err("child did not commit".into());
     };
     let mut parent_tx = parent
@@ -67,8 +63,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
         .await?
         .value;
     parent_tx.write_text("/file.txt", "kept parent\n").await?;
-    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx).await?.value
-    else {
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx).await? else {
         return Err("parent did not commit".into());
     };
     let resolver = Resolver {
@@ -122,7 +117,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
     unrelated
         .write_text("/unrelated.txt", "preserved\n")
         .await?;
-    let TransactionCommit::Committed(_) = fixtures::commit(&mut unrelated).await?.value else {
+    let TransactionCommit::Committed(_) = fixtures::commit(&mut unrelated).await? else {
         return Err("unrelated edit did not commit".into());
     };
     aborting
@@ -182,7 +177,7 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
         .await?
         .value;
     base_tx.write_text("/keep.txt", "base\n").await?;
-    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx).await?.value else {
+    let TransactionCommit::Committed(base) = fixtures::commit(&mut base_tx).await? else {
         return Err("base did not commit".into());
     };
     let child = parent
@@ -210,8 +205,7 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
         .await?
         .value;
     child_tx.write_text("/added.txt", "from child\n").await?;
-    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx).await?.value
-    else {
+    let TransactionCommit::Committed(child_head) = fixtures::commit(&mut child_tx).await? else {
         return Err("child did not commit".into());
     };
     let mut parent_tx = parent
@@ -223,8 +217,7 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
         .await?
         .value;
     parent_tx.write_text("/added.txt", "from parent\n").await?;
-    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx).await?.value
-    else {
+    let TransactionCommit::Committed(parent_head) = fixtures::commit(&mut parent_tx).await? else {
         return Err("parent did not commit".into());
     };
     let resolver = Resolver {

@@ -58,7 +58,20 @@ isolated_test(
     name = "ts_rs_macros_test",
     binary = ":ts_rs_macros_test_cases",
     id = "ts-rs-macros",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "ts_rs_macros_test_full-cloud",
+    binary = ":ts_rs_macros_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "ts-rs-macros",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -68,13 +81,4 @@ filegroup(
 )
 
 
-exports_files([
-        "src/attr/enum.rs",
-        "src/attr/field.rs",
-        "src/attr/mod.rs",
-        "src/attr/struct.rs",
-        "src/attr/variant.rs",
-        "src/deps.rs",
-        "src/optional.rs",
-        "src/utils.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])

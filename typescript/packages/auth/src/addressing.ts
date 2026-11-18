@@ -3,7 +3,7 @@ import {
   validateResourceLabel as validateLabel,
   resourceIdentityHostname, canonicalResourceHost as canonicalHost,
   resourceIdentityFromHostname, encodeActorReference, actorReferenceField,
-  actorLocationHint as locationHint, actorReferenceFromLegacyFields, canonicalWorkerRoute, workerRouteMatches, selectWorkerRoute as selectRoute,
+  actorLocationHint as locationHint, canonicalWorkerRoute, workerRouteMatches, selectWorkerRoute as selectRoute,
 } from "./wasm.js";
 
 /** Check the JS/WASM boundary shape; byte-content validation remains in Rust. */
@@ -115,13 +115,6 @@ export class ActorReference {
 
   static fromFields(fields: ActorReferenceFields): ActorReference {
     return new ActorReference(fields.account, fields.namespace, fields.id);
-  }
-
-  /** Only an absent field maps to the reserved default, never an empty string. */
-  static fromLegacyFields(account: Uint8Array, namespace: string | undefined, id: string): ActorReference {
-    requireBytes(account); requireText(id);
-    if (namespace !== undefined) requireText(namespace);
-    return ActorReference.decode(actorReferenceFromLegacyFields(account, namespace, id));
   }
 
   get account(): Uint8Array { return actorReferenceField(this.#encoded, 0); }

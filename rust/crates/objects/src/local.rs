@@ -26,7 +26,8 @@
 use crate::{
     Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
 };
-use acyclic_native_runtime::{LogFrame, PersistenceKey, spawn_persistence};
+use acyclic_log_frame::LogFrame;
+use acyclic_native_runtime::{PersistenceKey, spawn_persistence};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -723,7 +724,6 @@ fn open_root(
             let mut created = std::fs::File::create(&format)?;
             created.write_all(FORMAT)?;
             file(&created)?;
-            directory(&root)?;
         }
         Err(error) => return Err(error.into()),
     }
@@ -784,6 +784,8 @@ fn open_root(
     } else {
         file(&std::fs::File::create(&marker)?)?;
     }
+    // Publish FORMAT, LOCK, LOG and the recovery marker together. No caller
+    // observes this root until their one namespace barrier completes.
     directory(&root)?;
     Ok(Shared {
         source: ObservationSource::new(),
@@ -999,7 +1001,6 @@ impl std::fmt::Debug for LocalMedium {
 #[cfg(test)]
 mod isolation_tests {
     use super::*;
-    use futures::FutureExt as _;
 
     fn bytes(value: &[u8]) -> OwnedBytes {
         OwnedBytes::from(value.to_vec())
@@ -1192,8 +1193,24 @@ mod isolation_tests {
         ));
         let written = std::fs::read(&log).unwrap();
         assert_eq!(written.len() as u64, states.last().unwrap().0);
-        // Each cut recovers its own copy, so the cuts' reopens and flushes
-        // overlap instead of paying every flush latency in sequence.
+        let state_at = |cut| states.iter().rev().find(|(end, _)| *end <= cut).unwrap();
+        // Exhaust every byte cut through the production replay core. Filesystem
+        // recovery below covers each distinct state and its torn successor.
+        for cut in 0..=written.len() {
+            let (end, index, _, whole) = replay(written.get(..cut).unwrap(), cut as u64).unwrap();
+            let (expected_end, expected) = state_at(cut as u64);
+            let actual: BTreeMap<_, _> = index
+                .into_iter()
+                .map(|(key, entry)| {
+                    let start = usize::try_from(entry.slot.value).unwrap();
+                    let stop = start + usize::try_from(entry.slot.length).unwrap();
+                    (key, written.get(start..stop).unwrap().to_vec())
+                })
+                .collect();
+            assert_eq!(end, *expected_end, "cut at {cut}");
+            assert_eq!(whole, end == cut as u64, "cut at {cut}");
+            assert_eq!(actual, *expected, "cut at {cut}");
+        }
         let recover = async |cut: usize| {
             let copy = tempfile::tempdir().unwrap();
             std::fs::write(copy.path().join("FORMAT"), FORMAT).unwrap();
@@ -1204,11 +1221,7 @@ mod isolation_tests {
                 .await
                 .unwrap();
             assert!(reopened.recovered());
-            let (end, expected) = states
-                .iter()
-                .rev()
-                .find(|(end, _)| *end <= cut as u64)
-                .unwrap();
+            let (end, expected) = state_at(cut as u64);
             assert_eq!(contents(&reopened).await, *expected, "cut at {cut}");
             assert_eq!(
                 std::fs::metadata(copy.path().join(LOG)).unwrap().len(),
@@ -1235,11 +1248,14 @@ mod isolation_tests {
             assert_eq!(contents(&clean).await, committed, "successor at cut {cut}");
             assert_eq!(clean.close().await.unwrap(), LocalClose::Released);
         };
-        let mut cuts = Vec::new();
-        for cut in 0..=written.len() {
-            cuts.push(recover(cut));
-        }
-        futures::future::join_all(cuts).await;
+        futures::future::join_all(
+            states
+                .iter()
+                .flat_map(|(end, _)| [*end, end + 1])
+                .filter(|cut| *cut <= written.len() as u64)
+                .map(|cut| recover(usize::try_from(cut).unwrap())),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1281,7 +1297,7 @@ mod isolation_tests {
     #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn a_failed_flush_stops_the_root_until_it_recovers() {
-        use acyclic_native_runtime::testing::{DurableFault, Schedule};
+        use acyclic_native_runtime::testing::{DurableFault, Schedule, drive};
         acyclic_native_runtime::initialize_native_io_services().unwrap();
         let root = tempfile::tempdir().unwrap();
         let open =
@@ -1289,19 +1305,11 @@ mod isolation_tests {
         let medium = open().await.unwrap();
         assert!(medium.create("k/a", bytes(b"a")).await.unwrap());
         let (schedule, mut events) = Schedule::new();
-        let driver = tokio::spawn(async move {
-            while let Some(boundary) = events.recv().await {
-                boundary.release();
-            }
-        });
         schedule.cut_at(0, DurableFault::Failed);
         assert!(matches!(
-            schedule.scope(medium.flush(&[])).await,
+            drive(&schedule, &mut events, |_| {}, medium.flush(&[])).await,
             Err(MediumError::Ambiguous(_))
         ));
-        schedule.drained().await;
-        driver.abort();
-        let _ = driver.await;
         assert!(medium.create("k/b", bytes(b"b")).await.is_err());
         assert!(medium.flush(&[]).await.is_err());
         drop(medium);
@@ -1326,7 +1334,12 @@ mod isolation_tests {
 
     #[test]
     fn local_storage_progresses_with_an_occupied_input_worker() {
-        let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+        // Saturate this executor independently of the host's CPU count.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
         let (started, starting) = std::sync::mpsc::channel();
         let (release, held) = std::sync::mpsc::channel::<()>();
         let input = runtime.spawn_blocking(move || {
@@ -1335,19 +1348,11 @@ mod isolation_tests {
         });
         starting.recv().unwrap();
         runtime.block_on(async {
-            // The old route cannot start until the input producer closes.
-            let mut old_route = Box::pin(tokio::task::spawn_blocking(|| ()));
-            assert!(old_route.as_mut().now_or_never().is_none());
             let root = tempfile::tempdir().unwrap();
             let store = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
                 .await
                 .unwrap();
-            assert!(
-                store
-                    .create("values/a", OwnedBytes::from(b"before".to_vec()))
-                    .await
-                    .unwrap()
-            );
+            assert!(store.create("values/a", bytes(b"before")).await.unwrap());
             assert_eq!(
                 store
                     .read("values/a", None)
@@ -1360,10 +1365,7 @@ mod isolation_tests {
             let stale = observation(&store, "values/a").await;
             assert!(
                 store
-                    .replace(
-                        observation(&store, "values/a").await,
-                        OwnedBytes::from(b"after".to_vec())
-                    )
+                    .replace(observation(&store, "values/a").await, bytes(b"after"))
                     .await
                     .unwrap()
                     .is_some()
@@ -1378,11 +1380,11 @@ mod isolation_tests {
                 b"after"
             );
             assert!(
-                !store
-                    .replace(stale, OwnedBytes::from(b"wrong".to_vec()))
+                store
+                    .replace(stale, bytes(b"wrong"))
                     .await
                     .unwrap()
-                    .is_some()
+                    .is_none()
             );
             assert!(
                 store
@@ -1393,7 +1395,6 @@ mod isolation_tests {
             // Dropping the sole input producer terminates the blocked read.
             drop(release);
             assert!(input.await.unwrap().is_err());
-            old_route.await.unwrap();
         });
     }
 }

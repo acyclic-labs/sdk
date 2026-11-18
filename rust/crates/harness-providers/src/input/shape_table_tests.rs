@@ -1,6 +1,6 @@
 //! Every declared shape is exercised in every declared content position.
 use super::*;
-use crate::protocol::{
+use acyclic_harness_provider_protocol::{
     content,
     shape::{self, Constraint, Shape},
 };

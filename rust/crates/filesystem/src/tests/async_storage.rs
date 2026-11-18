@@ -51,8 +51,11 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
                     }
                 );
             }
-            assert_eq!(work.spent().peak_allocation_bytes, 31 + output_bytes);
-            assert_eq!(work.spent().bytes_copied, 2 * bytes.len() as u64);
+            assert_eq!(
+                work.spent().unwrap().peak_allocation_bytes,
+                31 + output_bytes
+            );
+            assert_eq!(work.spent().unwrap().bytes_copied, 2 * bytes.len() as u64);
             assert_eq!(work.allocations.live_bytes(), 31 + output_bytes);
             assert!(allocation.is_none());
             drop(values);
@@ -66,7 +69,7 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
                     ..
                 }))
             ));
-            assert_eq!(work.spent().bytes_copied, bytes.len() as u64);
+            assert_eq!(work.spent().unwrap().bytes_copied, bytes.len() as u64);
         }
         assert_eq!(earlier.value, [7; 31]);
         assert_eq!(work.allocations.live_bytes(), 31);
@@ -80,7 +83,7 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
     assert_eq!(work.allocations.live_bytes(), 31 + bytes.len() as u64);
     drop(read);
     work.allocations.release_owned(bytes.len() as u64)?;
-    let before = work.spent();
+    let before = work.spent().unwrap();
     work.budget.bytes_copied = before.bytes_copied;
     assert!(matches!(
         store.read(object_id, bytes.len() as u64, &mut work).await,
@@ -89,7 +92,7 @@ async fn owned_read_conformance_keeps_each_live_batch_buffer_funded()
             ..
         }))
     ));
-    assert_eq!(work.spent().bytes_copied, before.bytes_copied);
+    assert_eq!(work.spent().unwrap().bytes_copied, before.bytes_copied);
     assert_eq!(work.allocations.live_bytes(), 31);
     earlier.retire(&mut work.accounting())?;
     assert_eq!(work.allocations.live_bytes(), 0);
@@ -253,7 +256,7 @@ async fn adapters_reject_cancellation_and_sequential_read_failures()
     ] {
         assert!(matches!(result, Err(AuthorityStoreError::Cancelled)));
     }
-    assert_eq!(work.spent(), WorkCounters::default());
+    assert_eq!(work.spent().unwrap(), WorkCounters::default());
     let objects = MemoryObjectStore::default();
     let object_id = ObjectId {
         storage: None,
@@ -274,7 +277,7 @@ async fn adapters_reject_cancellation_and_sequential_read_failures()
     ] {
         assert!(matches!(result, Err(ObjectStoreError::Cancelled)));
     }
-    assert_eq!(work.spent(), WorkCounters::default());
+    assert_eq!(work.spent().unwrap(), WorkCounters::default());
     let live = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &live);
     assert!(matches!(
@@ -376,7 +379,7 @@ async fn default_guarded_fork_preserves_owner_rejection_and_rejects_managed_perm
                 failure,
                 crate::FsError::Authority(AuthorityStoreError::RejectedStatic(_))
             ));
-            assert_eq!(work.spent(), WorkCounters::default());
+            assert_eq!(work.spent().unwrap(), WorkCounters::default());
             assert_eq!(calls, 0);
             assert!(matches!(
                 store
@@ -389,7 +392,10 @@ async fn default_guarded_fork_preserves_owner_rejection_and_rejects_managed_perm
             ));
         } else {
             assert!(matches!(failure, crate::FsError::WorkspaceDeleted));
-            assert_eq!(work.spent(), prefix.spent().checked_add(guard_work)?);
+            assert_eq!(
+                work.spent().unwrap(),
+                prefix.spent().unwrap().checked_add(guard_work)?
+            );
             assert_eq!(calls, 1);
         }
         assert!(matches!(

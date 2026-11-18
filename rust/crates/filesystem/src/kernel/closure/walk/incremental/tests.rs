@@ -10,7 +10,7 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let meter = ProofMeter::Native {
         original: &original,
         cancellation: &cancellation,
@@ -23,20 +23,20 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
             drop(cache.slot(crate::VolumeId::from_bytes(index.to_be_bytes()), &meter)?);
         }
         let key = crate::VolumeId::from_bytes((count / 2).to_be_bytes());
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         let slot = cache.slot(key, &meter)?;
-        let after = original.receipt();
+        let after = original.receipt().unwrap();
         assert_eq!(after.allocation_operations, before.allocation_operations);
         assert!(after.items_examined - before.items_examined <= 8 * 16 + 1 + 16);
         drop(cache);
-        let retained = original.live_allocation_bytes() - baseline;
+        let retained = original.live_allocation_bytes().unwrap() - baseline;
         assert!(
             retained > 0,
             "cache retirement refunded a live proof-slot alias"
         );
         assert_eq!(retained, *slot_bytes.get_or_insert(retained));
         drop(slot);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 
     let store = crate::memory::MemoryObjectStore::default();
@@ -89,15 +89,15 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
                 .current(None)
                 .ok_or("committed proof lost its original handle")?;
             drop(slot);
-            assert!(original.live_allocation_bytes() > baseline);
+            assert!(original.live_allocation_bytes().unwrap() > baseline);
             assert_eq!(retained.generation_id, proof.generation_id);
             drop(retained);
         } else {
             drop(slot);
-            assert!(original.live_allocation_bytes() > baseline);
+            assert!(original.live_allocation_bytes().unwrap() > baseline);
             drop(pending);
         }
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 
     // Root cloning succeeds; the following two-Arc admission is refused.
@@ -110,14 +110,14 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let limited_baseline = limited.live_allocation_bytes();
+    let limited_baseline = limited.live_allocation_bytes().unwrap();
     let limited_meter = ProofMeter::Native {
         original: &limited,
         cancellation: &cancellation,
     };
     let mut cache = CachedProofs::default();
     let slot = cache.slot(volume, &limited_meter)?;
-    let before = limited.live_allocation_bytes();
+    let before = limited.live_allocation_bytes().unwrap();
     let context = ProofContext::new(&store, limits, limited_meter);
     let refused = context
         .remember(
@@ -137,10 +137,10 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
             }
         ))
     ));
-    assert_eq!(limited.live_allocation_bytes(), before);
+    assert_eq!(limited.live_allocation_bytes().unwrap(), before);
     drop(cache);
     drop(slot);
-    assert_eq!(limited.live_allocation_bytes(), limited_baseline);
+    assert_eq!(limited.live_allocation_bytes().unwrap(), limited_baseline);
 
     let meter = ProofMeter::Native {
         original: &original,
@@ -148,7 +148,7 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
     };
     let mut cache = CachedProofs::default();
     drop(cache.slot(volume, &meter)?);
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     cancellation.cancel();
     assert!(matches!(
         cache.slot(volume, &meter),
@@ -157,12 +157,12 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
         ))
     ));
     assert_eq!(
-        original.receipt(),
+        original.receipt().unwrap(),
         before,
         "cancelled lookup performed work"
     );
     drop(cache);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -240,7 +240,7 @@ fn validate(diff: &crate::GenerationDiff, budget: WorkBudget) -> TestResult<(boo
         meter.clone(),
     );
     let valid = context.validate_increment_namespace(diff)?;
-    Ok((valid, meter.work()))
+    Ok((valid, meter.work().unwrap()))
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn batched_namespace_indexes_fund_and_meter_siblings_and_shared_ancestry() -> Te
             );
             budget = crate::performance::work_budget(64 * count as u64, 1_000_000);
             budget.peak_allocation_bytes =
-                crate::kernel::closure::memory::proof_standalone_control_bytes();
+                crate::kernel::closure::memory::proof_standalone_control_bytes().unwrap();
             assert!(
                 validate(&diff, budget).is_err(),
                 "the parent index needs funded storage"
@@ -339,7 +339,7 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
                 old.get((first / 2) as usize).ok_or("missing predecessor")?
             );
         }
-        let examined = meter.work().items_examined;
+        let examined = meter.work().unwrap().items_examined;
         assert!(
             examined >= 2 * count,
             "child matching must charge its probes"

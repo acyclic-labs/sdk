@@ -119,7 +119,7 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
             .collect();
         assert_eq!(actual, expected[..maximum as usize]);
         assert_eq!(
-            work.spent().source_path_components,
+            work.spent().unwrap().source_path_components,
             match maximum {
                 0 => 0,
                 1 => 1,
@@ -128,7 +128,7 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
             }
         );
         if maximum == 2 {
-            full_allocations = work.spent().allocation_operations;
+            full_allocations = work.spent().unwrap().allocation_operations;
         }
         let bytes = crate::workspace::namespace_records_bytes(&search.records);
         crate::kernel::Owned::new(search, allocation, bytes).retire(&mut work)?;
@@ -213,13 +213,13 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
         .next(&DirectOnly(&store), &mut work, &cancel)
         .await?
         .ok_or("first alias absent")?;
-    let reads = work.spent().page_reads;
+    let reads = work.spent().unwrap().page_reads;
     cancel.cancel();
     assert!(matches!(
         cursor.next(&DirectOnly(&store), &mut work, &cancel).await,
         Err(FsError::Cancelled(_))
     ));
-    assert_eq!(work.spent().page_reads, reads);
+    assert_eq!(work.spent().unwrap().page_reads, reads);
     first.retire(&mut work)?;
     cursor.retire(&mut work)?;
     assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
@@ -309,7 +309,7 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
     impl Drop for Held {
         fn drop(&mut self) {
             assert!(
-                self.original.live_allocation_bytes()
+                self.original.live_allocation_bytes().unwrap()
                     == self.original_bytes + self.bytes.capacity() as u64,
                 "physical backing outlived its original credit"
             );
@@ -321,8 +321,8 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
         .map_err(|(error, _)| error)?;
     let recipient = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(error, _)| error)?;
-    let donor_bytes = donor.live_allocation_bytes();
-    let recipient_bytes = recipient.live_allocation_bytes();
+    let donor_bytes = donor.live_allocation_bytes().unwrap();
+    let recipient_bytes = recipient.live_allocation_bytes().unwrap();
     let dropped = Arc::new(AtomicBool::new(false));
     let bytes = vec![7; 73];
     let length = bytes.capacity() as u64;
@@ -347,13 +347,13 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
         ))
     ));
     assert!(dropped.load(Ordering::SeqCst));
-    assert_eq!(donor.live_allocation_bytes(), donor_bytes);
+    assert_eq!(donor.live_allocation_bytes().unwrap(), donor_bytes);
     assert_eq!(target.bytes, target_bytes);
     assert_eq!(
-        recipient.live_allocation_bytes(),
+        recipient.live_allocation_bytes().unwrap(),
         recipient_bytes + target_bytes
     );
     target.retire(&mut accounting)?;
-    assert_eq!(recipient.live_allocation_bytes(), recipient_bytes);
+    assert_eq!(recipient.live_allocation_bytes().unwrap(), recipient_bytes);
     Ok(())
 }

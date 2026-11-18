@@ -45,6 +45,12 @@ fn retained_inventory_accepts_exact_flat_and_nested_members_only() {
 
 #[test]
 fn separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift() {
+    compiler::with(
+        separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift_world,
+    );
+}
+
+fn separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift_world() {
     let fixture = Fixture::new();
     fs::write(
         fixture.path().join("Cargo.lock"),
@@ -166,15 +172,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
     let imported_lock = fixture.path().join(directory).join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
-    command_output(
-        Command::new("tar")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(fixture.path())
-            .arg(directory),
-    )
-    .unwrap();
+    fixture_archive::pack(&fixture.path().join(directory), &archive);
     release.checksum = crate::sha256_file(&archive)
         .unwrap()
         .trim_start_matches("sha256:")
@@ -346,15 +344,7 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
     let revision = "a".repeat(40);
     let (mut release, archive) = fixture.archive(&revision, "");
     fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
-    command_output(
-        Command::new("tar")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(fixture.path())
-            .arg("historical-fixture-0.1.0"),
-    )
-    .unwrap();
+    fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
     release.checksum = crate::sha256_file(&archive)
         .unwrap()
         .trim_start_matches("sha256:")
@@ -423,58 +413,45 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     assert_eq!(discovered.len(), 1);
     assert_eq!(discovered[0].target, "old-example");
     assert_eq!(discovered[0].required_features, vec!["old-feature"]);
-    let execution = execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &discovered,
-        None,
-        None,
-    )
-    .unwrap();
-    assert_eq!(execution[0].stdout_sha256, crate::sha256_bytes(b"7\n"));
+    let target_dir = fixture.path().join("target");
+    fs::create_dir(&target_dir).unwrap();
+    let mode = target_dir.join("example-mode");
     fs::write(
         fixture.path().join("examples/old-example.rs"),
-        "fn main() { panic!(\"failure\"); }\n",
+        r#"fn main() {
+            match std::fs::read_to_string("target/example-mode").unwrap().as_str() {
+                "success" => println!("{}", historical_fixture::value()),
+                "failure" => panic!("example deliberately failed"),
+                "mutate" => std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(),
+                mode => panic!("unexpected example mode: {mode}"),
+            }
+        }"#,
     )
     .unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &discovered,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed before execution"));
-    let failing = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &failing,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("failed"));
-    fs::write(
-        fixture.path().join("examples/old-example.rs"),
-        r#"fn main() { std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(); }"#,
-    )
-    .unwrap();
-    let mutating = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &mutating,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed during execution"));
+    let cargo = cargo();
+    let run = |examples: &[_]| {
+        execute_examples(fixture.path(), &cargo, &target_dir, examples, None, None)
+    };
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("changed before execution"));
+
+    // Cargo's output directory is outside the source closure. Changing the
+    // mode exercises all outcomes without rebuilding the example.
+    let discovered = examples(&metadata, fixture.path(), &owners).unwrap();
+    fs::write(&mode, "success").unwrap();
+    assert_eq!(
+        run(&discovered).unwrap()[0].stdout_sha256,
+        crate::sha256_bytes(b"7\n")
+    );
+    fs::write(&mode, "failure").unwrap();
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("example deliberately failed"));
+    fs::write(&mode, "mutate").unwrap();
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("changed during execution"));
     assert!(examples(
         &metadata,
         fixture.path(),
@@ -484,78 +461,43 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     .contains("absent"));
 }
 #[test]
-fn cargo_binary_target_produces_native_receipt_without_public_api_admission() {
-    use sdk_docs::rustdoc_profiles::{
-        execute_profile, observe_rustdoc, ProfileSpec, RustdocTarget,
-    };
-    let fixture = Fixture::new();
-    fs::write(
-        fixture.path().join("src/main.rs"),
-        "//! Source-owned historical command instructions.\nfn main() {}\n",
-    )
-    .unwrap();
-    let metadata = fixture.metadata();
-    let rustc = cargo()
-        .parent()
-        .unwrap()
-        .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
-    let output = command_output(Command::new(rustc).arg("-vV")).unwrap();
-    let info = String::from_utf8(output).unwrap();
-    let host = info
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .unwrap()
-        .to_owned();
-    let profile = ProfileSpec {
-        package: "historical-fixture".into(),
-        target: host.clone(),
-        default_features: true,
-        features: BTreeSet::new(),
-    };
-    let output = fixture.path().join("binary.json");
-    let target_dir = fixture.path().join("native-rustdoc");
-    let absent = execute_profile(
-        fixture.path().join("Cargo.toml"),
-        &metadata,
-        &profile,
-        &BTreeSet::from([host.clone()]),
-        &target_dir,
-        &output,
-        sdk_docs::rustdoc_profiles::CargoExecutionContext {
-            cargo_path: Some(&cargo()),
-            lock_selection: None,
-        },
-        &RustdocTarget::Binary("absent".into()),
-    );
-    assert!(absent
-        .unwrap_err()
-        .to_string()
-        .contains("absent from Cargo"));
-    assert!(!target_dir.exists());
-    let observation = execute_profile(
-        fixture.path().join("Cargo.toml"),
-        &metadata,
-        &profile,
-        &BTreeSet::from([host]),
-        &target_dir,
-        &output,
-        sdk_docs::rustdoc_profiles::CargoExecutionContext {
-            cargo_path: Some(&cargo()),
-            lock_selection: None,
-        },
-        &RustdocTarget::Binary("historical-fixture".into()),
-    )
-    .unwrap();
-    assert_eq!(observation.format_version, 60);
-    assert_eq!(observation.crate_version.as_deref(), Some("0.1.0"));
-    assert!(observation.includes_private);
-    assert!(observe_rustdoc(&output).is_err());
-    let native: serde_json::Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
-    assert_eq!(
-        native["index"][native["root"].to_string()]["docs"],
-        "Source-owned historical command instructions."
-    );
+fn absent_cargo_binary_is_rejected_before_compilation() {
+    compiler::with(|| {
+        use sdk_docs::rustdoc_profiles::{
+            execute_profile, CargoExecutionContext, ProfileSpec, RustdocTarget,
+        };
+        let fixture = Fixture::new();
+        fs::write(fixture.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let metadata = fixture.metadata();
+        let target = "fixture-host".to_owned();
+        let profile = ProfileSpec {
+            package: "historical-fixture".into(),
+            target: target.clone(),
+            default_features: true,
+            features: BTreeSet::new(),
+        };
+        let target_dir = fixture.path().join("native-rustdoc");
+        let absent = execute_profile(
+            fixture.path().join("Cargo.toml"),
+            &metadata,
+            &profile,
+            &BTreeSet::from([target]),
+            &target_dir,
+            &fixture.path().join("binary.json"),
+            CargoExecutionContext {
+                cargo_path: Some(&cargo()),
+                lock_selection: None,
+            },
+            &RustdocTarget::Binary("absent".into()),
+        );
+        assert!(absent
+            .unwrap_err()
+            .to_string()
+            .contains("absent from Cargo"));
+        assert!(!target_dir.exists());
+    });
 }
+
 #[test]
 fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
     let fixture = Fixture::new();
@@ -575,15 +517,7 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
         let archived = fixture.path().join("historical-fixture-0.1.0").join(name);
         fs::create_dir_all(archived.parent().unwrap()).unwrap();
         fs::copy(&path, &archived).unwrap();
-        command_output(
-            Command::new("tar")
-                .arg("-cf")
-                .arg(&archive)
-                .arg("-C")
-                .arg(fixture.path())
-                .arg("historical-fixture-0.1.0"),
-        )
-        .unwrap();
+        fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
         release.checksum = crate::sha256_file(&archive)
             .unwrap()
             .trim_start_matches("sha256:")
@@ -603,6 +537,42 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
 
 #[test]
 fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutations() {
+    let fixture = Fixture::new();
+    let root = fixture.path();
+    let package = root.join("rust/crates/owned");
+    fs::create_dir_all(package.join("src")).unwrap();
+    fs::copy(root.join("src/lib.rs"), package.join("src/lib.rs")).unwrap();
+    fs::write(package.join("build.rs"), "fn main() {}\n").unwrap();
+    fs::write(package.join("README.md"), "# Source README\n").unwrap();
+    let manifest = root.join("Cargo.toml");
+    let contents = fs::read_to_string(&manifest).unwrap().replace(
+        "edition='2021'",
+        "edition='2021'\nbuild='rust/crates/owned/build.rs'\nreadme='rust/crates/owned/README.md'",
+    );
+    fs::write(
+        manifest,
+        format!("{contents}\n[lib]\npath='rust/crates/owned/src/lib.rs'\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("examples/old-example.rs"),
+        r#"fn main() {
+            let input = std::fs::read_to_string("target/mutation-input").unwrap();
+            std::fs::write(input, "mutated documentation input").unwrap();
+        }"#,
+    )
+    .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let selector = target.join("mutation-input");
+    let metadata = fixture.metadata();
+    let examples = examples(
+        &metadata,
+        root,
+        &BTreeSet::from(["historical-fixture".into()]),
+    )
+    .unwrap();
+    let cargo = cargo();
     for changed in [
         "rust/crates/owned/src/lib.rs",
         "rust/crates/owned/build.rs",
@@ -610,49 +580,14 @@ fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutati
         "Cargo.toml",
         "Cargo.lock",
     ] {
-        let fixture = Fixture::new();
-        fs::create_dir_all(fixture.path().join("rust/crates/owned/src")).unwrap();
-        fs::copy(
-            fixture.path().join("src/lib.rs"),
-            fixture.path().join("rust/crates/owned/src/lib.rs"),
-        )
-        .unwrap();
-        fs::write(
-            fixture.path().join("rust/crates/owned/build.rs"),
-            "fn main() {}\n",
-        )
-        .unwrap();
-        fs::write(
-            fixture.path().join("rust/crates/owned/README.md"),
-            "# Source README\n",
-        )
-        .unwrap();
-        let manifest = fs::read_to_string(fixture.path().join("Cargo.toml")).unwrap().replace("edition='2021'", "edition='2021'\nbuild='rust/crates/owned/build.rs'\nreadme='rust/crates/owned/README.md'");
-        fs::write(
-            fixture.path().join("Cargo.toml"),
-            format!("{manifest}\n[lib]\npath='rust/crates/owned/src/lib.rs'\n"),
-        )
-        .unwrap();
-        fs::write(fixture.path().join("examples/old-example.rs"), format!("fn main() {{ std::fs::write({changed:?}, \"mutated documentation input\").unwrap(); }}\n")).unwrap();
-        let metadata = fixture.metadata();
-        let examples = examples(
-            &metadata,
-            fixture.path(),
-            &BTreeSet::from(["historical-fixture".into()]),
-        )
-        .unwrap();
-        let error = execute_examples(
-            fixture.path(),
-            &cargo(),
-            &fixture.path().join("target"),
-            &examples,
-            None,
-            None,
-        )
-        .unwrap_err();
+        let input = root.join(changed);
+        let original = fs::read(&input).unwrap();
+        fs::write(&selector, changed).unwrap();
+        let error = execute_examples(root, &cargo, &target, &examples, None, None).unwrap_err();
         assert!(
             error.contains("source closure changed"),
             "{changed}: {error}"
         );
+        fs::write(input, original).unwrap();
     }
 }

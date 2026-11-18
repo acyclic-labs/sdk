@@ -231,7 +231,7 @@ async fn write_receipts_release_original_ledger_custody_on_allow_and_deny()
         .await?;
     let cancel = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &cancel,
     )
     .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;

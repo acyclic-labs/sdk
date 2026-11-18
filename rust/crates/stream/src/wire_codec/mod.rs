@@ -6,8 +6,9 @@ use crate::{
     AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId, CommitMutation,
     CommitOutcome, CommittedAppend, CommittedEnvelope, CommittedFork, CommittedMutation,
     ForkReceipt, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, Record, StreamError,
-    StreamPath, wire,
+    StreamPath,
 };
+use acyclic_stream_wire::wire;
 
 #[cfg(test)]
 mod read_response_tests;

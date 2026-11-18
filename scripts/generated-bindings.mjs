@@ -1,18 +1,16 @@
-import { execFileSync } from "node:child_process";
+import { repositoryRoot as sourceRoot, trackedFiles } from "./policy-core.mjs";
 import ignore from "ignore";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
 let tracked;
 
 // Pinned outputs are compared. Ignored build outputs are regenerated from the
 // current source, so a clean checkout needs no pre-existing generated cache.
 export function projectGenerated(path, content, check) {
   if (check) {
-    tracked ??= new Set(execFileSync("git", ["ls-files", "-z"], { cwd: sourceRoot, encoding: "utf8" }).split("\0"));
+    tracked ??= new Set(trackedFiles(sourceRoot));
     if (tracked.has(relative(sourceRoot, path).replaceAll("\\", "/"))) return checkGenerated(path, content);
   }
   writeChanged(path, content);
@@ -66,27 +64,6 @@ export const writeChanged = (path, content) => {
   }
 };
 
-// Canonical generation inputs and their published copies live here.
-// Every family that negotiates a protocol ships the shared handshake schema.
-/** @type {[string, string[], string?][]} */
-export const packagedTypeScriptBindings = [
-  ["filesystem/v2/filesystem_pb", ["filesystem"]],
-  ["protocol/v1/protocol_pb", ["filesystem"]],
-  // Service bindings import the proto2 custom options descriptor transitively.
-  ["validation/v1/options_pb", ["auth", "inference", "actors", "filesystem", "machines", "objects", "stream"], "compatibility"],
-  ["auth/v1/auth_pb", ["auth"]],
-  ["inference/v1/inference_pb", ["inference"]],
-  ["machines/v1/machines_pb", ["machines"]],
-  ["harness/v2/resources_pb", ["machines", "actors"], "compatibility"],
-  ["objects/v1/objects_pb", ["objects"]],
-  ["stream/v1/stream_pb", ["stream"]],
-  ["stream/v1/session_pb", ["stream"]],
-  ["actors/v1/actors_pb", ["actors"]],
-];
-
-// These packages intentionally own no protobuf outputs after protocol retirement.
-export const retiredTypeScriptBindingPackages = ["harness"];
-
 export const compatibilityArtifacts = {
   auth: {
     schemaDigest: "rust/crates/auth/proto/auth/v1/auth.proto",
@@ -96,7 +73,7 @@ export const compatibilityArtifacts = {
   harness: {
     schemaDigest: "rust/crates/harness-core/proto/harness/v2/harness.proto",
     descriptorDigest: "compatibility/descriptors/harness-v2.bin",
-    conformanceDigest: "rust/crates/harness/conformance/legacy-harness.json",
+    conformanceDigest: "rust/crates/harness-suite/conformance/legacy-harness.json",
   },
   filesystem: {
     schemaDigest: "rust/crates/filesystem-wire/proto/filesystem/v2/filesystem.proto",
@@ -104,7 +81,7 @@ export const compatibilityArtifacts = {
     conformanceDigest: "rust/crates/filesystem/conformance/dependency-content-range-v1.json",
   },
   stream: {
-    schemaDigest: "rust/crates/stream/proto/stream/v1/stream.proto",
+    schemaDigest: "rust/crates/stream-wire/proto/stream/v1/stream.proto",
     descriptorDigest: "compatibility/descriptors/stream-v1.bin",
     conformanceDigest: "rust/crates/stream/conformance/stream.json",
   },
@@ -129,7 +106,7 @@ export const compatibilityArtifacts = {
   },
 };
 
-export const nativeWasmVector = "rust/crates/harness/conformance/native-wasm-event-v2.json";
+export const nativeWasmVector = "rust/crates/harness-suite/conformance/native-wasm-event-v2.json";
 // Only checkout-owned copies belong here. Validate at import so every consumer,
 // including generators, rejects build outputs before reading or writing them.
 export const packagedSourceCopies = [

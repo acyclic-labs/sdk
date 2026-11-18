@@ -2,32 +2,5 @@
 
 #![doc = include_str!("../../docs/client/README.md")]
 
-pub use acyclic_harness_client::{
-    AgentCommand, AgentPageRequest, AgentReply, ApprovalVerdict, DiffProjection, DiffQuery,
-    DiffQueryEvent, DiffSnapshot, DiffSummary, EventCursor, ExecutionPosition, InputPreview,
-    InputPreviewStep, InputQuery, MAX_READ_BYTES, SessionsScope,
-};
+pub use acyclic_harness_client::*;
 pub use acyclic_harness_core::preset::Preset;
-
-mod command_result;
-pub use command_result::{HeadlessOutcome, decode_command_result, encode_command_result};
-pub mod commands;
-mod mentions;
-pub use mentions::*;
-mod diff;
-pub use diff::*;
-mod task_list;
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-pub use acyclic_harness_client::{
-    AgentClient, AgentClientError, AgentEvent, AgentSelection, StreamView, StreamViewPolicy,
-    WireSession, WireSessionError,
-};
-pub use acyclic_harness_client::{
-    CREDENTIAL_ENV, ConnectionConfigError, ConnectionOptions, DEFAULT_ENDPOINT, DemandError,
-    DemandPolicy, ENDPOINT_ENV, ViewDemand, resolve_connection_options,
-};
-pub use acyclic_harness_client::{explorer, ui};
-pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};

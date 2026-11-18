@@ -44,7 +44,8 @@ mod content_progress;
 mod diff;
 mod errors;
 mod extents;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod fork_accounting_tests;
 mod fork_options;
 mod generation;
@@ -169,7 +170,9 @@ pub(crate) use reverse_traversal::{
     namespace_records_bytes, namespace_records_to_file_root_with_accounting,
 };
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 mod access_read_model;
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 mod access_write_model;

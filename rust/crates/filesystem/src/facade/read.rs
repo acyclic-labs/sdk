@@ -369,7 +369,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 return Ok(FileRangeRead {
                     bytes,
                     logical_owned_bytes: 0,
-                    work: accounting.spent(),
+                    work: accounting.spent()?,
                 });
             }
             self.read_record_range_with_accounting(
@@ -382,9 +382,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .await
         }
         .await;
-        let result = result.map(|mut value| {
-            value.work = accounting.spent();
-            value
+        let result = result.and_then(|mut value| {
+            value.work = accounting.spent()?;
+            Ok(value)
         });
         budget.finish(result, &accounting)
     }
@@ -411,7 +411,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 FileRangeRead {
                     logical_owned_bytes: read.logical_owned_bytes,
                     bytes: read.bytes,
-                    work: accounting.spent(),
+                    work: accounting.spent()?,
                 }
             } else {
                 crate::kernel::read_file_range_with_accounting(
@@ -440,7 +440,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 )
                 .await?;
             }
-            read.work = accounting.spent();
+            read.work = accounting.spent()?;
             Ok(read)
         });
         let retained = result.as_ref().map_or(0, |read| read.logical_owned_bytes);
@@ -528,7 +528,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
             return Ok(FileRangeRead {
                 logical_owned_bytes: read.logical_owned_bytes,
                 bytes: read.bytes,
-                work: accounting.spent(),
+                work: accounting.spent()?,
             });
         }
         crate::kernel::read_file_range_with_accounting(
@@ -577,7 +577,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
                         (Vec::new(), accounting.claim_owned(0, 0)?).into(),
                     )?,
                     logical_owned_bytes: 0,
-                    work: accounting.spent(),
+                    work: accounting.spent()?,
                 });
             }
             self.read_range_with_accounting(ByteRange { offset, length }, accounting, cancellation)

@@ -407,7 +407,7 @@ async fn generation_catalog_single_group_and_quote_use_receipts_without_prefligh
                     (reads, appends + 1),
                     "covered publication issued extra provider requests: native={native}, count={count}, repeat={repeat}"
                 );
-                assert_eq!(work.spent().backend_write_operations, 1);
+                assert_eq!(work.spent().unwrap().backend_write_operations, 1);
                 let last = members.last().ok_or("last member missing")?;
                 let sequence = last.expected.sequence.checked_next()?;
                 let head = Head {

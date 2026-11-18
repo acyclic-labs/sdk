@@ -505,7 +505,7 @@ fn pending_policy_read_wakes_on_either_original_cancellation()
         let (source, objects, _pinned) = fixture(None)?;
         let caller = CancellationToken::new();
         let work = capture_meter(BOUNDARY_BUDGET, &caller)?;
-        let original_bytes = work.live_allocation_bytes();
+        let original_bytes = work.live_allocation_bytes().unwrap();
         let (entered, pending) = mpsc::channel();
         let (release, released) = tokio::sync::oneshot::channel();
         *objects.pause.lock().unwrap() = Some(Pause {
@@ -549,7 +549,7 @@ fn pending_policy_read_wakes_on_either_original_cancellation()
             release.send(()).is_err(),
             "cancelled policy read remained live"
         );
-        assert_eq!(work.live_allocation_bytes(), original_bytes);
+        assert_eq!(work.live_allocation_bytes().unwrap(), original_bytes);
     }
     Ok(())
 }

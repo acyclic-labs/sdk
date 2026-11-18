@@ -30,9 +30,9 @@ Run Windows suites serially. Compile `scripts/graphcoder-conpty.cs` with the
 before running a Windows PTY case. The release graph prepares both hosts and the
 scratch root before selecting terminal cases.
 The Windows process host is the shared native-runtime `acyclic-process-host`
-binary. Build it with `cargo build --locked -p acyclic-native-runtime --bin acyclic-process-host`
+binary. Build it with `bazel build //rust/crates/native-runtime:acyclic-process-host`
 for the target platform, then supply its absolute executable as `E2E_PROCESS_HOST`.
-Use the same source revision as GraphCoder and retain the successful Cargo output
+Use the same source revision as GraphCoder and retain the successful Bazel output
 and executable digest. Changed host source requires a matching build.
 Headless inputs can declare `descendant_custody: true` when their service
 descendants must retire before the next input. This uses the same native owner

@@ -13,7 +13,9 @@ pub(in crate::bindings) fn ts<T: Tsify + Serialize>(value: T) -> Result<Ts<T>, J
     value.into_ts().map_err(js_error)
 }
 
-pub(in crate::bindings) fn browser_work(value: acyclic_fs::WorkCounters) -> BrowserWorkCounters {
+pub(in crate::bindings) fn browser_work(
+    value: acyclic_fs_work::performance::WorkCounters,
+) -> BrowserWorkCounters {
     BrowserWorkCounters {
         authority_records_read: value.authority_records_read,
         authority_records_appended: value.authority_records_appended,
@@ -246,7 +248,7 @@ pub(in crate::bindings) fn wasm_u32(value: &JsValue) -> Result<u32, JsValue> {
     let number = value
         .as_f64()
         .ok_or_else(|| js_error("expected a JavaScript number"))?;
-    acyclic_fs::exact_u32_from_f64(number).map_err(js_error)
+    acyclic_fs_base::numeric::exact_u32_from_f64(number).map_err(js_error)
 }
 
 pub(in crate::bindings) fn closed_error() -> JsValue {
@@ -266,7 +268,7 @@ pub(in crate::bindings) fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, Js
 }
 
 pub(in crate::bindings) fn encode_checkpoint_result(
-    receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs_work::performance::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
     ts(BrowserCheckpointResult {
         generation_id: receipt.value.to_bytes().to_vec(),

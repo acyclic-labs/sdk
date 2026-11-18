@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
+import { isCratesIoPackage, reachable, repositoryRoot as root } from "./policy-core.mjs";
+import { workspacePackages } from "./workspace-model.mjs";
 import { createHash } from "node:crypto";
-import { readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { RegistryPublicationUnobservable, publicationCommand, observePublication } from "./registry-publication.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
 const equivalents = JSON.parse(readFileSync(join(root, "release", "cargo-equivalent-archives.json"), "utf8"));
 
@@ -22,38 +22,58 @@ function run(command, args, options = {}) {
 }
 
 export function localCargoPackages() {
-  const result = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
-  if (result.status !== 0) fail(result.stderr || "cargo metadata failed");
-  const workspace = JSON.parse(result.stdout);
-  const packages = workspace.packages;
-  // Clippy lints every root workspace member a selection builds, not only the
-  // selected one; packages found below are other workspaces' members.
-  const members = new Set(workspace.workspace_members);
-  for (const item of packages) item.workspace_member = members.has(item.id);
-  const known = new Set(packages.map(item => item.name));
-  for (const item of packages) {
-    for (const dependency of item.dependencies) {
-      if (!dependency.path || !dependency.name.startsWith("acyclic-") || known.has(dependency.name)) continue;
-      const local = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1",
-        "--manifest-path", join(dependency.path, "Cargo.toml")]);
-      if (local.status !== 0) fail(local.stderr || "local Cargo metadata failed");
-      for (const candidate of JSON.parse(local.stdout).packages) {
-        if (!known.has(candidate.name)) { known.add(candidate.name); packages.push(candidate); }
-      }
+  const packages = workspacePackages(root);
+  const byDirectory = new Map(packages.map(item => [dirname(item.manifest_path), item]));
+  return [...reachable(packages.filter(item => item.workspace_member), function* (item) {
+    for (const {path} of item.dependencies) if (path) {
+      const local = byDirectory.get(path);
+      if (!local) fail(`missing local publication dependency ${path}`);
+      yield local;
+    }
+  })];
+}
+
+
+// The publication order is a topological order of the publishable local crates:
+// every crate follows the local crates it depends on. Deriving it from Cargo
+// declarations means a new publishable crate cannot be left out of the inventory.
+export function publicationOrder(packages) {
+  const publishable = packages.filter(isCratesIoPackage);
+  const byName = new Map(publishable.map(item => [item.name, item]));
+  const remaining = new Map(publishable.map(item => [item.name, new Set(item.dependencies
+    .filter(dependency => dependency.kind !== "dev" && byName.has(dependency.name))
+    .map(dependency => dependency.name))]));
+  const order = [];
+  while (remaining.size) {
+    const ready = [...remaining]
+      .filter(([, dependencies]) => [...dependencies].every(name => !remaining.has(name)))
+      .map(([name]) => name)
+      .sort();
+    if (!ready.length) fail("Cargo publication order has a cycle");
+    for (const name of ready) {
+      order.push(name);
+      remaining.delete(name);
     }
   }
-  return packages;
+  return order;
+}
+
+function generate() {
+  const order = publicationOrder(localCargoPackages());
+  writeFileSync(join(root, "release", "cargo-crates.json"), `${JSON.stringify(order, null, 2)}\n`);
 }
 
 export function metadata(releaseVersion) {
   const packages = localCargoPackages();
-  const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
+  const publishable = packages.filter(isCratesIoPackage);
   const byName = new Map(publishable.map(item => [item.name, item]));
   if (new Set(order).size !== order.length || order.some(name => !byName.has(name)) || byName.size !== order.length) {
     fail("release/cargo-crates.json must contain every publishable local crate exactly once");
   }
   const unpublishable = publicationDependencyErrors(packages, byName);
   if (unpublishable.length) fail(unpublishable.join("\n"));
+  const missingReadmes = readmeErrors(publishable);
+  if (missingReadmes.length) fail(missingReadmes.join("\n"));
   const position = new Map(order.map((name, index) => [name, index]));
   for (const item of publishable) {
     if (releaseVersion && item.version !== releaseVersion) fail(`${item.name} is not version ${releaseVersion}`);
@@ -65,6 +85,16 @@ export function metadata(releaseVersion) {
     }
   }
   return byName;
+}
+
+// `cargo package` refuses a declared readme that is not in the crate, so the
+// publication inventory checks the file before the release reaches Cargo.
+export function readmeErrors(packages) {
+  return packages.flatMap(item => {
+    if (!item.readme) return [];
+    const path = resolve(dirname(item.manifest_path), item.readme);
+    return existsSync(path) ? [] : [`${item.name} declares missing readme ${item.readme}`];
+  });
 }
 
 // `cargo package` rejects every non-dev local dependency, optional or not, that
@@ -181,10 +211,11 @@ async function publish(sourceSha, releaseVersion) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const [command, sourceSha, releaseVersion] = process.argv.slice(2);
-  if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();
+  if (command === "generate" && sourceSha === undefined && releaseVersion === undefined) generate();
+  else if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();
   else if (command === "check" && sourceSha && releaseVersion) metadata(releaseVersion);
   else if (command === "publish" && sourceSha && releaseVersion) await publish(sourceSha, releaseVersion);
-  else fail("usage: publish-cargo-crates.mjs check [SOURCE_SHA VERSION] | publish SOURCE_SHA VERSION");
+  else fail("usage: publish-cargo-crates.mjs generate | check [SOURCE_SHA VERSION] | publish SOURCE_SHA VERSION");
 }

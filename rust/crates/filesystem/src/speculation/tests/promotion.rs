@@ -310,11 +310,11 @@ fn bounded_outcome_window_and_failure_overflow_are_exact() -> Result<(), Box<dyn
         },
     );
     let overflow = merge_promotion_failure(prior, 0, nested);
-    assert!(matches!(
-        overflow.error,
-        ObjectStoreError::Work(WorkError::Overflow)
-    ));
-    assert_eq!(*overflow.work, prior);
+    assert!(matches!(overflow.error, ObjectStoreError::Missing));
+    assert_eq!(
+        overflow.work(),
+        Err(crate::WorkObservationError::Work(WorkError::Overflow))
+    );
     Ok(())
 }
 
@@ -390,7 +390,7 @@ async fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
     .err()
     .ok_or("stale promotion executed")?;
     assert!(matches!(stale.error, ObjectStoreError::Rejected(_)));
-    assert_eq!(*stale.work, WorkCounters::default());
+    assert_eq!(*stale.work().unwrap(), WorkCounters::default());
     assert_eq!(executor.calls.get(), 0);
 
     let local = fact(object_id, 6, StorageTier::NodeLocal);
@@ -645,7 +645,7 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
         .err()
         .ok_or("mismatched promotion executed")?;
     assert!(matches!(failure.error, ObjectStoreError::Rejected(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -698,7 +698,7 @@ async fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
             maximum: 64,
         })
     ));
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -749,8 +749,8 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
     .err()
     .ok_or("scheduled partition did not fail")?;
     assert!(matches!(failed.error, ObjectStoreError::Rejected(_)));
-    assert_eq!(failed.work.object_bytes_read, 64);
-    assert_eq!(failed.work.backend_write_operations, 0);
+    assert_eq!(failed.work.as_deref().unwrap().object_bytes_read, 64);
+    assert_eq!(failed.work.as_deref().unwrap().backend_write_operations, 0);
 
     (execute_promotion(
         &engine,
@@ -860,7 +860,7 @@ async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
     .err()
     .ok_or("cancelled promotion executed")?;
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert!(
         !AsyncObjectStore::contains(
             executor.destination(),

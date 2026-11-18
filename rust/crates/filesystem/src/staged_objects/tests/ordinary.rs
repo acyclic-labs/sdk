@@ -88,9 +88,9 @@ async fn flush_vector_and_visit_denial_precede_provider_work()
                 crate::WorkError::BudgetExceeded { .. }
             ))
         ));
-        assert_eq!(denied.spent().object_probes, 0);
-        assert_eq!(denied.spent().bytes_hashed, 0);
-        assert_eq!(denied.spent().backend_write_operations, 0);
+        assert_eq!(denied.spent().unwrap().object_probes, 0);
+        assert_eq!(denied.spent().unwrap().bytes_hashed, 0);
+        assert_eq!(denied.spent().unwrap().backend_write_operations, 0);
         assert!(store.index().objects.contains_key(&id));
         let mut retry = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
         assert!(!store.inner().contains(id, &mut retry).await?);
@@ -102,8 +102,8 @@ async fn flush_vector_and_visit_denial_precede_provider_work()
         // Count the four staging passes separately from the provider's real
         // fixed-width index insertion, using the same object and work path.
         assert_eq!(
-            retry.spent().items_examined,
-            direct.spent().items_examined + 4
+            retry.spent().unwrap().items_examined,
+            direct.spent().unwrap().items_examined + 4
         );
         assert_eq!(
             store
@@ -201,7 +201,7 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
                         .read_many(&[durable_request], &mut work)
                         .await?,
                 );
-                let prefix = work.spent();
+                let prefix = work.spent().unwrap();
                 let result = {
                     let read = async {
                         if stored {
@@ -225,10 +225,13 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
                     assert_eq!(&read.bytes, expected);
                 }
                 assert_eq!(values.len() as u64, count);
-                assert_eq!(work.spent().items_returned, prefix.items_returned + count);
+                assert_eq!(
+                    work.spent().unwrap().items_returned,
+                    prefix.items_returned + count
+                );
                 drop(values);
                 drop(allocation);
-                let exhausted = work.spent().items_returned;
+                let exhausted = work.spent().unwrap().items_returned;
                 assert!(matches!(
                     store.read_many(&requests, &mut work).await,
                     Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
@@ -243,9 +246,9 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
                         )
                     ))
                 ));
-                assert_eq!(work.spent().items_returned, exhausted);
+                assert_eq!(work.spent().unwrap().items_returned, exhausted);
                 assert_eq!(
-                    original.live_allocation_bytes(),
+                    original.live_allocation_bytes().unwrap(),
                     NativeMaterializationWork::accounting_state_bytes()
                 );
             }
@@ -269,7 +272,7 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
             .await
             .is_err()
     );
-    assert_eq!(denied.receipt().object_bytes_read, 0);
+    assert_eq!(denied.receipt().unwrap().object_bytes_read, 0);
     token.cancel();
     assert!(
         store
@@ -310,16 +313,16 @@ async fn durable_reads_admit_the_original_frame_before_polling_the_backend()
         &token,
     )
     .map_err(|(cause, _)| cause)?;
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     assert!(
         store
             .read(id, 1024, &mut AuthorityWork::native(&original, &token))
             .await
             .is_err()
     );
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -818,7 +821,7 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
         store.put_many_hashed(&[], &mut empty).await,
         Err(ObjectStoreError::EmptyWriteBatch)
     ));
-    assert_eq!(empty.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(empty.spent().unwrap(), WorkCounters::UNCHARGED);
     assert!(store.index().objects.is_empty());
     assert!(store.spill_io.try_read()?.is_none());
     let object = HashedObject::new(
@@ -1297,7 +1300,10 @@ async fn stale_spilled_pin_and_publication(
     // Drive both real operations instead of treating a held lock as a cycle.
     let (admitted, published) =
         futures::try_join!(admission, publication.map_err(crate::FsError::Object),)?;
-    assert_eq!(accounting.spent().object_bytes_read, bytes.len() as u64);
+    assert_eq!(
+        accounting.spent().unwrap().object_bytes_read,
+        bytes.len() as u64
+    );
     drop(admitted);
     let collecting = collector.await;
     drop(published);

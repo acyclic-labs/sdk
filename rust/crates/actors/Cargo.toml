@@ -26,16 +26,18 @@ test-support = [
     "acyclic-stream/test-support"]
 
 [dependencies]
+acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 loom = { version = "0.7.3", features = ["futures"], optional = true }
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 uuid.workspace = true
 bytes = { workspace = true, features = ["serde"] }
 futures.workspace = true
 http.workspace = true
-acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc-metadata"] }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true
@@ -55,6 +57,7 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
 # Actor sockets are channels of the in-process session protocol.
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 tokio = { version = "1.48.0", default-features = false, features = ["time"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
@@ -65,11 +68,13 @@ tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "wasm"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 tonic = { workspace = true, features = ["codegen"] }
 url = "=2.5.8"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "wasm", "conformance"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 wasm-bindgen-test = "=0.3.67"
 
 [dev-dependencies]
@@ -80,6 +85,7 @@ acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 http-body-util = "0.1.5"
 async-trait.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance", "test-support"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

@@ -3,7 +3,7 @@
 /// codes are refused rather than replaced with another cause.
 /// With `grpc`, servers must use `tonic::Status::from(error)` (owned or borrowed)
 /// for the canonical mapping, which preserves retained member refusal diagnostics.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[derive(Clone, Debug, Error)]
 pub enum StreamError {
     /// Peer violated the response contract; retrying the connection cannot repair it.
     #[error("invalid stream response")]

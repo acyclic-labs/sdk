@@ -34,7 +34,7 @@ impl HttpObjects {
             };
             let url = self
                 .endpoint
-                .join("blobs/availability")
+                .join(crate::ObjectsMethod::Availability.http_route())
                 .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
             let response = self
                 .transport

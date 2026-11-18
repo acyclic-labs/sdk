@@ -21,7 +21,7 @@ async fn lookup_copies_only_returned_receipts() -> Result<(), Box<dyn std::error
     let copies = COPIES.replace(None).unwrap();
     let (lookup, allocation) = result?;
     assert!(lookup.record.is_some());
-    assert_eq!(lookup.work, accounting.spent());
+    assert_eq!(lookup.work, accounting.spent().unwrap());
     // Kernel, current checkout, then completed outer lookup: no discarded copies.
     assert_eq!(copies, 3, "lookup made a discarded accounting snapshot");
     drop(allocation);

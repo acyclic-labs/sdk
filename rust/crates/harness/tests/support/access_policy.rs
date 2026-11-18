@@ -1,6 +1,9 @@
 use acyclic_fs::access::Policy;
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget, Workspace};
+use {
+    acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Workspace},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 pub async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
@@ -26,7 +29,7 @@ pub async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await?;
     checkout
         .commit(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,
@@ -34,8 +37,11 @@ pub async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_: WorkBudget| {
-                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                std::future::ready(Ok::<
+                    _,
+                    acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>,
+                >(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: Default::default(),
                     },

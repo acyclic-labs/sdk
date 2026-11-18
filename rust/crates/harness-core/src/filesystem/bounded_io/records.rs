@@ -14,7 +14,7 @@ pub trait PreparationRecord: serde::de::DeserializeOwned + crate::HeapLayout {
         crate::executor::json::preparation_serde_diagnostic_label_bytes()
     }
     fn json_value_schema() -> &'static Schema {
-        Schema::None
+        Schema::NONE
     }
 }
 
@@ -25,7 +25,7 @@ pub trait UploadRecord: serde::de::DeserializeOwned + crate::HeapLayout {
         crate::executor::json::preparation_serde_diagnostic_label_bytes()
     }
     fn json_value_schema() -> &'static Schema {
-        Schema::None
+        Schema::NONE
     }
 }
 
@@ -45,17 +45,17 @@ macro_rules! records {
     ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
-    crate::Capabilities => None,
-    Vec<crate::tool::ToolDefinition> => ToolDefinitions,
-    crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
-    crate::core::ExtensionConfiguration => None,
-    FileRef => None, Vec<crate::conversation::Attachment> => None,
-    crate::conversation::FilePathSelection => None,
-    crate::conversation::PathSelection => None,
+    crate::Capabilities => NONE,
+    Vec<crate::tool::ToolDefinition> => TOOLS,
+    crate::model::ModelRequest => MODEL_REQUEST, crate::model::ModelContent => MODEL_CONTENT, crate::model::ModelContentPart => MODEL_CONTENT_PART,
+    crate::core::ExtensionConfiguration => NONE,
+    FileRef => NONE, Vec<crate::conversation::Attachment> => NONE,
+    crate::conversation::FilePathSelection => NONE,
+    crate::conversation::PathSelection => NONE,
 );
 impl PreparationRecord for crate::executor::ResponseProjection {
     fn json_value_schema() -> &'static Schema {
-        Schema::ResponseProjection
+        Schema::RESPONSE_PROJECTION
     }
 
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
@@ -95,7 +95,7 @@ impl PreparationRecord for crate::executor::ResponseProjection {
 }
 impl PreparationRecord for crate::model::ModelEvent {
     fn json_value_schema() -> &'static Schema {
-        Schema::ModelEvent
+        Schema::MODEL_EVENT
     }
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         self.retained_owned_bytes().map(Some)
@@ -103,7 +103,7 @@ impl PreparationRecord for crate::model::ModelEvent {
 }
 impl PreparationRecord for crate::context::Context {
     fn json_value_schema() -> &'static Schema {
-        Schema::Context
+        Schema::CONTEXT
     }
 
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
@@ -174,7 +174,7 @@ impl PreparationRecord for acyclic_fs::access::Policy {}
 impl PreparationRecord for acyclic_fs::access::Capability {}
 impl PreparationRecord for crate::Outcome<serde_json::Value> {
     fn json_value_schema() -> &'static Schema {
-        Schema::TaskOutcome
+        Schema::TASK_OUTCOME
     }
 }
 impl PreparationRecord for serde_json::Value {
@@ -182,7 +182,7 @@ impl PreparationRecord for serde_json::Value {
         0
     }
     fn json_value_schema() -> &'static Schema {
-        Schema::Root
+        Schema::ROOT
     }
 }
 impl UploadRecord for FileRef {

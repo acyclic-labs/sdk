@@ -7,15 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
+build = "build.rs"
 
 [features]
 wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:tsify", "dep:wasm-bindgen"]
+
+[build-dependencies]
+serde_json.workspace = true
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 base64 = { version = "=0.22.1" }
 blake3 = { workspace = true }
 bytes.workspace = true
@@ -29,9 +34,13 @@ tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 url = "=2.5.8"
 
+[dev-dependencies]
+proptest.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-markdown = { path = "../markdown" }
 acyclic-stream = { path = "../stream", default-features = false, features = ["test-support"] }
+acyclic-stream-wire = { path = "../stream-wire" }
 acyclic-test-support = { path = "../test-support" }
 tempfile = "3.27.0"
 tokio = { version = "1.48.0", features = ["macros", "rt", "time"] }

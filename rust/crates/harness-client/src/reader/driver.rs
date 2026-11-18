@@ -70,7 +70,7 @@ impl Stream for FollowSource {
 pub struct Driver<P: ?Sized> {
     identity: Arc<()>,
     reader: Option<Arc<()>>,
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     ops: FuturesUnordered<LocalBoxFuture<'static, Option<(u64, Outcome)>>>,
     aborts: BTreeMap<u64, AbortHandle>,
     opening: FuturesUnordered<Opening>,
@@ -88,7 +88,7 @@ pub struct Driver<P: ?Sized> {
 
 impl<P: StreamProvider + ?Sized> Driver<P> {
     /// A driver over one provider session.
-    pub fn new(provider: Arc<P>) -> Self {
+    pub fn new(provider: acyclic_stream::ProviderOwner<P>) -> Self {
         Self {
             identity: Arc::new(()),
             reader: None,
@@ -243,7 +243,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         let id = self.next_follow;
         self.next_follow = id.checked_add(1).ok_or(StreamError::Capacity)?;
         self.ready.register(
-            acyclic_stream::wire::SessionChannel {
+            acyclic_stream_wire::wire::SessionChannel {
                 channel_id: id,
                 generation: 0,
             },
@@ -260,7 +260,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         Ok(())
     }
     fn start(&mut self, op: Op, access: super::Access) {
-        let provider = Arc::clone(&self.provider);
+        let provider = self.provider.clone();
         let id = op.id();
         let (abort, registration) = AbortHandle::new_pair();
         self.aborts.insert(id, abort);
@@ -373,7 +373,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             self.pending.insert(path.clone(), (from, abort));
             let anchor = reader.follow_anchor(&path, from);
             let observed = reader.cache().observation(&path);
-            let provider = Arc::clone(&self.provider);
+            let provider = self.provider.clone();
             let access = reader.cache.access.clone();
             let open = async move {
                 let opened = async {
@@ -749,10 +749,15 @@ mod tests {
                 );
                 assert_eq!(reader.cache.record(&path, u64::MAX - 2).is_none(), invalid);
                 assert!(reader.cache.record(&path, u64::MAX).is_none());
-                assert_eq!(
-                    reader.issues.get(&path),
-                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
-                );
+                assert_eq!(reader.issues.get(&path).is_some(), invalid);
+                if invalid {
+                    assert!(matches!(
+                        reader.issues.get(&path),
+                        Some(ReadIssue::Refused(error))
+                            if error.category()
+                                == acyclic_stream::StreamCategory::InvalidResponse
+                    ));
+                }
                 if !invalid {
                     assert_eq!(
                         reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
@@ -801,10 +806,15 @@ mod tests {
                     if invalid { None } else { Some(u64::MAX) }
                 );
                 assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
-                assert_eq!(
-                    reader.issues.get(&parent),
-                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
-                );
+                assert_eq!(reader.issues.get(&parent).is_some(), invalid);
+                if invalid {
+                    assert!(matches!(
+                        reader.issues.get(&parent),
+                        Some(ReadIssue::Refused(error))
+                            if error.category()
+                                == acyclic_stream::StreamCategory::InvalidResponse
+                    ));
+                }
                 reader.plan([(listing.clone(), Priority::Visible)]);
                 assert!(reader.poll(1).is_empty());
             }
@@ -833,7 +843,10 @@ mod tests {
                 original.value.as_slice().as_ptr()
             );
             let (_, accepted, record) = source.next().await.unwrap();
-            assert_eq!(record.unwrap_err(), StreamError::InvalidResponse);
+            assert_eq!(
+                record.unwrap_err().category(),
+                acyclic_stream::StreamCategory::InvalidResponse
+            );
             assert_eq!(accepted, u64::MAX);
             assert_eq!(source.position, u64::MAX);
 
@@ -893,10 +906,11 @@ mod tests {
             assert!(driver.follows.is_empty());
             assert!(driver.waiting.is_empty(), "refused source was requeued");
             assert_eq!(reader.next_deadline(), None);
-            assert_eq!(
+            assert!(matches!(
                 reader.issues.get(&path),
-                Some(&ReadIssue::Refused(StreamError::InvalidResponse))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::InvalidResponse
+            ));
             assert_eq!(
                 reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
                 original.value.as_slice().as_ptr()
@@ -948,10 +962,11 @@ mod tests {
                 vec![&path],
                 "a refused read must become observable rather than stay pending"
             );
-            assert_eq!(
+            assert!(matches!(
                 reader.issue(&path),
-                Some(&ReadIssue::Refused(StreamError::NotFound))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::NotFound
+            ));
             assert!(std::ptr::eq(
                 reader.issue(&path).unwrap(),
                 reader.issues.get(&path).unwrap()
@@ -1004,10 +1019,11 @@ mod tests {
                 b"unrelated committed row",
                 "a definite refusal cannot delay another stream"
             );
-            assert_eq!(
+            assert!(matches!(
                 reader.issue(&path),
-                Some(&ReadIssue::Refused(StreamError::NotFound))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::NotFound
+            ));
 
             provider
                 .append(AppendRequest {
@@ -1098,25 +1114,12 @@ mod tests {
             };
             reader.begin_frame(0);
             reader.plan(projections.iter().map(want));
-            let ops = reader.poll(0);
-            assert_eq!(
-                ops.len(),
-                2,
-                "one original fetch per tail projection must serve every admitted witness"
-            );
-            for flight in reader.inflight.values() {
-                assert!(
-                    reader
-                        .demand
-                        .get(&flight.key)
-                        .unwrap()
-                        .paging
-                        .witnesses
-                        .is_empty()
-                );
-                assert!(!flight.paging.witnesses.is_empty());
-            }
-            for op in ops.into_iter().rev() {
+            // The first page establishes the hierarchy cut before another
+            // projection can be admitted. Each fetch still serves every
+            // original witness for its tail.
+            for expected in [&alpha, &beta] {
+                let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
+                assert!(matches!(&op, Op::Children { tail: Some(tail), .. } if tail == expected));
                 let id = op.id();
                 reader.complete(id, execute(&provider, op).await, 0);
             }

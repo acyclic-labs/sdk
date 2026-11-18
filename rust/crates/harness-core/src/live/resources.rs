@@ -241,7 +241,7 @@ pub struct Counters<'a> {
     pub model: Option<&'a ModelUsageTotals>,
     /// Original filesystem operation work when its producer supplies coverage.
     /// Peak allocation is a peak, never an additive subtree byte total.
-    pub work: Option<&'a acyclic_fs::WorkCounters>,
+    pub work: Option<&'a acyclic_fs_work::performance::WorkCounters>,
     /// Original authenticated Machine interval receipt, without inferred cost.
     pub machine: Option<&'a acyclic_machines::UsageReceipt>,
 }

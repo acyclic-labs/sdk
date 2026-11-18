@@ -16,14 +16,14 @@ extract_cargo_lints(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "//typescript/packages/stream/fuzz:driver.rs",
         "latency.rs",
         "queue.rs",
         "schedules.rs",
         "session_model.rs",
+        "tests/main.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -34,6 +34,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -43,10 +44,7 @@ rust_test(
         "@sdk_crates//serde_json-1.0.154",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:typescript/packages/stream/test/session-deadline-model-driver.ts",
-        "//:typescript/packages/stream/test/session-model-driver.ts",
-        "//:typescript/packages/stream/test/session-queue-model-driver.ts",
-        "//:typescript/packages/stream/test/session-queue-work-driver.ts",
+        "//:wasm_stream_node_modules",
     ],
     tags = ["manual"],
 )
@@ -55,7 +53,22 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-stream-typescript-models::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH","BUN_INSTALL","HOME"],
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-stream-typescript-models::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    env_inherit = ["PATH","BUN_INSTALL","HOME"],
+    tags = ["manual"],
 )
 
 filegroup(
@@ -63,3 +76,6 @@ filegroup(
     srcs = glob(["**/*.rs"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])

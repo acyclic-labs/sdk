@@ -14,7 +14,9 @@ fn closed_spawn_arguments_preserve_original_credit_and_unwind() -> io::Result<()
         return Ok(());
     }
     let cwd = std::env::current_dir()?;
-    let search = crate::ExecutableSearch::from_environment(&cwd, |key| std::env::var_os(key));
+    let search = acyclic_executable_search::ExecutableSearch::from_environment(&cwd, |key| {
+        std::env::var_os(key)
+    });
     let executable = search.resolve_native("true")?;
     let program = CString::new(executable.as_os_str().as_bytes()).map_err(io::Error::other)?;
     for cut in 0..3 {
@@ -208,8 +210,8 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
         killed.call_once(|| {
             // The program leads no group: the tree's group, which the unreaped
             // warden's PID reserves, holds the program and never the warden.
-            // SAFETY: a signal to the tree's own process group.
             assert_eq!(
+                // SAFETY: a signal to the tree's own process group.
                 unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) },
                 0
             );
@@ -1474,11 +1476,11 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
 #[test]
 fn stalled_streaming_input_preserves_deadline_and_cleanup() -> io::Result<()> {
     use super::clock::tests::{HOUR, seeded, unscoped};
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = tempfile::tempdir()?;
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
-    let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
-    stderr_ready(&mut tree).expect("original stalled input readiness event");
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    stderr_ready(&mut tree)?;
     let (reached, second) = tokio::sync::oneshot::channel();
     let (advanced, resume) = std::sync::mpsc::channel();
     let (tree, checks, failure) = seeded(async move |schedule: &crate::testing::Schedule| {

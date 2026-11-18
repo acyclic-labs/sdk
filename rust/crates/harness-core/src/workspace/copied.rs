@@ -5,15 +5,18 @@ use crate::{
     Error, OperationId, Result, filesystem::WorkspaceAccess, machines::MachinesHost,
     resources::SandboxRef,
 };
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, TransactionCommit,
-    WorkBudget, Workspace,
-};
 use acyclic_machines::{
     ExecCommand, FileAccess, FileRead, FileWrite, OperatingSystem, read_file_at, write_file_at,
 };
 use acyclic_stream::BoxProviderFuture;
 use std::{collections::BTreeMap, io::Read as _, sync::Arc};
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, TransactionCommit,
+        Workspace,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 const WORK: WorkBudget = WorkBudget::UNBOUNDED;
 
@@ -302,8 +305,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CopiedWorkspace for Copy<A, O>
                             .map_err(|e| Error::from(e.error))?;
                     }
                     Entry::File(bytes, mode) => {
-                        let metadata = acyclic_fs::kernel::FileMetadata {
-                            posix_mode: acyclic_fs::kernel::MetadataField::Value(mode),
+                        let metadata = acyclic_fs_format::metadata::FileMetadata {
+                            posix_mode: acyclic_fs_format::metadata::MetadataField::Value(mode),
                             ..Default::default()
                         };
                         transaction
@@ -330,12 +333,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CopiedWorkspace for Copy<A, O>
                             .require(&self.workspace)
                             .await
                             .map_err(|error| {
-                                acyclic_fs::OperationFailure::new(error, Default::default())
+                                acyclic_fs_work::performance::OperationFailure::new(
+                                    error,
+                                    Default::default(),
+                                )
                             })?;
-                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: Default::default(),
-                        })
+                        Ok::<_, acyclic_fs_work::performance::OperationFailure<Error>>(
+                            acyclic_fs_work::performance::OperationReceipt {
+                                value: (),
+                                work: Default::default(),
+                            },
+                        )
                     },
                 )
                 .await

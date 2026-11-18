@@ -285,6 +285,10 @@ proptest! {
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
                 0x0005_0000 | libc::EOPNOTSUPP as u32);
         }
+        for call in [libc::SYS_timer_create, libc::SYS_timer_settime, libc::SYS_timer_gettime,
+            libc::SYS_timer_getoverrun, libc::SYS_timer_delete] {
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, ALLOW);
+        }
         for call in [libc::SYS_shmget, libc::SYS_shmat, libc::SYS_shmctl,
             libc::SYS_msgget, libc::SYS_msgsnd, libc::SYS_msgrcv, libc::SYS_msgctl,
             libc::SYS_semget, libc::SYS_semop, libc::SYS_semctl,

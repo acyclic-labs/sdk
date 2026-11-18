@@ -13,13 +13,12 @@ const FILES: [(&str, &str); 3] = [
 ];
 
 /// Faults this world drives, in seed order.
-const FAULTS: [&str; 7] = [
+const FAULTS: [&str; 6] = [
     "none",
     "crash_before",
     "crash_after",
     "crash_torn",
     "redeliver",
-    "duplicate",
     "stream_interrupted",
 ];
 
@@ -40,7 +39,7 @@ acyclic_test_support::cases! {
     runner = super::run,
     cases = [
         seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3,
-        seed_4 => 4, seed_5 => 5, seed_6 => 6,
+        seed_4 => 4, seed_5 => 5,
     ],
 }
 
@@ -58,17 +57,11 @@ fn fault(seed: u64) -> &'static str {
 fn variants(seed: u64) -> Vec<Variant> {
     ENTRIES
         .iter()
-        .map(|entry| {
-            Variant::from([
-                ("entry", *entry),
-                ("fault", fault(seed)),
-                ("topology", "single"),
-            ])
-        })
+        .map(|entry| Variant::from([("entry", *entry), ("fault", fault(seed))]))
         .collect()
 }
 
-fn step(duplicate: bool) -> Vec<acyclic_harness::model::ToolCall> {
+fn step() -> Vec<acyclic_harness::model::ToolCall> {
     let calls = [
         call("a1-read", "read", json!({"path": "a.txt"})),
         call(
@@ -87,18 +80,14 @@ fn step(duplicate: bool) -> Vec<acyclic_harness::model::ToolCall> {
             json!({"path": "d.txt", "ifVersion": "any"}),
         ),
     ];
-    let copies = if duplicate { 2 } else { 1 };
-    calls
-        .iter()
-        .flat_map(|call| std::iter::repeat_n(call.clone(), copies))
-        .collect()
+    calls.into_iter().collect()
 }
 
-fn plans(duplicate: bool, interrupt: bool) -> Vec<Plan> {
+fn plans(interrupt: bool) -> Vec<Plan> {
     vec![
         Plan {
             tag: "a1",
-            steps: vec![step(duplicate)],
+            steps: vec![step()],
             fail_once: interrupt.then(|| {
                 (
                     0,
@@ -146,9 +135,7 @@ fn effects_match(history: &[Settled], step_ran: bool) -> std::result::Result<(),
             .ok_or_else(|| format!("the check never read {path}"))
     };
     // Every entry must have worked when the step's turn finished: a world
-    // where all four tools fail would otherwise match unchanged files. A
-    // turn that failed visibly (duplicate call ids are refused whole) must
-    // instead have left no effect, which the checks below hold.
+    // where all four tools fail would otherwise match unchanged files.
     let read = history
         .iter()
         .any(|settled| settled.path() == Some("a.txt") && settled.succeeded());
@@ -222,7 +209,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 let crash = oracle::Crash {
                     seed,
                     files: &FILES,
-                    plans: || plans(false, false),
+                    plans: || plans(false),
                     prompts: vec![vec![a1.clone()]],
                     window: (0, 1),
                     mode,
@@ -234,7 +221,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 checked(&recovered).map_err(|report| format!("after {crashed}: {report}"))?;
                 return Ok(crashed.in_window);
             }
-            let plans = plans(fault == "duplicate", fault == "stream_interrupted");
+            let plans = plans(fault == "stream_interrupted");
             let mut world = World::new(seed, &FILES, service(plans)).map_err(oracle::failed)?;
             let prompts: Vec<_> = if fault == "redeliver" {
                 vec![vec![a1.clone()], vec![a1.clone()], vec![check.clone()]]

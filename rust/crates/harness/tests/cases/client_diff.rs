@@ -684,7 +684,10 @@ impl Fixture {
         &self,
         path: &str,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        use acyclic_fs::{CancellationToken, WorkBudget, access::Policy};
+        use {
+            acyclic_fs::{CancellationToken, access::Policy},
+            acyclic_fs_work::performance::WorkBudget,
+        };
         let fixture = self;
         let volume = &self.root.volume;
         let cancel = CancellationToken::new();
@@ -721,7 +724,7 @@ impl Fixture {
             .await?;
         let committed = checkout
             .commit::<acyclic_fs::FsError, _, _>(
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 None,
                 None,
                 None,
@@ -729,9 +732,9 @@ impl Fixture {
                 work,
                 &cancel,
                 |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                         value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                        work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     }))
                 },
             )
@@ -811,7 +814,10 @@ async fn live_diff_queries_fence_frontiers_and_cached_patches_against_policy_cha
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn workspace_diff_admits_range_restoration_before_reading_content() -> Result<()> {
-    use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkspaceError};
+    use {
+        acyclic_fs::{CancellationToken, PublicationPermit, WorkspaceError},
+        acyclic_fs_work::performance::WorkBudget,
+    };
     let fixture = Fixture::new().await?;
     let volume = &fixture.root.volume;
     let cancel = CancellationToken::new();
@@ -865,7 +871,7 @@ async fn workspace_diff_admits_range_restoration_before_reading_content() -> Res
                 work,
                 &cancel,
                 |_| async {
-                    Ok(acyclic_fs::OperationReceipt {
+                    Ok(acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: Default::default(),
                     })

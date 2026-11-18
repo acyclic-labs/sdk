@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_owner/agents.rs
-+++ b/rust/crates/harness/src/local/host_owner/agents.rs
+--- a/rust/crates/harness-local/src/local/host_owner/agents.rs
++++ b/rust/crates/harness-local/src/local/host_owner/agents.rs
 @@ -527,6 +527,9 @@
      super::super::host_workspace::child_reference(reference)?;
 +    if reference.len() > 128 {

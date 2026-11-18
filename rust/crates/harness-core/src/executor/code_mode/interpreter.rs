@@ -524,7 +524,7 @@ mod tests {
                                 let before_file =
                                     context.read_tool_path("recovery.txt", None, None).await?.0;
                                 let work = acyclic_fs::NativeMaterializationWork::new(
-                                    acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                                    acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
                                     &acyclic_fs::CancellationToken::new(),
                                 )
                                 .map_err(|(cause, work)| crate::Error::NativeConstruction {

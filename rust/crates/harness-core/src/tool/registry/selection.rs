@@ -247,7 +247,7 @@ impl ToolRegistry {
         if revision.is_none()
             && let Some(io) = io
         {
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 items_examined: name.len() as u64,
                 ..Default::default()
             })?;

@@ -96,7 +96,7 @@ fn validated_addresses(
     for address in addresses {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 items_examined: 1,
                 ..Default::default()
             })?;

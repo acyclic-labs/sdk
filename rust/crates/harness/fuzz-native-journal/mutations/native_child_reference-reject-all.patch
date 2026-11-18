@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_workspace.rs
-+++ b/rust/crates/harness/src/local/host_workspace.rs
+--- a/rust/crates/harness-local/src/local/host_workspace.rs
++++ b/rust/crates/harness-local/src/local/host_workspace.rs
 @@ -19,9 +19,3 @@
  pub(crate) fn child_reference(reference: &str) -> Result<()> {
 -    let portable = !reference.is_empty()

@@ -5,7 +5,6 @@ use crate::conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind};
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
-    pub(in crate::filesystem) exact_file: Option<FileRef>,
     pub(in crate::filesystem) maximum_bytes: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_metadata: Option<Arc<acyclic_fs::NativeAllocation>>,
@@ -78,7 +77,6 @@ impl<A, O> FilesystemContentVerifier<A, O> {
             Ok(Arc::new(Self {
                 host,
                 authority: Arc::new(authority),
-                exact_file: None,
                 maximum_bytes,
                 #[cfg(not(target_arch = "wasm32"))]
                 _native_metadata,
@@ -101,7 +99,6 @@ where
         crate::conversation::BoundedContentFuture<'a, crate::conversation::CapturedContent<'a>>,
     > {
         crate::conversation::BoundedContentFuture::new(access.io, || async move {
-            self.verify_exact_file(None, access.io)?;
             let mut history = access.io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(),
@@ -128,13 +125,6 @@ where
     }
 
     fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
-        if self
-            .exact_file
-            .as_ref()
-            .is_some_and(|file| file.volume() != volume)
-        {
-            return Ok(false);
-        }
         crate::model::charge_items(io, 1)?;
         let mut history = io.map(PreparationIo::history_io);
         volume.validate(
@@ -266,7 +256,6 @@ where
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_exact_file(None, io)?;
             if maximum_bytes == 0
                 || self
                     .maximum_bytes
@@ -336,7 +325,6 @@ where
                     &unmeasured
                 }
             };
-            self.verify_exact_file(None, Some(ledger))?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = ledger.original_native_work() {
                 self.supports_native_directory_list(volume, work)?;
@@ -393,7 +381,6 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<crate::context::DiffPublication>>>
     {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_exact_file(None, io)?;
             let unmeasured;
             let io = if let Some(io) = io {
                 io
@@ -449,7 +436,6 @@ where
     {
         let crate::conversation::ContentAccess { ceiling, io } = access;
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_exact_file(None, io)?;
             let mut history = io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(),
@@ -583,7 +569,6 @@ where
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("generation-bound range", range.offset, range.length));
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_exact_file(None, io)?;
             let mut history = io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(),
@@ -663,7 +648,6 @@ where
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_exact_file(None, io)?;
             let mut history = io.map(PreparationIo::history_io);
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(),
@@ -706,25 +690,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(in crate::filesystem) fn verify_exact_file(
-        &self,
-        file: Option<&FileRef>,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-        acyclic_differential::record(("content creation verify", 0u64));
-        if let Some(bound) = &self.exact_file
-            && file != Some(bound)
-        {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "created reference handle names another immutable file",
-            ));
-        }
-        Ok(())
-    }
-
     /// Selects exactly the file `reference` names: the cut its version names
     /// (authored or private) and Read access to its path there. A pinned
     /// reference is its own identity, so no reader re-derives another
@@ -736,16 +701,9 @@ where
         ceiling: Option<&crate::Capabilities>,
         io: &'a PreparationIo,
     ) -> Result<crate::filesystem::access::ReadObservation<'a, A, O>> {
-        self.verify_exact_file(Some(reference), Some(io))?;
         self.authority.recheck(&mut Some(&mut io.history_io()))?;
         self.host
-            .read_selection_with_access(
-                self.authority.scope(),
-                reference,
-                self.exact_file.is_some(),
-                ceiling,
-                io,
-            )
+            .read_selection_with_access(self.authority.scope(), reference, false, ceiling, io)
             .await
     }
 
@@ -801,7 +759,6 @@ where
             ceiling,
         } = options;
 
-        self.verify_exact_file(None, None)?;
         let grant = ContentGrant::verify_directory_read(
             self.authority.verifier(),
             self.authority.scope(),
@@ -832,7 +789,6 @@ where
         base: &GenerationRef,
         current: &GenerationRef,
     ) -> Result<crate::context::DiffPublication> {
-        self.verify_exact_file(None, None)?;
         let grant = ContentGrant::verify_directory_read(
             self.authority.verifier(),
             self.authority.scope(),
@@ -856,7 +812,6 @@ where
     ) -> impl futures::Stream<Item = Result<Option<crate::context::DiffPath>>> + 'a {
         async_stream::try_stream! {
             use futures::TryStreamExt as _;
-            self.verify_exact_file(None, None)?;
             let grant = ContentGrant::verify_directory_read(
                 self.authority.verifier(), self.authority.scope(), volume, "", &mut None,
             )?;
@@ -877,7 +832,6 @@ where
         (base, current): (&GenerationRef, &GenerationRef),
         paths: impl IntoIterator<Item = (&'path str, crate::context::DiffKind)>,
     ) -> Result<bool> {
-        self.verify_exact_file(None, None)?;
         let grant = ContentGrant::verify_directory_read(
             self.authority.verifier(),
             self.authority.scope(),
@@ -935,7 +889,6 @@ where
     > {
         self.supports_native_directory_list(volume, work)?;
         acyclic_fs::NativeFutureBundle::new(work, || async move {
-            self.verify_exact_file(None, Some(&PreparationIo::from_native_work(work)?))?;
             let mut observer = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,
             );

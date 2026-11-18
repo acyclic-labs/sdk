@@ -92,8 +92,8 @@ async fn original_path_frame_refusal_preserves_successful_prefix_without_backend
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let live_before = original.live_allocation_bytes();
+    let before = original.receipt().unwrap();
+    let live_before = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let failure = lookup_path_async_with_accounting(
         &store,
@@ -117,15 +117,15 @@ async fn original_path_frame_refusal_preserves_successful_prefix_without_backend
         ))
     ));
     assert_eq!(
-        original.receipt().allocation_operations,
+        original.receipt().unwrap().allocation_operations,
         before.allocation_operations
     );
     assert_eq!(
-        original.receipt().backend_read_operations,
+        original.receipt().unwrap().backend_read_operations,
         before.backend_read_operations
     );
-    assert!(original.receipt().items_examined > before.items_examined);
-    assert_eq!(original.live_allocation_bytes(), live_before);
+    assert!(original.receipt().unwrap().items_examined > before.items_examined);
+    assert_eq!(original.live_allocation_bytes().unwrap(), live_before);
     Ok(())
 }
 
@@ -136,23 +136,23 @@ fn original_path_item_effect_runs_without_root_loan_and_survives_late_cancellati
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let inspected = examine_item(&mut accounting, None, || original.receipt())?;
+    let inspected = examine_item(&mut accounting, None, || original.receipt().unwrap())?;
     assert_eq!(
         inspected, before,
         "the actual inspection precedes the item completion"
     );
     let mut expected = before;
     expected.items_examined += 1;
-    assert_eq!(original.receipt(), expected);
+    assert_eq!(original.receipt().unwrap(), expected);
     let failure = examine_item(&mut accounting, None, || cancellation.cancel());
     assert!(
         failure.is_err(),
         "late cancellation refuses only after recording the actual item"
     );
     expected.items_examined += 1;
-    assert_eq!(original.receipt(), expected);
+    assert_eq!(original.receipt().unwrap(), expected);
     Ok(())
 }
 
@@ -163,8 +163,8 @@ fn original_path_slot_reserve_failure_keeps_actual_cause_and_retires_only_claime
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let live_before = original.live_allocation_bytes();
+    let before = original.receipt().unwrap();
+    let live_before = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let count = (isize::MAX as usize)
         .checked_add(1)
@@ -181,7 +181,7 @@ fn original_path_slot_reserve_failure_keeps_actual_cause_and_retires_only_claime
     expected.peak_allocation_bytes = expected
         .peak_allocation_bytes
         .max(live_before + count as u64);
-    assert_eq!(original.receipt(), expected);
-    assert_eq!(original.live_allocation_bytes(), live_before);
+    assert_eq!(original.receipt().unwrap(), expected);
+    assert_eq!(original.live_allocation_bytes().unwrap(), live_before);
     Ok(())
 }

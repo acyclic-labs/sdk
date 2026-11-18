@@ -21,12 +21,11 @@ infrastructure such as multi-tenant regional control planes, distributed
 replication and consensus, internal administration, billing, and private
 qualification evidence.
 
-Run all implemented checks:
+Run the default workspace checks:
 
 ```sh
 node scripts/qualify-rustfmt.mjs
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-features --locked
+bazel test --@rules_rust//rust/settings:extra_rustc_flag=-Dwarnings //...
 bun install --frozen-lockfile
 bun run check
 bun test

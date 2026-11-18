@@ -118,7 +118,7 @@ pub(super) fn check_preview(
         let decoded = io.decode_seed(
             seed,
             text.as_bytes(),
-            crate::executor::json::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::NONE,
             super::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES,
             crate::wire::ErrorCode::Invalid,
         )?;
@@ -143,7 +143,7 @@ pub(super) fn check_preview(
             maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
         },
         None,
-        Some(crate::executor::json::JsonValueSchema::None),
+        Some(crate::executor::json::JsonValueSchema::NONE),
         &mut |_| Ok(()),
     )?;
     if valid_preview(&decoded) {
@@ -440,7 +440,8 @@ mod checks {
         }]});
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();

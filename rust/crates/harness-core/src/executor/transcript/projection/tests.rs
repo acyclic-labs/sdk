@@ -77,7 +77,8 @@ async fn segmented_projection_recovers_accounting_and_checkpoint_with_original_c
         .await?;
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = if native {
@@ -249,7 +250,7 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
             ),
         };
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 16 * 1024 * 1024);
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         let log_length = || {
             std::fs::metadata(directory.path().join("log"))
@@ -267,7 +268,7 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
             Some(&io),
         )
         .await?;
-        let written = io.receipt().object_bytes_written;
+        let written = io.receipt()?.object_bytes_written;
         assert_eq!(io.owned_bytes()?, reference.logical_owned_bytes()?);
         let log_written = log_length()? - before;
         let new_bytes =
@@ -309,12 +310,12 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
             ResponseProjection::continuation_metadata(journal, &reference, Some(&metadata_io))
                 .await?;
         assert!(metadata.context.messages.is_empty());
-        let read = metadata_io.receipt().object_bytes_read;
+        let read = metadata_io.receipt()?.object_bytes_read;
         assert!(
             read > 0 && read <= 2 * *first_metadata_read.get_or_insert(read),
             "history={history} metadata_read={read}"
         );
-        let peak = metadata_io.receipt().peak_allocation_bytes;
+        let peak = metadata_io.receipt()?.peak_allocation_bytes;
         assert!(
             peak <= *metadata_peak.get_or_insert(peak) + 4096,
             "history={history} metadata_peak={peak}"

@@ -75,11 +75,6 @@ pub mod wire;
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn valid_token(token: &str) -> bool {
-    acyclic_auth::credential::valid_credential(token)
-}
-
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("deployNamespace", "v1/actors/namespaces/deploy"),
@@ -164,26 +159,27 @@ mod tests {
             idempotency_key: "delete-a".into(),
         };
         assert_eq!(validate_delete(&valid), Ok(()));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let scoped = wire::DeleteAllRequest {
+                account_id: vec![1; 65_536],
+                ..valid.clone()
+            };
+            let cost = acyclic_test_support::measure(|| validate_delete(&scoped).unwrap());
+            assert_eq!(cost.count_total, 0);
+        }
         let semantic = domain::DeleteAllRequest::try_from(valid.clone()).expect("valid delete");
-        assert_eq!(semantic.actor_id().as_str(), "actor-a");
-        assert_eq!(semantic.idempotency_key(), "delete-a");
         assert_eq!(wire::DeleteAllRequest::from(semantic), valid);
         for invalid in [
             wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
                 actor_id: String::new(),
                 ..valid.clone()
             },
             wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
                 idempotency_key: String::new(),
                 ..valid.clone()
             },
             wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
                 idempotency_key: "k".repeat(257),
                 ..valid.clone()
             },
@@ -195,16 +191,10 @@ mod tests {
             assert!(domain::DeleteAllRequest::try_from(invalid).is_err());
         }
         let boundary = wire::DeleteAllRequest {
-            namespace: None,
-            account_id: Vec::new(),
             idempotency_key: "k".repeat(256),
             ..valid
         };
         assert_eq!(validate_delete(&boundary), Ok(()));
-        assert_eq!(
-            domain::DeleteAllResponse::try_from(wire::DeleteAllResponse {}),
-            Ok(domain::DeleteAllResponse::default())
-        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -314,7 +304,7 @@ mod tests {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         use tracing_subscriber::layer::SubscriberExt as _;
 
-        use acyclic_grpc_observability::tests::Capture;
+        use acyclic_test_support::trace_capture::Capture;
         let seen = Capture::default();
         let _guard =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));

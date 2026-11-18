@@ -78,7 +78,10 @@ fn native_name_zero_and_exact_budgets_preserve_real_allocations()
                 host_name_bytes_measured(OsStr::new(text), profile, &mut measured)?;
             assert_eq!(encoding, NameEncoding::native_for_profile(profile));
             assert_eq!(bytes, expected);
-            assert_eq!(measured.live_allocation_bytes(), bytes.capacity() as u64);
+            assert_eq!(
+                measured.live_allocation_bytes().unwrap(),
+                bytes.capacity() as u64
+            );
             let exact_budget = measured.work;
             drop(bytes);
             let mut exact = DemandWork::new(exact_budget, &cancellation);
@@ -106,8 +109,8 @@ fn native_name_uses_original_allocation_custody() -> Result<(), Box<dyn std::err
         items_examined: 3,
         ..WorkCounters::UNCHARGED
     })?;
-    let baseline = original.live_allocation_bytes();
-    let prior = original.receipt();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let prior = original.receipt().unwrap();
     let ((encoding, bytes), custody) = host_name_bytes_with_native_work(
         OsStr::new("native"),
         FilesystemProfile::Portable,
@@ -117,18 +120,21 @@ fn native_name_uses_original_allocation_custody() -> Result<(), Box<dyn std::err
     assert_eq!(bytes, b"native");
     assert!(original.shares_ledger(custody.work()));
     assert_eq!(custody.bytes(), bytes.capacity() as u64);
-    assert_eq!(original.receipt().items_examined, prior.items_examined);
     assert_eq!(
-        original.receipt().allocation_operations,
+        original.receipt().unwrap().items_examined,
+        prior.items_examined
+    );
+    assert_eq!(
+        original.receipt().unwrap().allocation_operations,
         prior.allocation_operations + 1
     );
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         baseline + bytes.capacity() as u64,
     );
     drop(bytes);
     drop(custody);
-    assert_eq!(original.live_allocation_bytes(), baseline,);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline,);
     Ok(())
 }
 
@@ -208,27 +214,27 @@ fn original_utf16_quota_keeps_completed_prefix_and_retires_capacity()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let prior = original.receipt();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let prior = original.receipt().unwrap();
     assert!(matches!(
         host_name_bytes_with_native_work(OsStr::new("ab"), FilesystemProfile::Windows, &original,),
         Err(crate::NativeTreeMaterializationError::Work(_))
     ));
-    let completed = original.receipt();
+    let completed = original.receipt().unwrap();
     assert_eq!(completed.bytes_encoded, prior.bytes_encoded + 2);
     assert_eq!(completed.items_examined, prior.items_examined + 3);
     assert_eq!(
         completed.allocation_operations,
         prior.allocation_operations + 1
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     cancellation.cancel();
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     assert!(matches!(
         host_name_bytes_with_native_work(OsStr::new("c"), FilesystemProfile::Portable, &original,),
         Err(crate::NativeTreeMaterializationError::Cancelled)
     ));
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
     Ok(())
 }
 

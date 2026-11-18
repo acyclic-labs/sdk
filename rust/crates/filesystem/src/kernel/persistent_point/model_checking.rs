@@ -56,7 +56,7 @@ fn race<const BROKEN: bool>(maximum: u64, resource: bool) {
             "pushes exceeded original credit"
         );
         assert_eq!(completed as u64, maximum);
-        assert_eq!(original.receipt().bytes_copied, completed as u64);
+        assert_eq!(original.receipt().unwrap().bytes_copied, completed as u64);
         assert_eq!(original.live_allocation_bytes(), baseline);
     });
 }

@@ -3,7 +3,7 @@ use super::*;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
 #[test]
-fn authority_paths_spill_beyond_inline_scratch_without_a_width_refusal()
+fn authority_paths_span_inline_scratch_and_preserve_the_stream_path_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let authority = AuthorityId::from_bytes([7; 16]);
@@ -24,7 +24,7 @@ fn authority_paths_spill_beyond_inline_scratch_without_a_width_refusal()
         let fixed = b"fs/authorities/".len()
             + 32
             + generation.map_or(0, |generation| generation.to_bytes().len() * 2);
-        for length in [fixed, 127, 128, 129, 65_535, 131_073]
+        for length in [fixed, 127, 128, 129, acyclic_stream::MAX_PATH_BYTES]
             .into_iter()
             .filter(|length| *length >= fixed)
         {
@@ -37,15 +37,21 @@ fn authority_paths_spill_beyond_inline_scratch_without_a_width_refusal()
                 generation,
             )?;
             assert_eq!(path.as_str().len(), length);
-            assert_eq!(work.spent().bytes_encoded, length as u64);
+            assert_eq!(work.spent().unwrap().bytes_encoded, length as u64);
             assert_eq!(
-                work.spent().bytes_copied,
+                work.spent().unwrap().bytes_copied,
                 (b"fs/authorities/".len() + suffix.len() + length) as u64
             );
-            assert_eq!(
-                work.spent().allocation_operations,
-                if length > 65_535 { 2 } else { 1 }
-            );
+            assert_eq!(work.spent().unwrap().allocation_operations, 1);
+        }
+        for length in [acyclic_stream::MAX_PATH_BYTES + 1, 131_073] {
+            let suffix = "x".repeat(length - fixed);
+            let mut work = AuthorityWork::new(BUDGET, &cancellation);
+            assert!(matches!(
+                work.path(&AuthorityPlacement::default(), authority, &suffix, generation),
+                Err(AuthorityStoreError::NativeStream(error))
+                    if error.category() == acyclic_stream::StreamCategory::InvalidPath
+            ));
         }
     }
     Ok(())
@@ -109,6 +115,6 @@ proptest::proptest! {
             (Err(actual), Err(old)) => proptest::prop_assert_eq!(actual.to_string(), old.to_string()),
             (actual, old) => proptest::prop_assert!(false, "actual={actual:?}, old={old:?}"),
         }
-        proptest::prop_assert_eq!(work.spent(), old.spent());
+        proptest::prop_assert_eq!(work.spent().unwrap(), old.spent().unwrap());
     }
 }

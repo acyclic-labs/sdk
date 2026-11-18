@@ -33,6 +33,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -49,9 +50,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/lib.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

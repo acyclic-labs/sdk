@@ -188,15 +188,63 @@ impl AuthorityVerifier {
     }
 
     pub(crate) fn copy_in_quota(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        self.copy_with_audience(&self.audience, quota)
+    }
+
+    fn copy_with_audience(
+        &self,
+        audience: &Authority,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<Self> {
         if quota.work().is_none() {
-            return Ok(self.clone());
+            return Ok(Self {
+                id: self.id.clone(),
+                public: self.public.clone(),
+                admission: self.admission.clone(),
+                audience: audience.clone(),
+            });
         }
         Ok(Self {
             id: copying::copy_text(&self.id, quota)?,
             public: self.public.clone(),
             admission: self.admission.clone(),
-            audience: copying::copy_authority(&self.audience, quota)?,
+            audience: copying::copy_authority(audience, quota)?,
         })
+    }
+
+    /// The verifier that signs this agent journal's execution checkpoints and
+    /// the alternate identity that verifies a checkpoint written under the
+    /// other custody. Native custody signs under the journal owner's
+    /// conversation, so a checkpoint survives a host admission change;
+    /// platform custody signs under the admitted caller. A journal may be
+    /// opened under either custody later, so verification accepts both
+    /// identities for the same signed state.
+    pub(crate) fn execution_checkpoint_verifiers(
+        &self,
+        owner: AgentId,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<(Self, Option<Self>)> {
+        let native = matches!(self.admission, runtime_signing::AdmissionPort::Native(_));
+        let owner_audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: owner.to_string(),
+        };
+        let (primary_audience, alternate_audience) = if native {
+            (
+                &owner_audience,
+                (self.audience != owner_audience).then_some(&self.audience),
+            )
+        } else {
+            (
+                &self.audience,
+                (self.audience != owner_audience).then_some(&owner_audience),
+            )
+        };
+        let primary = self.copy_with_audience(primary_audience, quota)?;
+        let alternate = alternate_audience
+            .map(|audience| self.copy_with_audience(audience, quota))
+            .transpose()?;
+        Ok((primary, alternate))
     }
 
     /// Verifies issuer identity and the complete immutable grant.

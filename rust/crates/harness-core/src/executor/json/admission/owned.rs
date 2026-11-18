@@ -106,7 +106,7 @@ fn tree<'c>(
                 .get_mut(depth)
                 .and_then(Option::take)
                 .ok_or_else(invalid_frame)?;
-            if frame.object.is_some() && !frame.schema.tag.is_empty() {
+            if frame.object.is_some() && !frame.schema.tag().is_empty() {
                 frame.counts.resolve(frame.tag.unwrap_or(0))?;
             }
             if depth == 0 {
@@ -136,7 +136,7 @@ fn tree<'c>(
         let (child, gate) = frame
             .schema
             .child(key.as_bytes(), frame.object.is_none().then_some(index));
-        if frame.object.is_some() && !frame.schema.tag.is_empty() && key == frame.schema.tag {
+        if frame.object.is_some() && !frame.schema.tag().is_empty() && key == frame.schema.tag() {
             frame.tag = Some(frame.schema.mask(field.as_str().map_or(b"", str::as_bytes)));
         }
         resident.visit(child_depth, field.as_str().map_or(0, str::len), charge)?;

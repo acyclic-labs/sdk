@@ -349,7 +349,7 @@ impl ProjFsSession {
             runtime.callbacks.close_admission();
             lock_recover(&runtime.projector.state).stopping = true;
             runtime.projector.signal_changed();
-            view.quiesce();
+            view.quiesce()?;
         }
         runtime.callbacks.drain();
         if runtime.writable && self.context.is_some() && !self.capture_attempted {
@@ -566,7 +566,10 @@ impl ProjFsSession {
 
     pub(in crate::native_mount) fn take_callback_failure(
         &self,
-    ) -> Option<(NativeMountError, crate::WorkCounters)> {
+    ) -> Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )> {
         if let Some(projector) = self.controller.as_ref() {
             return lock_recover(&projector.lifecycle)
                 .owner
@@ -585,8 +588,10 @@ impl ProjFsSession {
         lock_recover(failures).callback_failure.take()
     }
 
-    pub(in crate::native_mount) fn completed_callback_work(&self) -> crate::WorkCounters {
-        crate::WorkCounters::UNCHARGED
+    pub(in crate::native_mount) fn completed_callback_work(
+        &self,
+    ) -> Result<crate::WorkCounters, crate::WorkObservationError> {
+        Ok(crate::WorkCounters::UNCHARGED)
     }
 
     pub(in crate::native_mount) fn capture_host_paths(

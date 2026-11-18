@@ -73,7 +73,7 @@ async fn credited_fetch_enters_before_eof_and_retires_original_transport_owners(
         ActorId, ActorNamespace, Header, InvokeActorHeader, InvokeActorRequest, InvokeWorkerHeader,
         InvokeWorkerRequest,
     };
-    use acyclic_stream::body::BodyChunk;
+    use acyclic_stream_body::BodyChunk;
     use futures::{StreamExt as _, channel::mpsc};
     use http_body::{Body as _, Frame};
     use http_body_util::BodyExt as _;

@@ -1,12 +1,17 @@
 //! Original evidence writers consume a closure proved through the real adapter.
 use super::*;
-use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, CancellationToken, FileId, GenerationId, GuardedAppend,
-    HashedObject, Head, Lifecycle, LogicalObjectStore, ObjectId, ObjectKind, ProposedCommit,
-    PublicationPermit, VolumeConfig, VolumeId, WorkBudget,
-};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        AsyncObjectStore, AuthorityWork, CancellationToken, GenerationId, GuardedAppend,
+        HashedObject, Head, Lifecycle, LogicalObjectStore, ProposedCommit, PublicationPermit,
+        VolumeConfig,
+    },
+    acyclic_fs_format::identity::{FileId, VolumeId},
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 type Store = LogicalObjectStore<acyclic_objects::MemoryObjects>;
 

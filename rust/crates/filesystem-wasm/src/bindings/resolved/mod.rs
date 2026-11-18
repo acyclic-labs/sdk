@@ -11,7 +11,7 @@ pub struct BrowserResolvedFile {
 #[wasm_bindgen]
 pub struct BrowserResolvedFiles {
     pub(in crate::bindings) files: Vec<Option<BrowserResolvedFile>>,
-    pub(in crate::bindings) work: acyclic_fs::WorkCounters,
+    pub(in crate::bindings) work: acyclic_fs_work::performance::WorkCounters,
 }
 
 #[wasm_bindgen]
@@ -70,7 +70,11 @@ impl BrowserResolvedFile {
         let range = ByteRange { offset, length };
         let receipt = self
             .engine
-            .read_range(range, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .read_range(
+                range,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(js_error)?;
         ts(BrowserFileReadResult {
@@ -84,7 +88,10 @@ impl BrowserResolvedFile {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .read_symbolic_link(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .read_symbolic_link(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(js_error)?;
         ts(BrowserFileReadResult {

@@ -137,7 +137,7 @@ mod tests {
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let original = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(10_000_000, 10_000_000),
+                acyclic_fs_work::performance::work_budget(10_000_000, 10_000_000),
                 &cancellation,
             )
             .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -155,7 +155,7 @@ mod tests {
             assert_eq!(actual, expected);
             assert!(physical.count_total > 0, "allocation observer is active");
             assert!(
-                physical.bytes_max <= original.receipt().peak_allocation_bytes - baseline,
+                physical.bytes_max <= original.receipt()?.peak_allocation_bytes - baseline,
                 "supervision decoder exceeded its original peak reservation: {physical:?}"
             );
             assert!(

@@ -31,25 +31,28 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
         assert!(compared.bytes_total < buffered.bytes_total);
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
             budget.bytes_encoded = bytes.len() as u64;
             let work = native
                 .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
                 .transpose()
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let before = work.as_ref().map(|work| work.live_allocation_bytes());
+            let before = work
+                .as_ref()
+                .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes)
+                .transpose()?;
             let io = match &work {
                 Some(work) => PreparationIo::from_native_work(work)?,
                 None => PreparationIo::from_budget(budget, &cancellation)?,
             };
             let (actual, hold) = decode_json::<Value>(bytes, Some(&io))?;
             assert_eq!(actual, expected);
-            assert_eq!(io.receipt().bytes_encoded, bytes.len() as u64);
+            assert_eq!(io.receipt()?.bytes_encoded, bytes.len() as u64);
             drop(actual);
             drop(hold);
             drop(io);
             if let Some(work) = work {
-                assert_eq!(Some(work.live_allocation_bytes()), before);
+                assert_eq!(Some(work.live_allocation_bytes()?), before);
             }
         }
     }
@@ -70,12 +73,15 @@ fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Re
         assert!(decode_json::<Value>(bytes, None).is_err());
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
             let work = native
                 .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
                 .transpose()
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let before = work.as_ref().map(|work| work.live_allocation_bytes());
+            let before = work
+                .as_ref()
+                .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes)
+                .transpose()?;
             let io = match &work {
                 Some(work) => PreparationIo::from_native_work(work)?,
                 None => PreparationIo::from_budget(budget, &cancellation)?,
@@ -83,7 +89,7 @@ fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Re
             assert!(decode_json::<Value>(bytes, Some(&io)).is_err());
             drop(io);
             if let Some(work) = work {
-                assert_eq!(Some(work.live_allocation_bytes()), before);
+                assert_eq!(Some(work.live_allocation_bytes()?), before);
             }
         }
     }
@@ -357,12 +363,18 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
     let journal = Journal::default();
     let operation = OperationId::from_bytes([193; 16]);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
+    let io = PreparationIo::from_budget(
+        acyclic_fs_work::performance::WorkBudget::default(),
+        &cancellation,
+    )?;
     assert!(matches!(
         canonical_checkpoint_for_operation(&journal, operation, Limits::default(), Some(&io)).await,
         Err(Error::Unsupported(_))
     ));
-    assert_eq!(io.receipt(), acyclic_fs::WorkCounters::default());
+    assert_eq!(
+        io.receipt()?,
+        acyclic_fs_work::performance::WorkCounters::default()
+    );
     assert_eq!(journal.3.load(Ordering::SeqCst), 0);
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     Ok(())
@@ -735,7 +747,7 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
     for _ in 0..2 {
         assert!(
             journal
-                .append_if_tail(operation, 1, "tool:0:call:failed", &settle, None)?
+                .append_if_tail(operation, 1, "tool:0:call", &settle, None)?
                 .await?
         );
     }
@@ -743,7 +755,7 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
     let other = failed("other");
     assert!(
         !journal
-            .append_if_tail(operation, 1, "tool:0:other:failed", &other, None)?
+            .append_if_tail(operation, 1, "tool:0:other", &other, None)?
             .await?
     );
     for (operation_id, digest, count) in [(operation, [1; 32], 2), (other_operation, [2; 32], 1)] {

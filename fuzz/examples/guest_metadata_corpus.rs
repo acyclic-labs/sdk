@@ -26,7 +26,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
         .get_mut("expiresAtMs")
         .ok_or("original caller lacks expiresAtMs")? = "01".into();
     let mut capability =
-        serde_json::to_value(caller.with_capability(CallerCapability::new(1, "cap".into())?)?)?;
+        serde_json::to_value(caller.with_capability(CallerCapability::new(1, "cap".into())?))?;
     let positional = Value::Array(
         [
             "accountId",
@@ -56,7 +56,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
             "actor".into(),
             u64::MAX,
         )?
-        .with_capability(CallerCapability::new(1, "opaque".into())?)?,
+        .with_capability(CallerCapability::new(1, "opaque".into())?),
     )?;
     caller
         .as_object_mut()
@@ -83,7 +83,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "step=capture-guest-metadata: {error}; recovery=cargo run --manifest-path fuzz/Cargo.toml --example guest_metadata_corpus -- fuzz/corpus/guest_json"
+            "step=capture-guest-metadata: {error}; recovery=bazel run //fuzz:guest_metadata_corpus_example -- -- \"$PWD/fuzz/corpus/guest_json\""
         );
         std::process::exit(1);
     }

@@ -50,7 +50,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
             .err()
             .ok_or("invalid selected path unexpectedly succeeded")?;
         assert!(matches!(failure, WorkspaceError::NamespacePath(_)));
-        let work = accounting.spent();
+        let work = accounting.spent().unwrap();
         assert_eq!(work.allocation_operations, 0);
         assert_eq!(work.backend_read_operations, 0);
         assert_eq!(work.page_reads, 0);
@@ -409,7 +409,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
         let cancel = CancellationToken::new();
         let original =
             crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut records = FixedIndex::default();
         let mut old = Vec::new();
@@ -426,17 +426,20 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
         records.get_or_try_insert_with(own.file_id.into_bytes(), &mut accounting, |_| Ok(own))?;
         old.reverse();
         old.push(own);
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         let record = records
             .get_mut(own.file_id.into_bytes(), &mut accounting)?
             .ok_or("selected hard link disappeared")?;
         record.link_count += 1;
-        visits.push(accounting.spent().items_examined - before.items_examined);
+        visits.push(accounting.spent().unwrap().items_examined - before.items_examined);
         assert_eq!(
-            accounting.spent().allocation_operations,
+            accounting.spent().unwrap().allocation_operations,
             before.allocation_operations
         );
-        assert_eq!(accounting.spent().bytes_copied, before.bytes_copied);
+        assert_eq!(
+            accounting.spent().unwrap().bytes_copied,
+            before.bytes_copied
+        );
         assert_eq!(
             records
                 .get(own.file_id.into_bytes(), &mut accounting)?
@@ -471,7 +474,7 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
         old[position..].rotate_right(1);
         records
             .get_or_try_insert_with(first.file_id.into_bytes(), &mut accounting, |_| Ok(first))?;
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         let mut entry = records.first(&mut accounting)?;
         for expected in &old {
             let (key, record) = entry.ok_or("selected record order ended early")?;
@@ -480,8 +483,8 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
             entry = records.seek_after(*key, &mut accounting)?;
         }
         assert!(entry.is_none());
-        seeks.push(accounting.spent().items_examined - before.items_examined);
-        let before = accounting.spent();
+        seeks.push(accounting.spent().unwrap().items_examined - before.items_examined);
+        let before = accounting.spent().unwrap();
         let mut records = records.into_entries();
         for expected in &old {
             let entry = records
@@ -491,18 +494,18 @@ fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::erro
             assert_eq!(entry.value(), expected);
         }
         assert!(records.try_next(&mut accounting)?.is_none());
-        let after = accounting.spent();
+        let after = accounting.spent().unwrap();
         drains.push(after.items_examined - before.items_examined);
         assert!(drains.last().copied().unwrap() <= 6 * (2 * old.len() - 1) as u64);
         assert!(drains.last() < seeks.last());
         assert_eq!(after.allocation_operations, before.allocation_operations);
         assert_eq!(after.bytes_copied, before.bytes_copied);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         cancel.cancel();
         assert!(records.try_next(&mut accounting).is_err());
         drop(records);
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        original.receipt().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        original.receipt().unwrap().verify(budget)?;
     }
     assert_eq!(visits[0], visits[1]);
     assert!(visits[0] <= 145);
@@ -591,7 +594,7 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         .err()
         .ok_or("verification ignored its allocation gate")?;
         assert!(matches!(failed.error, WorkspaceError::Work(_)));
-        assert_eq!(failed.work.allocation_operations, 0);
+        assert_eq!(failed.work.as_deref().unwrap().allocation_operations, 0);
     }
     reads.store(0, Ordering::Relaxed);
     let cancelled = CancellationToken::new();
@@ -602,8 +605,8 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
             .err()
             .ok_or("verification ignored cancellation")?;
     assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(failed.work.allocation_operations, 0);
-    assert_eq!(failed.work.backend_read_operations, 0);
+    assert_eq!(failed.work.as_deref().unwrap().allocation_operations, 0);
+    assert_eq!(failed.work.as_deref().unwrap().backend_read_operations, 0);
     assert_eq!(reads.load(Ordering::Relaxed), 0);
     Ok(())
 }

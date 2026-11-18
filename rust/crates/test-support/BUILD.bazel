@@ -53,6 +53,8 @@ rust_library(
     ] + [
         "//rust/crates/differential:acyclic_differential",
         "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tracing-0.1.44",
+        "@sdk_crates//tracing-subscriber-0.3.23",
     ],
     visibility = ["//visibility:public"],
 )
@@ -81,14 +83,28 @@ isolated_test(
     name = "acyclic_test_support_test",
     binary = ":acyclic_test_support_test_cases",
     id = "acyclic-test-support",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_test_support_test_full-cloud",
+    binary = ":acyclic_test_support_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-test-support",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
     name = "uninstalled_cases",
     crate_root = "tests/uninstalled.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/uninstalled.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -106,6 +122,8 @@ rust_test(
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tracing-0.1.44",
+        "@sdk_crates//tracing-subscriber-0.3.23",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -115,7 +133,20 @@ isolated_test(
     name = "uninstalled",
     binary = ":uninstalled_cases",
     id = "acyclic-test-support::uninstalled",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "uninstalled_full-cloud",
+    binary = ":uninstalled_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-test-support::uninstalled",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -125,9 +156,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/fixtures.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

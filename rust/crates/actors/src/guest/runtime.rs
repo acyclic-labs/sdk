@@ -128,7 +128,7 @@ impl AdmittedCaller {
 
     /// Set the exact admitted namespace; omitted legacy fields map to the reserved namespace.
     pub fn with_namespace(mut self, namespace: String) -> Result<Self, GuestMetadataError> {
-        crate::addressing::NamespaceId::new(namespace.as_bytes())
+        crate::addressing::NamespaceId::validate(namespace.as_bytes())
             .map_err(|_| GuestMetadataError("namespace"))?;
         self.namespace = namespace;
         Ok(self)
@@ -146,14 +146,10 @@ impl AdmittedCaller {
         )
         .map_err(|_| GuestMetadataError("audience"))
     }
-    /// Attach an S1 handle after checking its representation.
-    pub fn with_capability(
-        mut self,
-        capability: CallerCapability,
-    ) -> Result<Self, GuestMetadataError> {
-        handle(capability.version, &capability.handle)?;
+    /// Attach an admitted S1 handle.
+    pub fn with_capability(mut self, capability: CallerCapability) -> Self {
         self.capability = Some(capability);
-        Ok(self)
+        self
     }
 }
 

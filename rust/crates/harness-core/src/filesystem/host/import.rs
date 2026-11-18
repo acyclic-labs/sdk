@@ -13,6 +13,7 @@ pub struct VolumeImportPlan<'a, A: 'static, O: 'static> {
     plan: JoinPlan<A, O>,
     source_grant: &'a ContentGrant,
     target_grant: &'a ContentGrant,
+    clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
 impl<'a, A: 'static, O: 'static> VolumeImportPlan<'a, A, O> {
@@ -20,11 +21,13 @@ impl<'a, A: 'static, O: 'static> VolumeImportPlan<'a, A, O> {
         plan: JoinPlan<A, O>,
         source_grant: &'a ContentGrant,
         target_grant: &'a ContentGrant,
+        clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Self {
         Self {
             plan,
             source_grant,
             target_grant,
+            clock,
         }
     }
 
@@ -61,6 +64,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore> VolumeImportPlan<'_,
                         VolumeOperation::Read,
                         &[Action::Read, Action::List],
                         &io,
+                        self.clock.as_ref(),
                     )
                     .await?;
                     let target = super::volume_access::compile(
@@ -70,12 +74,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore> VolumeImportPlan<'_,
                         VolumeOperation::Write,
                         &[Action::MergeInto],
                         &io,
+                        self.clock.as_ref(),
                     )
                     .await?;
-                    super::super::access::require_current(self.plan.source(), &source.0, &io)
-                        .await?;
-                    super::super::access::require_current(self.plan.target(), &target.0, &io)
-                        .await?;
+                    super::super::access::require_current(
+                        self.plan.source(),
+                        &source.0,
+                        &io,
+                        self.clock.as_ref(),
+                    )
+                    .await?;
+                    super::super::access::require_current(
+                        self.plan.target(),
+                        &target.0,
+                        &io,
+                        self.clock.as_ref(),
+                    )
+                    .await?;
                     drop((source, target));
                     self.plan
                         .apply(options, resolutions, permit)

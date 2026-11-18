@@ -88,6 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let root = self.open(&reference, Some(io)).await?;
             let opened = self.select_current_workspace(&root, io).await?;
             let payload = change_payload(grant.policy_scope(), volume, io)?;
+            let now = self.access_now()?;
             let root_view = if root.id() != opened.id() {
                 Some(
                     access::access_view(
@@ -97,6 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         payload,
                         access.ceiling,
                         io,
+                        now,
                     )
                     .await?,
                 )
@@ -110,14 +112,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 payload,
                 access.ceiling,
                 io,
+                now,
             )
             .await?;
             // Authorize the complete batch before inspecting any destination.
             // Create-only callers need Create even when the target is present.
             for change in changes {
-                access::require(&view.0, change.action(), change.path(), io)?;
+                self.require(&view.0, change.action(), change.path(), io)?;
                 if let Some(root_view) = &root_view {
-                    access::require(&root_view.0, change.action(), change.path(), io)?;
+                    self.require(&root_view.0, change.action(), change.path(), io)?;
                 }
             }
             if !inspect_destinations {
@@ -186,6 +189,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 return Err(io.invalid("unsupported conditional publication receipt"));
             }
             let payload = change_payload(grant.policy_scope(), volume, io)?;
+            let now = self.access_now()?;
             let view = access::access_view(
                 &opened,
                 grant.policy_scope(),
@@ -193,6 +197,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 payload,
                 access.ceiling,
                 io,
+                now,
             )
             .await?;
             let root_view = if root.id() != opened.id() {
@@ -204,6 +209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         payload,
                         access.ceiling,
                         io,
+                        now,
                     )
                     .await?,
                 )
@@ -236,18 +242,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         return Err(io.invalid("conditional receipt volume differs"));
                     }
                 }
-                access::require(&view.0, action, path, io)?;
+                self.require(&view.0, action, path, io)?;
                 if let Some(root_view) = &root_view {
-                    access::require(&root_view.0, action, path, io)?;
+                    self.require(&root_view.0, action, path, io)?;
                 }
             }
             if let Some(root_view) = &root_view {
-                access::require_current(&root, &root_view.0, io).await?;
+                access::require_current(&root, &root_view.0, io, self.clock()).await?;
             }
             if let Some(binding) = binding {
                 bounded_io::retain(&binding, Some(io)).await?;
             }
-            access::require_current(&opened, &view.0, io).await?;
+            access::require_current(&opened, &view.0, io, self.clock()).await?;
             grant.recheck(Some(io))?;
             bounded_io::retain(generation, Some(io)).await?;
             let count = receipt.1.len();
@@ -398,17 +404,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => (self.select_current_workspace(&root, io).await?, None),
             };
             let payload = change_payload(grant.policy_scope(), volume, io)?;
+            let now = self.access_now()?;
             let root_view = if opened.id() != root.id() || needs_binding {
                 Some(
-                    access::access_view(&root, grant.policy_scope(), None, payload, ceiling, io)
-                        .await?,
+                    access::access_view(
+                        &root,
+                        grant.policy_scope(),
+                        None,
+                        payload,
+                        ceiling,
+                        io,
+                        now,
+                    )
+                    .await?,
                 )
             } else {
                 None
             };
             if let Some(root_view) = &root_view {
                 for change in changes {
-                    access::require(&root_view.0, change.action(), change.path(), io)?;
+                    self.require(&root_view.0, change.action(), change.path(), io)?;
                 }
                 if needs_binding {
                     let fence = root_view
@@ -432,15 +447,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
-            let view =
-                access::access_view(&opened, grant.policy_scope(), None, payload, ceiling, io)
-                    .await?;
+            let view = access::access_view(
+                &opened,
+                grant.policy_scope(),
+                None,
+                payload,
+                ceiling,
+                io,
+                now,
+            )
+            .await?;
             for change in changes {
                 let action = change.action();
                 if let Some(check) = check {
                     check(action, change.path())?;
                 }
-                access::require(&view.0, action, change.path(), io)?;
+                self.require(&view.0, action, change.path(), io)?;
             }
             let generation = if let Some(prior) = prior {
                 if super::publication::publication_evidence(prior.evidence(), Some(io))?
@@ -452,9 +474,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         "conditional publication identity belongs to a different request",
                     ));
                 }
-                access::require_current(&opened, &view.0, io).await?;
+                access::require_current(&opened, &view.0, io, self.clock()).await?;
                 if let Some(root_view) = &root_view {
-                    access::require_current(&root, &root_view.0, io).await?;
+                    access::require_current(&root, &root_view.0, io, self.clock()).await?;
                 }
                 prior.into_generation()
             } else {
@@ -516,7 +538,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .ok_or_else(|| io.invalid("missing conditional publication policy fence"))?;
                 io.sdk(
                     transaction
-                        .observe_policy_fence(fence, io, io.cancellation())
+                        .observe_policy_fence(fence, self.access_now()?, io, io.cancellation())
                         .await,
                 )?;
                 for (change, record) in changes.iter().zip(&records) {
@@ -540,14 +562,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                             io.cancellation(),
                                             |prefix| {
                                                 let candidate = prefix.trim_start_matches('/');
-                                                access::require(
+                                                self.require(
                                                     &view.0,
                                                     Action::Create,
                                                     candidate,
                                                     io,
                                                 )?;
                                                 if let Some(root_view) = &root_view {
-                                                    access::require(
+                                                    self.require(
                                                         &root_view.0,
                                                         Action::Create,
                                                         candidate,
@@ -659,6 +681,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     io,
                     workspaces::FilePublication::Authorized(fence, grant, root_fence),
                     Some(workspaces::publication_context(receipt, io)?),
+                    self.clock_handle(),
                 )?;
                 match root_cut {
                     Some(cut) => cut.scope(publication).await?,

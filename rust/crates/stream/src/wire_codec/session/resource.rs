@@ -140,8 +140,14 @@ mod tests {
                     temporary.count_total, composed.count_total
                 );
                 let (_, [temporary, direct]) = acyclic_test_support::differential(
-                    || temporary_stream_path(std::hint::black_box(&resource)),
-                    || stream_path(std::hint::black_box(&resource)),
+                    || {
+                        temporary_stream_path(std::hint::black_box(&resource))
+                            .map_err(|error| error.category())
+                    },
+                    || {
+                        stream_path(std::hint::black_box(&resource))
+                            .map_err(|error| error.category())
+                    },
                 );
                 assert!(direct.count_total < temporary.count_total);
                 eprintln!(
@@ -150,8 +156,15 @@ mod tests {
                 );
                 if resource.contains('%') {
                     let (_, [owned, borrowed]) = acyclic_test_support::differential(
-                        || stream_path(std::hint::black_box(&resource)).map(|_| ()),
-                        || validate_resource(std::hint::black_box(&resource)),
+                        || {
+                            stream_path(std::hint::black_box(&resource))
+                                .map(|_| ())
+                                .map_err(|error| error.category())
+                        },
+                        || {
+                            validate_resource(std::hint::black_box(&resource))
+                                .map_err(|error| error.category())
+                        },
                     );
                     assert_eq!(borrowed.count_total + 1, owned.count_total);
                     eprintln!(

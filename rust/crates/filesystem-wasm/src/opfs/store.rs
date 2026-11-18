@@ -33,7 +33,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             self.write(object_id, &bytes, cancellation)
                 .await
                 .map_err(|error| ObjectFailure::new(error, work))?;
-            Ok(acyclic_fs::OperationReceipt { value: (), work })
+            Ok(acyclic_fs_work::performance::OperationReceipt { value: (), work })
         }
         .await;
         context.accept(result)
@@ -87,14 +87,17 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                     .and_then(|bytes| {
                         bytes
                             .checked_add(allocation_bytes::<ObjectResult<()>>(window.len())?)
-                            .ok_or(acyclic_fs::WorkError::Overflow)
+                            .ok_or(acyclic_fs_work::performance::WorkError::Overflow)
                     })
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
                 admitted.peak_allocation_bytes = admitted
                     .peak_allocation_bytes
                     .checked_add(frames)
                     .ok_or_else(|| {
-                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                        ObjectFailure::new(
+                            acyclic_fs_work::performance::WorkError::Overflow.into(),
+                            total,
+                        )
                     })?;
                 let frame_work = WorkCounters {
                     allocation_operations: 2,
@@ -113,7 +116,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 let results = join_all(std::iter::once(first).chain(futures)).await;
                 total = fold_unit_results(total, results, budget)?;
             }
-            Ok(acyclic_fs::OperationReceipt {
+            Ok(acyclic_fs_work::performance::OperationReceipt {
                 value: (),
                 work: total,
             })
@@ -183,7 +186,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             cancellation
                 .check()
                 .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-            Ok(acyclic_fs::OperationReceipt { value, work })
+            Ok(acyclic_fs_work::performance::OperationReceipt { value, work })
         }
         .await;
         context.accept(result)

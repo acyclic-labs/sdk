@@ -1,4 +1,9 @@
-use acyclic_harness_tui::{Editor, Motion, PromptHistory};
+use acyclic_harness_tui::{Editor, Motion};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_tui::{
+    InputEffect, PromptInput,
+    key_event::{KeyCode, KeyEvent, KeyModifiers},
+};
 
 #[test]
 fn continuation_removes_only_the_backslash_of_a_collapsed_paste() {
@@ -146,27 +151,38 @@ fn kills_accumulate_and_yank_rotation_is_cancelled_by_other_actions() {
 }
 
 #[test]
+#[cfg(not(target_arch = "wasm32"))]
 fn history_preserves_draft_and_reverse_search_order() {
-    let mut history = PromptHistory::default();
-    for text in ["first", "second", "first match"] {
-        history.push(text.to_owned());
-    }
-    assert_eq!(history.previous("draft"), Some("first match".into()));
-    assert_eq!(history.previous("ignored"), Some("second".into()));
-    assert_eq!(history.next_entry(), Some("first match".into()));
-    assert_eq!(history.next_entry(), Some("draft".into()));
-    assert_eq!(history.reverse_search("first"), Some("first match".into()));
-    assert_eq!(history.reverse_search("first"), Some("first".into()));
-    assert_eq!(history.reverse_search("first"), None);
-    let mut editor = Editor::new("draft");
-    let mut history = acyclic_harness_tui::PromptHistory::default();
-    history.push("older".into());
-    assert!(!editor.recall(&mut history, true, 0));
-    editor.set_cursor(0, false);
-    assert!(editor.recall(&mut history, true, 0));
-    editor.move_cursor(Motion::End, false, 10);
-    assert!(editor.recall(&mut history, false, 0));
-    assert_eq!(editor.text(), "draft");
+    let mut input = PromptInput::new(Editor::new("draft"));
+    let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+    assert!(input.key(up, 0, 10).is_empty());
+    input.editor.set_cursor(0, false);
+    let effects = input.key(up, 1, 10);
+    let [
+        InputEffect::History {
+            request,
+            previous: true,
+            ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("history request missing")
+    };
+    assert!(input.resolve_history(*request, "draft", Some("older"), true, 1));
+    input.editor.move_cursor(Motion::End, false, 10);
+    let effects = input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 2, 10);
+    let [
+        InputEffect::History {
+            request,
+            previous: false,
+            ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("history request missing")
+    };
+    assert!(input.resolve_history(*request, "older", Some("draft"), false, 2));
+    assert_eq!(input.editor.text(), "draft");
 }
 
 #[test]

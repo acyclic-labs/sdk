@@ -13,17 +13,19 @@ use std::sync::{LockResult, PoisonError};
 #[cfg(not(loom))]
 use std::thread_local;
 
+type HeldRanks = Vec<(u16, &'static Location<'static>)>;
+
 #[cfg(not(loom))]
 thread_local! {
-    static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = const { RefCell::new(Vec::new()) };
+    static HELD: RefCell<HeldRanks> = const { RefCell::new(Vec::new()) };
 }
 
 #[cfg(loom)]
 thread_local! {
-    static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = RefCell::new(Vec::new());
+    static HELD: RefCell<HeldRanks> = RefCell::new(Vec::new());
 }
 
-fn with_held(edit: &mut dyn FnMut(&mut Vec<(u16, &'static Location<'static>)>)) {
+fn with_held(edit: &mut dyn FnMut(&mut HeldRanks)) {
     HELD.with(|held| edit(&mut held.borrow_mut()));
 }
 
@@ -32,7 +34,8 @@ struct Held(u16, &'static Location<'static>);
 impl Held {
     #[track_caller]
     fn check(rank: u16) {
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         if model::fault() == model::Fault::MissingCheck {
             return;
         }
@@ -41,8 +44,7 @@ impl Held {
             if let Some((previous, site)) = held.iter().find(|(previous, _)| rank <= *previous) {
                 assert!(
                     rank > *previous,
-                    "lock order: rank {rank} at {} while holding rank {previous} from {site}",
-                    requested
+                    "lock order: rank {rank} at {requested} while holding rank {previous} from {site}"
                 );
             }
         });
@@ -173,7 +175,8 @@ fn wait_plain<G>(
     Held::check(rank);
     let wrap = |inner| {
         let held = Held(rank, site);
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         let held = if model::fault() == model::Fault::MissingRestore {
             held
         } else {
@@ -191,4 +194,5 @@ fn wait_plain<G>(
 
 #[cfg(test)]
 #[cfg(loom)]
+#[path = "checked/model.rs"]
 mod model;

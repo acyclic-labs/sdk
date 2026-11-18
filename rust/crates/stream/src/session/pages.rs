@@ -45,14 +45,16 @@ impl Visibility {
         for mut child in page.children {
             if !self.permits(
                 &capability,
-                crate::StreamMethod::ChildrenPage
+                acyclic_stream_wire::authorization::StreamMethod::ChildrenPage
                     .authorization()
                     .admitted
                     .first()
                     .ok_or(StreamError::InvalidResponse)?
                     .as_str(),
                 child.path.as_str(),
-                crate::StreamMethod::ChildrenPage.authorization().scope,
+                acyclic_stream_wire::authorization::StreamMethod::ChildrenPage
+                    .authorization()
+                    .scope,
             )? {
                 continue;
             }
@@ -61,9 +63,11 @@ impl Visibility {
                 StreamPath::validate(&target)?;
                 if self.permits(
                     &capability,
-                    crate::authorization::FOLLOW_ACTION.as_str(),
+                    acyclic_stream_wire::authorization::FOLLOW_ACTION.as_str(),
                     &target,
-                    crate::StreamMethod::Follow.authorization().scope,
+                    acyclic_stream_wire::authorization::StreamMethod::Follow
+                        .authorization()
+                        .scope,
                 )? {
                     if let Some(record) = child.tail_record.take() {
                         child.tail_record =
@@ -85,7 +89,7 @@ impl Visibility {
 }
 
 pub(super) fn source<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     request: crate::ChildrenPageRequest,
     visibility: Visibility,
     identity: wire::SessionChannel,
@@ -107,7 +111,7 @@ pub(super) fn source<P: StreamProvider + ?Sized>(
 /// Projects an already coherent provider view; authorization never causes a
 /// second observation. A filtered-out named head refuses the whole view.
 pub(super) fn heads<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
+    provider: crate::ProviderOwner<P>,
     request: crate::HeadsRequest,
     authorization: ResourceAuthorization,
     visibility: Option<Visibility>,

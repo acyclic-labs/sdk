@@ -203,8 +203,8 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn finite_budget() -> acyclic_fs::WorkBudget {
-    acyclic_fs::performance::work_budget(100_000_000, 100_000_000)
+fn finite_budget() -> acyclic_fs_work::performance::WorkBudget {
+    acyclic_fs_work::performance::work_budget(100_000_000, 100_000_000)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -218,7 +218,7 @@ fn native_work() -> acyclic_fs::NativeMaterializationWork {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
+fn original_native_all_seven_methods_preserve_protocol_and_result_custody() -> crate::Result<()> {
     let (initialization, operation) = ids();
     for (method, params, expected) in [
         ("tools/list", json!({}), json!({"tools":[]})),
@@ -253,9 +253,9 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
             maximum_bytes: 4096,
         };
         let work = native_work();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let probe = work
-            .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+            .claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)
             .unwrap();
         let (mut ordinary, ordinary_first, _) = request.exchange(None).unwrap();
         let (mut native, first, first_guard) = request.exchange(Some(&work)).unwrap();
@@ -289,19 +289,20 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
         assert_eq!(value, expected);
         assert!(guard.as_ref().unwrap().shares_ledger(&probe));
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             baseline + guard.as_ref().unwrap().bytes()
         );
         drop(value);
         drop(guard);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        work.receipt().verify(finite_budget()).unwrap();
+        assert_eq!(work.live_allocation_bytes()?, baseline);
+        work.receipt()?.verify(finite_budget()).unwrap();
     }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
+fn original_native_partial_line_max_denial_and_failed_state_precede_capture() -> crate::Result<()> {
     let (initialization, operation) = ids();
     let work = native_work();
     let request = McpStdioRequest {
@@ -326,14 +327,15 @@ fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
     drop(first);
     drop(guard);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
+fn original_native_cancellation_and_foreign_ledger_cannot_resume() -> crate::Result<()> {
     let (initialization, operation) = ids();
     let request = McpStdioRequest {
         initialization,
@@ -360,7 +362,7 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     drop(guard);
     drop(exchange);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
 
@@ -385,11 +387,12 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     drop(first);
     drop(guard);
     drop(exchange);
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn malformed_native_frame_preserves_owned_cause() {
+fn malformed_native_frame_preserves_owned_cause() -> crate::Result<()> {
     let (initialization, operation) = ids();
     let request = McpStdioRequest {
         initialization,
@@ -422,7 +425,8 @@ fn malformed_native_frame_preserves_owned_cause() {
     drop(guard);
     drop(exchange);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
+    Ok(())
 }

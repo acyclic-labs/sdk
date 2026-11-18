@@ -200,7 +200,7 @@ pub fn check(bytes: &[u8]) {
             },
         );
     }
-    publication_codec_fuzz::check(bytes);
+    assert!(publication_codec_fuzz::check(bytes).is_ok());
     if let Ok(value) = decode_retention_created(bytes, u64::MAX) {
         refuses_framing(bytes, |input| decode_retention_created(input, u64::MAX));
         assert_eq!(
@@ -256,9 +256,10 @@ pub fn check(bytes: &[u8]) {
 
 /// Produce SDK encoder output; the capture executable records its provenance.
 pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
-    use acyclic_fs::{
-        Digest, FileId, GenerationId, Lifecycle, ObjectId, ObjectKind, ObjectStorage, VolumeConfig,
-        VolumeId,
+    use {
+        acyclic_fs::{GenerationId, Lifecycle, VolumeConfig},
+        acyclic_fs_format::identity::{Digest, FileId, VolumeId},
+        acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
     };
     let maximum = DecodeLimits::default().maximum_page_items;
     let mut seeds = Vec::new();

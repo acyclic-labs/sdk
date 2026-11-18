@@ -11,7 +11,7 @@ impl NativeCheckout {
                 file_id: None,
                 path,
                 bytes: (bytes::Bytes::from(bytes.to_vec())).into(),
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         encode_created_mutation(&receipt)
@@ -25,7 +25,7 @@ impl NativeCheckout {
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
                 file_id: None,
                 path,
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         encode_created_mutation(&receipt)
@@ -44,7 +44,7 @@ impl NativeCheckout {
                 file_id: None,
                 path,
                 target: (bytes::Bytes::from(target.to_vec())).into(),
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         encode_created_mutation(&receipt)
@@ -60,7 +60,7 @@ impl NativeCheckout {
                 file_id: None,
                 path,
                 kind,
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         encode_created_mutation(&receipt)
@@ -86,7 +86,7 @@ impl NativeCheckout {
                 kind,
                 major,
                 minor,
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         encode_created_mutation(&receipt)
@@ -105,7 +105,7 @@ impl NativeCheckout {
                 file_id: None,
                 path,
                 payload: (bytes::Bytes::from(payload.to_vec())).into(),
-                metadata: acyclic_fs::kernel::FileMetadata::default(),
+                metadata: acyclic_fs_format::metadata::FileMetadata::default(),
             },)
         )?;
         encode_created_mutation(&receipt)
@@ -127,8 +127,8 @@ impl NativeCheckout {
             mutate(vec![acyclic_fs::kernel::Mutation::Remove {
                 path: native_path(&path, self.config)?,
                 expected_file_id: (expected).map_or(
-                    acyclic_fs::kernel::MetadataField::Unavailable,
-                    acyclic_fs::kernel::MetadataField::Value,
+                    acyclic_fs_format::metadata::MetadataField::Unavailable,
+                    acyclic_fs_format::metadata::MetadataField::Value,
                 ),
             }],)
         )?;

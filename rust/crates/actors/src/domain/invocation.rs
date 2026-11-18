@@ -122,7 +122,7 @@ impl InvokeActorRequest {
 }
 
 /// Typed invocation response with byte-preserving body and headers.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = InvokeActorResponse::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = InvokeActorResponse::validate_envelope)]
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]
 #[ts(rename_all = "camelCase")]
@@ -332,7 +332,7 @@ deployment_provenance!(InvokeActorRequest, InvokeWorkerRequest, InvokeActorRespo
 impl InvokeWorkerRequest {
     /// A named binding, admitted by the host, authorizes private RPC/fetch.
     pub fn with_binding(mut self, account: &[u8], binding: String) -> Result<Self, DomainError> {
-        crate::addressing::AccountId::new(account)?;
+        crate::addressing::validate_account(account)?;
         if binding.is_empty() {
             return Err(DomainError::InvalidBinding);
         }
@@ -397,11 +397,5 @@ impl InvokeWorkerRequest {
             return Err(DomainError::InvalidBinding);
         }
         Ok(())
-    }
-}
-
-impl InvokeActorResponse {
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        self.validate_envelope()
     }
 }

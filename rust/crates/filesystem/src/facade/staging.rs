@@ -310,7 +310,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .objects
                 .put_hashed(hashed, &mut object_work)
                 .await;
-            object_work.spent().verify(object_work.budget)?;
+            object_work.spent()?.verify(object_work.budget)?;
             result
         };
         let (allocations, ..) = accounting

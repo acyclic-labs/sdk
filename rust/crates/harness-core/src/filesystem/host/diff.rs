@@ -102,7 +102,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let (before, after) = selections
             .first()
             .ok_or_else(|| io.invalid("comparison has no authorized roots"))?;
-        let mut work = acyclic_fs::WorkCounters::default();
+        let mut work = acyclic_fs_work::performance::WorkCounters::default();
         let mut changed = io.cursor_receipt(
             before
                 .cut
@@ -115,8 +115,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let next = io.cursor_receipt(changed.next().await, &mut work)?;
             if streaming || next.is_none() {
                 for ((_, grant), (before, after)) in roots.iter().zip(&selections) {
-                    before.require_current(io).await?;
-                    after.require_current(io).await?;
+                    before.require_current(io, self.clock()).await?;
+                    after.require_current(io, self.clock()).await?;
                     grant.recheck(Some(io))?;
                 }
             }
@@ -125,7 +125,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let change = entry.value();
             let mut paths = Vec::new();
-            let now = super::super::access::access_now()?;
+            let now = self.access_now()?;
             let regular = |record: Option<FileRecord>| {
                 record.filter(|record| record.kind == acyclic_fs::kernel::FileKind::Regular)
             };
@@ -192,7 +192,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let (before, after) = self
             .diff_endpoints(volume, grant, (base, current), "", &io)
             .await?;
-        let now = super::super::access::access_now()?;
+        let now = self.access_now()?;
         let discloses = |selection: &super::directory::DirectorySelection<'_, A, O>, path: &str| {
             [Action::List, Action::Read]
                 .into_iter()
@@ -202,8 +202,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             (kind == DiffKind::Added || discloses(&before, path))
                 && (kind == DiffKind::Removed || discloses(&after, path))
         });
-        before.require_current(&io).await?;
-        after.require_current(&io).await?;
+        before.require_current(&io, self.clock()).await?;
+        after.require_current(&io, self.clock()).await?;
         grant.recheck(Some(&io))?;
         Ok(listed)
     }

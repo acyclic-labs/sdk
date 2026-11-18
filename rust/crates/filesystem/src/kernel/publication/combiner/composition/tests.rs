@@ -303,7 +303,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = if native {
         KernelAccounting::native(&original, &cancellation)
     } else {
@@ -410,7 +410,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
             );
             assert!(futures::poll!(std::pin::pin!(schedule.drained())).is_pending());
             if native {
-                assert!(original.live_allocation_bytes() > baseline);
+                assert!(original.live_allocation_bytes().unwrap() > baseline);
             }
             if let Some(collector) = collector.as_ref() {
                 let observer = CancellationToken::new();
@@ -455,7 +455,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         }
         released.released().await;
         if native {
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         } else {
             assert_eq!(
                 accounting

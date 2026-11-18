@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/host_process/children/answer.rs b/rust/crates/harness/src/local/host_process/children/answer.rs
---- a/rust/crates/harness/src/local/host_process/children/answer.rs
-+++ b/rust/crates/harness/src/local/host_process/children/answer.rs
+diff --git a/rust/crates/harness-local/src/local/host_process/children/answer.rs b/rust/crates/harness-local/src/local/host_process/children/answer.rs
+--- a/rust/crates/harness-local/src/local/host_process/children/answer.rs
++++ b/rust/crates/harness-local/src/local/host_process/children/answer.rs
 @@ -116,8 +116,8 @@ impl NativeAnswer {
                  }
              }

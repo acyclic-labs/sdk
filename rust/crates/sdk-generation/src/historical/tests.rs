@@ -1,3 +1,6 @@
+#[path = "../../tests/support/compiler.rs"]
+mod compiler;
+
 // Controlled protocol bytes exercise the production reader; this is not a parser model.
 fn registry_owner_source_inner(
     repository: &Path,
@@ -734,15 +737,7 @@ impl Fixture {
         )
         .unwrap();
         let archive = self.path().join("release.crate");
-        command_output(
-            Command::new("tar")
-                .arg("-cf")
-                .arg(&archive)
-                .arg("-C")
-                .arg(self.path())
-                .arg("historical-fixture-0.1.0"),
-        )
-        .unwrap();
+        fixture_archive::pack(&entry, &archive);
         let checksum = crate::sha256_file(&archive)
             .unwrap()
             .trim_start_matches("sha256:")
@@ -759,7 +754,7 @@ impl Fixture {
     }
 }
 fn cargo() -> PathBuf {
-    PathBuf::from(std::env::var_os("CARGO").expect("the test runner names Cargo in CARGO"))
+    compiler::binary("CARGO")
 }
 #[test]
 fn dependency_archive_initial_import_uses_verified_registry_facts() {
@@ -779,3 +774,6 @@ mod archives;
 mod dependency;
 
 mod archive_codec;
+
+#[path = "../../tests/support/archive.rs"]
+mod fixture_archive;

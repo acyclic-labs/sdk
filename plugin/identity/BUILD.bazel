@@ -29,6 +29,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = select({
@@ -36,6 +37,7 @@ rust_library(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/native-stdin:acyclic_native_stdin",
         "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//libc-0.2.191",
@@ -43,7 +45,7 @@ rust_library(
         "@sdk_crates//ring-0.17.14",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//zeroize-1.9.1",
     ],
@@ -51,6 +53,7 @@ rust_library(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/native-stdin:acyclic_native_stdin",
         "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//libc-0.2.191",
@@ -58,7 +61,7 @@ rust_library(
         "@sdk_crates//ring-0.17.14",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//zeroize-1.9.1",
     ],
@@ -66,15 +69,16 @@ rust_library(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/native-stdin:acyclic_native_stdin",
         "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//reqwest_0_12_28-0.12.28",
         "@sdk_crates//ring-0.17.14",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//windows_sys_0_61_2-0.61.2",
+        "@sdk_crates//windows-sys-0.61.2",
         "@sdk_crates//zeroize-1.9.1",
     ],
     }),
@@ -94,6 +98,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -110,14 +115,29 @@ isolated_test(
     name = "acyclic_plugin_identity_test",
     binary = ":acyclic_plugin_identity_test_cases",
     id = "acyclic-plugin-identity",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_plugin_identity_test_full-cloud",
+    binary = ":acyclic_plugin_identity_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-plugin-identity",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/command_entry.rs",
+        "tests/main.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -129,6 +149,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -138,6 +159,7 @@ rust_test(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/native-stdin:acyclic_native_stdin",
         "@sdk_crates//axum-0.8.9",
         "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//futures-0.3.34",
@@ -146,7 +168,7 @@ rust_test(
         "@sdk_crates//ring-0.17.14",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//zeroize-1.9.1",
@@ -155,6 +177,7 @@ rust_test(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/native-stdin:acyclic_native_stdin",
         "@sdk_crates//axum-0.8.9",
         "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//futures-0.3.34",
@@ -163,7 +186,7 @@ rust_test(
         "@sdk_crates//ring-0.17.14",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//zeroize-1.9.1",
@@ -172,6 +195,7 @@ rust_test(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/mcp:acyclic_mcp",
         "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/native-stdin:acyclic_native_stdin",
         "@sdk_crates//axum-0.8.9",
         "@sdk_crates//base64_0_23_1-0.23.1",
         "@sdk_crates//futures-0.3.34",
@@ -179,10 +203,10 @@ rust_test(
         "@sdk_crates//ring-0.17.14",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//tokio-1.54.1",
-        "@sdk_crates//windows_sys_0_61_2-0.61.2",
+        "@sdk_crates//windows-sys-0.61.2",
         "@sdk_crates//zeroize-1.9.1",
     ],
     }),
@@ -194,7 +218,20 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-plugin-identity::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-plugin-identity::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -203,6 +240,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

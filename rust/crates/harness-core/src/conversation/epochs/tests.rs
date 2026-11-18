@@ -357,7 +357,7 @@ async fn last_snapshot(
 
 fn snapshot_io() -> crate::filesystem::PreparationIo {
     crate::filesystem::PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(10_000_000, 10_000_000),
+        acyclic_fs_work::performance::work_budget(10_000_000, 10_000_000),
         &acyclic_fs::CancellationToken::new(),
     )
     .unwrap()
@@ -402,7 +402,7 @@ fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit()
     drop(encoded);
     assert_eq!(io.remaining()?.peak_allocation_bytes, baseline);
 
-    let mut budget = acyclic_fs::performance::work_budget(10_000_000, 10_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(10_000_000, 10_000_000);
     budget.peak_allocation_bytes = 0;
     let denied = crate::filesystem::PreparationIo::from_budget(
         budget,
@@ -413,7 +413,7 @@ fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit()
 
     let cancellation = acyclic_fs::CancellationToken::new();
     let cancelled = crate::filesystem::PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(10_000_000, 10_000_000),
+        acyclic_fs_work::performance::work_budget(10_000_000, 10_000_000),
         &cancellation,
     )?;
     cancellation.cancel();

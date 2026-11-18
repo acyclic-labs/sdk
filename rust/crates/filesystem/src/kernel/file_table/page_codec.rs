@@ -488,7 +488,8 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
             }
             // decode_record checked every record; the header admitted count.
             // Keep ordering after finish to preserve trailing-byte precedence.
-            #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(not(loom), not(target_arch = "wasm32")))]
             super::decode_probe::after_decode(&records, observe)?;
             Ok(FileTablePage::Leaf(records))
         }

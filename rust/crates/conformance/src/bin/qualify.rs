@@ -19,9 +19,10 @@ use std::time::{Duration, Instant};
 
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
-use acyclic_fs::native_mount::{MountOptions, NativeMountKind, probe_native_mount};
+use acyclic_fs::native_mount::{MountOptions, probe_native_mount};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
+use acyclic_fs_native_contract::NativeMountKind;
 use acyclic_objects::local::LocalObjectsLimits;
 use acyclic_objects::{Blobs, ByteRange, Digest, LocalObjects, Store};
 use acyclic_stream::{AppendOutcome, IdempotencyKey, LocalStream, LocalStreamLimits};

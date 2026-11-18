@@ -68,11 +68,34 @@ macro_rules! cargo_binary {
     }};
 }
 
+/// Locates a host tool that a test starts by name.
+///
+/// A Bazel test supplies the tool as a declared executable through Cargo's
+/// `CARGO_BIN_EXE_<name>` variable, as [`cargo_binary!`](crate::cargo_binary)
+/// does. An ordinary Cargo run has no such variable, so the tool is resolved
+/// from an environment variable of the same name (Cargo sets `CARGO`), or from
+/// the host's executable search path by its bare name.
+#[macro_export]
+macro_rules! host_tool {
+    ($name:literal) => {{
+        ::std::env::var_os(concat!("CARGO_BIN_EXE_", $name))
+            .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")))
+            .or_else(|| ::std::env::var_os($name))
+            .map_or_else(
+                || ::std::ffi::OsString::from($name),
+                ::std::ffi::OsString::from,
+            )
+    }};
+}
+
 /// Locates a checked-in fixture relative to the SDK repository.
 ///
 /// Cross-built test executables run against an explicitly supplied source
 /// snapshot: set `ACYCLIC_TEST_SOURCE_ROOT` to its absolute repository root.
-/// Ordinary Cargo tests use the source tree they were compiled from.
+/// A Bazel `isolated_test` sets it to the SDK's repository in the runfiles, in
+/// the SDK's own workspace and in any workspace that depends on the SDK, so a
+/// consumer reads the SDK files it declares as test data. Ordinary Cargo tests
+/// use the source tree they were compiled from.
 ///
 /// # Panics
 ///
@@ -161,6 +184,41 @@ macro_rules! crate_path_str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_tool_uses_the_declared_executable_or_the_host_search_path() {
+        let child = |declared: Option<&str>| {
+            let mut command = std::process::Command::new(
+                std::env::current_exe().expect("current test executable"),
+            );
+            command
+                .args(["--exact", "fixtures::tests::host_tool_child", "--nocapture"])
+                .env("ACYCLIC_HOST_TOOL_CHILD", "1")
+                .env_remove("CARGO_BIN_EXE_node")
+                .env_remove("NEXTEST_BIN_EXE_node")
+                .env_remove("node");
+            if let Some(declared) = declared {
+                command.env("CARGO_BIN_EXE_node", declared);
+            }
+            let output = command.output().expect("run host tool child");
+            assert!(
+                output.status.success(),
+                "host tool child failed: {output:?}"
+            );
+        };
+        child(None);
+        child(Some("/declared/node"));
+    }
+
+    #[test]
+    fn host_tool_child() {
+        if std::env::var_os("ACYCLIC_HOST_TOOL_CHILD").is_none() {
+            return;
+        }
+        let expected = std::env::var_os("CARGO_BIN_EXE_node")
+            .unwrap_or_else(|| std::ffi::OsString::from("node"));
+        assert_eq!(crate::host_tool!("node"), expected);
+    }
+
     #[test]
     fn selected_external_runner_executes_without_compiled_cargo_metadata() {
         let executable = crate::cargo_binary!(

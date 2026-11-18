@@ -16,7 +16,7 @@ fn observe(
             value
         })
         .map_err(|error| format!("{error:?}"));
-    (result, accounting.spent())
+    (result, accounting.spent().unwrap())
 }
 
 fn compare(

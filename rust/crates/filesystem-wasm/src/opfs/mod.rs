@@ -1,10 +1,6 @@
 //! Authoritative origin-private immutable object storage.
 
 use acyclic_fs::storage::ObjectWrite;
-use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectResult, ObjectStoreError, WorkBudget, WorkCounters, object_digest,
-};
 use acyclic_stream::OwnedBytes;
 use futures::future::join_all;
 use thiserror::Error;
@@ -13,6 +9,14 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     Blob, FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetDirectoryOptions,
     FileSystemGetFileOptions, FileSystemWritableFileStream,
+};
+use {
+    acyclic_fs::{
+        AsyncObjectStore, CancellationToken, ObjectFailure, ObjectRead, ObjectReadRequest,
+        ObjectReadRetention, ObjectResult, ObjectStoreError, object_digest,
+    },
+    acyclic_fs_format::object_reference::ObjectId,
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
 };
 
 mod store;
@@ -209,7 +213,16 @@ fn fold_unit_results(
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
             }
             Err(failure) => {
-                window = combine_parallel_window(window, *failure.work)
+                let observed = match failure.work() {
+                    Ok(work) => *work,
+                    Err(observation) => {
+                        return Err(ObjectFailure::without_receipt(
+                            first_error.unwrap_or(failure.error),
+                            observation,
+                        ));
+                    }
+                };
+                window = combine_parallel_window(window, observed)
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
                 if first_error.is_none() {
                     first_error = Some(failure.error);
@@ -231,11 +244,11 @@ fn fold_unit_results(
 fn combine_parallel_window(
     mut left: WorkCounters,
     mut right: WorkCounters,
-) -> Result<WorkCounters, acyclic_fs::WorkError> {
+) -> Result<WorkCounters, acyclic_fs_work::performance::WorkError> {
     let peak = left
         .peak_allocation_bytes
         .checked_add(right.peak_allocation_bytes)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
+        .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
     left.peak_allocation_bytes = 0;
     right.peak_allocation_bytes = 0;
     let mut combined = left.checked_add(right)?;
@@ -246,18 +259,21 @@ fn combine_parallel_window(
 fn combine_sequential(
     left: WorkCounters,
     right: WorkCounters,
-) -> Result<WorkCounters, acyclic_fs::WorkError> {
+) -> Result<WorkCounters, acyclic_fs_work::performance::WorkError> {
     left.checked_add(right)
 }
 
-fn allocation_bytes<T>(count: usize) -> Result<u64, acyclic_fs::WorkError> {
+fn allocation_bytes<T>(count: usize) -> Result<u64, acyclic_fs_work::performance::WorkError> {
     count
         .checked_mul(size_of::<T>())
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(acyclic_fs::WorkError::Overflow)
+        .ok_or(acyclic_fs_work::performance::WorkError::Overflow)
 }
 
-fn join_frames_bytes<F: Future>(_future: &F, count: usize) -> Result<u64, acyclic_fs::WorkError> {
+fn join_frames_bytes<F: Future>(
+    _future: &F,
+    count: usize,
+) -> Result<u64, acyclic_fs_work::performance::WorkError> {
     // Account for pinned futures and completed outputs in the small join_all window.
     allocation_bytes::<futures::future::MaybeDone<F>>(count)
 }

@@ -22,14 +22,14 @@
       {
         "messages": [
           {
+            "role": "system",
+            "content": "keep instructions"
+          },
+          {
             "role": "assistant",
             "content": {
               "kind": "file"
             }
-          },
-          {
-            "role": "system",
-            "content": "keep instructions"
           },
           {
             "role": "user",

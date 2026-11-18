@@ -1,12 +1,13 @@
 use super::*;
 
 pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
-    use acyclic_fs::{
-        CheckoutMountSource, NativeMountRequest, SharedCheckout, mount_native, probe_native_mount,
-    };
-    #[cfg(windows)]
-    use acyclic_fs::{MountFilesystem, MountPath};
     use std::sync::Arc;
+    #[cfg(windows)]
+    use {acyclic_fs::MountFilesystem, acyclic_fs_native_contract::MountPath};
+    use {
+        acyclic_fs::{CheckoutMountSource, SharedCheckout, mount_native, probe_native_mount},
+        acyclic_fs_native_contract::NativeMountRequest,
+    };
 
     let source = PathBuf::from(args.first().ok_or("mount-smoke: missing <src>")?).canonicalize()?;
     let work = PathBuf::from(args.get(1).ok_or("mount-smoke: missing <work>")?);
@@ -53,7 +54,7 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
     let started = Instant::now();
     let mut session = mount_native(
         NativeMountRequest {
-            mount_id: acyclic_fs::MountId::new(),
+            mount_id: acyclic_fs_format::identity::MountId::new(),
             volume_id,
             destination: mount_dir.clone(),
             writable: true,
@@ -189,8 +190,11 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
 // ---------------------------------------------------------------------------
 
 pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
-    use acyclic_fs::{CheckoutMountSource, NativeMountRequest, SharedCheckout, mount_native};
     use std::sync::Arc;
+    use {
+        acyclic_fs::{CheckoutMountSource, SharedCheckout, mount_native},
+        acyclic_fs_native_contract::NativeMountRequest,
+    };
 
     let source = PathBuf::from(args.first().ok_or("mount-hold: missing <src>")?).canonicalize()?;
     let work = PathBuf::from(args.get(1).ok_or("mount-hold: missing <work>")?);
@@ -220,7 +224,7 @@ pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
         Arc::new(CheckoutMountSource::new(shared, config).map_err(engine_err("mount source"))?);
     let mut session = mount_native(
         NativeMountRequest {
-            mount_id: acyclic_fs::MountId::new(),
+            mount_id: acyclic_fs_format::identity::MountId::new(),
             volume_id,
             destination: mount_dir.clone(),
             writable: true,
@@ -242,8 +246,11 @@ pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
 // ---------------------------------------------------------------------------
 
 pub(super) fn source_probe(args: &[String]) -> Result<(), Failure> {
-    use acyclic_fs::{CheckoutMountSource, MountFilesystem, MountPath, SharedCheckout};
     use std::sync::Arc;
+    use {
+        acyclic_fs::{CheckoutMountSource, MountFilesystem, SharedCheckout},
+        acyclic_fs_native_contract::MountPath,
+    };
 
     let source =
         PathBuf::from(args.first().ok_or("source-probe: missing <src>")?).canonicalize()?;
@@ -308,8 +315,11 @@ pub(super) fn source_probe(args: &[String]) -> Result<(), Failure> {
 // ---------------------------------------------------------------------------
 
 pub(super) fn mount_smoke2(args: &[String]) -> Result<(), Failure> {
-    use acyclic_fs::{CheckoutMountSource, NativeMountRequest, SharedCheckout, mount_native};
     use std::sync::Arc;
+    use {
+        acyclic_fs::{CheckoutMountSource, SharedCheckout, mount_native},
+        acyclic_fs_native_contract::NativeMountRequest,
+    };
 
     let source =
         PathBuf::from(args.first().ok_or("mount-smoke2: missing <src>")?).canonicalize()?;
@@ -342,7 +352,7 @@ pub(super) fn mount_smoke2(args: &[String]) -> Result<(), Failure> {
         let started = Instant::now();
         let session = mount_native(
             NativeMountRequest {
-                mount_id: acyclic_fs::MountId::new(),
+                mount_id: acyclic_fs_format::identity::MountId::new(),
                 volume_id,
                 destination: mount_dir.clone(),
                 writable: true,

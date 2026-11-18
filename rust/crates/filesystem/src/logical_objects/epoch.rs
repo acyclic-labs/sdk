@@ -27,11 +27,12 @@ pub struct Epoch {
     /// Where the current epoch survives a restart, for a store that collects.
     #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     pointer: Option<PathBuf>,
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(target_arch = "wasm32")))]
     pub(crate) hooks: hooks::Hooks,
 }
 
-const ROOT: &[u8] = b"fs-epoch/";
+const ROOT: &[u8; 9] = b"fs-epoch/";
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 const FORMAT: &[u8; 8] = b"FSEPOCH\x01";
 
@@ -70,7 +71,8 @@ impl Epoch {
             current: AtomicU64::new(current),
             unreleased: AtomicU64::new(unreleased),
             pointer: Some(pointer),
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(not(target_arch = "wasm32")))]
             hooks: hooks::Hooks::default(),
         })
     }
@@ -88,10 +90,8 @@ impl Epoch {
     pub(super) const ROOT_BYTES: usize = ROOT.len() + 8;
 
     /// Fills the caller's empty, preallocated root storage without growing it.
-    pub(super) fn root_from(epoch: u64, mut bytes: Vec<u8>) -> acyclic_objects::RootId {
-        bytes.extend_from_slice(ROOT);
-        bytes.extend_from_slice(&epoch.to_be_bytes());
-        acyclic_objects::RootId::new(bytes).expect("a fixed-width epoch root is a valid root")
+    pub(super) fn root_from(epoch: u64, bytes: Vec<u8>) -> acyclic_objects::RootId {
+        acyclic_objects::RootId::from_prefix(ROOT, &epoch.to_be_bytes(), bytes)
     }
 
     #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
@@ -174,7 +174,8 @@ pub(crate) enum Step {
     Released,
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 pub(crate) mod hooks {
     use super::Step;
     use std::sync::{Arc, Mutex, PoisonError};
@@ -199,16 +200,14 @@ pub(crate) mod hooks {
         }
 
         /// Holds the next publication that retains until the guard drops.
-        pub(crate) fn pause(&self) -> tokio::sync::OwnedMutexGuard<()> {
-            self.pause_at(1)
+        pub(crate) async fn pause(&self) -> tokio::sync::OwnedMutexGuard<()> {
+            self.pause_at(1).await
         }
 
         /// Holds the `nth` retain from now until the guard drops.
-        pub(crate) fn pause_at(&self, nth: usize) -> tokio::sync::OwnedMutexGuard<()> {
+        pub(crate) async fn pause_at(&self, nth: usize) -> tokio::sync::OwnedMutexGuard<()> {
             let gate = Arc::new(tokio::sync::Mutex::new(()));
-            let guard = Arc::clone(&gate)
-                .try_lock_owned()
-                .expect("a fresh gate is free");
+            let guard = Arc::clone(&gate).lock_owned().await;
             *self.pause.lock().unwrap_or_else(PoisonError::into_inner) = Some((nth, gate));
             guard
         }

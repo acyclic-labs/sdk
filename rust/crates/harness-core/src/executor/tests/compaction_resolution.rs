@@ -42,7 +42,7 @@ fn native_work() -> Result<acyclic_fs::NativeMaterializationWork> {
     acyclic_fs::NativeMaterializationWork::new(
         // Use the production operation allowance. Funding only the accounting
         // state made the supposed successful reference an allocation failure.
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, _)| Error::NativeWork {
@@ -122,7 +122,7 @@ async fn native_resolution_failures_reject_before_journal_or_model_work() -> Res
             let operation = OperationId::new();
             let executor = executor(&context, operation, policy)?;
             let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(1 << 20, 1 << 20);
+            let mut budget = acyclic_fs_work::performance::work_budget(1 << 20, 1 << 20);
             match fault {
                 0 => budget.bytes_hashed = 0,
                 1 => budget.allocation_operations = 1, // the original ledger only

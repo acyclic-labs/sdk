@@ -90,7 +90,7 @@ fn original_ledgers_enforce_hash_cuts_and_release_sequence_scratch() -> Result<(
     for native in [false, true] {
         for hash in [0, 1, full.len() as u64, full.len() as u64 + 1] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+            let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024);
             budget.bytes_hashed = hash;
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -112,7 +112,7 @@ fn original_ledgers_enforce_hash_cuts_and_release_sequence_scratch() -> Result<(
                         Some(*blake3::hash(&prefix).as_bytes())
                     )
                 );
-                assert_eq!(io.receipt().bytes_hashed, hash);
+                assert_eq!(io.receipt()?.bytes_hashed, hash);
             }
             // A native failure may carry its diagnostic custody until dropped.
             assert_eq!(io.owned_bytes()?, baseline, "native={native} hash={hash}");
@@ -157,7 +157,8 @@ fn original_ledger_peak_is_independent_of_message_count() -> Result<()> {
         for count in [1, 10, 100, 1000] {
             let values = vec![value.clone(); count];
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(8 * 1024 * 1024, 8 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(8 * 1024 * 1024, 8 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = if native {
@@ -179,7 +180,7 @@ fn original_ledger_peak_is_independent_of_message_count() -> Result<()> {
                     &mut None
                 )?)
             );
-            let peak = io.receipt().peak_allocation_bytes;
+            let peak = io.receipt()?.peak_allocation_bytes;
             let first = *maximum.get_or_insert(peak);
             assert_eq!(peak, first, "native={native} count={count}");
             assert_eq!(io.owned_bytes()?, baseline);

@@ -114,7 +114,12 @@ impl GuestSessionAdmission {
     }
 
     /// Takes the packet entry's original terminal callback cause and receipt.
-    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+    pub fn take_callback_failure(
+        &self,
+    ) -> Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )> {
         self.protocol.single_core()?.take_handler_failure()
     }
 
@@ -183,7 +188,12 @@ impl GuestSessionFailure {
         &self.cause
     }
     /// The original callback error and counters, if filesystem workers joined.
-    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+    pub fn take_callback_failure(
+        &self,
+    ) -> Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )> {
         self.drained.as_ref()?.take_callback_failure()
     }
     /// Both original physical and transport errors, without replacing either.
@@ -218,12 +228,19 @@ pub struct GuestSessionRetired(super::vhost_session::VhostRetired);
 
 impl GuestSessionRetired {
     /// Consumes the original callback cause once, without substituting errno.
-    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+    pub fn take_callback_failure(
+        &self,
+    ) -> Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )> {
         self.0.take_callback_failure()
     }
     /// Work completed by the original callback owner.
     #[must_use]
-    pub fn completed_callback_work(&self) -> crate::WorkCounters {
+    pub fn completed_callback_work(
+        &self,
+    ) -> Result<crate::WorkCounters, crate::WorkObservationError> {
         self.0.completed_callback_work()
     }
     /// Transport result after workers have joined.

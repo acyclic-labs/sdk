@@ -72,7 +72,7 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
     .err()
     .ok_or("multilevel blob unexpectedly fit a one-page height bound")?;
     assert!(matches!(shallow.error, BlobReadError::CycleOrHeight));
-    assert!(shallow.work.page_reads > 0);
+    assert!(shallow.work().unwrap().page_reads > 0);
     Ok(())
 }
 
@@ -162,7 +162,7 @@ async fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
     .err()
     .ok_or("underbudgeted measured source unexpectedly built")?;
     assert!(matches!(failed.error, BlobBuildError::Work(_)));
-    assert_eq!(failed.work.backend_write_operations, 0);
+    assert_eq!(failed.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -238,9 +238,9 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     .err()
     .ok_or("spare-capacity input escaped its hard bound")?;
     assert!(matches!(failed.error, BlobBuildError::Work(_)));
-    assert_eq!(failed.work.source_bytes_read, 3);
-    assert_eq!(failed.work.backend_write_operations, 0);
-    assert!(failed.work.peak_allocation_bytes >= capacity);
+    assert_eq!(failed.work.as_deref().unwrap().source_bytes_read, 3);
+    assert_eq!(failed.work.as_deref().unwrap().backend_write_operations, 0);
+    assert!(failed.work.as_deref().unwrap().peak_allocation_bytes >= capacity);
     Ok(())
 }
 
@@ -306,8 +306,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     .err()
     .ok_or("failing source unexpectedly built")?;
     assert!(matches!(failure.error, BlobBuildError::Source(_)));
-    assert_eq!(failure.work.source_bytes_read, 1);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().source_bytes_read, 1);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
 
     let cancellation = CancellationToken::new();
     let mut cancelling = ScriptedSource {
@@ -328,8 +328,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     .err()
     .ok_or("midstream-cancelled source unexpectedly built")?;
     assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
-    assert_eq!(cancelled.work.source_bytes_read, 1);
-    assert_eq!(cancelled.work.backend_write_operations, 0);
+    assert_eq!(cancelled.work().unwrap().source_bytes_read, 1);
+    assert_eq!(cancelled.work().unwrap().backend_write_operations, 0);
 
     let cancellation = CancellationToken::new();
     let mut queued = ScriptedSource {
@@ -350,11 +350,15 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     .err()
     .ok_or("queued midstream cancellation unexpectedly built")?;
     assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
-    assert_eq!(cancelled.work.source_bytes_read, 5);
-    assert_eq!(cancelled.work.backend_write_operations, 0);
+    assert_eq!(cancelled.work().unwrap().source_bytes_read, 5);
+    assert_eq!(cancelled.work().unwrap().backend_write_operations, 0);
 
     let mut tight_budget = WorkBudget::UNBOUNDED;
-    tight_budget.peak_allocation_bytes = cancelled.work.peak_allocation_bytes.saturating_sub(1);
+    tight_budget.peak_allocation_bytes = cancelled
+        .work()
+        .unwrap()
+        .peak_allocation_bytes
+        .saturating_sub(1);
     let mut bounded = std::io::Cursor::new(OwnedBytes::from_static(b"abcdef"));
     let rejected = (build_blob(
         &MemoryObjectStore::default(),
@@ -367,8 +371,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     .err()
     .ok_or("one-byte-short retained-buffer budget unexpectedly built")?;
     assert!(matches!(rejected.error, BlobBuildError::Work(_)));
-    assert_eq!(rejected.work.source_bytes_read, 4);
-    assert_eq!(rejected.work.backend_write_operations, 0);
+    assert_eq!(rejected.work().unwrap().source_bytes_read, 4);
+    assert_eq!(rejected.work().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -532,7 +536,7 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         .err()
         .ok_or("invalid blob options unexpectedly succeeded")?;
         assert!(matches!(failure.error, BlobBuildError::InvalidOptions));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
         assert_eq!(source.position(), 0);
     }
     let mut invalid_source = std::io::Cursor::new(b"abc");
@@ -553,7 +557,7 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
     .ok_or("undersized blob page unexpectedly succeeded")?;
     assert!(matches!(invalid.error, BlobBuildError::InvalidOptions));
     assert_eq!(invalid_source.position(), 0);
-    assert_eq!(*invalid.work, WorkCounters::default());
+    assert_eq!(*invalid.work().unwrap(), WorkCounters::default());
 
     let options = BlobBuildOptions {
         chunk_bytes: 2,
@@ -596,6 +600,6 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         ),
         "{failure:?}"
     );
-    assert!(failure.work.peak_allocation_bytes <= maximum);
+    assert!(failure.work.as_deref().unwrap().peak_allocation_bytes <= maximum);
     Ok(())
 }

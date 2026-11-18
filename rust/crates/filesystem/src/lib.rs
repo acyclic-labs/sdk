@@ -13,16 +13,12 @@
 pub use acyclic_auth::addressing;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_fs_wire::{AUTHORIZATION, FsMethod, authorization};
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
 #[cfg(test)]
 extern crate self as acyclic_fs;
-
-// These API regressions own memory fixtures even when consumers select none.
-#[cfg(test)]
-#[path = "../tests/measured_native_source.rs"]
-mod measured_native_source;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;
@@ -42,14 +38,16 @@ pub(crate) fn descriptor_digest() -> String {
         .to_string()
 }
 
-#[cfg(any(test, all(feature = "test-support", windows)))]
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn initialize_test_native_io() {
-    static INITIALIZED: std::sync::Once = std::sync::Once::new();
-    INITIALIZED.call_once(|| {
+mod test_native_io {
+    pub(crate) fn initialize() {
         acyclic_native_runtime::initialize_native_io_services().expect("native I/O test services");
-    });
+    }
 }
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use test_native_io::initialize as initialize_test_native_io;
 
 #[cfg(all(any(test, feature = "test-support"), windows))]
 mod windows_test_filesystems;
@@ -60,7 +58,8 @@ pub use windows_test_filesystems::junction as test_directory_junction;
 pub mod access;
 mod arc_layout;
 pub use arc_layout::shared_allocation_bytes;
-mod operation_claim;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_sync;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch_queue;
@@ -94,7 +93,6 @@ pub mod distributed;
 mod logical_objects;
 pub use logical_objects::{LogicalObjectStore, ObjectSealer, PlainObjects};
 pub mod facade;
-#[macro_use]
 pub mod foundation;
 mod publication_changes;
 pub use publication_changes::PublicationEntry;
@@ -109,27 +107,19 @@ mod heap_future;
 pub mod hosted_contract;
 pub use hosted_contract::{MAX_BYTE_RESPONSE_ENVELOPE_BYTES, MINIMUM_HANDSHAKE_RESPONSE_BYTES};
 mod identity;
+#[cfg(kani)]
+mod kani_proofs;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;
 mod lock_order;
 pub mod materializer;
 #[cfg(test)]
-#[path = "tests/measured_creation.rs"]
-mod measured_creation;
-#[cfg(test)]
 pub mod memory;
 pub mod merge_driver;
 pub mod model;
 pub mod mount;
 pub mod multi_root;
-mod obs;
-#[cfg(all(feature = "tooling", not(target_arch = "wasm32")))]
-#[doc(hidden)]
-pub mod tooling_contracts;
-pub use acyclic_fs_base::numeric::exact_u32_from_f64;
-#[cfg(kani)]
-mod kani_proofs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_capture;
 #[cfg(not(target_arch = "wasm32"))]
@@ -137,8 +127,6 @@ mod native_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_host;
-#[cfg(not(target_arch = "wasm32"))]
-mod native_identity;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(
@@ -148,6 +136,10 @@ mod native_identity;
     )
 ))]
 mod native_ownership;
+mod obs;
+#[cfg(all(feature = "tooling", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod tooling_contracts;
 #[cfg(all(target_os = "linux", feature = "fuzzing"))]
 #[doc(hidden)]
 pub use acyclic_native_runtime::receive_packet_device_reply_for_test;
@@ -159,7 +151,11 @@ pub mod native_mount;
 mod native_name;
 pub mod operation_window;
 pub mod path;
-pub mod performance;
+#[cfg(not(test))]
+use acyclic_fs_work::performance;
+#[cfg(test)]
+#[path = "tests/performance_scope.rs"]
+mod performance;
 mod record_store;
 pub mod s3;
 #[cfg(not(target_arch = "wasm32"))]
@@ -182,7 +178,6 @@ pub mod streams_record;
 #[cfg(test)]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
-pub use acyclic_fs_base::text_merge;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod watch;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
@@ -201,6 +196,10 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
+use acyclic_fs_format::identity::{
+    AuthorityId, CheckoutId, Digest, FileId, MountId, OperationId, VolumeId, WatchId,
+};
+use acyclic_fs_format::object_reference::{ObjectId, ObjectIdBytes, ObjectKind, ObjectStorage};
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(not(target_arch = "wasm32"))]
@@ -231,11 +230,11 @@ pub use distributed::{
 pub use distributed::{StreamStateStoreCause, StreamStateStoreError, UnresolvedCommit};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    ContentAddress, ContentChange, ContentFile, ContentTimes, CreationOperation, DetachedFile,
-    DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
-    FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsResult, GenerationDiff,
-    JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation, MergeConflict,
-    MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    ContentAddress, ContentChange, ContentFile, ContentTimes, CreationAttribute, CreationOperation,
+    DetachedFile, DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage,
+    EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
+    FsResult, GenerationDiff, JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation,
+    MergeConflict, MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
@@ -250,9 +249,8 @@ pub use facade::{
 };
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
-    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
-    FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
-    authority_commit_digest,
+    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, DurableCommit, Epoch, GenerationId, Head,
+    ProposedCommit, Sequence, authority_commit_digest,
 };
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
@@ -272,6 +270,10 @@ pub use git_compat::{
 };
 pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs_native_contract::{
+    MountPath, NativeMountRequest, NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation,
+};
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
     GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,
@@ -340,19 +342,15 @@ pub use native_capture::{
     hold_root, hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
-#[cfg(not(target_arch = "wasm32"))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
-    MountContentPin, MountDirectoryCursor, MountDirectoryEntry, MountDirectoryPage,
-    MountFilesystem, MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountOptions, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountSourceRetirement, MountSparseRange, MountSparseSpan,
-    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountCleanupState,
-    NativeMountControlPaths, NativeMountDrainProof, NativeMountError, NativeMountKind,
+    MountDirectoryCursor, MountDirectoryEntry, MountDirectoryPage, MountFilesystem,
+    MountLifecycleError, MountOpenFile, MountOptions, MountPublication, MountSourceError,
+    MountSourceRetirement, MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
+    NativeMountCleanupState, NativeMountControlPaths, NativeMountDrainProof, NativeMountError,
     NativeMountProbe, NativeMountRecoveryCleanupState, NativeMountRecoveryOwner,
-    NativeMountRequest, NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
+    NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState, SharedViewInstance,
@@ -379,8 +377,9 @@ pub use operation_window::{
     WorkspaceOperationFinish,
 };
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
-pub use performance::{
+use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
+    WorkObservationError,
 };
 pub use s3::{
     S3Error, S3List, S3ListCursor, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object,
@@ -409,10 +408,9 @@ pub use speculation::{
 };
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, ByteRange,
-    CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject, ObjectFailure, ObjectId,
-    ObjectIdBytes, ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
-    ObjectStorage, ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit,
-    ReservationOutcome, object_digest,
+    CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject, ObjectFailure, ObjectRead,
+    ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationPermit,
+    PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
 pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,

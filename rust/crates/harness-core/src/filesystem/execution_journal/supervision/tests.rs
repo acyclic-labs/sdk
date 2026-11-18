@@ -299,7 +299,7 @@ async fn native_capture_receipts_keep_original_identity_and_refuse_unavailable_p
     let mut context = ToolContext::new(task.clone(), effect, "shell")?;
     context.model_turn = (execution, 0);
     let evidence = NativeCaptureEvidence::Unavailable {
-        operation: acyclic_fs::OperationId::new(),
+        operation: acyclic_fs_format::identity::OperationId::new(),
     };
     assert!(
         context
@@ -394,7 +394,7 @@ async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_
         );
         let context = crate::runtime::ToolContext::new(task, operation, "edit")?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 16_000_000);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = if native {

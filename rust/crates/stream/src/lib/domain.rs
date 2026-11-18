@@ -919,13 +919,37 @@ impl CommitRequest {
 pub trait UnixMillisClock: Send + Sync + 'static {
     /// Current Unix time in milliseconds.
     fn now_unix_millis(&self) -> u64;
+
+    /// Whether this is the host's system clock, the default when no clock is
+    /// configured. Two system clocks are interchangeable even when they are
+    /// distinct values.
+    fn is_system_clock(&self) -> bool {
+        false
+    }
 }
 
 /// Production wall clock for deadline-aware providers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemUnixMillisClock;
 
+#[cfg(any(test, target_arch = "wasm32"))]
+/// Converts an exact nonnegative JavaScript integer without truncation.
+#[must_use]
+pub fn wasm_unsigned_integer(value: f64) -> Option<u64> {
+    if !value.is_finite() || value.is_sign_negative() || value.fract() != 0.0 {
+        return None;
+    }
+    // Use Duration's checked float conversion on the integral millisecond count.
+    std::time::Duration::try_from_secs_f64(value)
+        .ok()
+        .map(|value| value.as_secs())
+}
+
 impl UnixMillisClock for SystemUnixMillisClock {
+    fn is_system_clock(&self) -> bool {
+        true
+    }
+
     fn now_unix_millis(&self) -> u64 {
         #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
         if let Some(millis) = acyclic_native_runtime::testing::unix_millis() {
@@ -933,14 +957,7 @@ impl UnixMillisClock for SystemUnixMillisClock {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let now = js_sys::Date::now().max(0.0).floor();
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "JavaScript Date returns f64; the integer cast saturates at u64 bounds"
-            )]
-            let millis = now as u64;
-            millis
+            wasm_unsigned_integer(js_sys::Date::now()).unwrap_or(u64::MAX)
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -949,6 +966,23 @@ impl UnixMillisClock for SystemUnixMillisClock {
                 .map_or(0, |duration| {
                     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
                 })
+        }
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::wasm_unsigned_integer;
+
+    #[test]
+    fn javascript_clock_rejects_invalid_deadline_times() {
+        assert_eq!(
+            wasm_unsigned_integer(1_700_000_000_123.0),
+            Some(1_700_000_000_123)
+        );
+        assert_eq!(wasm_unsigned_integer(0.0), Some(0));
+        for invalid in [-0.0, -1.0, 1.5, f64::NAN, f64::INFINITY, f64::MAX] {
+            assert_eq!(wasm_unsigned_integer(invalid), None);
         }
     }
 }

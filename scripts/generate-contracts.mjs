@@ -1,9 +1,8 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
-import { checkGenerated, projectGenerated } from "./generated-bindings.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
@@ -59,7 +58,10 @@ export const keepsGenerator = (generator, families, native) => !generator.native
 /** The contract modules are the one computed import: every caller loads them here. @param {string[]} names */
 export const loadContractModules = names => Promise.all(names.map(name => import(`./${name}`)));
 
-export async function generateContracts(mode = "write", families = [], { native = false } = {}) {
+/** @param {string} [mode] @param {string[]} [families]
+ * @param {{native?:boolean,tools?:ReadonlyMap<string,string>,sourceCommit?:string}} [options] */
+export async function generateContracts(mode = "write", families = [], { native = false, tools = undefined, sourceCommit = undefined } = {}) {
+  const {checkGenerated, projectGenerated} = await import("./generated-bindings.mjs");
   let modules = contractModules(families);
 
   if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
@@ -83,7 +85,7 @@ export async function generateContracts(mode = "write", families = [], { native 
   try {
     report.phase = "source";
     saveReport();
-    report.source_commit = captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
+    report.source_commit = sourceCommit ?? captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
     if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
     report.phase = "imports";
     saveReport();
@@ -93,7 +95,11 @@ export async function generateContracts(mode = "write", families = [], { native 
     generators = generators.filter((_, index) => kept[index]);
     const targets = [...new Set(generators.flatMap(generator => generator.rust ?? []))];
     report.labels = targets;
-    const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, report, saveReport);
+    const executables = tools ? targets.map(target => {
+      const executable = tools.get(target);
+      if (!executable) throw Error(`ContractToolMissing: ${target}`);
+      return executable;
+    }) : targets.length === 0 ? [] : buildContractTargets(root, targets, report, saveReport);
     const targetIndex = new Map(targets.map((target, index) => [target, index]));
     const consumers = generators.flatMap(generator => (generator.rust ?? [])
       .map(target => [targetIndex.get(target), generator.rustPayload]));
@@ -140,7 +146,7 @@ export async function generateContracts(mode = "write", families = [], { native 
 
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const args = process.argv.slice(3);
   await generateContracts(process.argv[2] ?? "write", args.filter(arg => arg !== "--native"), { native: args.includes("--native") });
 }

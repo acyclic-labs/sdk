@@ -17,20 +17,8 @@ pub struct BearerAuth(Option<MetadataValue<Ascii>>);
 impl BearerAuth {
     /// Validates an opaque bearer credential and marks its metadata sensitive.
     pub fn new(token: &str) -> Result<Self, Error> {
-        #[cfg(not(target_arch = "wasm32"))]
         let value = acyclic_auth::credential::bearer_metadata(token)
             .map_err(|_| Error::Configuration("invalid bearer credential".to_owned()))?;
-        #[cfg(target_arch = "wasm32")]
-        let value = {
-            let invalid = || Error::Configuration("invalid bearer credential".to_owned());
-            if !crate::valid_token(token) {
-                return Err(invalid());
-            }
-            let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(token))
-                .map_err(|_| invalid())?;
-            value.set_sensitive(true);
-            value
-        };
         Ok(Self(Some(value)))
     }
 }
@@ -323,8 +311,9 @@ impl Client {
     }
 
     async fn stage<T>(&self, work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+        let mut work = std::pin::pin!(work);
         match &self.context {
-            Some(context) => context.run(work).await?,
+            Some(context) => context.run(work.as_mut()).await?,
             None => work.await,
         }
     }

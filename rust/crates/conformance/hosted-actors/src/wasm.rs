@@ -12,7 +12,6 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt;
 use js_sys::{Function, Promise, Uint8Array};
-use std::sync::Arc;
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 
@@ -41,7 +40,7 @@ impl ActorsDomain {
         let provider = InjectedStream::new(port).map_err(failed)?;
         Ok(Self {
             store: Store::new(
-                Arc::new(Counted::new(provider)),
+                acyclic_stream::ProviderOwner::new(Counted::new(provider)),
                 StreamPath::new("actors/state").map_err(failed)?,
             ),
             clock: SystemClock,

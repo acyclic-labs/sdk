@@ -290,7 +290,8 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
             if state.invalidation.is_pending(state.invalidation.notified) {
                 break;
             }
-            #[cfg(all(test, loom))]
+            #[cfg(test)]
+            #[cfg(all(loom))]
             model_checking::before_invalidator_wait();
             state = core
                 .invalidation
@@ -317,7 +318,8 @@ pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl Ke
 }
 
 fn invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(all(not(loom)))]
     super::tests::owner::pause_invalidations(core);
     let mut through = None;
     let result = core.request(|work| {
@@ -401,7 +403,8 @@ fn drop_kernel_caches(
     })
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod tests {
     use super::*;
 

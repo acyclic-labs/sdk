@@ -101,18 +101,18 @@ async fn a_scoped_name_query_keeps_the_callback_budget_and_cancellation()
     .map_err(|(error, _)| error)?;
     runtime.work = Mutex::new(limited.clone());
     assert!(cached_name_query(&runtime, lookup.node.file_id, basis).is_err());
-    assert_eq!(limited.receipt().allocation_operations, 1);
+    assert_eq!(limited.receipt().unwrap().allocation_operations, 1);
     let cancellable =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
     runtime.work = Mutex::new(cancellable.clone());
-    let before = cancellable.receipt();
+    let before = cancellable.receipt().unwrap();
     cancellation.cancel();
     assert_eq!(
         cached_name_query(&runtime, lookup.node.file_id, basis),
         windows::Win32::Foundation::ERROR_OPERATION_ABORTED.to_hresult()
     );
-    assert_eq!(cancellable.receipt(), before);
+    assert_eq!(cancellable.receipt().unwrap(), before);
     Ok(())
 }
 
@@ -150,7 +150,7 @@ async fn stale_listing_facts_keep_the_original_lookup_allocation_budget()
     let (mut runtime, _, _, _root) = stale_name_runtime(&work).await?;
     runtime.work = Mutex::new(original.clone());
     assert_eq!(leaf_name_query(&runtime), HR_FILE_NOT_FOUND);
-    let receipt = original.receipt();
+    let receipt = original.receipt().unwrap();
     for peak in [
         receipt.peak_allocation_bytes,
         defaults.peak_allocation_bytes,
@@ -173,8 +173,8 @@ async fn stale_listing_facts_keep_the_original_lookup_allocation_budget()
         let (mut runtime, file_id, basis, _root) = stale_name_runtime(&work).await?;
         runtime.work = Mutex::new(limited.clone());
         assert_eq!(cached_name_query(&runtime, file_id, basis), expected);
-        let fallback = limited.receipt();
-        let baseline = plain.receipt();
+        let fallback = limited.receipt().unwrap();
+        let baseline = plain.receipt().unwrap();
         assert_eq!(
             fallback.allocation_operations,
             baseline.allocation_operations

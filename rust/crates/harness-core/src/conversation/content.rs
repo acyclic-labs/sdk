@@ -217,12 +217,12 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.original_native_work() {
                 let native = if bytes == 0 {
-                    work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?
+                    work.claim(0, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?
                 } else {
                     work.claim(
                         bytes,
                         u64::from((bytes) != 0),
-                        acyclic_fs::WorkCounters::UNCHARGED,
+                        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                     )?
                 };
                 return Ok(Self {

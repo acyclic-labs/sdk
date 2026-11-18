@@ -1,7 +1,8 @@
 //! Canonical blob client over the caller's original binary account transport.
+use crate::error::unavailable;
 use crate::{
     Availability, Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object,
-    Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
+    ObjectsMethod, Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
 };
 use acyclic_stream::{OwnedBytes, ProviderPlatform, ProviderTask, Revision};
 use bytes::Bytes;
@@ -53,19 +54,15 @@ impl<T> BinaryObjects<T> {
     }
 }
 
-fn unavailable() -> Error {
-    wire::ErrorCode::Unavailable.into()
-}
-
 impl<T: Transport> BinaryObjects<T> {
     async fn call<I: Message, O: Message + Default>(
         &self,
-        route: &str,
+        method: ObjectsMethod,
         input: I,
     ) -> Result<(O, Option<Revision>), Error> {
         let (body, revision) = self
             .transport
-            .invoke(route, input.encode_to_vec().into())
+            .invoke(method.http_route(), input.encode_to_vec().into())
             .await?;
         // Owned decoding retains body fields in the original response allocation.
         let reply = O::decode(body).map_err(|_| unavailable())?;
@@ -74,15 +71,13 @@ impl<T: Transport> BinaryObjects<T> {
 
     async fn publish(
         &self,
-        route: &str,
+        method: ObjectsMethod,
         input: impl Message,
         digest: Digest,
         length: u64,
     ) -> Result<Put, Error> {
-        let (reply, revision) = self.call(route, input).await?;
-        Ok(convert::verified_put(&reply, digest, length)
-            .map_err(|_| unavailable())?
-            .committed_at(revision))
+        let (reply, revision) = self.call(method, input).await?;
+        convert::verified_put(&reply, digest, length, revision)
     }
 }
 
@@ -98,19 +93,9 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     }
 
     async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        let digest = Digest::sealed(&body);
-        let length = body.bytes().len() as u64;
-        self.publish(
-            "blobs/put",
-            wire::PutBlobRequest {
-                digest: Some(digest.into()),
-                body: Bytes::from_owner(body.into_bytes()),
-                references: convert::wire_digests(&references),
-            },
-            digest,
-            length,
-        )
-        .await
+        let (request, (digest, length)) = convert::put_blob(body, &references);
+        self.publish(ObjectsMethod::PutBlob, request, digest, length)
+            .await
     }
 
     async fn put_batch_sealed(
@@ -123,8 +108,8 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         }
         let (request, expected) = convert::put_blobs(requests);
         let replied = async {
-            let (reply, revision) = self.call("blobs/put-batch", request).await?;
-            convert::verified_puts(reply, &expected, revision.as_ref()).map_err(|_| unavailable())
+            let (reply, revision) = self.call(ObjectsMethod::PutBlobs, request).await?;
+            convert::verified_puts(reply, &expected, revision.as_ref())
         };
         replied
             .await
@@ -132,17 +117,9 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
-        let digest = Digest::of(&manifest.encode()?);
-        let length = manifest.length()?;
-        self.publish(
-            "blobs/put-manifest",
-            wire::PutManifestRequest {
-                manifest: Some(convert::manifest(&manifest)),
-            },
-            digest,
-            length,
-        )
-        .await
+        let (request, (digest, length)) = convert::put_manifest(&manifest)?;
+        self.publish(ObjectsMethod::PutManifest, request, digest, length)
+            .await
     }
 
     async fn get(
@@ -153,60 +130,45 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     ) -> Result<Object, Error> {
         let (reply, revision) = self
             .call(
-                "blobs/get",
-                wire::GetBlobRequest {
-                    digest: Some(digest.into()),
-                    range: Some(convert::range(range)),
-                    maximum_bytes,
-                },
+                ObjectsMethod::GetBlob,
+                convert::get_request(digest, range, maximum_bytes),
             )
             .await?;
-        Ok(convert::object(reply, digest, range, maximum_bytes)
-            .map_err(|_| unavailable())?
-            .served_at(revision))
+        convert::object(reply, digest, range, maximum_bytes, revision)
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         let (reply, revision) = self
             .call(
-                "blobs/head",
+                ObjectsMethod::HeadBlob,
                 wire::HeadBlobRequest {
                     digest: Some(digest.into()),
                 },
             )
             .await?;
-        let mut head = convert::headed(&reply, digest).map_err(|_| unavailable())?;
-        head.revision = revision;
-        Ok(head)
+        convert::headed(&reply, digest, revision)
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
         let (reply, revision) = self
             .call(
-                "blobs/delete",
+                ObjectsMethod::DeleteBlob,
                 wire::DeleteBlobRequest {
                     digest: Some(digest.into()),
                 },
             )
             .await?;
-        let mut deletion = convert::delete(&reply).map_err(|_| unavailable())?;
-        deletion.revision = revision;
-        Ok(deletion)
+        convert::delete(&reply, revision)
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
         let (reply, revision) = self
             .call(
-                "blobs/list",
-                wire::ListBlobsRequest {
-                    after: after.map(Into::into),
-                    limit,
-                },
+                ObjectsMethod::ListBlobs,
+                convert::list_request(after, limit),
             )
             .await?;
-        let mut page = convert::listed(&reply, after, limit).map_err(|_| unavailable())?;
-        page.revision = revision;
-        Ok(page)
+        convert::listed(&reply, after, limit, revision)
     }
 
     async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {
@@ -217,42 +179,56 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         let (reply, revision): (wire::RetainResponse, _) = self
             .call(
-                "blobs/retain",
-                wire::RetainRequest {
-                    root: root.as_bytes().to_vec(),
-                    references: convert::wire_digests(&references),
-                },
+                ObjectsMethod::Retain,
+                convert::retain_request(root, &references),
             )
             .await?;
-        let mut retained = convert::retained(&reply);
-        retained.revision = revision;
-        Ok(retained)
+        Ok(convert::retained(&reply, revision))
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
         let (reply, revision): (wire::ReleaseResponse, _) = self
+            .call(ObjectsMethod::Release, convert::release_request(root))
+            .await?;
+        Ok(convert::released(&reply, revision))
+    }
+
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        let (reply, revision): (wire::RetainResponse, _) = self
             .call(
-                "blobs/release",
-                wire::ReleaseRequest {
-                    root: root.as_bytes().to_vec(),
-                },
+                ObjectsMethod::RetainFenced,
+                convert::retain_fenced_request(root, fence, &references),
             )
             .await?;
-        Ok(Released {
-            existed: reply.existed,
-            revision,
-        })
+        Ok(convert::retained(&reply, revision))
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        let (reply, revision): (wire::ReleaseResponse, _) = self
+            .call(
+                ObjectsMethod::ReleaseTerminal,
+                convert::release_terminal_request(root, fence),
+            )
+            .await?;
+        Ok(convert::released(&reply, revision))
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        let (reply, revision) = self.call("blobs/collect", wire::CollectRequest {}).await?;
-        let mut collection = convert::collection(&reply);
-        collection.revision = revision;
-        Ok(collection)
+        let (reply, revision) = self
+            .call(ObjectsMethod::Collect, wire::CollectRequest {})
+            .await?;
+        Ok(convert::collection(&reply, revision))
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
-        let (reply, _) = self.call("blobs/usage", wire::UsageRequest {}).await?;
+        let (reply, _) = self
+            .call(ObjectsMethod::Usage, wire::UsageRequest {})
+            .await?;
         Ok(convert::usage(&reply))
     }
 }

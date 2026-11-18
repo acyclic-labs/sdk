@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -6,15 +7,6 @@ import { fileURLToPath } from "node:url";
 import { sha256File } from "./file-digest.mjs";
 import { runCommand } from "./run-command.mjs";
 
-const libraryNames = {
-  win32: "acyclic_fs_napi.dll",
-  linux: "libacyclic_fs_napi.so",
-  darwin: "libacyclic_fs_napi.dylib",
-};
-const libraryName = libraryNames[process.platform];
-if (libraryName === undefined) {
-  throw new Error(`unsupported N-API qualification platform ${process.platform}`);
-}
 const { version } = JSON.parse(await readFile(
   new URL("../typescript/packages/filesystem/package.json", import.meta.url), "utf8",
 ));
@@ -38,11 +30,20 @@ if (positional.length > 1 || (output !== undefined && !isAbsolute(output))) {
   throw new Error("usage: check-filesystem-napi.mjs [--adapter] [ABSOLUTE_OUTPUT]");
 }
 
-const targetRoot = resolve(process.env.CARGO_TARGET_DIR ?? "target");
-const profile = process.env.ACYCLIC_FS_NAPI_PROFILE ?? "debug";
-const source = join(targetRoot, profile, libraryName);
+const target = "//rust/crates/filesystem-napi:acyclic_fs_napi_cdylib";
+const download = "--remote_download_toplevel";
+if (await runCommand("bazel", ["build", download, target]) !== 0) {
+  throw new Error(`native binding build failed for ${target}`);
+}
+const bazelOutput = (...args) => execFileSync("bazel", args, { encoding: "utf8" }).trim();
+const files = bazelOutput("cquery", download, "--output=files", target).split(/\r?\n/);
+const libraries = files.filter((file) => /\.(?:dll|so|dylib)$/.test(file));
+if (libraries.length !== 1) {
+  throw new Error(`expected one shared library from ${target}, got ${libraries.length}`);
+}
+const source = resolve(bazelOutput("info", "execution_root"), libraries[0]);
 const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-napi-"));
-const bindingPath = join(temporary, `${basename(libraryName)}.node`);
+const bindingPath = join(temporary, `${basename(source)}.node`);
 try {
   await copyFile(source, bindingPath);
   const status = await runCommand(process.execPath, [fileURLToPath(import.meta.url)], {

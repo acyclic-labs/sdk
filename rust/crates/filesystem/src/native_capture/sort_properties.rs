@@ -29,8 +29,8 @@ proptest! {
         let before = original.receipt();
         capture_sort_by(&mut values, Ord::cmp, &scope.native).unwrap();
         let after = original.receipt();
-        prop_assert_eq!(after.items_examined - before.items_examined, values.len().saturating_sub(1) as u64);
-        prop_assert_eq!(after.bytes_copied, before.bytes_copied);
+        prop_assert_eq!(after.unwrap().items_examined - before.unwrap().items_examined, values.len().saturating_sub(1) as u64);
+        prop_assert_eq!(after.unwrap().bytes_copied, before.unwrap().bytes_copied);
         drop((values, scope));
         prop_assert_eq!(original.live_allocation_bytes(), baseline);
 

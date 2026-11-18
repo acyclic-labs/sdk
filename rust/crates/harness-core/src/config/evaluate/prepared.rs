@@ -86,7 +86,11 @@ pub(super) async fn load(
         reads: retain_reads.then(Vec::new),
         digest: blake3::Hasher::new_derive_key(VERSION),
     };
-    let modules = closure(path, source, tree, &mut observations).await?;
+    let modules = closure(path, source, tree, &mut |path, bytes| {
+        observations.observe(path, bytes);
+        Ok(())
+    })
+    .await?;
     Ok(Loaded {
         reads: observations.reads.unwrap_or_default(),
         modules,
@@ -96,6 +100,17 @@ pub(super) async fn load(
             .and_then(|io| io.original_native_work())
             .cloned(),
     })
+}
+
+/// Visit original sources during the one dependency walk without retaining
+/// evaluation evidence. Operational observer/read failures stay outer errors.
+pub(crate) async fn visit_module_sources(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    observe: &mut (dyn FnMut(&str, Option<&[u8]>) -> Result<()> + Send),
+) -> Result<std::result::Result<(), String>> {
+    Ok(closure(path, source, tree, observe).await?.map(|_| ()))
 }
 
 // Hash each original observation once. Only reusable or evidence-retaining
@@ -162,7 +177,7 @@ impl Loaded {
         cache: &Cache,
     ) -> Result<Evaluation> {
         if let Some(work) = &self.work {
-            work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+            work.admit(acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
         }
         let base = crate::contract::canonical_json_bytes(base)?;
         let mut key = blake3::Hasher::new_derive_key(VERSION);
@@ -234,9 +249,9 @@ async fn closure(
     path: &str,
     source: &[u8],
     tree: &dyn Tree,
-    observations: &mut Observations,
+    observe: &mut (dyn FnMut(&str, Option<&[u8]>) -> Result<()> + Send),
 ) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
-    observations.observe(path, Some(source));
+    observe(path, Some(source))?;
     let mut modules = BTreeMap::new();
     match compile_module(path, source) {
         Ok(module) => modules.insert(path.to_owned(), (module, true)),
@@ -266,7 +281,7 @@ async fn closure(
         }
         let next = next.clone();
         let bytes = tree.read(&next).await?;
-        observations.observe(&next, bytes.as_deref().map(|bytes| &**bytes));
+        observe(&next, bytes.as_deref().map(|bytes| &**bytes))?;
         let Some(bytes) = bytes else {
             return Ok(Err(format!(
                 "{current} imports {next}, which no layer holds"

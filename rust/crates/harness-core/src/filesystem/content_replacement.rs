@@ -62,7 +62,7 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
     filesystem
         .create_workspace(
             "stale-content",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -105,7 +105,7 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
     let workspace = filesystem
         .open_workspace(
             "stale-content",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await

@@ -22,6 +22,8 @@ rust_library(
         "//rust/crates/sdk-generation/fuzz:git_layout.rs",
         "//rust/crates/sdk-generation/fuzz:identity_record.rs",
         "//rust/crates/sdk-generation/fuzz:source_identities.rs",
+        "tests/support/archive.rs",
+        "tests/support/compiler.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//:rust-toolchain.toml",
@@ -76,12 +78,13 @@ rust_test(
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//hex-0.4.3",
         "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//toml-1.1.6+spec-1.1.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.cargo/config.toml",
         "//:release/cargo-crates.json",
+        "//:scripts/mold-linker.sh",
         "//compatibility:Cargo.toml",
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",
@@ -114,8 +117,26 @@ rust_test(
 isolated_test(
     name = "sdk_generation_test",
     binary = ":sdk_generation_test_cases",
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-generation",
+    exclude = ["::full_cloud::"],
+    workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
+)
+
+isolated_test(
+    name = "sdk_generation_test_full-cloud",
+    binary = ":sdk_generation_test_cases",
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
+    id = "sdk-generation",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    workers = 1,
+    limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -185,8 +206,50 @@ rust_binary(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/cli_regressions.rs",
+        "tests/cli_regressions/archives.rs",
+        "tests/cli_regressions/cache.rs",
+        "tests/cli_regressions/commands.rs",
+        "tests/cli_regressions/current.rs",
+        "tests/cli_regressions/package_manifest.rs",
+        "tests/cli_regressions/packaging.rs",
+        "tests/cli_regressions/paths.rs",
+        "tests/cli_regressions/registry.rs",
+        "tests/cli_regressions/replay.rs",
+        "tests/cli_regressions/runtime.rs",
+        "tests/fixtures/excluded-owners/rust/vendor/helper/src/lib.rs",
+        "tests/fixtures/excluded-owners/rust/vendor/macro-dev-helper/src/lib.rs",
+        "tests/fixtures/excluded-owners/rust/vendor/macros/src/lib.rs",
+        "tests/fixtures/feature-profile/rust/crates/demo/binary.rs",
+        "tests/fixtures/feature-profile/rust/crates/demo/src/lib.rs",
+        "tests/fixtures/relocation/rust/crates/demo/build.rs",
+        "tests/fixtures/relocation/rust/crates/demo/src/lib.rs",
+        "tests/fixtures/relocation/rust/crates/helper/src/lib.rs",
+        "tests/main.rs",
+        "tests/support/archive.rs",
+        "tests/support/rustdoc_paths.rs",
+    ],
+    compile_data = [
+        "tests/fixtures/excluded-owners/Cargo.lock",
+        "tests/fixtures/excluded-owners/Cargo.toml",
+        "tests/fixtures/excluded-owners/rust/crates/demo/Cargo.toml",
+        "tests/fixtures/excluded-owners/rust/vendor/helper/Cargo.toml",
+        "tests/fixtures/excluded-owners/rust/vendor/macro-dev-helper/Cargo.toml",
+        "tests/fixtures/excluded-owners/rust/vendor/macros/Cargo.lock",
+        "tests/fixtures/excluded-owners/rust/vendor/macros/Cargo.toml",
+        "tests/fixtures/feature-profile/Cargo.lock",
+        "tests/fixtures/feature-profile/Cargo.toml",
+        "tests/fixtures/feature-profile/release/cargo-crates.json",
+        "tests/fixtures/feature-profile/rust-toolchain.toml",
+        "tests/fixtures/feature-profile/rust/crates/demo/Cargo.toml",
+        "tests/fixtures/feature-profile/rust/crates/demo/binary.toml",
+        "tests/fixtures/feature-profile/rust/crates/demo/long-features.toml",
+        "tests/fixtures/relocation/Cargo.lock",
+        "tests/fixtures/relocation/Cargo.toml",
+        "tests/fixtures/relocation/rust/crates/demo/Cargo.toml",
+        "tests/fixtures/relocation/rust/crates/helper/Cargo.toml",
+    ],
     edition = "2021",
     version = "0.1.0",
     crate_features = FEATURES,
@@ -210,7 +273,7 @@ rust_test(
         "@sdk_crates//ring-0.17.14",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tar-0.4.46",
         "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//toml-1.1.6+spec-1.1.0",
@@ -218,6 +281,8 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.cargo/config.toml",
         "//:release/cargo-crates.json",
+        "//:scripts/mold-linker.sh",
+        "//:tree/rust/proofs/sdk-rustdoc-fixtures",
         "//compatibility:Cargo.toml",
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",
@@ -245,6 +310,7 @@ rust_test(
         "//rust/crates/stream:conformance/stream.json",
         "src/lib.rs",
         "src/main.rs",
+        "//rust/proofs/sdk-rustdoc-fixtures:feature_profiles",
     ],
     tags = ["manual"],
 )
@@ -252,9 +318,26 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-generation::main",
+    exclude = ["::full_cloud::"],
+    workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
+    id = "sdk-generation::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    workers = 1,
+    limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
+    tags = ["manual"],
 )
 
 filegroup(
@@ -264,12 +347,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/parallel.rs",
-        "src/shared_cache.rs",
-        "src/source_selection.rs",
-        "tests/cli_regressions/cache.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

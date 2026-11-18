@@ -145,7 +145,7 @@ fn open(objects: &JsValue) -> Result<Arc<dyn Blobs>, JsValue> {
     };
     match (field("port"), field("medium")) {
         (Some(port), None) => Ok(Arc::new(binary::BinaryObjects::new(
-            JavaScriptTransport::new(port).map_err(js_error)?,
+            JavaScriptTransport::new(port).map_err(|error| js_error(&error))?,
         ))),
         (None, Some(medium)) => {
             let account: Uint8Array = field("account")

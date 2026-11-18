@@ -1,0 +1,81 @@
+[
+  {
+    "name": "auth",
+    "package": "auth",
+    "directory": "typescript/packages/auth/generated/wasm",
+    "outName": "acyclic_auth_wasm",
+    "module": "//rust/crates/auth-wasm:acyclic_auth_wasm_wasm_cdylib",
+    "label": "//wasm:auth"
+  },
+  {
+    "name": "actors",
+    "package": "actors",
+    "directory": "typescript/packages/actors/generated/wasm",
+    "outName": "acyclic_actors_wasm",
+    "module": "//rust/crates/actors-wasm:acyclic_actors_wasm_wasm_cdylib",
+    "label": "//wasm:actors"
+  },
+  {
+    "name": "filesystem",
+    "package": "filesystem",
+    "directory": "typescript/packages/filesystem/generated/wasm",
+    "outName": "acyclic_fs_wasm",
+    "module": "//rust/crates/filesystem-wasm:acyclic_fs_wasm_wasm_cdylib",
+    "label": "//wasm:filesystem"
+  },
+  {
+    "name": "stream",
+    "package": "stream",
+    "directory": "typescript/packages/stream/generated/wasm",
+    "outName": "acyclic_stream_wasm",
+    "module": "//rust/crates/stream:acyclic_stream_wasm_cdylib",
+    "label": "//wasm:stream"
+  },
+  {
+    "name": "objects",
+    "package": "objects",
+    "directory": "typescript/packages/objects/generated/wasm",
+    "outName": "acyclic_objects_wasm",
+    "module": "//rust/crates/objects-wasm:acyclic_objects_wasm_wasm_cdylib",
+    "label": "//wasm:objects"
+  },
+  {
+    "name": "manifest",
+    "package": "workers",
+    "directory": "typescript/packages/workers/generated/wasm",
+    "outName": "acyclic_manifest",
+    "module": "//rust/crates/manifest:acyclic_manifest_wasm_cdylib",
+    "label": "//wasm:manifest"
+  },
+  {
+    "name": "machines",
+    "package": "machines",
+    "directory": "typescript/packages/machines/generated/wasm",
+    "outName": "acyclic_machines_wasm",
+    "module": "//rust/crates/machines-wasm:acyclic_machines_wasm_wasm_cdylib",
+    "label": "//wasm:machines"
+  },
+  {
+    "name": "inference",
+    "package": "inference",
+    "directory": "typescript/packages/inference/generated/wasm",
+    "outName": "acyclic_inference_wasm",
+    "module": "//rust/crates/inference-wasm:acyclic_inference_wasm_wasm_cdylib",
+    "label": "//wasm:inference"
+  },
+  {
+    "name": "harness",
+    "package": "harness",
+    "directory": "typescript/packages/harness/generated/wasm",
+    "outName": "acyclic_harness_wasm",
+    "module": "//rust/crates/harness-providers:acyclic_harness_providers_wasm_cdylib",
+    "label": "//wasm:harness"
+  },
+  {
+    "name": "hosted-actors",
+    "directory": "rust/crates/conformance/hosted-actors/generated",
+    "outName": "acyclic_hosted_actors_conformance",
+    "module": "//rust/crates/conformance/hosted-actors:acyclic_hosted_actors_conformance_wasm_cdylib",
+    "label": "//wasm:hosted-actors"
+  }
+]

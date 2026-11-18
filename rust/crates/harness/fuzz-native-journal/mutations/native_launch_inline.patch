@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_process/launch.rs
-+++ b/rust/crates/harness/src/local/host_process/launch.rs
+--- a/rust/crates/harness-local/src/local/host_process/launch.rs
++++ b/rust/crates/harness-local/src/local/host_process/launch.rs
 @@ -115,7 +115,7 @@
          };
          let inherited_path = match (host, name.as_str()) {

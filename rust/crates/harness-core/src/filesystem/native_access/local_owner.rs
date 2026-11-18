@@ -14,7 +14,11 @@ pub async fn local_owner_workspace<
 ) -> Result<acyclic_fs::Workspace<A, O>> {
     let cancellation = acyclic_fs::CancellationToken::new();
     match filesystem
-        .open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .open_workspace(
+            name,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
     {
         Ok(receipt) => return Ok(receipt.value),
@@ -36,8 +40,8 @@ pub async fn local_owner_workspace<
                 config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
-            acyclic_fs::OperationId::from_bytes(operation),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_format::identity::OperationId::from_bytes(operation),
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
             None,
         )
@@ -62,8 +66,11 @@ where
         .map_err(|error| Error::Invalid(error.to_string()))?;
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
+    let work = NativeMaterializationWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
     let issuer = host_owner_root(owner)?;
     owner_mount_options(workspace, &issuer, None, writable, &work).await
 }

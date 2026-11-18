@@ -29,7 +29,7 @@ pub(crate) async fn read(
     let maximum = maximum.into();
     #[cfg(not(target_arch = "wasm32"))]
     let mut custody = work
-        .map(|work| work.claim(64, 1, acyclic_fs::WorkCounters::UNCHARGED))
+        .map(|work| work.claim(64, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED))
         .transpose()?;
     let mut bytes = Zeroizing::new(Vec::new());
     while let Some(chunk) = body.next().await {
@@ -48,7 +48,7 @@ pub(crate) async fn read(
                 let mut growth = work.claim(
                     capacity as u64,
                     1,
-                    acyclic_fs::WorkCounters {
+                    acyclic_fs_work::performance::WorkCounters {
                         bytes_copied: bytes.len() as u64,
                         ..Default::default()
                     },
@@ -75,7 +75,7 @@ pub(crate) async fn read(
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_copied: chunk.len() as u64,
                 items_examined: 1,
                 ..Default::default()

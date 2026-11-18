@@ -189,7 +189,7 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
         state.driver = Some(Waker::from(startup.clone()));
         startup
     };
-    let host = Host::with_pool(Pool::new(1));
+    let host = Host::with_pool(Pool::new(1), Progress::new());
     let startup = startup_for(&host);
     let ready = Arc::new(AtomicBool::new(false));
     let work_ready = ready.clone();
@@ -228,7 +228,7 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
     assert!(!waiting_start, "parking retained its startup waiter");
     let parked_waiting = startup.waiting.load(Ordering::SeqCst);
     // An immediately completing callback obeys the same first-step permit.
-    let host = Host::with_pool(Pool::new(1));
+    let host = Host::with_pool(Pool::new(1), Progress::new());
     let startup = startup_for(&host);
     let worker = host.clone();
     let thread = std::thread::spawn(move || worker.run(|| ()));
@@ -436,7 +436,7 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
     for _ in 0..threads {
         receive.recv().unwrap();
     }
-    let host = Host::for_workers(workers);
+    let host = Host::for_workers(workers, Progress::new());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)

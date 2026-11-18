@@ -59,14 +59,14 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> AuthorityProvider for P {}
 /// Oversized values return [`AuthorityStoreError::DurableCodec`] before their
 /// durable value or indexed keys are allocated.
 pub struct StreamAuthorityStore<P: ?Sized> {
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     placement: Arc<AuthorityPlacement>,
 }
 
 impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
     fn clone(&self) -> Self {
         Self {
-            provider: Arc::clone(&self.provider),
+            provider: self.provider.clone(),
             placement: Arc::clone(&self.placement),
         }
     }
@@ -75,13 +75,16 @@ impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
 impl<P: ?Sized> StreamAuthorityStore<P> {
     /// Binds one authenticated public Stream provider.
     #[must_use]
-    pub fn new(provider: Arc<P>) -> Self {
+    pub fn new(provider: acyclic_stream::ProviderOwner<P>) -> Self {
         Self::with_placement(provider, AuthorityPlacement::default())
     }
 
     /// Binds a provider with authority streams at a caller-chosen placement.
     #[must_use]
-    pub fn with_placement(provider: Arc<P>, placement: AuthorityPlacement) -> Self {
+    pub fn with_placement(
+        provider: acyclic_stream::ProviderOwner<P>,
+        placement: AuthorityPlacement,
+    ) -> Self {
         Self {
             provider,
             placement: Arc::new(placement),
@@ -96,8 +99,8 @@ impl<P: ?Sized> StreamAuthorityStore<P> {
 
     /// Returns the shared public Stream provider.
     #[must_use]
-    pub fn provider(&self) -> Arc<P> {
-        Arc::clone(&self.provider)
+    pub fn provider(&self) -> acyclic_stream::ProviderOwner<P> {
+        self.provider.clone()
     }
 }
 
@@ -160,7 +163,8 @@ mod bindings;
 mod changes;
 mod generation_seek;
 mod head_payload;
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 mod head_payload_loom_tests;
 mod lineage;
 mod operations;

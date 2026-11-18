@@ -1,5 +1,122 @@
 //! Content addresses, logical ranges, manifests and the v2 envelope encoding.
 use crate::{Error, wire::ErrorCode};
+use sha2::{Digest as _, Sha256};
+
+/// Hashes the logical body in input order, independent of transport framing.
+/// Both digests consume each bounded input segment before the next is read.
+#[derive(Default)]
+pub struct ContentHasher {
+    blake3: blake3::Hasher,
+    sha256: Sha256,
+    length: u64,
+}
+
+/// Digests computed from one complete logical body. BLAKE3 is its content
+/// identity; SHA-256 is a checksum for contracts that require that algorithm.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContentDigests {
+    blake3: Digest,
+    sha256: [u8; 32],
+    length: u64,
+}
+
+impl ContentHasher {
+    /// Adds bytes to both digests. Overflow leaves the hasher unchanged.
+    pub fn update(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let length = self
+            .length
+            .checked_add(bytes.len() as u64)
+            .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+        for chunk in bytes.chunks(64 * 1024) {
+            self.blake3.update(chunk);
+            self.sha256.update(chunk);
+        }
+        self.length = length;
+        Ok(())
+    }
+
+    /// Finishes both digests over the same accepted input.
+    #[must_use]
+    pub fn finish(self) -> ContentDigests {
+        ContentDigests {
+            blake3: Digest::from_bytes(*self.blake3.finalize().as_bytes()),
+            sha256: self.sha256.finalize().into(),
+            length: self.length,
+        }
+    }
+}
+
+impl ContentDigests {
+    /// The BLAKE3 digest of the logical bytes.
+    #[must_use]
+    pub const fn blake3(&self) -> Digest {
+        self.blake3
+    }
+    /// The SHA-256 checksum of those same bytes.
+    #[must_use]
+    pub const fn sha256(&self) -> &[u8; 32] {
+        &self.sha256
+    }
+    /// The number of logical bytes hashed.
+    #[must_use]
+    pub const fn length(&self) -> u64 {
+        self.length
+    }
+}
+
+#[cfg(test)]
+mod content_digest_tests {
+    use super::{ContentHasher, Digest, Manifest, Part};
+    use sha2::{Digest as _, Sha256};
+
+    #[test]
+    fn logical_checksums_are_independent_of_input_frames() {
+        let expected_sha256 =
+            hex::decode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                .unwrap();
+        for frames in [
+            &[b"abc".as_slice()][..],
+            &[b"a".as_slice(), b"bc".as_slice()][..],
+        ] {
+            let mut hasher = ContentHasher::default();
+            for frame in frames {
+                hasher.update(frame).unwrap();
+            }
+            let result = hasher.finish();
+            assert_eq!(result.blake3(), Digest::of(b"abc"));
+            assert_eq!(result.sha256().as_slice(), expected_sha256);
+            assert_eq!(result.length(), 3);
+            let manifest = Manifest {
+                parts: vec![Part {
+                    digest: result.blake3(),
+                    length: result.length(),
+                }],
+                edges: Vec::new(),
+                sha256: Some(*result.sha256()),
+            };
+            let encoded = manifest.encode().unwrap();
+            assert_eq!(Manifest::decode(&encoded).unwrap(), manifest);
+        }
+    }
+
+    #[test]
+    fn logical_checksums_cross_chunk_and_frame_boundaries() {
+        let bytes: Vec<_> = (0..(3 * 65536 + 19))
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect();
+        let expected_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        let expected_blake3 = Digest::of(&bytes);
+        for boundary in [1, 65535, 65536, 65537, 131073] {
+            let mut hasher = ContentHasher::default();
+            hasher.update(&bytes[..boundary]).unwrap();
+            hasher.update(&bytes[boundary..]).unwrap();
+            let result = hasher.finish();
+            assert_eq!(result.blake3(), expected_blake3);
+            assert_eq!(*result.sha256(), expected_sha256);
+            assert_eq!(result.length(), bytes.len() as u64);
+        }
+    }
+}
 
 /// BLAKE3-256 of a blob's stored bytes.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -129,10 +246,14 @@ pub struct Manifest {
     pub parts: Vec<Part>,
     /// Additional retained references.
     pub edges: Vec<Digest>,
+    /// A publisher-declared SHA-256 of the concatenated logical bytes, when an
+    /// external contract requires it. This is not a content address and is
+    /// not verified by manifest admission.
+    pub sha256: Option<[u8; 32]>,
 }
 
-const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v1\0";
-const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v2\0";
+const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v2\0";
+const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v3\0";
 const BATCH_MAGIC: &[u8] = b"acyclic-retained-v1\0";
 const INCARNATION_MAGIC: &[u8] = b"acyclic-incarnation-v1\0";
 const EPOCH_MAGIC: &[u8] = b"acyclic-epoch-v1\0";
@@ -153,6 +274,35 @@ impl DecodeAllocation for () {
     }
 }
 
+/// One admission and capacity reconciliation for engine-owned vectors.
+pub(crate) fn reserve_admitted<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    allocation: &impl DecodeAllocation,
+) -> Result<(), Error> {
+    let needed = values
+        .len()
+        .checked_add(additional)
+        .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+    if needed <= values.capacity() {
+        return Ok(());
+    }
+    let width = std::mem::size_of::<T>();
+    let admitted = needed
+        .checked_mul(width)
+        .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+    let held = admitted
+        .checked_add(values.capacity() * width)
+        .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+    allocation.admit(admitted)?;
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+    // Both backings stay funded through reallocation; only the replacement
+    // remains live once it succeeds.
+    allocation.capacity(held, values.capacity() * width)
+}
+
 impl Manifest {
     /// Total logical length of the parts.
     pub fn length(&self) -> Result<u64, Error> {
@@ -163,14 +313,14 @@ impl Manifest {
         })
     }
 
-    /// Canonical v1 encoding; its BLAKE3 is the manifest's digest.
+    /// Canonical v2 encoding; its BLAKE3 is the manifest's digest.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let parts =
             u32::try_from(self.parts.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
         let edges =
             u32::try_from(self.edges.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
         let mut bytes = Vec::with_capacity(
-            MANIFEST_MAGIC.len() + 8 + self.parts.len() * 40 + self.edges.len() * 32,
+            MANIFEST_MAGIC.len() + 41 + self.parts.len() * 40 + self.edges.len() * 32,
         );
         bytes.extend_from_slice(MANIFEST_MAGIC);
         bytes.extend_from_slice(&parts.to_le_bytes());
@@ -182,6 +332,8 @@ impl Manifest {
         for edge in &self.edges {
             bytes.extend_from_slice(edge.as_bytes());
         }
+        bytes.push(u8::from(self.sha256.is_some()));
+        bytes.extend_from_slice(&self.sha256.unwrap_or_default());
         Ok(bytes)
     }
 
@@ -205,8 +357,19 @@ impl Manifest {
         })?;
         let count = reader.u32()? as usize;
         let edges = reader.vector(count, 32, allocation, |reader| reader.digest())?;
+        let present = reader.take(1)?;
+        let checksum: [u8; 32] = reader.take(32)?.try_into().map_err(|_| corrupt())?;
+        let sha256 = match present {
+            [0] if checksum == [0; 32] => None,
+            [1] => Some(checksum),
+            _ => return Err(corrupt()),
+        };
         reader.finish()?;
-        Ok(Self { parts, edges })
+        Ok(Self {
+            parts,
+            edges,
+            sha256,
+        })
     }
 
     /// Every outgoing reference, parts first, each digest once.
@@ -230,6 +393,7 @@ pub(crate) struct Envelope {
     pub(crate) length: u64,
     pub(crate) stored: u64,
     pub(crate) references: Vec<Digest>,
+    pub(crate) sha256: Option<[u8; 32]>,
     /// Unique to the put that published this blob; names its payload and
     /// index keys, so no actor working on an earlier blob of the same digest
     /// can match anything of this one.
@@ -247,9 +411,12 @@ pub(crate) struct Envelope {
 
 impl Envelope {
     pub(crate) fn encode(&self) -> Result<Vec<u8>, Error> {
+        if self.kind == Kind::Blob && self.sha256.is_some() {
+            return Err(invalid());
+        }
         let references = u32::try_from(self.references.len())
             .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 62 + self.references.len() * 32);
+        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 95 + self.references.len() * 32);
         bytes.extend_from_slice(ENVELOPE_MAGIC);
         bytes.push(match self.kind {
             Kind::Blob => 1,
@@ -261,6 +428,8 @@ impl Envelope {
         for reference in &self.references {
             bytes.extend_from_slice(reference.as_bytes());
         }
+        bytes.push(u8::from(self.sha256.is_some()));
+        bytes.extend_from_slice(&self.sha256.unwrap_or_default());
         bytes.extend_from_slice(&self.version);
         bytes.push(u8::from(self.dying.is_some()));
         bytes.extend_from_slice(&self.dying.unwrap_or_default());
@@ -288,6 +457,13 @@ impl Envelope {
         let stored = reader.u64()?;
         let count = reader.u32()? as usize;
         let references = reader.vector(count, 32, allocation, |reader| reader.digest())?;
+        let present = reader.take(1)?;
+        let checksum: [u8; 32] = reader.take(32)?.try_into().map_err(|_| corrupt())?;
+        let sha256 = match present {
+            [0] if checksum == [0; 32] => None,
+            [1] if kind == Kind::Manifest => Some(checksum),
+            _ => return Err(corrupt()),
+        };
         let nonce = |reader: &mut Reader<'_>| -> Result<[u8; 16], Error> {
             reader.take(16)?.try_into().map_err(|_| corrupt())
         };
@@ -304,6 +480,7 @@ impl Envelope {
             length,
             stored,
             references,
+            sha256,
             version,
             dying,
             condemned,
@@ -384,18 +561,8 @@ impl<'a> Reader<'a> {
     ) -> Result<Vec<T>, Error> {
         // Validate the complete fixed-width body before admitting an allocation.
         let bytes = self.take(count.checked_mul(width).ok_or_else(corrupt)?)?;
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        let admitted = count
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(corrupt)?;
-        allocation.admit(admitted)?;
         let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-        allocation.capacity(admitted, values.capacity() * std::mem::size_of::<T>())?;
+        reserve_admitted(&mut values, count, allocation)?;
         let mut reader = Reader(bytes);
         for _ in 0..count {
             values.push(decode(&mut reader)?);

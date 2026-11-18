@@ -353,7 +353,7 @@ where
                 // there are never two mutations for the same stream path.
                 crate::executor::stock_vec_prepare_push(records, io)?;
                 if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters {
+                    io.charge(acyclic_fs_work::performance::WorkCounters {
                         bytes_copied: (records.len() as u64)
                             .checked_mul(std::mem::size_of::<acyclic_stream::AppendRecord>() as u64)
                             .ok_or_else(|| invalid(Some(io)))?,
@@ -448,7 +448,7 @@ fn publication_digest(
     let domain = b"harness/v1/indexed-execution\0";
     let length = crate::core::owned_sum([domain.len() as u64, 64, 1])?;
     if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: length,
             ..Default::default()
         })?;

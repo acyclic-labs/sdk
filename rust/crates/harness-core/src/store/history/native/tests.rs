@@ -1,6 +1,9 @@
 use super::*;
-use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
 use completion::AcceptedCompletionIo;
+use {
+    acyclic_fs::CancellationToken,
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+};
 
 fn control_budget() -> WorkBudget {
     WorkBudget {
@@ -63,7 +66,7 @@ fn sdk_output_adoption_keeps_original_ownership() {
 }
 
 #[test]
-fn accepted_completion_uses_only_reserved_credit() {
+fn accepted_completion_uses_only_reserved_credit() -> crate::Result<()> {
     let cancellation = CancellationToken::new();
     let maximum = WorkCounters {
         bytes_copied: 4,
@@ -82,11 +85,11 @@ fn accepted_completion_uses_only_reserved_credit() {
     );
     let mut io = AcceptedCompletionIo::new(&work, token, pool).unwrap();
     io.copy_bytes(3).unwrap();
-    let prefix = work.receipt();
+    let prefix = work.receipt()?;
     assert!(io.admit_copy(2).is_err());
-    assert_eq!(work.receipt(), prefix);
+    assert_eq!(work.receipt()?, prefix);
     assert!(io.copy_bytes(2).is_err());
-    assert_eq!(work.receipt().bytes_copied, 5);
+    assert_eq!(work.receipt()?.bytes_copied, 5);
     assert_eq!(io.completion_work().unwrap(), work.journal_work().unwrap());
     let pool = io.into_custody();
     assert_eq!(pool.bytes(), 16);
@@ -99,7 +102,8 @@ fn accepted_completion_uses_only_reserved_credit() {
         })
         .is_err()
     );
-    assert_eq!(work.receipt().bytes_copied, 5);
+    assert_eq!(work.receipt()?.bytes_copied, 5);
+    Ok(())
 }
 
 #[test]
@@ -182,7 +186,7 @@ fn accepted_sdk_output_cannot_widen_the_closed_pool() {
 }
 
 #[test]
-fn accepted_receiver_keeps_completed_work_when_token_or_pool_is_exceeded() {
+fn accepted_receiver_keeps_completed_work_when_token_or_pool_is_exceeded() -> crate::Result<()> {
     for (allowed_bytes, pool_bytes) in [(3, 8), (5, 4)] {
         let cancellation = CancellationToken::new();
         let maximum = WorkCounters {
@@ -197,13 +201,13 @@ fn accepted_receiver_keeps_completed_work_when_token_or_pool_is_exceeded() {
         let token = work.reserve_work(maximum).unwrap();
         let pool = work.claim(pool_bytes, 0, WorkCounters::default()).unwrap();
         let mut io = AcceptedCompletionIo::new(&work, token, pool).unwrap();
-        let prefix = work.receipt();
+        let prefix = work.receipt()?;
         if allowed_bytes == 3 {
             cancellation.cancel();
         }
         assert!(io.receive_record(5).is_err());
         assert_eq!(
-            work.receipt(),
+            work.receipt()?,
             prefix
                 .checked_add(WorkCounters {
                     authority_records_read: 1,
@@ -222,6 +226,7 @@ fn accepted_receiver_keeps_completed_work_when_token_or_pool_is_exceeded() {
             assert_eq!(io.remaining_work(), WorkCounters::default());
         }
     }
+    Ok(())
 }
 
 #[test]

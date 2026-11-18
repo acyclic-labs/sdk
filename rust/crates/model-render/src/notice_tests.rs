@@ -3,7 +3,7 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn notice(key: Option<String>, position: usize, paths: Vec<String>) -> Notice {
+fn notice(key: Option<String>, position: usize, paths: &[String]) -> Notice {
     Notice {
         source: "filesystem".into(),
         kind: "arbitrary.new.kind".into(),
@@ -22,7 +22,7 @@ proptest! {
         let mut expected = BTreeMap::new();
         let mut keyed: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
         for (position, (key, wake, paths)) in events.into_iter().enumerate() {
-            let mut event = notice(key.clone(), position, paths.clone());
+            let mut event = notice(key.clone(), position, &paths);
             event.wake = wake;
             pending.push(event.clone()).unwrap();
             if let Some(key) = key.filter(|_| !wake) {
@@ -48,18 +48,18 @@ proptest! {
             fields.insert(Field::Model, json!("model"));
             let header = Header::new(target.clone(), RENDERER_VERSION, &fields, None).unwrap();
             let tail = Tail::new(&fields).unwrap();
-            let first = notice(Some("files".into()), 1, vec![text.clone()]);
+            let first = notice(Some("files".into()), 1, std::slice::from_ref(&text));
             let frozen = notice_block(target.clone(), &[first]).unwrap();
             let stored = serde_json::to_vec(&frozen).unwrap();
             let reopened: WireItem = serde_json::from_slice(&stored).unwrap();
             let mut before = Vec::new();
             render(&header, [&reopened], &tail, &mut before).unwrap();
-            let later = notice_block(target.clone(), &[notice(Some("files".into()), 2, vec!["later".into()])]).unwrap();
+            let later = notice_block(target.clone(), &[notice(Some("files".into()), 2, &["later".into()])]).unwrap();
             let mut after = Vec::new();
             render(&header, [&reopened, &later], &tail, &mut after).unwrap();
             let prefix = &before[..before.len()-tail.bytes().len()];
             prop_assert!(after.starts_with(prefix));
-            let rewritten = notice_block(target, &[notice(Some("files".into()), 3, vec!["rewritten".into()])]).unwrap();
+            let rewritten = notice_block(target, &[notice(Some("files".into()), 3, &["rewritten".into()])]).unwrap();
             let mut negative = Vec::new();
             render(&header, [&rewritten, &later], &tail, &mut negative).unwrap();
             prop_assert!(!negative.starts_with(prefix), "editing rendered history must break the oracle");
@@ -80,7 +80,7 @@ proptest! {
 #[test]
 fn malformed_pending_notice_does_not_change_the_batch() {
     let mut pending = PendingNotices::default();
-    let original = notice(Some("files".into()), 0, vec!["p".into()]);
+    let original = notice(Some("files".into()), 0, &["p".into()]);
     pending.push(original.clone()).unwrap();
     let mut invalid = original.clone();
     invalid.body = json!({"paths":[1]});

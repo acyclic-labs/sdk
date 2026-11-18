@@ -2,7 +2,6 @@
 //! generation counter is persisted: the recorded intent is the replay identity.
 
 use super::{AgentPath, Error, IntentId, TurnEffect, handler::Agents};
-use std::sync::Arc;
 
 pub(crate) const SPAWN: &str = "spawn:";
 const SEP: char = '\u{1f}';
@@ -70,7 +69,7 @@ pub(crate) fn generated_intent(value: &str) -> bool {
 /// child: no checkpoint means it is live, so adoption needs no second read.
 /// Released generations are terminal and can never reclaim the name.
 pub async fn resolve_spawn_name<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     within: &acyclic_actors::addressing::ActorReference,
     parent: &AgentPath,
     name: &str,

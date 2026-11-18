@@ -115,46 +115,13 @@ pub enum WindowsUsnError {
     /// The journal returned impossible or truncated metadata.
     #[error("the Windows USN journal metadata is invalid")]
     InvalidJournal,
+    /// The volume has no active change journal to certify continuity.
+    #[error("the Windows USN journal is not active")]
+    JournalInactive,
     /// Ordinary path or volume I/O failed.
     #[error("Windows USN I/O failed: {0}")]
     Io(String),
     /// The native journal query failed.
     #[error("Windows USN query failed: {0}")]
     Native(String),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn checkpoint_encoding_is_canonical_versioned_and_bounded() {
-        let checkpoint = WindowsUsnCheckpoint {
-            root_identity: NativeRootIdentity::from_bytes([7; 16]),
-            journal_id: 19,
-            next_usn: 23,
-        };
-        let bytes = checkpoint.to_bytes();
-        assert!(matches!(
-            WindowsUsnCheckpoint::from_bytes(&bytes),
-            Ok(decoded) if decoded == checkpoint
-        ));
-        assert!(matches!(
-            WindowsUsnCheckpoint::from_bytes(&bytes[..39]),
-            Err(WindowsUsnError::InvalidCheckpoint)
-        ));
-        for version in [0, 2, u8::MAX] {
-            let mut wrong_version = bytes[..8].to_vec();
-            wrong_version[7] = version;
-            assert!(matches!(
-                WindowsUsnCheckpoint::from_bytes(&wrong_version),
-                Err(WindowsUsnError::UnsupportedVersion)
-            ));
-        }
-        let mut impossible = bytes;
-        impossible[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
-        assert!(matches!(
-            WindowsUsnCheckpoint::from_bytes(&impossible),
-            Err(WindowsUsnError::InvalidCheckpoint)
-        ));
-    }
 }

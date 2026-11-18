@@ -12,7 +12,7 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
     }
     impl Drop for Value<'_> {
         fn drop(&mut self) {
-            assert!(self.original.live_allocation_bytes() >= self.minimum.get());
+            assert!(self.original.live_allocation_bytes().unwrap() >= self.minimum.get());
             self.drops.set(self.drops.get() + 1);
         }
     }
@@ -20,7 +20,7 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut node_bytes = 0;
     let minimum = std::cell::Cell::new(baseline);
     let drops = std::cell::Cell::new(0);
@@ -38,12 +38,12 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
             },
         )?;
         if number == 0 {
-            node_bytes = original.live_allocation_bytes() - baseline;
+            node_bytes = original.live_allocation_bytes().unwrap() - baseline;
             minimum.set(baseline + node_bytes);
         }
         assert_eq!(index.complete(), number < 4);
         // Four leaves across two windows need at most two branch nodes.
-        assert!(original.live_allocation_bytes() <= baseline + 6 * node_bytes);
+        assert!(original.live_allocation_bytes().unwrap() <= baseline + 6 * node_bytes);
         assert!(
             index
                 .get(
@@ -63,7 +63,7 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
                 "evicted facts were treated as verified absence"
             );
         }
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         let mut constructed = false;
         index.get_or_try_insert_with(
             [number; 32],
@@ -75,14 +75,14 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
         )?;
         assert!(!constructed);
         assert_eq!(
-            original.receipt().allocation_operations,
+            original.receipt().unwrap().allocation_operations,
             before.allocation_operations
         );
     }
     assert_eq!(64 - drops.get(), 4);
     drop(index);
     assert_eq!(drops.get(), 64);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -102,7 +102,7 @@ fn refused_rotation_keeps_all_facts_and_complete_coverage() -> Result<(), Box<dy
             |_| Ok(number),
         )?;
     }
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let attempt = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
             allocation_operations: 1,
@@ -111,7 +111,7 @@ fn refused_rotation_keeps_all_facts_and_complete_coverage() -> Result<(), Box<dy
         &cancel,
     )
     .map_err(|(error, _)| error)?;
-    let attempt_baseline = attempt.live_allocation_bytes();
+    let attempt_baseline = attempt.live_allocation_bytes().unwrap();
     assert!(
         index
             .get_or_try_insert_with(
@@ -121,7 +121,7 @@ fn refused_rotation_keeps_all_facts_and_complete_coverage() -> Result<(), Box<dy
             )
             .is_err()
     );
-    assert_eq!(attempt.live_allocation_bytes(), attempt_baseline);
+    assert_eq!(attempt.live_allocation_bytes().unwrap(), attempt_baseline);
     assert!(
         index
             .get_or_try_insert_with(
@@ -131,7 +131,7 @@ fn refused_rotation_keeps_all_facts_and_complete_coverage() -> Result<(), Box<dy
             )
             .is_err()
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     assert!(index.complete());
     for number in 0_u8..4 {
         assert_eq!(
@@ -153,7 +153,7 @@ fn refused_rotation_keeps_all_facts_and_complete_coverage() -> Result<(), Box<dy
             )
             .is_err()
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     assert!(index.complete());
     index.get_or_try_insert_with(
         [4; 32],

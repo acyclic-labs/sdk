@@ -13,8 +13,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::Zeroizing;
 #[path = "credential_io.rs"]
 mod credential_io;
-use acyclic_fs::{NativeAllocation, WorkCounters};
 use credential_io::CredentialIo;
+use {acyclic_fs::NativeAllocation, acyclic_fs_work::performance::WorkCounters};
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_AUTH_BYTES: u64 = 1024 * 1024;
@@ -333,7 +333,7 @@ impl CodexLogin {
                             response.status
                         ))
                     } else {
-                        crate::http_error(response.status)
+                        acyclic_harness_provider_response::http_error(response.status)
                     }),
                     failure,
                 );
@@ -628,7 +628,7 @@ fn stage(
     auth: &Value,
     io: &mut CredentialIo,
 ) -> Result<()> {
-    let encoded = (crate::projection::encoded_len(auth)? as u64)
+    let encoded = (acyclic_harness_provider_response::encoded_json_len(auth)? as u64)
         .checked_add(1)
         .filter(|&bytes| bytes <= MAX_AUTH_BYTES)
         .ok_or_else(|| invalid("Codex merged credentials exceed limit"))?;

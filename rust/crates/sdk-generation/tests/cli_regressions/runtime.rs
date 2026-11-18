@@ -1,9 +1,19 @@
 use super::cache as sync;
 use super::*;
 
+use acyclic_test_support::fixture_compiler as compiler;
+pub(super) use acyclic_test_support::fixture_compiler::binary;
+
 thread_local! {
     static GIT: PathBuf = resolve_git();
-    static COMPILER: sync::Arc<Toolchain> = resolve_cargo();
+    static COMPILER: sync::Arc<PathBuf> = sync::Arc::new(binary("CARGO"));
+    static CLI_PATH: std::ffi::OsString = GIT.with(|git| {
+        std::env::join_paths(
+            std::iter::once(git.parent().unwrap().to_owned())
+                .chain(std::env::split_paths(&compiler::path())),
+        )
+        .unwrap()
+    });
     #[cfg(windows)]
     static LINKER: (String, PathBuf) = resolve_linker();
     #[cfg(windows)]
@@ -60,59 +70,16 @@ pub(super) fn git() -> PathBuf {
 }
 
 pub(super) fn path() -> std::ffi::OsString {
-    std::env::join_paths(
-        [
-            cargo().parent().unwrap().to_owned(),
-            git().parent().unwrap().to_owned(),
-        ]
-        .into_iter()
-        .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap()
-}
-
-// Leaf slot: initialization only runs explicit rustup probes, acquiring no
-// fixture or SDK cache lock. Publish Cargo and its immutable fixture recordings
-// together, and release this lock before any Cargo work or fixture locks.
-struct Toolchain {
-    cargo: sync::Arc<PathBuf>,
-    probes: BTreeMap<Vec<std::ffi::OsString>, std::process::Output>,
-}
-static CARGO: sync::Mutex<Option<sync::Arc<Toolchain>>> = sync::Mutex::new(None);
-// Independent leaf slots: constructors do not acquire another fixture slot.
-static FIXTURES: [sync::Mutex<Option<sync::Arc<Fixture>>>; 3] =
-    [const { sync::Mutex::new(None) }; 3];
-
-pub(super) fn fixture(kind: u8) -> sync::Arc<Fixture> {
-    sync::get_or_try_init(&FIXTURES[usize::from(kind)], || {
-        let fixture = if kind == 2 {
-            let fixture = feature_profile_source();
-            init_git(&fixture.root, "feature profile fixture");
-            fixture
-        } else {
-            build_fixture(kind == 1)
-        };
-        Ok::<_, std::convert::Infallible>(fixture)
-    })
-    .unwrap()
+    CLI_PATH.with(Clone::clone)
 }
 
 pub(super) fn cargo() -> sync::Arc<PathBuf> {
-    COMPILER.with(|compiler| sync::Arc::clone(&compiler.cargo))
-}
-
-pub(super) fn rustc() -> PathBuf {
-    cargo()
-        .parent()
-        .unwrap()
-        .join(format!("rustc{}", std::env::consts::EXE_SUFFIX))
+    COMPILER.with(sync::Arc::clone)
 }
 
 pub(super) fn configure(command: &mut Command) {
     // These controls inspect API/source identity and execute unoptimized code.
-    // Debug symbol files are unused fixtures; dev builds stay incremental.
     command
-        .env("CARGO_PROFILE_DEV_DEBUG", "0")
         // Private fixtures do not inherit this checkout's static-CRT flags.
         // Resolver/lock configuration is still discovered by the real Cargo.
         .env(
@@ -125,17 +92,8 @@ pub(super) fn configure(command: &mut Command) {
             } else {
                 ""
             },
-        )
-        .env(
-            "RUSTUP_TOOLCHAIN",
-            cargo()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .file_name()
-                .unwrap(),
         );
+    compiler::configure(command);
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
@@ -176,90 +134,12 @@ fn resolve_linker() -> (String, PathBuf) {
     )
 }
 
-fn resolve_cargo() -> sync::Arc<Toolchain> {
-    sync::get_or_try_init(&CARGO, || {
-        let commands = [
-            vec!["which", "cargo", "--toolchain", "1.98.1"],
-            vec!["which", "cargo", "--toolchain", "nightly-2026-07-01"],
-            vec![
-                "target",
-                "list",
-                "--installed",
-                "--toolchain",
-                "nightly-2026-07-01",
-            ],
-        ];
-        let mut probes = BTreeMap::new();
-        let mut cargo = None;
-        for arguments in commands {
-            let output = Command::new("rustup")
-                .env("RUSTUP_AUTO_INSTALL", "0")
-                .args(&arguments)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{}", output_message(&output));
-            if cargo.is_none() {
-                cargo = Some(sync::Arc::new(PathBuf::from(
-                    String::from_utf8(output.stdout.clone()).unwrap().trim(),
-                )));
-            }
-            probes.insert(
-                arguments
-                    .into_iter()
-                    .map(std::ffi::OsString::from)
-                    .collect(),
-                output,
-            );
-        }
-        Ok::<_, std::convert::Infallible>(Toolchain {
-            cargo: cargo.unwrap(),
-            probes,
-        })
-    })
-    .unwrap()
-}
-
-// Real recorded provisioning outputs for this test binary's fixed, explicitly
-// selected toolchains. Production selection and wrapper-freshness controls use
-// the real executor. Only these exact explicit rustup commands are replayed.
-pub(super) fn tool_output(command: &Command) -> Option<std::process::Output> {
-    if command.get_program() != "rustup" {
-        return None;
-    }
-    for (key, value) in command.get_envs() {
-        if ["RUSTUP_HOME", "RUSTUP_DIST_SERVER", "RUSTUP_UPDATE_ROOT"]
-            .iter()
-            .any(|name| key.as_encoded_bytes().eq_ignore_ascii_case(name.as_bytes()))
-            && value != std::env::var_os(key).as_deref()
-        {
-            return None;
-        }
-    }
-    let arguments = command
-        .get_args()
-        .map(std::ffi::OsString::from)
-        .collect::<Vec<_>>();
-    COMPILER.with(|compiler| compiler.probes.get(&arguments).cloned())
-}
-
-pub(super) fn binary(name: &str) -> PathBuf {
-    std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
-}
-
 struct Timing(std::time::Instant, String);
 thread_local! {
     static TIMING: Timing = Timing(std::time::Instant::now(), std::thread::current().name().unwrap_or("unnamed").to_owned());
 }
 pub(super) fn time_control() {
     TIMING.with(|_| ());
-    // Resolve this leaf before fixture initialization can acquire its own slot.
-    let _ = cargo();
 }
 pub(super) fn phase(name: &str) {
     TIMING.with(|timer| {

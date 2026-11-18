@@ -15,7 +15,7 @@ pub(super) fn entries(
     let encoded_len = acyclic_stream::changes_encoded_len(context, selected)?;
     let mut entries = work.vec(selected.len())?;
     for entry in selected {
-        entries.push(acyclic_stream::wire::ChangeEntry {
+        entries.push(acyclic_stream_wire::wire::ChangeEntry {
             key: work.bytes(entry.key)?,
             operation: text(entry.operation, work)?,
             metadata: work.bytes(entry.metadata)?,

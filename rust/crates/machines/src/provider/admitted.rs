@@ -82,6 +82,23 @@ enum Intent<'a> {
     Policy(MachineId, SuspensionPolicy),
 }
 
+#[derive(Clone, Copy)]
+enum Transition {
+    Suspend,
+    Wake,
+    Destroy,
+}
+
+impl Transition {
+    fn intent(self, machine: MachineId) -> Intent<'static> {
+        match self {
+            Self::Suspend => Intent::Suspend(machine),
+            Self::Wake => Intent::Wake(machine),
+            Self::Destroy => Intent::Destroy(machine),
+        }
+    }
+}
+
 impl<B: NativeMachine> AdmittedMachine<B> {
     pub(crate) async fn open(
         backend: B,
@@ -169,7 +186,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             return Ok(());
         }
         let key = self.journal.implicit_key(b"wake").await?;
-        self.change_locked(admitted, machine, key, MachineState::Running)
+        self.change_locked(admitted, machine, key, Transition::Wake)
             .await
             .map(drop)
     }
@@ -184,7 +201,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             return Ok(());
         }
         let key = self.journal.implicit_key(b"suspend").await?;
-        self.change_locked(admitted, machine, key, MachineState::Suspended)
+        self.change_locked(admitted, machine, key, Transition::Suspend)
             .await
             .map(drop)
     }
@@ -201,22 +218,14 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         &self,
         machine: MachineId,
         key: IdempotencyKey,
-        target: MachineState,
+        transition: Transition,
     ) -> Result<MutationOutcome, ProviderError> {
-        let intent = match target {
-            MachineState::Suspended => Intent::Suspend(machine),
-            MachineState::Running => Intent::Wake(machine),
-            MachineState::Destroyed => Intent::Destroy(machine),
-            _ => {
-                return Err(ProviderError::Invalid(
-                    "unknown native transition; recovery: use suspend, wake or destroy".into(),
-                ));
-            }
-        };
-        let admission = self.admit(&intent).await?;
-        let outcome = self.change_locked(admission, machine, key, target).await?;
+        let admission = self.admit(&transition.intent(machine)).await?;
+        let outcome = self
+            .change_locked(admission, machine, key, transition)
+            .await?;
         // An explicit wake restarts the idle deadline, exactly like guest work.
-        if let (MachineState::Running, Some((_, activity))) = (target, &self.idle) {
+        if let (Transition::Wake, Some((_, activity))) = (transition, &self.idle) {
             activity.send_modify(|value| value.epoch = value.epoch.wrapping_add(1));
         }
         Ok(outcome)
@@ -227,35 +236,25 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         mut admission: Admitted<'_>,
         machine: MachineId,
         key: IdempotencyKey,
-        target: MachineState,
+        transition: Transition,
     ) -> Result<MutationOutcome, ProviderError> {
+        use MachineState::{Destroyed, Destroying, Running, Suspended, Suspending, Waking};
+
         let (value, pending_key) = &mut *admission;
         Self::select(value, machine)?;
-        let (intent, outcome) = match target {
-            MachineState::Suspended => (
-                Intent::Suspend(machine),
-                MutationOutcome::Suspended(machine),
-            ),
-            MachineState::Running => (Intent::Wake(machine), MutationOutcome::Woken(machine)),
-            MachineState::Destroyed => (
-                Intent::Destroy(machine),
+        let (target, pending_state, outcome) = match transition {
+            Transition::Suspend => (Suspended, Suspending, MutationOutcome::Suspended(machine)),
+            Transition::Wake => (Running, Waking, MutationOutcome::Woken(machine)),
+            Transition::Destroy => (
+                Destroyed,
+                Destroying,
                 MutationOutcome::MachineDestroyed(machine),
             ),
-            _ => {
-                return Err(ProviderError::Invalid(
-                    "unknown native transition; recovery: use suspend, wake or destroy".into(),
-                ));
-            }
         };
-        let digest = intent_digest(&(value.id, &intent))?;
+        let digest = intent_digest(&(value.id, transition.intent(machine)))?;
         let mut pending = value.clone();
-        pending.state = match target {
-            MachineState::Running => MachineState::Waking,
-            MachineState::Suspended => MachineState::Suspending,
-            _ => MachineState::Destroying,
-        };
+        pending.state = pending_state;
         let physical = (value.state != target).then_some(&pending);
-        let pending_state = pending.state;
         let state = &mut value.state;
         let closing_key = &mut *pending_key;
         let admitted = match self
@@ -592,7 +591,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             "acyclic.machines.suspend",
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async { self.change(machine, key, MachineState::Suspended).await }
+            async { self.change(machine, key, Transition::Suspend).await }
         )
     }
     async fn wake(
@@ -604,7 +603,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             "acyclic.machines.wake",
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async { self.change(machine, key, MachineState::Running).await }
+            async { self.change(machine, key, Transition::Wake).await }
         )
     }
     async fn destroy_machine(
@@ -616,7 +615,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             "acyclic.machines.destroy_machine",
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async { self.change(machine, key, MachineState::Destroyed).await }
+            async { self.change(machine, key, Transition::Destroy).await }
         )
     }
     async fn set_suspension_policy(

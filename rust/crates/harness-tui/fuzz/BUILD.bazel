@@ -30,6 +30,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -58,6 +59,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -86,6 +88,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -114,6 +117,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -142,6 +146,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -170,6 +175,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -196,6 +202,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -224,6 +231,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -252,6 +260,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -278,6 +287,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -296,42 +306,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/completion_events/catalog-alias",
-        "corpus/completion_events/greek-theme",
-        "corpus/completion_events/mention",
-        "corpus/completion_events/quoted-delta",
-        "corpus/completion_events/quotes",
-        "corpus/completion_events/slash",
-        "corpus/completion_events/themes",
-        "corpus/completion_events/undo-refresh",
-        "corpus/completion_events/unicode",
-        "corpus/config_keymap/aliases",
-        "corpus/config_keymap/chord",
-        "corpus/config_keymap/defaults",
-        "corpus/config_keymap/duplicate",
-        "corpus/config_keymap/syntax",
-        "corpus/config_keymap/unknown",
-        "corpus/config_settings/defaults",
-        "corpus/config_theme/defaults",
-        "corpus/config_theme/invalid-rgb",
-        "corpus/config_theme/rgb",
-        "corpus/config_theme/syntax",
-        "corpus/config_theme/unknown",
-        "corpus/edit_sequences/continuation",
-        "corpus/edit_sequences/history",
-        "corpus/edit_sequences/kill-ring",
-        "corpus/edit_sequences/motions",
-        "corpus/edit_sequences/paste",
-        "corpus/edit_sequences/unicode",
-        "corpus/input_events/config",
-        "corpus/input_events/history",
-        "corpus/input_events/ime",
-        "corpus/input_events/keys",
-        "corpus/input_events/super",
-        "corpus/input_events/windows-editor",
-        "transcript_anchor.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

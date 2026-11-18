@@ -10,7 +10,13 @@ fn credential_callbacks_are_fresh_sensitive_and_never_use_a_fixed_fallback() {
         .unwrap();
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
         .run(
-            &prop::collection::vec("[a-zA-Z0-9_-]{1,64}", 2..8),
+            &prop::collection::vec(
+                prop_oneof![
+                    "[a-zA-Z0-9_-]{1,64}",
+                    (8193..=12288usize).prop_map(|length| "a".repeat(length)),
+                ],
+                2..8,
+            ),
             |values| {
                 runtime.block_on(async {
                     let expected = values.clone();
@@ -42,22 +48,4 @@ fn credential_callbacks_are_fresh_sensitive_and_never_use_a_fixed_fallback() {
             },
         )
         .unwrap();
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn credential_callbacks_preserve_the_inference_byte_limit(length in 8193..=12288usize) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        runtime.block_on(async {
-            let client = Inference(Arc::new(Connection {
-                channel: Endpoint::from_static("https://fixture.invalid").connect_lazy(),
-                authorization: Some(authorization("stale").unwrap()),
-                credential: Some(CredentialProvider::new(move || std::future::ready(Ok("a".repeat(length))))),
-                client_instance: [1; 16],
-            }));
-            prop_assert!(matches!(client.request(()).await, Err(Error::Invalid(_))));
-            Ok(())
-        })?;
-    }
 }

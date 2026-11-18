@@ -4,7 +4,7 @@ use proptest::prelude::*;
 fn work() -> NativeMaterializationWork {
     let cancel = acyclic_fs::CancellationToken::new();
     NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 4_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 4_000_000),
         &cancel,
     )
     .expect("fixture native work")

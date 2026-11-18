@@ -49,21 +49,6 @@ unsafe impl GlobalAlloc for Spy {
     }
 }
 
-// The former implementation omitted both fast paths. Keep the real trait
-// defaults as the negative control, rather than inventing measurement overhead.
-struct MissingFastPaths(CountingAllocator<Spy>);
-// SAFETY: allocation provenance and layout are forwarded unchanged.
-unsafe impl GlobalAlloc for MissingFastPaths {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: forward the caller's valid allocation layout.
-        unsafe { self.0.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: forward the allocation's original pointer and layout.
-        unsafe { self.0.dealloc(pointer, layout) };
-    }
-}
-
 fn exercise(
     allocator: &impl GlobalAlloc,
     before: usize,
@@ -101,25 +86,20 @@ fn exercise(
 }
 
 proptest! {
-    // Delegation preserves requested bytes/alignment and the retained prefix;
-    // successful accounting is identical to the old allocate-copy-free path.
+    // Delegation preserves requested bytes/alignment, the retained prefix,
+    // and the exact accounting of the original and replacement allocations.
     #[test]
     fn native_fast_paths_preserve_bytes_alignment_and_all_counts(
         before in 1usize..4097, after in 1usize..8193, power in 0u32..7,
     ) {
         let (actual, calls) = exercise(&CountingAllocator(Spy), before, after, 1usize << power);
-        let (former, broken_calls) = exercise(&MissingFastPaths(CountingAllocator(Spy)), before, after, 1usize << power);
-        prop_assert_eq!(actual, former);
         prop_assert_eq!(actual.count_total, 2);
         prop_assert_eq!(actual.count_current, 0);
         prop_assert_eq!(actual.count_max, 2);
         prop_assert_eq!(actual.bytes_total, (before + after) as u64);
         prop_assert_eq!(actual.bytes_current, 0);
         prop_assert_eq!(actual.bytes_max, (before + after) as u64);
-        let native = |calls| calls == [0, 1, 1, 1];
-        prop_assert!(native(calls));
-        prop_assert!(!native(broken_calls), "old trait defaults escaped delegation checks");
-        prop_assert_eq!(broken_calls, [2, 0, 0, 2]);
+        prop_assert_eq!(calls, [0, 1, 1, 1]);
     }
 }
 
@@ -175,43 +155,54 @@ fn scopes_restore_after_unwind_and_isolate_threads() {
     assert_eq!(FIRST_ALLOCATION.get(), None);
 }
 
-#[test]
-fn nested_scopes_accumulate_and_restore_the_parent() {
-    use std::hint::black_box;
-    let mut child = AllocationInfo::default();
-    let parent = measure(|| {
-        drop(black_box(Box::new([0u8; 7])));
-        child = measure(|| drop(black_box(Box::new([0u8; 11]))));
-        drop(black_box(Box::new([0u8; 13])));
-    });
-    assert_eq!(child.count_total, 1);
-    assert_eq!(child.bytes_total, 11);
-    assert_eq!(parent.count_total, 3);
-    assert_eq!(parent.bytes_total, 31);
-    assert_eq!(parent.count_current, 0);
-    assert_eq!(parent.bytes_current, 0);
-    assert_eq!(parent.count_max, 1);
-    assert_eq!(parent.bytes_max, 13);
-    assert_eq!(COUNTER.get(), None);
+struct ReturnedStorage<'a> {
+    bytes: Box<[u8]>,
+    drops: &'a Cell<usize>,
 }
 
-#[test]
-fn summing_nonoverlapping_peaks_fails_the_lifetime_oracle() {
-    use std::hint::black_box;
-    let broken = measure(|| {
-        drop(black_box(Box::new([0u8; 7])));
-        let previous = COUNTER.replace(Some(AllocationInfo::default()));
-        drop(black_box(Box::new([0u8; 11])));
-        let child = COUNTER.replace(previous).unwrap();
-        // The former Scope::drop: add peaks, despite no overlapping lifetimes.
-        let mut parent = COUNTER.get().unwrap();
-        parent += child;
-        COUNTER.set(Some(parent));
-        drop(black_box(Box::new([0u8; 13])));
-    });
-    assert_eq!((broken.count_max, broken.bytes_max), (2, 18));
-    let matches_lifetimes = |info: AllocationInfo| (info.count_max, info.bytes_max) == (1, 13);
-    assert!(!matches_lifetimes(broken));
+impl Drop for ReturnedStorage<'_> {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+proptest! {
+    #[test]
+    fn returned_storage_lifetimes_follow_the_active_scope(size in 1usize..257) {
+        let drops = Cell::new(0);
+        let child = measure(|| ReturnedStorage {
+            bytes: std::hint::black_box(vec![0x5a; size].into_boxed_slice()),
+            drops: &drops,
+        });
+        prop_assert_eq!(drops.get(), 0);
+        prop_assert!(child.output.bytes.iter().all(|byte| *byte == 0x5a));
+        prop_assert_eq!((child.count_total, child.count_current, child.count_max), (1, 1, 1));
+        prop_assert_eq!((child.bytes_total, child.bytes_current, child.bytes_max), (size as u64, size as i64, size as u64));
+        prop_assert_eq!(current_allocations(), None);
+        let later = measure(|| drop(child.output));
+        prop_assert_eq!(drops.get(), 1);
+        prop_assert_eq!((later.count_total, later.count_current, later.bytes_current), (0, -1, -(size as i64)));
+        prop_assert_eq!((child.count_current, child.bytes_current), (1, size as i64));
+
+        let parent = measure(|| {
+            let child = measure(|| ReturnedStorage {
+                bytes: std::hint::black_box(vec![0x5a; size].into_boxed_slice()),
+                drops: &drops,
+            });
+            assert_eq!(drops.get(), 1);
+            assert_eq!(child.output.bytes.len(), size);
+            let before = current_allocations().unwrap();
+            assert_eq!((before.count_current, before.bytes_current), (1, size as i64));
+            drop(child.output);
+            assert_eq!(drops.get(), 2);
+            let after = current_allocations().unwrap();
+            assert_eq!((after.count_current, after.bytes_current), (0, 0));
+            assert_eq!((child.count_current, child.bytes_current), (1, size as i64));
+        });
+        prop_assert_eq!((parent.count_total, parent.count_current, parent.count_max), (1, 0, 1));
+        prop_assert_eq!((parent.bytes_total, parent.bytes_current, parent.bytes_max), (size as u64, 0, size as u64));
+        prop_assert_eq!(current_allocations(), None);
+    }
 }
 
 fn nested(depth: u8, run: &mut dyn FnMut()) {

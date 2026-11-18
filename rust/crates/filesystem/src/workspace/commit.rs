@@ -31,11 +31,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                 publication_ready,
             )
             .await;
-        let (allocations, spent, _, _) = accounting
-            .standalone_parts()
-            .ok_or(crate::WorkError::Overflow)?;
-        let live = allocations.live_bytes();
-        merge_workspace_backend(committed, spent, live).map(|receipt| receipt.value)
+        merge_workspace_backend(committed, accounting)
     }
 
     /// Publishes this private candidate under the supplied limits and seal.

@@ -20,7 +20,7 @@ fn retirement_trace(sizes: &[u16], actions: &[(bool, usize)]) -> TestResult {
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut owners = Vec::with_capacity(sizes.len());
     let mut claims = Vec::with_capacity(sizes.len());
     for &bytes in sizes {
@@ -29,7 +29,7 @@ fn retirement_trace(sizes: &[u16], actions: &[(bool, usize)]) -> TestResult {
         claims.push(Some(allocation.transfer_checkout_control(&owner, &owner)?));
         owners.push(Some(owner));
     }
-    let mut expected_work = original.receipt();
+    let mut expected_work = original.receipt().unwrap();
     for &(payload, index) in actions {
         let index = index % sizes.len();
         if payload {
@@ -56,16 +56,16 @@ fn retirement_trace(sizes: &[u16], actions: &[(bool, usize)]) -> TestResult {
             NativeAllocationAccounting::ALLOCATION_BYTES
         };
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             baseline + shared + headers * std::mem::size_of::<ProofDataCustody>() as u64 + payload
         );
-        assert_eq!(original.receipt(), expected_work);
+        assert_eq!(original.receipt().unwrap(), expected_work);
     }
     drop(claims);
     drop(owners);
     original.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    assert_eq!(original.receipt(), expected_work);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(original.receipt().unwrap(), expected_work);
     Ok(())
 }
 
@@ -113,15 +113,21 @@ async fn read_then_bind_native_original_reconciles_without_another_payload_chang
     let original = crate::NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let shared = original.state.lock().allocation_accounting()?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     assert!(custody.bind_native_original(&original.state, &shared));
     assert_eq!(shared.non_native.load(Ordering::Acquire), retained);
     original.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline + retained);
-    let receipt = original.receipt();
+    assert_eq!(
+        original.live_allocation_bytes().unwrap(),
+        baseline + retained
+    );
+    let receipt = original.receipt().unwrap();
     original.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline + retained);
-    assert_eq!(original.receipt(), receipt);
+    assert_eq!(
+        original.live_allocation_bytes().unwrap(),
+        baseline + retained
+    );
+    assert_eq!(original.receipt().unwrap(), receipt);
     drop(read);
     drop(checkout);
     drop(custody);
@@ -129,7 +135,7 @@ async fn read_then_bind_native_original_reconciles_without_another_payload_chang
     drop(shared);
     original.charge(WorkCounters::UNCHARGED)?;
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -178,14 +184,14 @@ fn shared_accounting_charges_once_per_operation_for_any_owner_count() -> TestRes
         let original = crate::NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
         let mut owners = Vec::with_capacity(count);
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         for _ in 0..count {
             owners.push(native_custody(&original)?);
         }
         let mut expected = before;
         expected.allocation_operations += count as u64 + 1;
-        expected.peak_allocation_bytes = original.live_allocation_bytes();
-        assert_eq!(original.receipt(), expected);
+        expected.peak_allocation_bytes = original.live_allocation_bytes().unwrap();
+        assert_eq!(original.receipt().unwrap(), expected);
         let shared = original
             .state
             .lock()
@@ -195,20 +201,20 @@ fn shared_accounting_charges_once_per_operation_for_any_owner_count() -> TestRes
             .ok_or("missing totals")?
             .clone();
         assert_eq!(Arc::strong_count(&shared), count + 2);
-        let mut expected = original.receipt();
+        let mut expected = original.receipt().unwrap();
         for _ in 0..64 {
             original.charge(SCAN)?;
             expected.items_examined += 1;
-            assert_eq!(original.receipt(), expected);
+            assert_eq!(original.receipt().unwrap(), expected);
         }
         drop(shared);
         drop(owners);
         original.charge(WorkCounters::UNCHARGED)?;
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             crate::NativeMaterializationWork::accounting_state_bytes()
         );
-        assert_eq!(original.receipt(), expected);
+        assert_eq!(original.receipt().unwrap(), expected);
         assert!(original.state.lock().roots.allocation_accounting.is_none());
     }
     Ok(())
@@ -224,29 +230,29 @@ fn native_payload_outlives_checkout_and_retires_resource_exactly_once() -> TestR
         peak_allocation_bytes: 16,
         ..BOUNDARY_BUDGET
     })?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut allocation = resource.claim(16, 1, WorkCounters::UNCHARGED)?;
     let claim = allocation.transfer_checkout_control(&custody, &custody)?;
-    let receipt = original.receipt();
+    let receipt = original.receipt().unwrap();
     drop(custody);
     original.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline + 16);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + 16);
     assert_eq!(resource.remaining()?.peak_allocation_bytes, 0);
     assert!(resource.claim(1, 1, WorkCounters::UNCHARGED).is_err());
     drop(claim);
     original.charge(WorkCounters::UNCHARGED)?;
     assert_eq!(resource.remaining()?.peak_allocation_bytes, 16);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         baseline
             - NativeAllocationAccounting::ALLOCATION_BYTES
             - std::mem::size_of::<ProofDataCustody>() as u64
     );
-    assert_eq!(original.receipt(), receipt);
+    assert_eq!(original.receipt().unwrap(), receipt);
     drop(allocation);
     drop(resource);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -301,27 +307,27 @@ fn wrong_original_and_cancelled_invocation_reject_registration_before_allocation
         .map_err(|(error, _)| error)?;
     let custody = native_custody(&first)?;
     let mut header = second.claim_root_metadata(custody.logical_owned_bytes())?;
-    let receipt = second.receipt();
-    let retained = second.live_allocation_bytes();
+    let receipt = second.receipt().unwrap();
+    let retained = second.live_allocation_bytes().unwrap();
     assert!(
         second
             .register_native_checkout_control(&custody, &mut header)
             .is_err()
     );
-    assert_eq!(second.receipt(), receipt);
-    assert_eq!(second.live_allocation_bytes(), retained);
+    assert_eq!(second.receipt().unwrap(), receipt);
+    assert_eq!(second.live_allocation_bytes().unwrap(), retained);
     assert_eq!(header.bytes(), custody.logical_owned_bytes());
     assert!(second.state.lock().roots.allocation_accounting.is_none());
     let custody = Arc::new(ProofDataCustody::default());
     let (invocation, cancel) = second.invocation_view()?;
     cancel.cancel();
-    let receipt = second.receipt();
+    let receipt = second.receipt().unwrap();
     assert!(
         invocation
             .register_native_checkout_control(&custody, &mut header)
             .is_err()
     );
-    assert_eq!(second.receipt(), receipt);
+    assert_eq!(second.receipt().unwrap(), receipt);
     assert_eq!(header.bytes(), custody.logical_owned_bytes());
     assert!(!custody.is_native_original(&second.state));
     assert!(second.state.lock().roots.allocation_accounting.is_none());
@@ -334,26 +340,26 @@ fn non_native_birth_and_retirement_are_reconciled_as_live_bytes() -> TestResult 
     let original = crate::NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let custody = native_custody(&original)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let first = crate::kernel::ProofDataClaim::new(Some(&custody), 16);
     original.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline + 16);
-    let receipt = original.receipt();
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + 16);
+    let receipt = original.receipt().unwrap();
     drop(first);
     let next = crate::kernel::ProofDataClaim::pending_control(&custody, 16);
     original.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline + 16);
-    assert_eq!(original.receipt(), receipt);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + 16);
+    assert_eq!(original.receipt().unwrap(), receipt);
     drop(custody);
     original.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(original.live_allocation_bytes(), baseline + 16);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + 16);
     drop(next);
     original.charge(WorkCounters::UNCHARGED)?;
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
-    assert_eq!(original.receipt(), receipt);
+    assert_eq!(original.receipt().unwrap(), receipt);
     Ok(())
 }
 
@@ -370,15 +376,15 @@ fn failed_shared_metadata_admission_keeps_header_and_owner_retryable() -> TestRe
     .map_err(|(error, _)| error)?;
     let custody = Arc::new(ProofDataCustody::default());
     let mut header = denied.claim_root_metadata(custody.logical_owned_bytes())?;
-    let before = denied.receipt();
-    let baseline = denied.live_allocation_bytes();
+    let before = denied.receipt().unwrap();
+    let baseline = denied.live_allocation_bytes().unwrap();
     assert!(
         denied
             .register_native_checkout_control(&custody, &mut header)
             .is_err()
     );
-    assert_eq!(denied.receipt(), before);
-    assert_eq!(denied.live_allocation_bytes(), baseline);
+    assert_eq!(denied.receipt().unwrap(), before);
+    assert_eq!(denied.live_allocation_bytes().unwrap(), baseline);
     assert_eq!(header.bytes(), custody.logical_owned_bytes());
     assert!(!custody.is_native_original(&denied.state));
     assert!(denied.state.lock().roots.allocation_accounting.is_none());
@@ -392,7 +398,7 @@ fn failed_shared_metadata_admission_keeps_header_and_owner_retryable() -> TestRe
     drop(custody);
     allowed.charge(WorkCounters::UNCHARGED)?;
     assert_eq!(
-        allowed.live_allocation_bytes(),
+        allowed.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -411,7 +417,7 @@ fn concurrent_final_owner_retirement_never_strands_shared_metadata() -> TestResu
         drop(allocation);
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let dropping = barrier.clone();
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         let thread = std::thread::spawn(move || {
             dropping.wait();
             drop(claim);
@@ -421,12 +427,12 @@ fn concurrent_final_owner_retirement_never_strands_shared_metadata() -> TestResu
         thread.join().map_err(|_| "retirement panicked")?;
         original.charge(WorkCounters::UNCHARGED)?;
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             crate::NativeMaterializationWork::accounting_state_bytes()
         );
         let mut expected = before;
         expected.items_examined += 1;
-        assert_eq!(original.receipt(), expected);
+        assert_eq!(original.receipt().unwrap(), expected);
     }
     Ok(())
 }

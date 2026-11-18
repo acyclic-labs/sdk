@@ -1,6 +1,10 @@
 //! A real host worker yields only at an original blocking future's Pending.
 use super::*;
 use crate::sync::Condvar;
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(not(loom))]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context as PollContext, Wake};
 mod pool;
 pub(crate) use pool::Pool;
@@ -32,12 +36,53 @@ impl State {
     }
 }
 
+/// The aggregate progress of the live native workers a replay driver owns.
+/// A parked worker stops the paused clock's auto-advance, so while it is the
+/// only live work no timer can fire and the driver must name the stall.
+pub(crate) struct Progress {
+    running: AtomicUsize,
+    parked: AtomicUsize,
+    idle: Mutex<Option<Waker>>,
+}
+
+impl Progress {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            running: AtomicUsize::new(0),
+            parked: AtomicUsize::new(0),
+            idle: Mutex::new(None),
+        })
+    }
+
+    pub(crate) fn stalled(&self) -> bool {
+        self.running.load(Ordering::SeqCst) == 0 && self.parked.load(Ordering::SeqCst) > 0
+    }
+
+    pub(crate) fn parked(&self) -> usize {
+        self.parked.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn register(&self, waker: &Waker) {
+        *lock(&self.idle) = Some(waker.clone());
+    }
+
+    fn wake(&self) {
+        let waker = lock(&self.idle).take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
 // Sole handoff lock. Never nested with executor, schedule, channel or provider
 // locks; future polls, callbacks, wakes and original I/O happen outside it.
 pub(super) struct Host {
     state: Mutex<State>,
     changed: Condvar,
     pool: Arc<pool::Pool>,
+    progress: Arc<Progress>,
+    running: AtomicBool,
+    parked: AtomicBool,
 }
 
 // Installed by the receiving worker around the original Task callback.
@@ -82,15 +127,22 @@ impl Host {
     }
     #[cfg(test)]
     #[cfg(loom)]
-    pub(super) fn new(threads: usize) -> Arc<Self> {
-        Self::with_pool(Pool::new(threads))
+    pub(super) fn new(threads: usize, progress: Arc<Progress>) -> Arc<Self> {
+        let pool = Pool::new(threads);
+        for _ in 0..threads {
+            pool.started();
+        }
+        Self::with_pool(pool, progress)
     }
 
-    pub(super) fn for_workers(workers: &crate::NativeWorkers) -> Arc<Self> {
-        Self::with_pool(workers.host_pool.clone())
+    pub(super) fn for_workers(
+        workers: &crate::NativeWorkers,
+        progress: Arc<Progress>,
+    ) -> Arc<Self> {
+        Self::with_pool(workers.host_pool.clone(), progress)
     }
 
-    fn with_pool(pool: Arc<Pool>) -> Arc<Self> {
+    fn with_pool(pool: Arc<Pool>, progress: Arc<Progress>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
                 phase: Phase::Starting,
@@ -103,7 +155,38 @@ impl Host {
             }),
             changed: Condvar::new(),
             pool,
+            progress,
+            running: AtomicBool::new(false),
+            parked: AtomicBool::new(false),
         })
+    }
+
+    fn mark_running(&self) {
+        if !self.running.swap(true, Ordering::SeqCst) {
+            self.progress.running.fetch_add(1, Ordering::SeqCst);
+        }
+        if self.parked.swap(false, Ordering::SeqCst) {
+            self.progress.parked.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn mark_parked(&self) {
+        if !self.parked.swap(true, Ordering::SeqCst) {
+            self.progress.parked.fetch_add(1, Ordering::SeqCst);
+        }
+        if self.running.swap(false, Ordering::SeqCst) {
+            self.progress.running.fetch_sub(1, Ordering::SeqCst);
+        }
+        self.progress.wake();
+    }
+
+    fn mark_finished(&self) {
+        if self.running.swap(false, Ordering::SeqCst) {
+            self.progress.running.fetch_sub(1, Ordering::SeqCst);
+        }
+        if self.parked.swap(false, Ordering::SeqCst) {
+            self.progress.parked.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     pub(super) fn run<T>(self: &Arc<Self>, work: impl FnOnce() -> T) -> T {
@@ -131,6 +214,7 @@ impl Host {
             state.phase = Phase::Running;
         }
         drop(state);
+        self.mark_running();
         self.pool.changed();
         let _finished = Finished(self.clone());
         let context = Context::simulation().map(|mut context| {
@@ -158,13 +242,20 @@ impl Host {
             state.phase = Phase::Parked;
             let saturated = self.pool.park();
             // Parking does not make the callback ready.
-            if state.detached && state.ready {
+            let parked = if state.detached && state.ready {
                 state.ready = false;
                 self.pool.resume();
                 state.phase = Phase::Running;
-            }
+                self.mark_running();
+                false
+            } else {
+                true
+            };
             self.changed.notify_one();
             drop(state);
+            if parked {
+                self.mark_parked();
+            }
             if saturated {
                 self.pool.changed();
             }
@@ -215,12 +306,14 @@ impl Host {
                         Phase::Waiting => {
                             self.pool.resume();
                             state.phase = Phase::Running;
+                            self.mark_running();
                             self.changed.notify_one();
                         }
                         Phase::Parked if state.ready => {
                             state.ready = false;
                             self.pool.resume();
                             state.phase = Phase::Running;
+                            self.mark_running();
                             self.changed.notify_one();
                         }
                         Phase::Parked => return Poll::Pending,
@@ -292,6 +385,7 @@ impl Drop for Driver {
                 state.ready = false;
                 self.0.pool.resume();
                 state.phase = Phase::Running;
+                self.0.mark_running();
                 self.0.changed.notify_one();
             }
             state.driver.take()
@@ -328,6 +422,7 @@ impl Drop for Finished {
     fn drop(&mut self) {
         let mut state = lock(&self.0.state);
         state.phase = Phase::Finished;
+        self.0.mark_finished();
         drop(state);
         self.0.changed.notify_one();
     }
@@ -345,6 +440,7 @@ impl Wake for Host {
                 state.ready = false;
                 self.pool.resume();
                 state.phase = Phase::Running;
+                self.mark_running();
                 self.changed.notify_one();
             }
             // Running work belongs to the current physical step. Its driver

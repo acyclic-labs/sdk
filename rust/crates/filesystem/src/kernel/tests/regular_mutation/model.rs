@@ -112,7 +112,7 @@ async fn generated_regular_file_histories_match_independent_logical_and_physical
                             failure.error,
                             RegularMutationError::KeepSizeBeyondEofUnsupported
                         ));
-                        assert_eq!(failure.work.backend_write_operations, 0);
+                        assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
                         assert_eq!(payload, before);
                     }
                 }

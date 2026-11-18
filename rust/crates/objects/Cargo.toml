@@ -37,6 +37,7 @@ acyclic-auth = { version = "=0.2.0", path = "../auth" }
 pin-project-lite = "0.2.16"
 http-body = { version = "1" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 async-trait.workspace = true
 blake3 = "1.8.2"
 bytes.workspace = true
@@ -46,6 +47,7 @@ hex.workspace = true
 prost.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 serde_json = { workspace = true }
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "rt", "macros"] }
 
@@ -60,6 +62,7 @@ quick-xml = { version = "0.41.0" }
 reqwest-s3 = { package = "reqwest", version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
 tonic = { workspace = true, default-features = true, features = ["tls-ring"] }
 tonic-prost = { workspace = true }
+acyclic-log-frame = { version = "=0.2.0", path = "../log-frame" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, features = ["http2"] }
 tracing.workspace = true

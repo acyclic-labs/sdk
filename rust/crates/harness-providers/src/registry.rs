@@ -7,6 +7,7 @@ use crate::credentials::{Credential, CredentialInputs};
 use catalog_update::Changes;
 
 /// Registry of protocol endpoints addressed by `provider/model`.
+#[derive(Clone)]
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,

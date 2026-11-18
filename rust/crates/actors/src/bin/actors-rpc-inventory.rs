@@ -8,7 +8,7 @@ fn main() {
     });
     if let Err(error) = serde_json::to_writer(std::io::stdout(), &inventory) {
         eprintln!(
-            "STEP_FAILED actors RPC inventory: {error}; recovery: cargo run --locked -p acyclic-actors --bin actors-rpc-inventory"
+            "STEP_FAILED actors RPC inventory: {error}; recovery: bazel run //rust/crates/actors:actors-rpc-inventory"
         );
         std::process::exit(1);
     }
@@ -17,7 +17,7 @@ fn main() {
 #[cfg(target_arch = "wasm32")]
 fn main() {
     eprintln!(
-        "STEP_FAILED actors RPC inventory requires native adapters; recovery: cargo run --locked -p acyclic-actors --bin actors-rpc-inventory"
+        "STEP_FAILED actors RPC inventory requires native adapters; recovery: bazel run //rust/crates/actors:actors-rpc-inventory"
     );
     std::process::exit(1);
 }

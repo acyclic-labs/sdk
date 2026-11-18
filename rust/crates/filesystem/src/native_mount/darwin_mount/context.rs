@@ -65,11 +65,20 @@ pub(super) struct DarwinMountContext {
 #[derive(Default)]
 pub(super) struct DarwinCallbackState {
     pub(super) completed_future_request_work: WorkCounters,
-    pub(super) first_fatal: Option<(Option<NativeMountError>, WorkCounters)>,
+    pub(super) observation_error: Option<crate::WorkObservationError>,
+    pub(super) first_fatal: Option<(
+        Option<NativeMountError>,
+        Result<WorkCounters, crate::WorkObservationError>,
+    )>,
 }
 
 impl DarwinCallbackState {
-    pub(super) fn take_failure(&mut self) -> Option<(NativeMountError, WorkCounters)> {
+    pub(super) fn take_failure(
+        &mut self,
+    ) -> Option<(
+        NativeMountError,
+        Result<WorkCounters, crate::WorkObservationError>,
+    )> {
         let (cause, work) = self.first_fatal.as_mut()?;
         cause.take().map(|cause| (cause, *work))
     }

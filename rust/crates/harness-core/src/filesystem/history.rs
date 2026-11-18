@@ -7,12 +7,15 @@ use crate::{
     conversation::VolumeClass,
 };
 use acyclic_actors::guest::GuestError;
-use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, FilesystemCommit, ForkSpec, Fs, IdempotencyKey,
-    RestoreSpec, StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
-};
 use acyclic_stream::{CommitCondition, CommitMutation, ReadRequest, StreamProvider};
 use futures::TryStreamExt as _;
+use {
+    acyclic_fs::{
+        AsyncObjectStore, CancellationToken, FilesystemCommit, ForkSpec, Fs, IdempotencyKey,
+        RestoreSpec, StreamAuthorityStore, WorkspaceName, distributed::AuthorityProvider,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 mod creation;
 mod retention;
@@ -201,7 +204,9 @@ where
             .map(|((_, head), source)| RestoreSpec {
                 expected: head,
                 source,
-                operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                    operation.into_bytes(),
+                ),
                 permit: acyclic_fs::PublicationPermit::Unrestricted,
             })
             .collect::<Vec<_>>();

@@ -16,7 +16,7 @@ async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected(
             call["args"] = args;
         }
         let frame = json!({"candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":call}]},"finishReason":"STOP"}]});
-        let parsed = stream::events(
+        let parsed = crate::event_driver::events(
             Adapter::Gemini,
             chunks(&format!("data: {frame}\n\n"), 1),
             4096,
@@ -80,7 +80,7 @@ async fn incomplete_or_malformed_native_tool_batches_never_execute() -> Result<(
         "functionCall":{"name":"prior","args":{}},"thoughtSignature":"prior-signature"
     }]}}]});
     for frame in frames {
-        let events = stream::events(
+        let events = crate::event_driver::events(
             Adapter::Gemini,
             chunks(&format!("data: {prefix}\n\ndata: {frame}\n\n"), 1),
             4096,
@@ -97,7 +97,7 @@ async fn incomplete_or_malformed_native_tool_batches_never_execute() -> Result<(
     // The original signed batch is withheld on truncation too, while the
     // shared completion retains the token-limit reason instead of refusing it.
     let frame = json!({"candidates":[truncated]});
-    let events = stream::events(
+    let events = crate::event_driver::events(
         Adapter::Gemini,
         chunks(&format!("data: {prefix}\n\ndata: {frame}\n\n"), 1),
         4096,

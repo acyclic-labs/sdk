@@ -1,6 +1,7 @@
 //! Platform I/O for the shared session pool, without another session protocol.
-use crate::{BoxProviderFuture, BoxProviderStream, ProviderPlatform, StreamError, wire};
-use std::sync::Arc;
+pub(crate) use crate::ProviderOwner as Shared;
+use crate::{BoxProviderFuture, BoxProviderStream, ProviderPlatform, StreamError};
+use acyclic_stream_wire::wire;
 
 /// Canonical inbound frames, with the owning boundary's error contract.
 pub type Responses<E = StreamError> = BoxProviderStream<'static, Result<super::super::Frame, E>>;
@@ -72,7 +73,7 @@ pub trait Transport: ProviderPlatform {
 }
 
 /// Shared endpoint handle retained across reconnects.
-pub type Endpoint = Arc<dyn Transport>;
+pub type Endpoint = Shared<dyn Transport>;
 #[cfg(not(target_arch = "wasm32"))]
 /// Resolves a moved node to its authenticated endpoint, without opening a session.
 pub type Connect = dyn Fn(wire::SessionNode) -> BoxProviderFuture<'static, Result<Endpoint, Failure>>

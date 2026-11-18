@@ -28,6 +28,8 @@ mod preparation;
 mod profile;
 mod provider;
 mod recorded;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+pub(crate) use recorded::IgnoreDivergence;
 pub use recorded::{
     Divergence, DivergenceSink, RecordedCall, RecordedModel, RecordedToolOutcome, Recording,
     replay_key,

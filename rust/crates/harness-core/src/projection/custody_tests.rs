@@ -23,35 +23,33 @@ impl ContentResidencyVerifier for Resolver {
     }
 }
 
-fn reference(bytes: &[u8]) -> FileRef {
+fn reference(bytes: &[u8]) -> Result<FileRef> {
     FileRef::new(
         VolumeRef::new(
-            ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
+            ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?,
             "private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
             &mut None,
-        )
-        .unwrap(),
+        )?,
         "invocation.json".into(),
         "v1".into(),
-        FileDescriptor::from_bytes(bytes, "application/json", &mut None).unwrap(),
+        FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
         "fixture".into(),
         &mut None,
     )
-    .unwrap()
 }
 
-fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
-    let reference = reference(&bytes);
+fn check_bytes(bytes: Vec<u8>, must_reject: bool) -> Result<()> {
+    let reference = reference(&bytes)?;
     let resolver = Resolver(bytes);
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(2_000_000, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(2_000_000, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )
-    .unwrap();
-    let io = PreparationIo::from_native_work(&work).unwrap();
-    let baseline = work.live_allocation_bytes();
+    .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let baseline = work.live_allocation_bytes()?;
     let result = futures::executor::block_on(artifacts::read_tool_call(
         &resolver,
         &reference,
@@ -63,9 +61,7 @@ fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
     }
     match result {
         Ok(call) => {
-            let custody = io
-                .take_native_custody(call.payload_bytes().unwrap())
-                .unwrap();
+            let custody = io.take_native_custody(call.payload_bytes()?)?;
             drop(call);
             drop(custody);
         }
@@ -79,21 +75,23 @@ fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
     ));
     match result {
         Ok(block) => {
-            let custody = io
-                .take_native_custody(block.payload_bytes().unwrap())
-                .unwrap();
+            let custody = io.take_native_custody(block.payload_bytes()?)?;
             drop(block);
             drop(custody);
         }
         Err(error) => drop(error),
     }
     // Check while the I/O scope is still alive: scope destruction must not hide a leak.
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    assert_eq!(io.owned_bytes().unwrap(), 0);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    assert_eq!(io.owned_bytes()?, 0);
+    Ok(())
 }
 
-fn check_rejected(value: Value) {
-    check_bytes(serde_json::to_vec(&value).unwrap(), true);
+fn check_rejected(value: &Value) -> Result<()> {
+    check_bytes(
+        serde_json::to_vec(value).map_err(|error| crate::Error::Invalid(error.to_string()))?,
+        true,
+    )
 }
 
 fn arbitrary_value() -> impl Strategy<Value = Value> {
@@ -130,15 +128,15 @@ proptest! {
             _ => {value["metadata"]["unsafe"] = json!(u64::MAX);},
         }
         for _ in 0..nesting {value = json!({"wrapper":value});}
-        check_rejected(value);
+        check_rejected(&value).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
 
 #[test]
-fn removed_metadata_rejection_does_not_leave_the_decoded_record_retained() {
+fn removed_metadata_rejection_does_not_leave_the_decoded_record_retained() -> Result<()> {
     check_rejected(
-        json!({"invocation":{"call_id":"call", "name":"echo", "arguments":{"payload":"x".repeat(1000)}}, "extra":"y".repeat(1000)}),
-    );
+        &json!({"invocation":{"call_id":"call", "name":"echo", "arguments":{"payload":"x".repeat(1000)}}, "extra":"y".repeat(1000)}),
+    )
 }
 
 proptest! {
@@ -146,57 +144,59 @@ proptest! {
     #[test]
     fn guarded_joins_conserve_the_original_ledger(bytes in 0u64..8192, additional in 0u64..8192) {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4*1024*1024),
+            acyclic_fs_work::performance::work_budget(100_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         let io = PreparationIo::from_native_work(&work).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let live = || work.live_allocation_bytes().map_err(|error| TestCaseError::fail(error.to_string()));
+        let baseline = live()?;
         let mut hold = io.reserve_decode(bytes).unwrap();
         let incoming = io.reserve_decode(additional).unwrap();
         prop_assert_eq!(hold.bytes() + incoming.bytes(), bytes + additional);
-        prop_assert_eq!(work.live_allocation_bytes() - baseline, bytes + additional);
+        prop_assert_eq!(live()? - baseline, bytes + additional);
         hold.absorb(incoming).unwrap();
         prop_assert_eq!(hold.bytes(), bytes + additional);
         prop_assert!(hold.substitute(bytes + additional + 1).is_err());
         prop_assert_eq!(hold.bytes(), bytes + additional);
         drop(hold);
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(live()?, baseline);
     }
 }
 
 #[test]
-fn premature_retention_negative_control_is_visible_before_io_scope_drop() {
+fn premature_retention_negative_control_is_visible_before_io_scope_drop() -> Result<()> {
     let bytes = br#"{"invocation":{"arguments":{"payload":"charged"}}}"#;
-    let file = reference(bytes);
+    let file = reference(bytes)?;
     let resolver = Resolver(bytes.to_vec());
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(100_000, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )
-    .unwrap();
-    let io = PreparationIo::from_native_work(&work).unwrap();
-    let baseline = work.live_allocation_bytes();
+    .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let baseline = work.live_allocation_bytes()?;
     let (value, hold) = futures::executor::block_on(artifacts::read_value(
         &resolver,
         &file,
         Some(4096),
         Some(&io),
-    ))
-    .unwrap();
+    ))?;
     // Broken original ordering: release the guard before discovering missing metadata.
-    hold.unwrap().into_retained().unwrap();
+    hold.ok_or_else(|| io.invalid("decoded record lost native custody"))?
+        .into_retained()?;
     assert!(value.get("metadata").is_none());
     drop(value);
-    assert_ne!(work.live_allocation_bytes(), baseline);
-    io.release(io.owned_bytes().unwrap()).unwrap();
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_ne!(work.live_allocation_bytes()?, baseline);
+    io.release(io.owned_bytes()?)?;
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn arbitrary_wire_inputs_leave_no_custody_after_their_final_reader(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
-        check_bytes(bytes, false);
+        check_bytes(bytes, false).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 
     #[test]
@@ -215,12 +215,13 @@ proptest! {
                 _ => {value = json!([value]);},
             }
         }
-        check_bytes(serde_json::to_vec(&value).unwrap(), false);
+        let bytes = serde_json::to_vec(&value).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        check_bytes(bytes, false).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
 
 #[test]
-fn canonical_reasoning_keeps_only_its_field_custody() {
+fn canonical_reasoning_keeps_only_its_field_custody() -> Result<()> {
     use crate::model::{
         ModelEvent, ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome,
     };
@@ -237,5 +238,8 @@ fn canonical_reasoning_keeps_only_its_field_custody() {
             outcome: ReasoningOutcome::PreservedOpaque,
         },
     };
-    check_bytes(serde_json::to_vec(&event).unwrap(), true);
+    check_bytes(
+        serde_json::to_vec(&event).map_err(|error| crate::Error::Invalid(error.to_string()))?,
+        true,
+    )
 }

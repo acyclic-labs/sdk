@@ -82,7 +82,7 @@ fn small_blob_reservations_do_not_depend_on_page_width() -> Result<(), Box<dyn s
         let mut values = empty_blob_vec::<u8>();
         reserve_blob_vec(&mut values, 1, &mut accounting)?;
         values.value.push(7);
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         let mut result = Ok(());
         let physical = acyclic_test_support::measure(|| {
             result = reserve_blob_vec(&mut values, 2, &mut accounting);
@@ -105,10 +105,10 @@ fn small_blob_reservations_do_not_depend_on_page_width() -> Result<(), Box<dyn s
         assert_eq!(physical.count_total, 0);
         assert_eq!(values.value.capacity(), 1);
         assert_eq!(values.value, [7]);
-        assert_eq!(accounting.spent(), before);
+        assert_eq!(accounting.spent().unwrap(), before);
         release_blob_vec(values, &mut accounting)?;
         if let Some(original) = original {
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         } else {
             assert_eq!(
                 accounting
@@ -150,7 +150,7 @@ fn small_blob_reservations_do_not_depend_on_page_width() -> Result<(), Box<dyn s
         ))?;
         let leaf = index.leaf.value.capacity();
         let parent = index.levels.value[0].value.capacity();
-        let allocated = accounting.spent().peak_allocation_bytes;
+        let allocated = accounting.spent().unwrap().peak_allocation_bytes;
         index.release(&mut accounting)?;
         batching.release(&mut accounting)?;
         Ok((root, allocated, leaf, parent))

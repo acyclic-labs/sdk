@@ -261,7 +261,7 @@ impl BrowserWorkspace {
         let engine = {
             let value = &self.engine;
             let generation = Box::pin(value.head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             ))
             .await
@@ -271,7 +271,7 @@ impl BrowserWorkspace {
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 &mut publication_ready,
             ))
@@ -301,7 +301,7 @@ impl BrowserWorkspace {
                 destination,
                 browser_fork_options(generation.clone(), idempotency_key, options.paths.clone()),
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 &mut publication_ready,
             ))
@@ -399,7 +399,7 @@ impl BrowserWorkspace {
                 .plan_at(
                     &browser_join_generation(source, options.source_generation.as_deref()).await?,
                     &browser_join_generation(target, options.target_generation.as_deref()).await?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await

@@ -233,6 +233,30 @@ async fn execute(
     CliCompletion::executed(result, failure_report)
 }
 
+/// The run-start delegation policy selected by argv or its JSON preset file.
+fn topology(
+    args: &Args,
+) -> Result<acyclic_harness::topology::Topology, Box<dyn std::error::Error>> {
+    let mut topology = match &args.topology_file {
+        Some(path) => serde_json::from_slice(&acyclic_harness::local::read_regular_file(path)?)?,
+        None => acyclic_harness::topology::Topology::select(
+            args.topology.as_deref().unwrap_or("swarm"),
+        )?,
+    };
+    let preset_children = topology.max_children();
+    let preset_depth = topology.max_depth();
+    if args.topology_file.is_some()
+        && let Some(mode) = &args.topology
+    {
+        topology.mode = acyclic_harness::topology::Topology::select(mode)?.mode;
+    }
+    let max_children = args.max_children.or(preset_children);
+    let max_depth = args.max_depth.or(preset_depth);
+    topology = topology.with_limits(max_children, max_depth);
+    topology.validate()?;
+    Ok(topology)
+}
+
 /// The `GraphCoder` preset with argv's overrides for the local harness: the
 /// harness resolves its models through the provider registry and its catalog,
 /// under the workspace's native settings and search.
@@ -245,9 +269,7 @@ fn configure(
     }
     .working_directory(&std::env::current_dir()?)?;
     config = config.question_plugin(questions_enabled(args));
-    config = config.topology(acyclic_harness::topology::Topology::select(
-        args.topology.as_deref().unwrap_or("swarm"),
-    )?)?;
+    config = config.topology(topology(args)?)?;
     if args.no_compaction {
         config = config.compaction(acyclic_harness::context::CompactionPolicy::Disabled);
     }
@@ -585,6 +607,25 @@ fn owner_arguments(args: &Args) -> Vec<OwnerArgument> {
             });
         }
     }
+    for (flag, value) in [
+        ("--max-children", args.max_children),
+        ("--max-depth", args.max_depth),
+    ] {
+        if let Some(value) = value {
+            arguments.push(OwnerArgument {
+                flag,
+                value: Some(value.to_string().into()),
+                reusable: true,
+            });
+        }
+    }
+    if let Some(path) = &args.topology_file {
+        arguments.push(OwnerArgument {
+            flag: "--topology-file",
+            value: Some(path.clone().into_os_string()),
+            reusable: true,
+        });
+    }
     arguments.push(OwnerArgument {
         flag: "--workspace-mounting",
         value: Some(
@@ -733,6 +774,43 @@ mod owner_arguments_tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn topology_file_keeps_caps_and_reattaches() -> Result<(), Box<dyn std::error::Error>> {
+        let file = tempfile::NamedTempFile::new()?;
+        std::fs::write(
+            file.path(),
+            br#"{"version":1,"mode":"single","max_children":2,"max_depth":1}"#,
+        )?;
+        let path = file.path().to_str().ok_or("non-UTF-8 preset path")?;
+        let mut args = Args::try_parse_from([
+            "graphcoder",
+            "--topology-file",
+            path,
+            "--topology",
+            "swarm",
+            "exec",
+            "task",
+        ])?;
+        let selected = topology(&args)?;
+        assert!(matches!(
+            selected.mode,
+            acyclic_harness::topology::Mode::Swarm { .. }
+        ));
+        assert_eq!(
+            (selected.max_children(), selected.max_depth()),
+            (Some(2), Some(1))
+        );
+        args.max_children = Some(3);
+        args.max_depth = Some(0);
+        let selected = topology(&args)?;
+        assert_eq!(
+            (selected.max_children(), selected.max_depth()),
+            (Some(3), Some(0))
+        );
+        require_owner_arguments(&args, &Default::default())?;
         Ok(())
     }
 
@@ -996,11 +1074,7 @@ async fn connected(
     }
     sessions::apply_peer_choice(args, &connection, peer_choice_applied).await?;
     if args.endpoint.is_none() {
-        connection
-            .require_topology(&acyclic_harness::topology::Topology::select(
-                args.topology.as_deref().unwrap_or("swarm"),
-            )?)
-            .await?;
+        connection.require_topology(&topology(args)?).await?;
     }
     if let Some(Command::Run {
         goal: Some(goal),

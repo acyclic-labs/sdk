@@ -45,3 +45,17 @@ pub fn charge_bytes(cost: Cost, bytes: u64) {
     #[cfg(not(feature = "test-support"))]
     let _ = (cost, bytes);
 }
+
+/// Runs `future` as one named cost-ledger operation when the simulation
+/// support is compiled in, and as a plain future otherwise.
+pub async fn operation<F: std::future::Future>(name: &'static str, future: F) -> F::Output {
+    #[cfg(feature = "test-support")]
+    {
+        crate::testing::ledger::operation(name, future).await
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = name;
+        future.await
+    }
+}

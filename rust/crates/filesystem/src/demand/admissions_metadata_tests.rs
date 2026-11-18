@@ -24,8 +24,8 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .unwrap();
-    let baseline = original.live_allocation_bytes();
-    let before = original.receipt();
+    let baseline = original.live_allocation_bytes().unwrap();
+    let before = original.receipt().unwrap();
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -44,7 +44,7 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
     }
     // Keep a publisher alive while checking the real heap delta: a terminal
     // reconciliation would otherwise discard the aggregate before comparison.
-    if original.live_allocation_bytes() != baseline + allocated.bytes_total {
+    if original.live_allocation_bytes().unwrap() != baseline + allocated.bytes_total {
         return Err("shared metadata must fund its complete physical allocation");
     }
     let expected = before
@@ -54,7 +54,7 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
             ..WorkCounters::UNCHARGED
         })
         .unwrap();
-    if original.receipt() != expected {
+    if original.receipt().unwrap() != expected {
         return Err("metadata receipt");
     }
     let ((), retired) = measured(|| {
@@ -67,7 +67,9 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
     {
         return Err("final owner releases the physical allocation once");
     }
-    if original.live_allocation_bytes() != baseline || original.receipt() != expected {
+    if original.live_allocation_bytes().unwrap() != baseline
+        || original.receipt().unwrap() != expected
+    {
         return Err("final owner restores standing bytes and keeps the receipt");
     }
     Ok(allocated.bytes_total)
@@ -106,8 +108,8 @@ fn an_exact_physical_metadata_budget_succeeds_and_one_byte_less_allocates_nothin
             &cancellation,
         )
         .unwrap();
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        let before = original.receipt();
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        let before = original.receipt().unwrap();
         let (result, heap) = measured(|| original.state.lock().allocation_accounting());
         if short {
             assert!(
@@ -116,16 +118,16 @@ fn an_exact_physical_metadata_budget_succeeds_and_one_byte_less_allocates_nothin
             })) if observed == baseline + physical && limit == maximum)
             );
             assert_eq!(heap, acyclic_test_support::AllocationInfo::default());
-            assert_eq!(original.receipt(), before);
+            assert_eq!(original.receipt().unwrap(), before);
         } else {
             let shared = result.unwrap();
             assert_eq!(heap.count_total, 1);
             assert_eq!(heap.bytes_total, physical);
-            assert_eq!(original.live_allocation_bytes(), maximum);
+            assert_eq!(original.live_allocation_bytes().unwrap(), maximum);
             drop(shared);
         }
         original.charge(WorkCounters::UNCHARGED).unwrap();
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 }
 
@@ -143,10 +145,10 @@ proptest! {
         let original = crate::NativeMaterializationWork::new(
             WorkBudget::UNBOUNDED, &CancellationToken::new(),
         ).unwrap();
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let initial = original.state.lock().allocation_accounting().unwrap();
         let mut owners = vec![Some(initial); publishers];
-        let charged = original.receipt();
+        let charged = original.receipt().unwrap();
         for (clone, index) in actions {
             let index = index % owners.len();
             if clone {
@@ -156,12 +158,12 @@ proptest! {
             }
             original.charge(WorkCounters::UNCHARGED).unwrap();
             let live = u64::from(owners.iter().any(Option::is_some));
-            prop_assert_eq!(original.live_allocation_bytes(), baseline + live * physical);
-            prop_assert_eq!(original.receipt(), charged);
+            prop_assert_eq!(original.live_allocation_bytes().unwrap(), baseline + live * physical);
+            prop_assert_eq!(original.receipt().unwrap(), charged);
         }
         drop(owners);
         original.charge(WorkCounters::UNCHARGED).unwrap();
-        prop_assert_eq!(original.live_allocation_bytes(), baseline);
-        prop_assert_eq!(original.receipt(), charged);
+        prop_assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        prop_assert_eq!(original.receipt().unwrap(), charged);
     }
 }

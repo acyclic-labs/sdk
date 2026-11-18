@@ -34,6 +34,8 @@ thread_local! {
 /// recording, or an event of another type, does nothing: independent
 /// observation points share code paths, and a capture subscribes to exactly
 /// one of them by its type.
+/// The downcast binds the capture to `Vec<T>`; its typed `push` cannot admit
+/// a value from a different event type.
 pub fn record<T: 'static>(event: T) {
     let mut pending = Some(event);
     TRACE.with_borrow_mut(|trace| {

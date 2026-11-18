@@ -72,6 +72,33 @@ async fn failed_initialization_can_retry_with_the_same_retained_owner()
     Ok(())
 }
 
+#[tokio::test]
+async fn system_clock_options_share_a_root_with_default_options()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().to_owned();
+    let system =
+        Fs::local(LocalOptions::new(&root).clock(Arc::new(acyclic_stream::SystemUnixMillisClock)))
+            .await?;
+    // A default open selects the same system clock through a distinct value.
+    let default = Fs::local(LocalOptions::new(&root)).await?;
+
+    struct Fixed;
+    impl acyclic_stream::UnixMillisClock for Fixed {
+        fn now_unix_millis(&self) -> u64 {
+            0
+        }
+    }
+    assert!(matches!(
+        Fs::local(LocalOptions::new(&root).clock(Arc::new(Fixed))).await,
+        Err(FsError::LocalOptionsConflict)
+    ));
+
+    drop(default);
+    drop(system);
+    Ok(())
+}
+
 #[test]
 fn inline_local_root_does_not_create_a_private_tokio_io_pool()
 -> Result<(), Box<dyn std::error::Error>> {

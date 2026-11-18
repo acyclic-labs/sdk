@@ -187,12 +187,12 @@ fn generation_catalog_failed_node_admission_preserves_coverage_and_original_fund
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let (catalog, identity) = {
         let mut owner = AuthorityWork::native(&original, &cancel);
         GenerationCatalog::creation(None, None, &mut owner)?
     };
-    let funded = original.live_allocation_bytes();
+    let funded = original.live_allocation_bytes().unwrap();
     assert!(funded > baseline);
     let generation = GenerationId::new(Digest::from_bytes([24; 32]));
     let mut denied = AuthorityWork::new(
@@ -215,14 +215,14 @@ fn generation_catalog_failed_node_admission_preserves_coverage_and_original_fund
             .get(generation.object_id().index_key(), &mut denied.accounting())?
             .is_none()
     );
-    assert_eq!(original.live_allocation_bytes(), funded);
+    assert_eq!(original.live_allocation_bytes().unwrap(), funded);
     let last = catalog.clone();
     drop(catalog);
-    assert_eq!(original.live_allocation_bytes(), funded);
+    assert_eq!(original.live_allocation_bytes().unwrap(), funded);
     drop(last);
     drop(identity);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         baseline,
         "catalog backing outlived its original credit"
     );

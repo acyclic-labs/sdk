@@ -28,11 +28,17 @@ fn only_an_inherited_origin_is_spelled_and_each_record_has_one_encoding() {
         own.encoded_len() + "fork".len() + 2,
         unspelled.encoded_len()
     );
-    assert_eq!(record(own, Some(&fork)), Ok(stored("fork")));
+    assert_eq!(
+        record(own, Some(&fork)).map_err(|error| error.category()),
+        Ok(stored("fork"))
+    );
     // An inherited record names its segment and round-trips exactly.
     let inherited = record_wire(stored("source"), Some(&fork));
     assert_eq!(inherited.origin, "source");
-    assert_eq!(record(inherited.clone(), Some(&fork)), Ok(stored("source")));
+    assert_eq!(
+        record(inherited.clone(), Some(&fork)).map_err(|error| error.category()),
+        Ok(stored("source"))
+    );
     // Spelling the followed path, or omitting an origin with no followed
     // path, is a decode error rather than a second encoding.
     assert_eq!(
@@ -40,8 +46,9 @@ fn only_an_inherited_origin_is_spelled_and_each_record_has_one_encoding() {
         Err(StreamCategory::InvalidArgument)
     );
     assert_eq!(
-        record(record_wire(stored("source"), Some(&source)), None),
-        Err(StreamError::InvalidArgument)
+        record(record_wire(stored("source"), Some(&source)), None)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     let mut malformed = inherited;
     malformed.origin = "/not//canonical".into();

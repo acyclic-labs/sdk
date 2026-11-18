@@ -284,8 +284,8 @@ fn credential_capacity_counts_live_entries_not_slot_numbers() {
 
 #[test]
 fn declared_method_credentials_match_session_admission() {
-    use crate::StreamMethod;
     use acyclic_auth::action::Action;
+    use acyclic_stream_wire::authorization::StreamMethod;
 
     #[cfg(feature = "test-support")]
     for operation in crate::TokenOperation::ALL {
@@ -347,7 +347,11 @@ fn declared_method_credentials_match_session_admission() {
                         paths: [path].into(),
                         retained: Default::default(),
                         durable_through: None,
-                        projection: Default::default(),
+                        projection: if method == StreamMethod::Tail {
+                            crate::HeadProjection::Tail
+                        } else {
+                            crate::HeadProjection::History
+                        },
                         children: None,
                         limit: 1,
                         at_least: Default::default(),
@@ -402,7 +406,27 @@ fn declared_method_credentials_match_session_admission() {
             );
         }
     }
-    for operation in [crate::TokenOperation::Read, crate::TokenOperation::Follow] {
+    let read_actions: Vec<_> = crate::TokenOperation::Read.actions().collect();
+    assert_eq!(
+        read_actions,
+        [
+            acyclic_auth::action::StreamsAction::Read.into(),
+            acyclic_auth::action::StreamsAction::Tail.into()
+        ]
+    );
+    let mut slots = Slots::default();
+    auth.register(
+        &mut slots,
+        0,
+        &credential("streams:/allowed", &read_actions, None),
+        1,
+    )
+    .unwrap();
+    assert!(admit(&auth, &slots, StreamMethod::Follow, "allowed").is_err());
+    assert!(admit(&auth, &slots, StreamMethod::Tail, "allowed").is_ok());
+
+    {
+        let operation = crate::TokenOperation::Follow;
         let actions: Vec<_> = operation.actions().collect();
         for removed in std::iter::once(None).chain((0..actions.len()).map(Some)) {
             let credential = credential("streams:/allowed", &actions, removed);
@@ -1204,12 +1228,9 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
             let authorize = || {
                 for _ in 0..checks {
                     assert_eq!(
-                        context.authorize(
-                            "fs:/volume/public",
-                            &[],
-                            &attributes,
-                            PolicyDecision::Allow
-                        ),
+                        context
+                            .authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow)
+                            .map_err(|error| error.category()),
                         Ok(())
                     );
                 }

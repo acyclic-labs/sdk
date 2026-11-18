@@ -4,15 +4,15 @@ use proptest::prelude::*;
 
 fn work(bytes: u64) -> NativeMaterializationWork {
     NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, bytes),
+        acyclic_fs_work::performance::work_budget(100_000, bytes),
         &acyclic_fs::CancellationToken::new(),
     )
     .expect("fixture work")
 }
 
-fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) {
+fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) -> crate::Result<()> {
     let work = work(4_000_000);
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let bytes = Bytes::from(input);
     let expected = bytes.clone();
     let mut eof = false;
@@ -32,7 +32,7 @@ fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) {
     let received = futures::executor::block_on(body.next()).unwrap().unwrap();
     assert_eq!(received, expected);
     if !broken {
-        assert_eq!(work.receipt().source_bytes_read, expected.len() as u64);
+        assert_eq!(work.receipt()?.source_bytes_read, expected.len() as u64);
     }
     if terminal == 2 {
         work.cancellation().cancel();
@@ -57,11 +57,12 @@ fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) {
     let clone = received.clone();
     drop((body, received));
     assert!(
-        work.live_allocation_bytes() >= baseline + clone.len() as u64,
+        work.live_allocation_bytes()? >= baseline + clone.len() as u64,
         "response payload lost custody while a reader retains it"
     );
     drop(clone);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 proptest! {
@@ -70,19 +71,20 @@ proptest! {
     fn received_bytes_preserve_data_and_custody_until_the_last_reader_drops(
         input in prop::collection::vec(any::<u8>(), 1..4096),
         terminal in 0u8..3,
-    ) { check_retention(input, false, terminal); }
+    ) { check_retention(input, false, terminal).map_err(|error| TestCaseError::fail(error.to_string()))?; }
 }
 
 #[test]
 #[should_panic(expected = "response payload lost custody")]
 fn negative_control_detects_the_former_unfunded_response_buffer() {
-    check_retention(vec![b'x'; 4096], true, 0);
+    let result = check_retention(vec![b'x'; 4096], true, 0);
+    assert!(result.is_ok(), "observation failed: {result:?}");
 }
 
 #[test]
-fn an_oversized_received_buffer_is_rejected_before_a_reader_can_consume_it() {
+fn an_oversized_received_buffer_is_rejected_before_a_reader_can_consume_it() -> crate::Result<()> {
     let work = work(8192);
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let source = futures::stream::iter([
         Ok(Bytes::from(vec![0; 16384])),
         Ok(Bytes::from_static(b"later")),
@@ -92,5 +94,6 @@ fn an_oversized_received_buffer_is_rejected_before_a_reader_can_consume_it() {
     assert!(futures::executor::block_on(body.next()).is_none());
     assert!(futures::executor::block_on(body.next()).is_none());
     drop(body);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }

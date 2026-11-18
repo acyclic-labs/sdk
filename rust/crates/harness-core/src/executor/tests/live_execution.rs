@@ -87,13 +87,20 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+type PendingOutcome = fn(OperationId) -> Result<Option<ToolResult>>;
+
+#[cfg(not(target_arch = "wasm32"))]
 struct PendingTool {
+    retire_on_drop: bool,
+    outcome: PendingOutcome,
     calls: AtomicUsize,
-    result: Mutex<Option<ToolResult>>,
     accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::tool::ToolExecutor for PendingTool {
+    fn cancellable_on_drop(&self) -> bool {
+        self.retire_on_drop
+    }
     fn execute<'a>(
         &'a self,
         _: ToolInvocation,
@@ -107,22 +114,23 @@ impl crate::tool::ToolExecutor for PendingTool {
     }
     fn reconcile<'a>(
         &'a self,
-        _: ToolInvocation,
+        invocation: ToolInvocation,
         _: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Ok(self.result.lock().unwrap().clone()) })
+        Box::pin(async move { (self.outcome)(invocation.operation_id) })
     }
 }
 
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
+async fn a_live_tool_retry_requires_retirement_before_settlement() -> Result<()> {
     let (journal, _issuer) = super::publication_observation::journal().await?;
     let provider = Arc::new(scripted_model());
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
+        retire_on_drop: false,
+        outcome: |_| Ok(None),
         calls: AtomicUsize::new(0),
-        result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
     });
     let tools = echo_tools(
@@ -163,70 +171,27 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     drop(first);
-    assert!(matches!(
-        executor.execute_progress(input.clone(), &journal).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
-    ));
-    // Neither cancellation nor an inconclusive reconciliation authorizes a
-    // terminal result. The original serialized invocation remains recoverable.
-    assert_eq!(
-        journal.replay(input.operation_id, 0, 100, None)?.await?,
-        before
-    );
-    assert!(matches!(
-        executor.execute_progress(input.clone(), &journal).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
-    ));
-    assert_eq!(
-        journal.replay(input.operation_id, 0, 100, None)?.await?,
-        before
-    );
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 1);
-    // A later outcome of that exact invocation can still settle normally.
-    *tool.result.lock().unwrap() = Some(ToolResult {
-        value: json!({"value":"hello"}),
-    });
-    assert_eq!(
-        executor.execute(input.clone(), &journal).await?.text,
-        "done"
-    );
-    let completed = journal.replay(input.operation_id, 0, 100, None)?.await?;
-    assert_eq!(&completed[..before.len()], before.as_slice());
-    assert!(
-        completed
-            .iter()
-            .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
-    );
-    assert!(
-        !completed
-            .iter()
-            .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
-    );
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 2);
-    Ok(())
+    pending_redelivery(&journal, (tool, provider, executor, input), true).await
 }
 
-/// A started call whose incarnation died, reopened by its successor, which
-/// took the delivery: the call's producer is fenced. A dispatched start is
-/// the record a start published together with its dispatch leaves.
+/// Stop the original attempt while its tool outcome is still pending.
 #[cfg(not(target_arch = "wasm32"))]
-async fn fenced_pending_call(
-    dispatched: bool,
+async fn start_pending_call(
+    journal: &dyn ExecutionJournal,
+    retire_on_drop: bool,
+    outcome: PendingOutcome,
 ) -> Result<(
-    Journal,
     Arc<PendingTool>,
     Arc<ScriptedModelProvider>,
     StockExecutor,
     TurnInput,
 )> {
-    let journal = Journal::default();
     let provider = Arc::new(scripted_model());
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
+        retire_on_drop,
+        outcome,
         calls: AtomicUsize::new(0),
-        result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
     });
     let tools = echo_tools(
@@ -249,13 +214,29 @@ async fn fenced_pending_call(
         allowed()?,
     )?;
     let input = input();
-    let mut first = Box::pin(executor.execute(input.clone(), &journal));
+    let mut first = Box::pin(executor.execute(input.clone(), journal));
     tokio::select! {
         outcome = &mut first => panic!("execution ended before tool acceptance: {outcome:?}"),
         accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
     }
-    // The incarnation dies with its producer; the next one reopens the cut.
     drop(first);
+    Ok((tool, provider, executor, input))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn fenced_pending_call(
+    dispatched: bool,
+) -> Result<(
+    Journal,
+    Arc<PendingTool>,
+    Arc<ScriptedModelProvider>,
+    StockExecutor,
+    TurnInput,
+)> {
+    let journal = Journal::default();
+    let (tool, provider, executor, input) =
+        start_pending_call(&journal, false, |_| Ok(None)).await?;
+    // The incarnation dies with its producer; the next one reopens the cut.
     let reopened = journal.reopen_before_tool_completion("call-1");
     if dispatched {
         for record in reopened.0.lock().unwrap().iter_mut() {
@@ -271,11 +252,18 @@ async fn fenced_pending_call(
 /// dead owner can no longer settle, so an inconclusive reconciliation is the
 /// model's interrupted failure, the effect never runs again, and the turn
 /// continues instead of staying indeterminate.
-#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> Result<()> {
-    let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
-    let settled = executor.execute(input.clone(), &reopened).await?;
+async fn pending_redelivery(
+    journal: &dyn ExecutionJournal,
+    (tool, provider, executor, input): (
+        Arc<PendingTool>,
+        Arc<ScriptedModelProvider>,
+        StockExecutor,
+        TurnInput,
+    ),
+    unknown: bool,
+) -> Result<()> {
+    let settled = executor.execute(input.clone(), journal).await?;
     assert_eq!(settled.text, "done");
     let text = super::tools_1::tool_error_text(&provider.requests()[1].messages, "call-1")
         .expect("the next model request carries the call's failure");
@@ -283,45 +271,96 @@ async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> R
         text.starts_with(ToolFailureKind::Interrupted.message()),
         "{text}"
     );
-    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
-        &record.event,
-        ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
-            if call_id == "call-1"
-    )));
+    assert_eq!(
+        text.contains("operation outcome is indeterminate"),
+        unknown,
+        "{text}"
+    );
+    assert_eq!(text.contains("may still complete"), unknown, "{text}");
+    assert!(
+        journal
+            .replay(input.operation_id, 0, 100, None)?
+            .await?
+            .iter()
+            .any(|record| matches!(
+                &record.event,
+                ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
+                    if call_id == "call-1"
+            ))
+    );
     assert_eq!(
         tool.calls.load(Ordering::SeqCst),
         1,
         "the effect never runs again"
     );
-    assert_eq!(settled, executor.execute(input, &reopened).await?);
+    assert_eq!(settled, executor.execute(input, journal).await?);
     Ok(())
 }
 
-/// A call dispatched to another host outlives its fenced owner: it stays
-/// retained, with nothing recorded and nothing run again, until that host's
-/// own settlement decides it.
-#[tokio::test]
+/// Replay a still-pending outcome on the same owner and after a restart.
+/// The real journal, claim and stock settlement engine run under seeded I/O
+/// scheduling; no uncertain tool effect is executed a second time.
+#[test]
 #[cfg(not(target_arch = "wasm32"))]
-async fn a_fenced_dispatched_call_waits_for_its_host_to_settle_it() -> Result<()> {
-    let (reopened, tool, _, executor, input) = fenced_pending_call(true).await?;
-    let retained = executor.execute(input.clone(), &reopened).await;
-    assert!(
-        matches!(&retained, Err(Error::Indeterminate(id)) if *id == input.operation_id),
-        "{retained:?}"
-    );
-    assert!(!reopened.0.lock().unwrap().iter().any(|record| matches!(
-        &record.event,
-        ExecutionEvent::ToolFailed { .. } | ExecutionEvent::ToolCompleted { .. }
-    )));
-    *tool.result.lock().unwrap() = Some(ToolResult {
-        value: json!({"value":"hello"}),
-    });
-    assert_eq!(executor.execute(input, &reopened).await?.text, "done");
-    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
-        &record.event,
-        ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "call-1"
-    )));
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1, "the host ran it once");
+fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::Result<(), String> {
+    use acyclic_native_runtime::testing::{
+        Schedule, seeded_runtime,
+        sweep::{seeds, sweep},
+    };
+    sweep(
+        "harness-pending-redelivery",
+        seeds(0..8).map_err(|error| error.to_string())?,
+        |seed| {
+            seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
+            let (schedule, mut boundaries) = Schedule::seeded(seed);
+            let history = async {
+                let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
+                pending_redelivery(&reopened, (tool, provider, executor, input), false).await?;
+                let (reopened, tool, provider, executor, input) = fenced_pending_call(true).await?;
+                pending_redelivery(&reopened, (tool, provider, executor, input), true).await?;
+                let outcomes: [PendingOutcome; 4] = [
+                    |_| Ok(None),
+                    |operation| Err(Error::Indeterminate(operation)),
+                    |_| Err(Error::Storage("reconciliation transport lost".into())),
+                    |operation_id| Err(Error::CommandIndeterminate {
+                        operation_id,
+                        cause: crate::CommandIndeterminacy {
+                            command: "pending".into(),
+                            reason: crate::CommandIndeterminacyReason::Failed {
+                                code: "STORAGE".into(),
+                                error: "command outcome unknown".into(),
+                            },
+                        },
+                    }),
+                ];
+                let (journal, _issuer) = super::publication_observation::journal().await?;
+                for retired in [false, true] {
+                    for outcome in outcomes {
+                        let pending = start_pending_call(&journal, retired, outcome).await?;
+                        pending_redelivery(&journal, pending, !retired).await?;
+                    }
+                }
+                Ok::<(), Error>(())
+            };
+            let mut execution = Box::pin(schedule.scope(history));
+            let result = loop {
+                tokio::select! {
+                    result = &mut execution => break result,
+                    boundary = boundaries.recv() => boundary.expect("schedule boundary").release(),
+                }
+            };
+            drop(execution);
+            loop {
+                tokio::select! {
+                    () = schedule.drained() => break,
+                    boundary = boundaries.recv() => boundary.expect("drain boundary").release(),
+                }
+            }
+            result.map_err(|error| error.to_string())
+        })
+        },
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -368,7 +407,7 @@ impl crate::tool::ToolExecutor for KeyedTool {
 }
 
 /// A fenced start of a keyed effect runs again, once, after reconciliation
-/// finds no receipt; while its producer may be live it is only retained.
+/// finds no receipt; an unfenced effect is never repeated.
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn a_fenced_keyed_call_runs_its_one_effect_again() -> Result<()> {
@@ -407,12 +446,6 @@ async fn a_fenced_keyed_call_runs_its_one_effect_again() -> Result<()> {
         accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
     }
     drop(first);
-    // The same owner's start is never fenced: it is retained, not run again.
-    assert!(matches!(
-        executor.execute_progress(input.clone(), &journal).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
-    ));
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     let reopened = journal.reopen_before_tool_completion("call-1");
     let settled = executor.execute(input.clone(), &reopened).await?;
     assert_eq!(settled.text, "done");
@@ -427,8 +460,8 @@ async fn a_fenced_keyed_call_runs_its_one_effect_again() -> Result<()> {
             tool.reconciles.load(Ordering::SeqCst),
             tool.effects.load(Ordering::SeqCst),
         ),
-        (2, 2, 1),
-        "one live reconciliation, one fenced reconciliation, one effect"
+        (2, 1, 1),
+        "one fenced reconciliation, one effect"
     );
     Ok(())
 }

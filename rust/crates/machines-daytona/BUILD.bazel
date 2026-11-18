@@ -5,6 +5,8 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 FEATURES = []
 
+WASM_FEATURES = []
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-machines-daytona","CARGO_PKG_DESCRIPTION":"Protected Daytona adapter for the public Machines provider seam","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
@@ -28,6 +30,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -50,43 +53,11 @@ rust_library(
 )
 
 rust_test(
-    name = "acyclic_machines_daytona_test_cases",
-    crate = ":acyclic_machines_daytona",
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values())",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        "//rust/crates/harness-core:acyclic_harness_core",
-        "//rust/crates/harness-providers:acyclic_harness_providers",
-        "//rust/crates/machines:acyclic_machines",
-        "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//tokio-1.54.1",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "acyclic_machines_daytona_test",
-    binary = ":acyclic_machines_daytona_test_cases",
-    id = "acyclic-machines-daytona",
-    limit_seconds = 10,
-    tags = ["no-sandbox"],
-)
-
-rust_test(
     name = "conformance_cases",
     crate_root = "tests/conformance.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/conformance.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -97,6 +68,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -127,8 +99,60 @@ isolated_test(
     name = "conformance",
     binary = ":conformance_cases",
     id = "acyclic-machines-daytona::conformance",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "conformance_full-cloud",
+    binary = ":conformance_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-machines-daytona::conformance",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_library(
+    name = "acyclic_machines_daytona_wasm",
+    crate_name = "acyclic_machines_daytona",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
+    deps = [
+        "//rust/crates/auth:acyclic_auth_wasm",
+        "//rust/crates/harness-core:acyclic_harness_core_wasm",
+        "//rust/crates/machines:acyclic_machines_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@wasm_crates//bytes-1.12.1",
+        "@wasm_crates//futures-0.3.34",
+        "@wasm_crates//http-1.5.0",
+        "@wasm_crates//serde-1.0.229",
+        "@wasm_crates//serde_json-1.0.154",
+        "@wasm_crates//time-0.3.55",
+        "@wasm_crates//url-2.5.8",
+    ],
+    proc_macro_deps = [
+        "@sdk_crates//async-trait-0.1.92",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(
@@ -137,6 +161,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

@@ -32,9 +32,10 @@ pub fn normalize_identity(kind: &str, value: &str) -> Result<Uuid, IdentityError
     Ok(uuid_from_digest(digest.finalize().into()))
 }
 
-fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
+const fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
+    let (prefix, _) = digest.split_at(16);
     let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    bytes.copy_from_slice(prefix);
     uuid::Builder::from_sha1_bytes(bytes).into_uuid()
 }
 
@@ -64,7 +65,7 @@ macro_rules! uuid_identity {
             }
 
             /// Derives a deterministic, never-nil identity from a domain-separated SHA-256 digest: its first 16 bytes stamped as a version-5 UUID.
-            pub fn from_digest(digest: [u8; 32]) -> Self {
+            pub const fn from_digest(digest: [u8; 32]) -> Self {
                 Self(uuid_from_digest(digest))
             }
 
@@ -100,6 +101,14 @@ uuid_identity!(OperationId, "Address of one admitted operation.");
 uuid_identity!(MachineId, "Stable logical machine identity.");
 uuid_identity!(CheckpointId, "Stable immutable checkpoint identity.");
 
+// Check the revision-one byte vectors at compile time on every target.
+const _: () = {
+    assert!(OperationId::from_digest([0; 32]).0.as_u128() == 0x5000_8000_000000000000);
+    assert!(
+        MachineId::from_digest([0xff; 32]).0.as_u128() == 0xffffffff_ffff_5fff_bfff_ffffffffffff
+    );
+};
+
 impl MachineId {
     /// Global pair retaining this machine's exact 16-byte UUID wire representation.
     pub fn identity(
@@ -117,9 +126,9 @@ pub mod identity_codec_fuzz {
 
     /// UUID syntax is owned by the UUID library; each public identity must add
     /// exactly the non-nil constraint and preserve all original bits.
-    pub fn check(bytes: &[u8]) {
+    pub fn check(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "test-support")]
-        crate::grpc::codec_fuzz::check_identities(bytes);
+        crate::grpc::codec_fuzz::check_identities(bytes)?;
         let expected_bytes = <[u8; 16]>::try_from(bytes)
             .ok()
             .filter(|value| value.iter().any(|byte| *byte != 0));
@@ -150,16 +159,17 @@ pub mod identity_codec_fuzz {
                 if let Some(id) = admitted {
                     assert_eq!($identity::parse(&id.to_string()), Ok(id));
                     assert_eq!(serde_json::from_slice::<$identity>(
-                        &serde_json::to_vec(&id).unwrap()).unwrap(), id);
+                        &serde_json::to_vec(&id)?)?, id);
                 }
             )+ };
         }
         check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
-        check_image_digest(bytes);
+        check_image_digest(bytes)?;
         check_oci_reference(bytes);
+        Ok(())
     }
 
-    fn check_image_digest(bytes: &[u8]) {
+    fn check_image_digest(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let nonzero = |raw: [u8; 32]| raw.iter().any(|byte| *byte != 0);
         let expected = <[u8; 32]>::try_from(bytes).ok().filter(|raw| nonzero(*raw));
         let actual = <[u8; 32]>::try_from(bytes)
@@ -182,18 +192,22 @@ pub mod identity_codec_fuzz {
         );
         if let Some(digest) = actual {
             assert_eq!(
-                serde_json::from_slice::<ImageDigest>(&serde_json::to_vec(&digest).unwrap())
-                    .unwrap(),
+                serde_json::from_slice::<ImageDigest>(&serde_json::to_vec(&digest)?)?,
                 digest
             );
         }
+        Ok(())
     }
 
     fn check_oci_reference(bytes: &[u8]) {
         fn checked(reference: &str) -> Option<Image> {
             let image = Image::oci(reference).ok()?;
+            assert!(
+                matches!(&image, Image::ManagedOci(_)),
+                "OCI reference must select a managed image"
+            );
             let Image::ManagedOci(digest) = &image else {
-                panic!("OCI reference must select a managed image");
+                return None;
             };
             let split = reference.len().saturating_sub(64);
             let name = reference
@@ -234,7 +248,10 @@ pub mod identity_codec_fuzz {
             for malformed in [
                 digest.clone(),
                 format!("{digest}{suffix}f"),
-                format!("{digest}@sha256:g{}", digest.get(1..).unwrap()),
+                format!(
+                    "{digest}@sha256:g{}",
+                    digest.chars().skip(1).collect::<String>()
+                ),
             ] {
                 assert!(
                     Image::oci(malformed).is_err(),
@@ -247,22 +264,22 @@ pub mod identity_codec_fuzz {
     /// Capture the original public identity writers and the UUID library's nil
     /// writer as a refusal input. Image digests retain their public byte/serde
     /// writers and the zero array writer as refusal inputs.
-    pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
+    pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
         let id = MachineId::from_digest([1; 32]);
         let nil = Uuid::nil();
-        let image = ImageDigest::new([1; 32]).unwrap();
-        vec![
+        let image = ImageDigest::new([1; 32])?;
+        Ok(vec![
             ("machine-bytes", id.as_bytes().to_vec()),
             ("machine-text", id.to_string().into_bytes()),
-            ("machine-json", serde_json::to_vec(&id).unwrap()),
+            ("machine-json", serde_json::to_vec(&id)?),
             ("machine-nil-bytes", nil.as_bytes().to_vec()),
             ("machine-nil-text", nil.to_string().into_bytes()),
-            ("machine-nil-json", serde_json::to_vec(&nil).unwrap()),
+            ("machine-nil-json", serde_json::to_vec(&nil)?),
             ("image-bytes", image.as_bytes().to_vec()),
-            ("image-json", serde_json::to_vec(&image).unwrap()),
+            ("image-json", serde_json::to_vec(&image)?),
             ("image-zero-bytes", [0; 32].to_vec()),
-            ("image-zero-json", serde_json::to_vec(&[0_u8; 32]).unwrap()),
-        ]
+            ("image-zero-json", serde_json::to_vec(&[0_u8; 32])?),
+        ])
     }
 }
 
@@ -274,8 +291,8 @@ mod resource_identity_tests {
     fn public_identity_admission_preserves_syntax_and_nonzero_bits() {
         use super::identity_codec_fuzz::check;
         use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-        for (_, bytes) in super::identity_codec_fuzz::seeds() {
-            check(&bytes);
+        for (_, bytes) in super::identity_codec_fuzz::seeds().unwrap() {
+            assert!(check(&bytes).is_ok());
         }
         let strategy = (
             proptest::collection::vec(any::<u8>(), 0..128),
@@ -287,13 +304,13 @@ mod resource_identity_tests {
             TestRng::deterministic_rng(RngAlgorithm::ChaCha),
         )
         .run(&strategy, |(bytes, raw, image)| {
-            check(&bytes);
-            check(&raw);
+            prop_assert!(check(&bytes).is_ok());
+            prop_assert!(check(&raw).is_ok());
             let original = uuid::Uuid::from_bytes(raw);
-            check(original.to_string().as_bytes());
-            check(&serde_json::to_vec(&original).unwrap());
-            check(&image);
-            check(&serde_json::to_vec(&image).unwrap());
+            prop_assert!(check(original.to_string().as_bytes()).is_ok());
+            prop_assert!(check(&serde_json::to_vec(&original).unwrap()).is_ok());
+            prop_assert!(check(&image).is_ok());
+            prop_assert!(check(&serde_json::to_vec(&image).unwrap()).is_ok());
             Ok(())
         })
         .unwrap();

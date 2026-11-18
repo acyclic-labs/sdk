@@ -26,9 +26,9 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
         &token,
     )
     .map_err(|(cause, _)| cause)?;
-    let before = original.live_allocation_bytes();
+    let before = original.live_allocation_bytes().unwrap();
     let group = crate::PolicyGroup::new(&[&cuts], &original, &token)?;
-    assert!(original.live_allocation_bytes() > before);
+    assert!(original.live_allocation_bytes().unwrap() > before);
     let effect = StreamPath::new("harness/approval-answer")?;
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
@@ -50,7 +50,7 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
         assert!(commit.request_mut().is_none());
     }
     if seal {
-        assert_eq!(original.live_allocation_bytes(), before);
+        assert_eq!(original.live_allocation_bytes().unwrap(), before);
     }
     // A different policy head wins after the caller's original admission.
     let head = store.head(authority, &mut work).await?;
@@ -83,7 +83,13 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
     let outcome = provider.commit(commit.request().clone()).await?;
     if seal {
         assert!(matches!(outcome, CommitOutcome::Conflict(_)));
-        assert_eq!(provider.tail(effect).await, Err(StreamError::NotFound));
+        assert_eq!(
+            provider
+                .tail(effect)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
+        );
         assert!(matches!(
             store.settle(commit, outcome, &mut work).await?,
             crate::FilesystemCommitOutcome::Rejected(_)

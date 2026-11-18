@@ -330,8 +330,8 @@ impl NativeMaterializationWork {
         }
         delta
     }
-    /// Actual invocation work.
-    pub fn receipt(&self) -> WorkCounters {
+    /// Actual invocation work, or an error if deferred work cannot be reconciled.
+    pub fn receipt(&self) -> Result<WorkCounters, crate::WorkObservationError> {
         self.state(|state| state.receipt())
     }
     /// Retains the original durable work prefix once.
@@ -343,10 +343,12 @@ impl NativeMaterializationWork {
     /// Durable prefix plus current invocation work.
     pub fn journal_work(&self) -> Result<WorkCounters, NativeTreeMaterializationError> {
         self.state(|state| {
-            state
-                .original_work
-                .unwrap_or_default()
-                .checked_add(state.receipt())
+            Ok::<_, crate::demand::DemandError>(
+                state
+                    .original_work
+                    .unwrap_or_default()
+                    .checked_add(state.receipt()?)?,
+            )
         })
         .map_err(Into::into)
     }
@@ -426,12 +428,11 @@ impl NativeMaterializationWork {
             additional_resource: None,
         })
     }
-    /// Current live allocation.
-    pub fn live_allocation_bytes(&self) -> u64 {
+    /// Current live allocation, or an error if the original ledger is poisoned.
+    pub fn live_allocation_bytes(&self) -> Result<u64, crate::WorkObservationError> {
         self.state(|state| {
-            state
-                .reconcile_native_controls()
-                .expect("balanced native retirement");
+            state.live_allocation_bytes()?;
+            state.reconcile_native_controls()?;
             state.live_allocation_bytes()
         })
     }

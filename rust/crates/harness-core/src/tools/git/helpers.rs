@@ -15,7 +15,7 @@ pub(super) fn existing_tracked_paths<
             match generation
                 .stat(
                     &format!("/{path}"),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await

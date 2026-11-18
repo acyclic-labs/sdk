@@ -182,6 +182,6 @@ async fn uncertain_checkpoint_reset_fences_the_owner_until_reopen() {
                     .is_none()
             );
         }
-        work.receipt().verify(budget).unwrap();
+        work.receipt().unwrap().verify(budget).unwrap();
     }
 }

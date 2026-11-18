@@ -79,6 +79,9 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     workspace
         .release_publication(reservation, &original, &cancellation)
         .await?;
-    original.receipt().verify(selected_transaction_budget())?;
+    original
+        .receipt()
+        .unwrap()
+        .verify(selected_transaction_budget())?;
     Ok(())
 }

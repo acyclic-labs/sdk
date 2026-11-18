@@ -144,7 +144,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             failure.error.semantic_error(),
             LazyWorkspaceError::Store(_)
         ));
-        failure.work.verify(budget)?;
+        failure.work().unwrap().verify(budget)?;
         let workspace = unbounded!(fs, open_workspace("companion-fault"))?;
         let initial = unbounded!(
             workspace,
@@ -191,7 +191,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         assert_eq!(
             lazy.workspace()
                 .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new()
                 )
                 .await

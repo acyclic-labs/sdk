@@ -5,14 +5,14 @@ pub(crate) use std::sync::*;
 
 // Every retained native owner includes its lock storage in its admitted layout.
 // The pthread-backed standard mutex allocates separately on first acquisition.
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+pub(crate) use self::{InlineMutex as Mutex, InlineMutexGuard as MutexGuard};
 #[cfg(all(
     not(loom),
     not(target_arch = "wasm32"),
     any(test, target_os = "linux", windows)
 ))]
 pub(crate) use acyclic_native_runtime::InlineCondvar as Condvar;
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-pub(crate) use acyclic_native_runtime::{InlineMutex as Mutex, InlineMutexGuard as MutexGuard};
 
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 pub(crate) use acyclic_native_runtime::{InlineMutex, InlineMutexGuard};
@@ -22,30 +22,6 @@ pub(crate) use loom::sync::Mutex as InlineMutex;
 pub(crate) use loom::sync::MutexGuard as InlineMutexGuard;
 #[cfg(all(not(loom), target_arch = "wasm32"))]
 pub(crate) use std::sync::Mutex as InlineMutex;
-
-// Native namespace and helper coordination has a dedicated model domain.
-// The unchanged ledger uses the separate filesystem accounting proofs.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod native {
-    #[cfg(loom)]
-    pub(crate) use loom::{sync::*, thread};
-    #[cfg(not(loom))]
-    pub(crate) use std::{sync::*, thread};
-
-    #[cfg(loom)]
-    pub(crate) type RetirementSender = loom::sync::mpsc::Sender<()>;
-    #[cfg(not(loom))]
-    pub(crate) type RetirementSender = std::sync::mpsc::SyncSender<()>;
-
-    // Retirement consumes its sender, including constructor rejection. There
-    // is exactly one notification for the one worker receive.
-    pub(crate) fn retirement_channel() -> (RetirementSender, mpsc::Receiver<()>) {
-        #[cfg(loom)]
-        return loom::sync::mpsc::channel();
-        #[cfg(not(loom))]
-        std::sync::mpsc::sync_channel(1)
-    }
-}
 
 // Type identity checks compile in ordinary builds, including --all-features.
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]

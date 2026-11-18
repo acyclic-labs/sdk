@@ -1,12 +1,17 @@
 //! Restore a real generation and retain its full reference at the shipping command.
-use acyclic_fs::{
-    AuthoredMutation, CancellationToken, Fs, Lifecycle, LivePublicationObservation, LocalOptions,
-    OperationId, PublicationPermit, VolumeConfig, WorkBudget,
-    kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath},
-    model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
-};
+use acyclic_fs_format::metadata::FileMetadata;
 use acyclic_native_runtime::ProcessCommand;
 use std::{path::Path, time::Duration};
+use {
+    acyclic_fs::{
+        AuthoredMutation, CancellationToken, Fs, Lifecycle, LivePublicationObservation,
+        LocalOptions, PublicationPermit, VolumeConfig,
+        kernel::{LogicalName, NameEncoding, NamespacePath},
+        model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
+    },
+    acyclic_fs_format::identity::OperationId,
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -82,8 +87,8 @@ fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_
                 WorkBudget::UNBOUNDED,
                 &cancel,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                        acyclic_fs::OperationReceipt {
+                    Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                        acyclic_fs_work::performance::OperationReceipt {
                             value: (),
                             work: Default::default(),
                         },
@@ -123,9 +128,9 @@ fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_
     // The local composition is plaintext. A different full storage identity
     // must fail; discarding its association would restore the valid object.
     let mut associated = generation.object_id();
-    associated.storage = Some(acyclic_fs::ObjectStorage {
+    associated.storage = Some(acyclic_fs_format::object_reference::ObjectStorage {
         locator: generation.digest(),
-        root_file_id: acyclic_fs::FileId::from_bytes([1; 16]),
+        root_file_id: acyclic_fs_format::identity::FileId::from_bytes([1; 16]),
         origin_generation: generation.digest(),
     });
     let refused = directory.path().join("different-storage");
@@ -143,7 +148,7 @@ fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_
     let missing_store = directory.path().join("must-not-open");
     let rejected = directory.path().join("must-not-create");
     let mut wrong_kind = generation.object_id();
-    wrong_kind.kind = acyclic_fs::ObjectKind::BlobChunk;
+    wrong_kind.kind = acyclic_fs_format::object_reference::ObjectKind::BlobChunk;
     for malformed in [
         hex::encode(generation.digest().as_bytes()),
         hex::encode(wrong_kind.to_bytes().as_slice()),

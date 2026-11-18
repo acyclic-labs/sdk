@@ -66,6 +66,32 @@ pub struct ResultCursor {
 }
 
 impl ResultCursor {
+    pub(crate) fn validate_page(
+        self,
+        original: Self,
+        credit: NonZeroU32,
+        returned: usize,
+        next: Option<Self>,
+    ) -> Result<(), ProviderError> {
+        if self != original {
+            return Err(invalid("result page cursor was substituted"));
+        }
+        let (range, _) = self.interval(original.cut, credit)?;
+        let returned = u64::try_from(returned)
+            .map_err(|_| invalid("result page extent exceeds address space"))?;
+        if returned > range.end - range.start || returned == 0 && self.from < self.cut.count {
+            return Err(invalid(
+                "result page violates its original extent or credit",
+            ));
+        }
+        let end = self.from + returned;
+        let expected = (end < self.cut.count).then_some(Self { from: end, ..self });
+        if next != expected {
+            return Err(invalid("result page continuation was substituted"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn interval(
         self,
         original: ResultCut,
@@ -344,23 +370,8 @@ pub async fn cleanup(
     let mut cursor = ResultCursor { cut, from: 0 };
     loop {
         let page = provider.read_results(cursor, credit).await?;
-        if page.cursor != cursor {
-            return Err(invalid("cleanup result cursor was substituted"));
-        }
-        let count = u64::try_from(page.machines.len())
-            .map_err(|_| invalid("cleanup page extent exceeds address space"))?;
-        let (allowed, _) = cursor.interval(cut, credit)?;
-        if count > allowed.end - allowed.start || count == 0 && cursor.from < cut.count {
-            return Err(invalid("cleanup result page violates its extent or credit"));
-        }
-        let end = cursor.from + count;
-        let next = (end < cut.count).then_some(ResultCursor {
-            from: end,
-            ..cursor
-        });
-        if page.next != next {
-            return Err(invalid("cleanup continuation was substituted"));
-        }
+        page.cursor
+            .validate_page(cursor, credit, page.machines.len(), page.next)?;
         for (index, machine) in page.machines.into_iter().enumerate() {
             use sha2::{Digest as _, Sha256};
             let index = cursor.from
@@ -377,7 +388,7 @@ pub async fn cleanup(
                 return Err(invalid("cleanup destroy result was substituted"));
             }
         }
-        let Some(next) = next else {
+        let Some(next) = page.next else {
             return Ok(());
         };
         cursor = next;

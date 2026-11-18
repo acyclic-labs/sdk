@@ -27,11 +27,14 @@ use crate::{
     resources::ProviderRef,
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
-use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, FilesystemCommit, FilesystemCommitOutcome, Fs,
-    StreamAuthorityStore, WorkBudget, distributed::AuthorityProvider,
-};
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        AsyncObjectStore, CancellationToken, FilesystemCommit, FilesystemCommitOutcome, Fs,
+        StreamAuthorityStore, distributed::AuthorityProvider,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 enum StagedInput<'a> {
     Text {
@@ -146,9 +149,11 @@ impl Prepared {
         let mut journal_creation: acyclic_fs::CreateSpec<'_> =
             host.volume_create_spec(&journal).map_err(turn)?;
         if let Some(policy) = &policy {
-            journal_creation.creation = acyclic_fs::CreationOperation::populated(
+            let attributes = policy.attributes(&journal, journal_creation.creation.operation_id)?;
+            journal_creation.creation = acyclic_fs::CreationOperation::populated_with_attributes(
                 journal_creation.creation.operation_id,
                 policy.files(),
+                attributes,
             );
         }
         creations.push(journal_creation);
@@ -208,7 +213,10 @@ impl Prepared {
         P: AuthorityProvider + ?Sized + 'static,
         O: AsyncObjectStore + 'static,
     {
-        if !Arc::ptr_eq(agents.provider(), &host.filesystem.stream_provider()) {
+        if !acyclic_stream::ProviderOwner::ptr_eq(
+            agents.provider(),
+            &host.filesystem.stream_provider(),
+        ) {
             return Err(Error::Record("root activation uses another provider"));
         }
         let Self { child, commit } = self;
@@ -411,7 +419,7 @@ where
                 audience: caller.audience,
                 scope: caller.scope,
             },
-            volumes,
+            volumes.with_clock(turns.clock.clone()),
             within,
             (turns, cuts),
             configure,
@@ -445,9 +453,10 @@ where
         let ancestry = acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(
             filesystem.stream_provider(),
         ));
-        let volumes = FilesystemHost::new(filesystem, &provider, None)
-            .and_then(|host| host.with_project_families(ancestry))
-            .map_err(turn)?;
+        let volumes =
+            FilesystemHost::new_with_clock(filesystem, &provider, None, turns.clock.clone())
+                .and_then(|host| host.with_project_families(ancestry))
+                .map_err(turn)?;
         Self::on(
             issuer,
             admission,
@@ -643,6 +652,7 @@ where
     /// authority admitting it.
     /// Independent roots also receive read-only peer discovery; child enrollment
     /// never inherits that resource or session-directory authority.
+    /// Enrollment and authorization use this binding's original actor clock.
     ///
     /// # Errors
     /// When `root` is absent or its scope does not cover its observation.
@@ -651,34 +661,32 @@ where
         &self,
         root: &AgentPath,
         calls: &str,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<super::AgentObservation, Error> {
-        self.client_observation(root, calls, clock, None).await
+        self.client_observation(root, calls, None).await
     }
 
     /// Explicit owner enrollment for the root directory of this placement.
     /// This is a platform operation, never callable by a session request.
+    /// The credential retains this binding's original clock.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn session_credential(
         &self,
         root: &AgentPath,
         calls: &str,
         directory: &str,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<super::AgentObservation, Error> {
         self.admit_sessions()?;
-        self.client_observation(root, calls, clock, Some(directory))
-            .await
+        self.client_observation(root, calls, Some(directory)).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Session admission for this endpoint's root uses the same audience as
     /// its client enrollment. Local roots have a conversation audience;
     /// admitted workloads retain their original host-selected audience.
+    /// Deadline evaluation uses the same clock as this binding's actor alarms.
     pub fn client_authority(
         &self,
         root: &AgentPath,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<acyclic_stream::session::Authority, Error> {
         self.admit_path(root)?;
         let issuer = self.admission.verify(&self.issuer, root).map_err(turn)?;
@@ -686,7 +694,7 @@ where
             issuer
                 .native()
                 .ok_or(Error::Record("client admission requires native custody"))?,
-            clock,
+            self.clock.clone(),
         )
         .map_err(turn)
     }
@@ -704,7 +712,6 @@ where
         &self,
         root: &AgentPath,
         calls: &str,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         directory: Option<&str>,
     ) -> Result<super::AgentObservation, Error> {
         self.admit_path(root)?;
@@ -723,7 +730,7 @@ where
                 (&authority, self.observation_parent(&authority.scope)),
                 &state.path,
                 &journal,
-                clock,
+                self.clock.clone(),
                 calls,
                 directory.zip(directory_source.as_ref()),
             )
@@ -797,14 +804,13 @@ where
                 .map_err(turn)?;
             let state = self.agents.state(agent).await?;
             let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
-            let clock = ObservationClock(self.clock.clone());
             let (resource, credential, _) = self
                 .volumes
                 .observation_credential(
                     (&authority, self.observation_parent(&authority.scope)),
                     &state.path,
                     &journal,
-                    &clock,
+                    self.clock.as_ref(),
                     &[],
                     None,
                     audience,
@@ -941,6 +947,14 @@ where
     ) -> Result<Arc<super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
+        let own_journal = file.is_some_and(|file| {
+            file.volume().is_agent_journal()
+                && file.volume().provider() == &self.volumes.provider
+                && file.volume().owner()
+                    == &crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes(
+                        agent.id_bytes(),
+                    ))
+        });
         let external = match (sequence, file) {
             (Some(sequence), Some(file)) if sequence < state.conversation_tail => {
                 let entry = crate::agent::conversation_entry(
@@ -962,12 +976,7 @@ where
                 ));
             }
             (None, Some(file))
-                if file.volume().is_agent_journal()
-                    && file.volume().provider() == &self.volumes.provider
-                    && file.volume().owner()
-                        == &crate::conversation::VolumeOwner::Agent(
-                            crate::AgentId::from_bytes(agent.id_bytes()),
-                        )
+                if own_journal
                     && [
                         super::InternalContentClass::Conversation,
                         super::InternalContentClass::ToolOutput,
@@ -980,6 +989,15 @@ where
                 // conversation proof above, even though their bytes are staged.
                 self.volumes.file_generation(file, None).map_err(turn)?;
                 std::slice::from_ref(file)
+            }
+            (None, Some(file))
+                if file.volume().is_agent_journal()
+                    && !own_journal
+                    && state.adoption_grant(file).is_empty() =>
+            {
+                return Err(Error::Record(
+                    "journal file requires its selected agent or committed conversation proof",
+                ));
             }
             (None, file) => file.map_or(&[][..], |file| state.adoption_grant(file)),
         };
@@ -1640,16 +1658,6 @@ where
     ) -> Result<RootSubmission, Error> {
         self.submit_root(self.prepare_root(intent, request).await?)
             .await
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct ObservationClock(Arc<dyn Clock>);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl acyclic_stream::UnixMillisClock for ObservationClock {
-    fn now_unix_millis(&self) -> u64 {
-        self.0.now_unix_ms()
     }
 }
 

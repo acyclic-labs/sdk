@@ -1,6 +1,6 @@
 //! Original ordinary and instrumented suites share their real root bindings.
-#[cfg(not(loom))]
-mod agent_control_mapping;
+#[cfg(all(not(loom), feature = "test-support"))]
+use acyclic_harness_control_checks as agent_control_mapping;
 #[cfg(not(loom))]
 mod agent_model;
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]

@@ -433,6 +433,9 @@ impl LocalStream {
                         frame.work.as_deref(),
                     ))
                 })?;
+                acyclic_native_runtime::cost::charge(
+                    acyclic_native_runtime::cost::Cost::JournalAppend,
+                );
                 *cursor = stream
                     .inner
                     .journal

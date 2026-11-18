@@ -21,7 +21,7 @@ async fn check_roots(_native: bool) -> Result<()> {
     let provider = Arc::new(acyclic_stream::MemoryStream::default());
     let path = StreamPath::new("index/pages")?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
     #[cfg(not(target_arch = "wasm32"))]
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -72,7 +72,7 @@ async fn check_roots(_native: bool) -> Result<()> {
         cache: None,
     };
     for (index, version) in versions {
-        let before = io.receipt();
+        let before = io.receipt()?;
         let read = reader
             .get(version, &key(index))
             .await?
@@ -80,7 +80,7 @@ async fn check_roots(_native: bool) -> Result<()> {
         assert!(
             matches!(read.node(Some(&io))?, Node::Leaf { value, .. } if value == index.to_be_bytes())
         );
-        let records = io.receipt().authority_records_read - before.authority_records_read;
+        let records = io.receipt()?.authority_records_read - before.authority_records_read;
         eprintln!(
             "persisted index native={_native} keys={} read_records={records}",
             index + 1

@@ -119,7 +119,7 @@ fn measurement(
     });
     (
         result.map(|()| kinds).map_err(|error| format!("{error:?}")),
-        accounting.spent(),
+        accounting.spent().unwrap(),
         allocations,
     )
 }

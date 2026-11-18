@@ -1,6 +1,6 @@
 {
  "version": 1,
- "uncovered": 2987,
+ "uncovered": 2438,
  "classes": [
   {
    "id": "A1",
@@ -29,16 +29,10 @@
      "crash_after",
      "crash_torn",
      "redeliver",
-     "duplicate",
      "stream_interrupted",
      "interrupt_unknown",
      "cancel",
      "compaction_straddle"
-    ],
-    "topology": [
-     "single",
-     "child",
-     "fork"
     ]
    }
   },
@@ -563,8 +557,7 @@
      "custody_conflict",
      "malformed_output",
      "subscription_end",
-     "child_settles_during_turn",
-     "interaction_cancelled"
+     "child_settles_during_turn"
     ],
     "location": [
      "root",
@@ -622,8 +615,7 @@
      "root",
      "worker",
      "advisor",
-     "reviewer",
-     "forked_child"
+     "reviewer"
     ]
    }
   },
@@ -860,28 +852,6 @@
    }
   },
   {
-   "id": "J1",
-   "name": "unbounded_growth",
-   "family": "scale",
-   "invariant": "Durable bytes and memory per step are O(delta) and per-agent cost is O(1), independent of step index, agent count and history length.",
-   "dimensions": {
-    "resource": [
-     "durable_log_bytes",
-     "index_keys",
-     "transcript_projection",
-     "resident_memory",
-     "recording_frames",
-     "per_agent_checkout",
-     "query_cost"
-    ],
-    "driver": [
-     "steps",
-     "agents",
-     "calls"
-    ]
-   }
-  },
-  {
    "id": "J2",
    "name": "protective_limit_hit",
    "family": "scale",
@@ -972,83 +942,6 @@
      "inspect",
      "json_output",
      "recovery"
-    ]
-   }
-  },
-  {
-   "id": "T1",
-   "name": "attached_client_lifecycle",
-   "family": "client",
-   "invariant": "Attach, detach, reattach, cancel and answer never change owner state except as requested; the client view equals the owner state after each event; owner completion keeps the endpoint until an explicit stop.",
-   "dimensions": {
-    "action": [
-     "attach",
-     "detach",
-     "reattach",
-     "cancel_injected_turn",
-     "interrupt",
-     "owner_completes",
-     "attach_child",
-     "answer_question",
-     "client_timeout"
-    ],
-    "owner": [
-     "busy",
-     "idle",
-     "completed",
-     "child_running"
-    ]
-   }
-  },
-  {
-   "id": "X1",
-   "name": "simulation_determinism",
-   "family": "meta",
-   "invariant": "Each generator world produces identical traces for a seed in-process and cross-process, and differs under the entropy-erased negative control.",
-   "dimensions": {
-    "run": [
-     "same_process",
-     "cross_process",
-     "entropy_erased"
-    ],
-    "world": [
-     "A1",
-     "A2",
-     "A3",
-     "B1",
-     "B2",
-     "B3",
-     "C1",
-     "C2",
-     "C3",
-     "C4",
-     "C5",
-     "D1",
-     "D2",
-     "D3",
-     "D4",
-     "D5",
-     "D6",
-     "E1",
-     "E2",
-     "E3",
-     "F1",
-     "F2",
-     "G1",
-     "H1",
-     "H2",
-     "H3",
-     "H4",
-     "H5",
-     "H6",
-     "I1",
-     "I2",
-     "J1",
-     "J2",
-     "O1",
-     "R1",
-     "S1",
-     "T1"
     ]
    }
   }

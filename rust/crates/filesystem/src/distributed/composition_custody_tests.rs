@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamError};
+use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamCategory};
 
 #[tokio::test]
 async fn native_request_transfer_keeps_original_context_and_live_commit_backing()
@@ -8,7 +8,7 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     let root =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
-    let baseline = root.live_allocation_bytes();
+    let baseline = root.live_allocation_bytes().unwrap();
     let (original, stop) = root.invocation_view()?;
     let mut work = AuthorityWork::native(&original, &cancellation);
     let meter = work.native_meter()?;
@@ -22,14 +22,14 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     });
     let first_bytes = work.request_allocation.as_ref().unwrap().bytes();
     assert!(first_bytes > 0);
-    let live = root.live_allocation_bytes();
-    let receipt = root.receipt();
+    let live = root.live_allocation_bytes().unwrap();
+    let receipt = root.receipt().unwrap();
     commit.retain_request_custody(&mut work)?;
     assert_eq!(commit.allocation.as_ref().unwrap().bytes(), first_bytes);
     assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
     assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
-    assert_eq!(root.live_allocation_bytes(), live);
-    assert_eq!(root.receipt(), receipt);
+    assert_eq!(root.live_allocation_bytes().unwrap(), live);
+    assert_eq!(root.receipt().unwrap(), receipt);
 
     let foreign =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
@@ -42,8 +42,8 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
         let mut other = AuthorityWork::native(context, &cancellation);
         let bytes = other.vec::<u8>(17)?;
         let request = commit.request().clone();
-        let before = context.live_allocation_bytes();
-        let spent = context.receipt();
+        let before = context.live_allocation_bytes().unwrap();
+        let spent = context.receipt().unwrap();
         assert!(matches!(
             commit.retain_request_custody(&mut other),
             Err(AuthorityStoreError::NativeOriginal(
@@ -53,8 +53,8 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
         assert_eq!(commit.allocation.as_ref().unwrap().bytes(), first_bytes);
         assert_eq!(other.request_allocation.as_ref().unwrap().bytes(), 17);
         assert_eq!(commit.request(), &request);
-        assert_eq!(context.live_allocation_bytes(), before);
-        assert_eq!(context.receipt(), spent);
+        assert_eq!(context.live_allocation_bytes().unwrap(), before);
+        assert_eq!(context.receipt().unwrap(), spent);
         drop(bytes);
     }
     drop(invocation);
@@ -86,17 +86,17 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     let bytes = work.vec::<u8>(23)?;
     let retained = commit.allocation.as_ref().unwrap().bytes();
     stop.cancel();
-    let receipt = root.receipt();
+    let receipt = root.receipt().unwrap();
     commit.retain_request_custody(&mut work)?;
     assert_eq!(commit.allocation.as_ref().unwrap().bytes(), retained + 23);
     assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
-    assert_eq!(root.receipt(), receipt);
+    assert_eq!(root.receipt().unwrap(), receipt);
     drop(bytes);
     drop(meter);
     drop(work);
 
     let request = commit.request().clone();
-    let live = root.live_allocation_bytes();
+    let live = root.live_allocation_bytes().unwrap();
     let mut stopped = AuthorityWork::native(&original, &cancellation);
     let FilesystemCommitOutcome::Unknown { commit, .. } =
         store.submit(commit, &mut stopped).await?
@@ -105,8 +105,11 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     };
     assert_eq!(commit.request(), &request);
     assert_eq!(commit.allocation.as_ref().unwrap().bytes(), retained + 23);
-    assert_eq!(root.live_allocation_bytes(), live);
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(root.live_allocation_bytes().unwrap(), live);
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     drop(stopped);
     drop(request);
     drop(commit);
@@ -114,6 +117,6 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     // before invocation admission with the root after every invocation owner.
     drop(original);
     drop(stop);
-    assert_eq!(root.live_allocation_bytes(), baseline);
+    assert_eq!(root.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }

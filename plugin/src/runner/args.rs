@@ -57,6 +57,19 @@ pub struct Args {
     #[arg(global = true, long, conflicts_with_all = ["host_workspace", "endpoint"])]
     pub topology: Option<String>,
 
+    /// Maximum open children per agent; absent means unbounded.
+    #[arg(global = true, long, conflicts_with_all = ["host_workspace", "endpoint"])]
+    pub max_children: Option<u64>,
+
+    /// Maximum agent depth, counting the root as zero; absent means unbounded.
+    #[arg(global = true, long, conflicts_with_all = ["host_workspace", "endpoint"])]
+    pub max_depth: Option<u64>,
+
+    /// Read the run-start topology preset from this JSON file. Explicit
+    /// `--topology`, `--max-children` and `--max-depth` override its fields.
+    #[arg(global = true, long, conflicts_with_all = ["host_workspace", "endpoint"])]
+    pub topology_file: Option<PathBuf>,
+
     /// Internal detached owner, started through the shared readiness protocol.
     #[arg(long, hide = true)]
     pub local_service: bool,

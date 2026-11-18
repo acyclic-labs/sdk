@@ -18,13 +18,16 @@ use acyclic_actors::{
     addressing::ActorReference,
     guest::{Checkpoint, Composer, Composition, GuestError, GuestFuture, Participant},
 };
-use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
-    StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
-};
 use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, Record, StreamError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec,
+        IdempotencyKey, StreamAuthorityStore, WorkspaceName, distributed::AuthorityProvider,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[cfg(test)]
 mod tests;
@@ -68,7 +71,7 @@ pub trait VolumeResources: acyclic_stream::ProviderPlatform + 'static {
         &'a self,
         source: &'a str,
         destination: &'a str,
-        operation: acyclic_fs::OperationId,
+        operation: acyclic_fs_format::identity::OperationId,
         generation: Option<acyclic_fs::GenerationId>,
     ) -> BoxProviderFuture<'a, Result<Option<acyclic_fs::GenerationId>, ForkCutError>>;
 
@@ -136,8 +139,8 @@ fn key(child: &AgentPath, entry: crate::agent::EntryId) -> [u8; 16] {
 pub fn spawned_operation(
     child: &AgentPath,
     binding: crate::agent::EntryId,
-) -> acyclic_fs::OperationId {
-    acyclic_fs::OperationId::from_bytes(key(child, binding))
+) -> acyclic_fs_format::identity::OperationId {
+    acyclic_fs_format::identity::OperationId::from_bytes(key(child, binding))
 }
 
 fn invalid(error: crate::Error) -> Error {
@@ -150,7 +153,7 @@ fn invalid(error: crate::Error) -> Error {
 fn spawned_volume(
     child: &AgentPath,
     binding: &WorkspaceEntry,
-) -> Result<(VolumeRef, acyclic_fs::OperationId), Error> {
+) -> Result<(VolumeRef, acyclic_fs_format::identity::OperationId), Error> {
     let source = binding.volume()?;
     let owner = match source.owner() {
         VolumeOwner::Agent(_) => VolumeOwner::Agent(crate::AgentId::from_bytes(child.id_bytes())),
@@ -628,7 +631,7 @@ where
                         .cut(
                             &source_name,
                             &text(&planned.destination)?,
-                            acyclic_fs::OperationId::from_bytes(planned.key),
+                            acyclic_fs_format::identity::OperationId::from_bytes(planned.key),
                             selected,
                         )
                         .await
@@ -674,7 +677,8 @@ where
                 None => creations.push(CreateSpec {
                     name: destination,
                     initialization: self.host.volume_initialization(),
-                    creation: acyclic_fs::OperationId::from_bytes(planned.key).into(),
+                    creation: acyclic_fs_format::identity::OperationId::from_bytes(planned.key)
+                        .into(),
                 }),
             }
         }
@@ -686,9 +690,13 @@ where
             let mut creation: CreateSpec<'_> =
                 self.host.volume_create_spec(&journal).map_err(guest)?;
             if let Some(policy) = &self.root_policy {
-                creation.creation = acyclic_fs::CreationOperation::populated(
+                let attributes = policy
+                    .attributes(&journal, creation.creation.operation_id)
+                    .map_err(guest)?;
+                creation.creation = acyclic_fs::CreationOperation::populated_with_attributes(
                     creation.creation.operation_id,
                     policy.files(),
+                    attributes,
                 );
             }
             creations.push(creation);

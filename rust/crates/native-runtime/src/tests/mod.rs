@@ -1,10 +1,11 @@
 mod health;
 use super::*;
+pub(crate) use acyclic_test_support::waker::complete;
+use acyclic_test_support::waker::thread_waker as completion_waker;
 use std::fs::OpenOptions;
 use std::io::{Seek as _, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Poll, Wake};
-use std::thread::Thread;
 use std::time::Instant;
 
 mod admission;
@@ -15,7 +16,6 @@ mod custody;
 mod device_control;
 mod namespace;
 mod native_allocation;
-mod positional;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 mod positional_interrupted;
 mod prepared_order;
@@ -26,22 +26,6 @@ mod source;
 mod spare;
 use source::SourceFixture;
 mod write_validation;
-
-struct ThreadWake(Thread);
-
-impl Wake for ThreadWake {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.unpark();
-    }
-}
-
-fn completion_waker() -> Waker {
-    Waker::from(Arc::new(ThreadWake(std::thread::current())))
-}
 
 /// Polls a pending host task until a worker queue accepted its job, parking
 /// until its admission waker fires between polls.
@@ -55,19 +39,6 @@ pub(crate) fn submit<T>(task: &mut NativeCompletion<T>) {
         );
         if task.pending.is_some() {
             std::thread::park();
-        }
-    }
-}
-
-/// Drives `future` on this thread, parking until its producer waker unparks it.
-pub(crate) fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
-    let waker = completion_waker();
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut Context::from_waker(&waker)) {
-            Poll::Ready(result) => return result,
-            // A wake before park leaves the token set, so none is lost.
-            Poll::Pending => std::thread::park(),
         }
     }
 }

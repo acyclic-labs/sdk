@@ -30,7 +30,10 @@ impl NativeCheckout {
     pub async fn export_manifest(&self) -> Result<NativeExportManifest> {
         let checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
-            .export_manifest(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
+            .export_manifest(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &self.cancellation,
+            )
             .await
             .map_err(napi_error)?;
         encode_export_manifest(receipt.value, receipt.work)
@@ -39,7 +42,7 @@ impl NativeCheckout {
 
 pub(in crate::bindings) fn encode_export_manifest(
     manifest: GenerationExportManifest,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<NativeExportManifest> {
     let manifest_bytes = encode_generation_export_manifest(&manifest).map_err(napi_error)?;
     Ok(NativeExportManifest {

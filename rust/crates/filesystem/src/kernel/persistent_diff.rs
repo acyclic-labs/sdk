@@ -102,7 +102,7 @@ async fn diff_with_accounting<F: Format>(
                 Diff {
                     changes,
                     truncated,
-                    work: accounting.spent(),
+                    work: accounting.spent()?,
                     retained_allocation_bytes: bytes,
                 },
                 allocation,

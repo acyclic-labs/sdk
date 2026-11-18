@@ -313,13 +313,16 @@ async fn generated_sparse_histories_match_independent_byte_model()
                 let failure = result.expect_err("extent admission differs from byte model");
                 refusal_mismatches[refusal] |= std::mem::discriminant(&failure.error)
                     != std::mem::discriminant(&expected_error);
-                assert_eq!(failure.work.items_examined, u64::try_from(mutations.len())?);
-                assert_eq!(failure.work.allocation_operations, 0);
-                assert_eq!(failure.work.peak_allocation_bytes, 0);
-                assert_eq!(failure.work.backend_read_operations, 0);
-                assert_eq!(failure.work.backend_write_operations, 0);
-                assert_eq!(failure.work.object_bytes_read, 0);
-                assert_eq!(failure.work.object_bytes_written, 0);
+                assert_eq!(
+                    failure.work.as_deref().unwrap().items_examined,
+                    u64::try_from(mutations.len())?
+                );
+                assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().peak_allocation_bytes, 0);
+                assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().object_bytes_read, 0);
+                assert_eq!(failure.work.as_deref().unwrap().object_bytes_written, 0);
                 continue;
             }
             let receipt = result?;
@@ -353,7 +356,7 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let mutation = ExtentMutation::Replace {
         offset: 4,
@@ -376,10 +379,10 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         denied,
         FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)
     ));
-    assert_eq!(original.receipt().bytes_copied, 0);
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().bytes_copied, 0);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -407,9 +410,9 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         >(()))?,
         ExtentPage::Leaf(vec![hole(0, 4), allocated(4, 4), hole(8, 8)])
     );
-    assert!(original.receipt().backend_read_operations > 0);
-    assert_eq!(original.receipt().page_writes, 1);
-    assert_eq!(original.receipt().backend_write_operations, 1);
+    assert!(original.receipt().unwrap().backend_read_operations > 0);
+    assert_eq!(original.receipt().unwrap().page_writes, 1);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 1);
     drop(read);
     let cloned = (crate::kernel::regular_mutation::clone_extent_range_with_accounting(
         &store,
@@ -444,12 +447,12 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         >(()))?,
         ExtentPage::Leaf(vec![hole(0, 6), allocated(6, 4), hole(10, 6)])
     );
-    assert_eq!(original.receipt().page_writes, 2);
-    assert_eq!(original.receipt().backend_write_operations, 2);
+    assert_eq!(original.receipt().unwrap().page_writes, 2);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 2);
     drop(read);
     drop(store);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())

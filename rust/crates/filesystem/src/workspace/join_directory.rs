@@ -135,7 +135,7 @@ fn decode_resolution(
 ) -> Result<MergeResolution, DrivenJoinError> {
     if conflict.kind == ConflictKind::Text {
         std::str::from_utf8(&bytes).map_err(WorkspaceError::engine)?;
-        if crate::text_merge::has_conflict_markers(&bytes) {
+        if acyclic_fs_base::text_merge::has_conflict_markers(&bytes) {
             return Err(WorkspaceError::InvalidMergeResolution.into());
         }
         return Ok(MergeResolution::Text(bytes));
@@ -153,24 +153,31 @@ fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub fn check_captured_merge_resolution(trace: &[u8], data: &[u8]) {
+    let result = check_captured_merge_resolution_inner(trace, data);
+    assert!(result.is_ok(), "captured merge check failed: {result:?}");
+}
+
+#[cfg(any(test, feature = "fuzzing"))]
+fn check_captured_merge_resolution_inner(
+    trace: &[u8],
+    data: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
     let (conflict, bytes, expected): (crate::ConflictView, Vec<u8>, Option<MergeResolution>) =
-        serde_json::from_slice(trace).expect("captured public merge resolution trace");
+        serde_json::from_slice(trace)?;
     let bytes: acyclic_stream::OwnedBytes = bytes.into();
     let backing = bytes.as_ptr();
     let actual = decode_resolution(bytes, &conflict);
     if expected.is_some()
         && let Ok(resolution) = &actual
     {
-        let encoded = serde_json::to_vec(resolution).expect("serializable public resolution");
-        let original: serde_json::Value =
-            serde_json::from_slice(trace).expect("captured trace JSON");
+        let encoded = serde_json::to_vec(resolution)?;
+        let original: serde_json::Value = serde_json::from_slice(trace)?;
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&encoded)?,
             original[2],
             "captured public text encoding changed"
         );
-        let restored: MergeResolution =
-            serde_json::from_slice(&encoded).expect("canonical resolution");
+        let restored: MergeResolution = serde_json::from_slice(&encoded)?;
         assert_eq!(&restored, resolution);
         if let MergeResolution::Text(text) = resolution {
             assert_eq!(
@@ -182,8 +189,7 @@ pub fn check_captured_merge_resolution(trace: &[u8], data: &[u8]) {
     }
     match expected {
         Some(expected) => assert_eq!(
-            actual.expect("captured public merge resolution was refused"),
-            expected,
+            actual?, expected,
             "captured public merge resolution changed"
         ),
         None => assert!(
@@ -202,11 +208,12 @@ pub fn check_captured_merge_resolution(trace: &[u8], data: &[u8]) {
         && let Ok(resolution) = decode_resolution(data.into(), &conflict)
     {
         let MergeResolution::Text(text) = resolution else {
-            panic!("plain-text proposal selected a different resolution kind");
+            return Err("plain-text proposal selected a different resolution kind".into());
         };
         assert_eq!(text.as_slice(), data, "plain-text proposal bytes changed");
-        assert!(!crate::text_merge::has_conflict_markers(&text));
+        assert!(!acyclic_fs_base::text_merge::has_conflict_markers(&text));
     }
+    Ok(())
 }
 
 /// Exercises the shipped resolution decoder and admission against arbitrary
@@ -229,23 +236,28 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     check_resolution_roundtrip(&bytes);
     if let Ok(MergeResolution::Text(text)) = result {
         assert_eq!(conflict.kind, ConflictKind::Text);
-        assert!(!crate::text_merge::has_conflict_markers(&text));
+        assert!(!acyclic_fs_base::text_merge::has_conflict_markers(&text));
     }
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
 fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) {
+    let result = check_merge_file_roundtrip_inner::<T>(bytes);
+    assert!(result.is_ok(), "merge file round trip failed: {result:?}");
+}
+
+#[cfg(any(test, feature = "fuzzing"))]
+fn check_merge_file_roundtrip_inner<T: serde::de::DeserializeOwned + Serialize>(
+    bytes: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(decoded) = serde_json::from_slice::<T>(bytes) {
-        let canonical = serde_json::to_vec(&decoded).expect("serializable merge file");
-        let restored: T = serde_json::from_slice(&canonical).expect("canonical merge file");
-        assert_eq!(
-            canonical,
-            serde_json::to_vec(&restored).expect("restored merge file")
-        );
-        let mut document = serde_json::to_value(decoded).expect("merge file object");
+        let canonical = serde_json::to_vec(&decoded)?;
+        let restored: T = serde_json::from_slice(&canonical)?;
+        assert_eq!(canonical, serde_json::to_vec(&restored)?);
+        let mut document = serde_json::to_value(decoded)?;
         for version in [0, 2, 255] {
             document["version"] = version.into();
-            let future = serde_json::to_vec(&document).expect("unsupported merge file");
+            let future = serde_json::to_vec(&document)?;
             assert!(
                 serde_json::from_slice::<T>(&future).is_err(),
                 "unsupported merge file version accepted by the shipped decoder"
@@ -253,28 +265,35 @@ fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes:
         }
         document
             .as_object_mut()
-            .expect("merge file object")
+            .ok_or("merge file is not an object")?
             .remove("version");
         assert!(
             serde_json::from_value::<T>(document).is_err(),
             "unversioned merge file accepted by the shipped decoder"
         );
     }
+    Ok(())
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
 fn check_resolution_roundtrip(bytes: &[u8]) {
+    let result = check_resolution_roundtrip_inner(bytes);
+    assert!(result.is_ok(), "resolution round trip failed: {result:?}");
+}
+
+#[cfg(any(test, feature = "fuzzing"))]
+fn check_resolution_roundtrip_inner(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(decoded) = serde_json::from_slice::<MergeResolution>(bytes) {
-        let canonical = serde_json::to_vec(&decoded).expect("serializable public resolution");
-        let restored: MergeResolution =
-            serde_json::from_slice(&canonical).expect("canonical public resolution");
+        let canonical = serde_json::to_vec(&decoded)?;
+        let restored: MergeResolution = serde_json::from_slice(&canonical)?;
         assert_eq!(decoded, restored);
     }
     if let Ok(decoded) = parse_resolution(bytes) {
-        let canonical = serde_json::to_vec(&decoded).expect("serializable resolution");
-        let restored = parse_resolution(&canonical).expect("canonical resolution");
+        let canonical = serde_json::to_vec(&decoded)?;
+        let restored = parse_resolution(&canonical)?;
         assert_eq!(decoded, restored);
     }
+    Ok(())
 }
 
 /// A filesystem projection that owns the original preview and its cancellation,
@@ -590,7 +609,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     )
                     .map_err(WorkspaceError::from)
                 };
-                #[cfg(all(test, not(target_arch = "wasm32")))]
+                #[cfg(test)]
+                #[cfg(all(not(target_arch = "wasm32")))]
                 let bytes = crate::test_support::observe_text_output(merge)?;
                 #[cfg(not(all(test, not(target_arch = "wasm32"))))]
                 let bytes = merge()?;
@@ -686,21 +706,24 @@ fn json(
         let bytes = crate::kernel::allocation::retained::Retained::from_owned(bytes, accounting)?;
         Ok(bytes.into_bytes((), accounting)?.into())
     };
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(target_arch = "wasm32")))]
     return crate::test_support::observe_json_output(serialize);
     #[cfg(not(all(test, not(target_arch = "wasm32"))))]
     serialize()
 }
 
 fn json_error(error: serde_json::Error) -> WorkspaceError {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(target_arch = "wasm32")))]
     {
         let mut result = None;
         let first = acyclic_test_support::first_allocation(|| {
             result = Some(WorkspaceError::engine(error));
         });
         crate::test_support::JSON_ERROR_FIRST_ALLOCATION.set(Some(first));
-        result.expect("serializer error conversion completed")
+        result
+            .unwrap_or_else(|| WorkspaceError::path("serializer error conversion did not complete"))
     }
     #[cfg(not(all(test, not(target_arch = "wasm32"))))]
     WorkspaceError::engine(error)

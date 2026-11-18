@@ -3,6 +3,7 @@ use crate::conformance::Failure;
 use crate::conformance::sockets::{self as conformance, Peer, SocketBackend, SocketPackage};
 use crate::local::{Runtime, SystemClock};
 use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
+use acyclic_stream::StreamCategory;
 use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::session::{ActorSocket, Client, testing};
 use acyclic_stream::{BoxProviderFuture, CommitOutcome, LocalStream, MemoryStream};
@@ -552,7 +553,7 @@ async fn native_socket_admission_rechecks_the_retained_target_before_installing(
     assert!(sockets.is_empty());
     assert!(matches!(
         records(&sockets.shared.store, &sockets.shared.layout.segment(1)?).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
+        Err(Error::Stream(error)) if error.category() == StreamCategory::NotFound
     ));
     Ok(())
 }
@@ -617,14 +618,17 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     }
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
+        Err(Error::Stream(error)) if error.category() == StreamCategory::NotFound
     ));
     let before = decode_work();
     let refused = match client.actor_socket(encoded.clone(), 0).await {
         Err(error) => Some(error),
         Ok(mut socket) => socket.next().await.err(),
     };
-    assert_eq!(refused, Some(StreamError::AccessDenied));
+    assert_eq!(
+        refused.map(|error| error.category()),
+        Some(StreamCategory::AccessDenied)
+    );
     assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
     assert!(sockets.is_empty());
@@ -638,7 +642,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     );
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
+        Err(Error::Stream(error)) if error.category() == StreamCategory::NotFound
     ));
 
     // The same signed credential admits its own account's namespace. Actor
@@ -664,7 +668,10 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
         Err(error) => Some(error),
         Ok(mut socket) => socket.next().await.err(),
     };
-    assert_eq!(refused, Some(StreamError::AccessDenied));
+    assert_eq!(
+        refused.map(|error| error.category()),
+        Some(StreamCategory::AccessDenied)
+    );
     assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
     Ok(())
@@ -795,10 +802,10 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, &format!("paged-{index}")).await?;
         }
         LEDGER_ENCODINGS.set(0);
-        let (allocation, allocated) = provider.pause_write(false);
+        let (allocation, allocated) = provider.pause_write(false)?;
         let mut compact = Box::pin(shared.compact());
         paused(&mut compact, allocated).await?;
-        let (first_page, copying) = provider.pause_write(false);
+        let (first_page, copying) = provider.pause_write(false)?;
         allocation.send(()).map_err(|_| "lost allocation request")?;
         paused(&mut compact, copying).await?;
         assert_eq!(
@@ -854,11 +861,11 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "unrelated-close").await?;
         let (connection, inbox, _last, open, _frames) =
             close_fixture(&sockets, "delayed-open").await?;
-        let (release, entered) = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed)?;
         let mut opening = Box::pin(shared.commit_open(&connection, &open));
         paused(&mut opening, entered).await?;
         let release = if lose_reply {
-            let (retry, entered) = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry()?;
             // Acceptance is real; losing its reply returns Unavailable to the
             // original retry path. Keep that retry parked until after rotation.
             drop(release);
@@ -930,8 +937,8 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 assert_eq!(records.len(), 2);
                 assert_eq!(crate::sockets::input_kind(&records[1]), Some("close"));
             }
-            Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound && !committed => {
-            }
+            Err(Error::Stream(error))
+                if error.category() == StreamCategory::NotFound && !committed => {}
             _ => return Err("recovery lost an Open or delivered a refused Open".into()),
         }
     }
@@ -951,7 +958,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "delayed-close").await?;
         let (unrelated, unrelated_inbox, unrelated_last, _frames) =
             admitted_close_fixture(&sockets, "unrelated-close").await?;
-        let (release, entered) = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed)?;
         let completion = shared
             .begin_close(
                 &connection,
@@ -961,7 +968,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let mut closing = executor.take()?;
         paused(&mut closing, entered).await?;
         let release = if lose_reply {
-            let (retry, entered) = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry()?;
             drop(release);
             paused(&mut closing, entered).await?;
             retry
@@ -1131,17 +1138,20 @@ struct ControlledStream {
 }
 
 impl ControlledStream {
-    fn pause_write(&self, after: bool) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
+    fn pause_write(
+        &self,
+        after: bool,
+    ) -> Result<(oneshot::Sender<()>, oneshot::Receiver<()>), &'static str> {
         let (release, resumed) = oneshot::channel();
         let (entered, observed) = oneshot::channel();
         assert!(
             self.pause
                 .lock()
-                .unwrap()
+                .map_err(|_| "write control poisoned")?
                 .replace((after, entered, resumed))
                 .is_none()
         );
-        (release, observed)
+        Ok((release, observed))
     }
 }
 
@@ -1167,7 +1177,12 @@ impl StreamProvider for ControlledStream {
     }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         // MemoryStream acceptance is already its durable boundary.
-        match self.durability_fault.lock().unwrap().take() {
+        match self
+            .durability_fault
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .take()
+        {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -1212,23 +1227,37 @@ impl StreamProvider for ControlledStream {
         &self,
         request: acyclic_stream::WriteRequest,
     ) -> BoxProviderFuture<'_, Result<acyclic_stream::WriteOutcome, StreamError>> {
-        let pause = self.pause.lock().unwrap().take();
-        let replay = match (&request, self.accepted.lock().unwrap().as_ref()) {
-            (
-                acyclic_stream::WriteRequest::Commit(current)
-                | acyclic_stream::WriteRequest::CommitAccepted(current),
-                Some((
-                    acyclic_stream::WriteRequest::Commit(original)
-                    | acyclic_stream::WriteRequest::CommitAccepted(original),
-                    outcome,
-                )),
-            ) if current.idempotency_key == original.idempotency_key => {
-                assert_eq!(current, original, "retry changed the original request");
-                Some(outcome.clone())
-            }
-            _ => None,
-        };
+        let prepared = (|| {
+            let pause = self
+                .pause
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take();
+            let replay = match (
+                &request,
+                self.accepted
+                    .lock()
+                    .map_err(|_| StreamError::Unavailable)?
+                    .as_ref(),
+            ) {
+                (
+                    acyclic_stream::WriteRequest::Commit(current)
+                    | acyclic_stream::WriteRequest::CommitAccepted(current),
+                    Some((
+                        acyclic_stream::WriteRequest::Commit(original)
+                        | acyclic_stream::WriteRequest::CommitAccepted(original),
+                        outcome,
+                    )),
+                ) if current.idempotency_key == original.idempotency_key => {
+                    assert_eq!(current, original, "retry changed the original request");
+                    Some(outcome.clone())
+                }
+                _ => None,
+            };
+            Ok::<_, StreamError>((pause, replay))
+        })();
         Box::pin(async move {
+            let (pause, replay) = prepared?;
             if let Some(original) = replay {
                 let result = self.inner.write(request).await?;
                 assert_eq!(result, original, "retry replaced the original acceptance");
@@ -1237,7 +1266,7 @@ impl StreamProvider for ControlledStream {
             }
             match pause {
                 Some((false, entered, resumed)) => {
-                    entered.send(()).expect("lost held-write observer");
+                    entered.send(()).map_err(|_| StreamError::Unavailable)?;
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     self.inner.write(request).await
                 }
@@ -1250,9 +1279,10 @@ impl StreamProvider for ControlledStream {
                             acyclic_stream::WriteOutcome::Commit(CommitOutcome::Committed(_))
                                 | acyclic_stream::WriteOutcome::CommitAccepted(Ok(..))
                         ));
-                        *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
+                        *self.accepted.lock().map_err(|_| StreamError::Unavailable)? =
+                            Some((original, outcome.clone()));
                     }
-                    entered.send(()).expect("lost accepted-write observer");
+                    entered.send(()).map_err(|_| StreamError::Unavailable)?;
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     result
                 }
@@ -1300,38 +1330,53 @@ struct HeldCloseExecutor {
 
 impl Executor for HeldCloseExecutor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
-        self.tasks.lock().unwrap().push_back(future);
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(future);
     }
 
     fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
-        let retry = self.retry.lock().unwrap().take();
+        let retry = self
+            .retry
+            .lock()
+            .map(|mut retry| retry.take())
+            .map_err(|_| "retry control poisoned");
         Box::pin(async move {
-            let (entered, retry) = retry.expect("a decided socket operation must not retry");
-            assert_eq!(milliseconds, 1, "unexpected additional transport retry");
-            entered.send(()).expect("lost transport-retry observer");
-            retry.await.expect("lost original transport-retry producer");
+            let result = async {
+                let (entered, retry) = retry?.ok_or("a decided socket operation must not retry")?;
+                assert_eq!(milliseconds, 1, "unexpected additional transport retry");
+                entered
+                    .send(())
+                    .map_err(|_| "lost transport-retry observer")?;
+                retry
+                    .await
+                    .map_err(|_| "lost original transport-retry producer")
+            }
+            .await;
+            assert_eq!(result, Ok(()));
         })
     }
 }
 
 impl HeldCloseExecutor {
-    fn pause_retry(&self) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
+    fn pause_retry(&self) -> Result<(oneshot::Sender<()>, oneshot::Receiver<()>), &'static str> {
         let (release, retry) = oneshot::channel();
         let (entered, observed) = oneshot::channel();
         assert!(
             self.retry
                 .lock()
-                .unwrap()
+                .map_err(|_| "retry control poisoned")?
                 .replace((entered, retry))
                 .is_none()
         );
-        (release, observed)
+        Ok((release, observed))
     }
 
     fn take(&self) -> Result<BoxProviderFuture<'static, ()>, &'static str> {
         self.tasks
             .lock()
-            .unwrap()
+            .map_err(|_| "close task registry poisoned")?
             .pop_front()
             .ok_or("missing owned close task")
     }
@@ -1702,7 +1747,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     drop(executor.take()?); // Drop the actual close future before its first poll.
     assert!(matches!(
         waiting.await,
-        Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.as_ref() == &StreamError::Unavailable)
+        Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.category() == StreamCategory::Unavailable)
     ));
     let terminal = pin
         .completion()
@@ -1710,7 +1755,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         .expect_err("original producer loss must remain terminal");
     assert!(matches!(
         terminal.downcast_ref::<Error>(),
-        Some(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
+        Some(Error::Stream(error)) if error.category() == StreamCategory::Unavailable
     ));
     assert!(
         last.await.is_err(),
@@ -1845,7 +1890,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         if lose_producer {
             drop(opening);
             assert!(
-                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.as_ref() == &StreamError::Unavailable))
+                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.category() == StreamCategory::Unavailable))
             );
             assert!(last.await.is_err());
             assert!(matches!(
@@ -1896,7 +1941,10 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     })
     .encode();
     assert!(frame.len() <= maximum);
-    assert_eq!(inbound.receive(frame), Err(StreamError::InvalidArgument));
+    assert_eq!(
+        inbound.receive(frame).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
+    );
     let reason = "x".repeat(maximum - 32);
     let frame = SocketFrame::Close {
         code: 1000,
@@ -1905,7 +1953,10 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     }
     .encode();
     assert!(frame.len() <= maximum);
-    assert_eq!(inbound.receive(frame), Err(StreamError::InvalidArgument));
+    assert_eq!(
+        inbound.receive(frame).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
+    );
     let actor = shared
         .lock(&connection)
         .sockets
@@ -2083,7 +2134,7 @@ async fn accepted_open_retries_uncertain_durability_without_closing() -> TestRes
         let (connection, inbox, _last, open, _frames) =
             close_fixture(&sockets, "durability-open").await?;
         // Record the real acceptance so the adapter checks byte-identical replay.
-        let (release, entered) = provider.pause_write(true);
+        let (release, entered) = provider.pause_write(true)?;
         release.send(()).map_err(|_| "lost Open release")?;
         *provider.durability_fault.lock().unwrap() = Some(error);
         assert!(matches!(

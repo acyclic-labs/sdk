@@ -132,7 +132,7 @@ async fn cancellation_withdraws_blocked_queue_admission() -> TestResult {
 }
 
 /// Each channel span records how its follow ended, without leaking private paths.
-fn assert_channel_traces(capture: &acyclic_grpc_observability::tests::Capture) -> TestResult {
+fn assert_channel_traces(capture: &acyclic_test_support::trace_capture::Capture) -> TestResult {
     let channels = capture.spans("stream.session.channel");
     assert_physical_sessions(&capture.spans("stream.session"));
     let [first, second, third, ..] = channels.as_slice() else {
@@ -168,7 +168,7 @@ fn assert_channel_traces(capture: &acyclic_grpc_observability::tests::Capture) -
 #[test]
 fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() -> TestResult {
     use crate::grpc::tests::retry_capture;
-    use acyclic_grpc_observability::tests::Capture;
+    use acyclic_test_support::trace_capture::Capture;
     use tracing::instrument::WithSubscriber as _;
     let test = format!(
         "{}::traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop",
@@ -271,7 +271,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
     )
 }
 
-fn assert_physical_sessions(sessions: &[acyclic_grpc_observability::tests::CapturedSpan]) {
+fn assert_physical_sessions(sessions: &[acyclic_test_support::trace_capture::CapturedSpan]) {
     let outcomes = sessions
         .iter()
         .map(|session| {
@@ -336,7 +336,7 @@ async fn peer_unavailability_ends_the_original_session_and_allows_a_caller_reope
 #[test]
 fn negative_control_reports_physical_failures_as_normal_closure() -> TestResult {
     use crate::grpc::tests::retry_capture;
-    use acyclic_grpc_observability::tests::Capture;
+    use acyclic_test_support::trace_capture::Capture;
     let test = format!(
         "{}::negative_control_reports_physical_failures_as_normal_closure",
         module_path!()

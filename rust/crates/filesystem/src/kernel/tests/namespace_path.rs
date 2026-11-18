@@ -17,7 +17,7 @@ fn parse_path(
         NamespacePath::parse_in_profile(path, profile, limits, &mut accounting, cancellation)
             .map(|(path, _)| path)
     })();
-    let work = accounting.spent();
+    let work = accounting.spent().unwrap();
     result
         .map(|value| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(super::operations::path_error(error), work))
@@ -44,7 +44,7 @@ mod original_namespace_controls {
         let controller_operations = {
             let probe = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
                 .map_err(|(error, _)| error)?;
-            probe.receipt().allocation_operations
+            probe.receipt().unwrap().allocation_operations
         };
         let budget = WorkBudget {
             allocation_operations: controller_operations
@@ -54,7 +54,7 @@ mod original_namespace_controls {
         };
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (paid_path, paid_guard) = NamespacePath::parse_in_profile(
             "/paid",
@@ -66,11 +66,11 @@ mod original_namespace_controls {
         drop(paid_path);
         drop(paid_guard);
         assert_eq!(
-            original.receipt().allocation_operations,
+            original.receipt().unwrap().allocation_operations,
             budget.allocation_operations
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        let before = original.receipt();
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        let before = original.receipt().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let error = NamespacePath::parse_in_profile(
             "/a/b",
@@ -82,7 +82,7 @@ mod original_namespace_controls {
         .err()
         .ok_or("exhausted original allocated a path")?;
         assert!(is_budget_error(&error));
-        let after = original.receipt();
+        let after = original.receipt().unwrap();
         assert_eq!(after.allocation_operations, before.allocation_operations);
         assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
         assert_eq!(after.bytes_copied, before.bytes_copied);
@@ -91,7 +91,7 @@ mod original_namespace_controls {
             after.source_path_components - before.source_path_components,
             2
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         Ok(())
     }
 
@@ -105,8 +105,8 @@ mod original_namespace_controls {
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
-        let before = original.receipt();
+        let baseline = original.live_allocation_bytes().unwrap();
+        let before = original.receipt().unwrap();
         cancellation.cancel();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         for result in [
@@ -124,8 +124,8 @@ mod original_namespace_controls {
                 error,
                 crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)
             ));
-            assert_eq!(original.receipt(), before);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.receipt().unwrap(), before);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
         Ok(())
     }
@@ -203,7 +203,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
             } else {
                 0
             };
-            let before = accounting.spent();
+            let before = accounting.spent().unwrap();
             let path = NamespacePath::child_from_owned(
                 crate::kernel::Owned::new(path, allocation, bytes),
                 &name,
@@ -215,10 +215,13 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                 assert_eq!(path.value.components()[0].as_bytes().as_ptr(), parent_name);
             }
             assert_eq!(
-                accounting.spent().bytes_copied - before.bytes_copied,
+                accounting.spent().unwrap().bytes_copied - before.bytes_copied,
                 name.as_bytes().len() as u64 + moved
             );
-            assert_eq!(accounting.spent().items_examined - before.items_examined, 1);
+            assert_eq!(
+                accounting.spent().unwrap().items_examined - before.items_examined,
+                1
+            );
             let expected_bytes =
                 parent_encoded_bytes + u32::from(root != "/") + name.as_bytes().len() as u32;
             assert_eq!(path.value.encoded_bytes(), expected_bytes);
@@ -241,7 +244,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                     &cancellation,
                 )?;
                 let bytes = path.retained_bytes();
-                let before = accounting.spent();
+                let before = accounting.spent().unwrap();
                 if cancel {
                     cancellation.cancel();
                 }
@@ -276,10 +279,13 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                     ));
                 }
                 assert_eq!(
-                    accounting.spent().allocation_operations,
+                    accounting.spent().unwrap().allocation_operations,
                     before.allocation_operations
                 );
-                assert_eq!(accounting.spent().bytes_copied, before.bytes_copied);
+                assert_eq!(
+                    accounting.spent().unwrap().bytes_copied,
+                    before.bytes_copied
+                );
                 assert_eq!(
                     accounting
                         .standalone_parts()
@@ -348,8 +354,8 @@ fn invalid_and_cancelled_paths_do_not_allocate() {
             0,
         )
         .expect_err("invalid spelling must fail");
-        assert_eq!(failure.work.allocation_operations, 0);
-        assert_eq!(failure.work.peak_allocation_bytes, 0);
+        assert_eq!(failure.work().unwrap().allocation_operations, 0);
+        assert_eq!(failure.work().unwrap().peak_allocation_bytes, 0);
     }
     cancellation.cancel();
     let failure = parse_path(
@@ -361,7 +367,7 @@ fn invalid_and_cancelled_paths_do_not_allocate() {
         99,
     )
     .expect_err("cancelled parser must fail");
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert_eq!(failure.error, NamespacePathError::Cancelled);
 }
 
@@ -381,8 +387,8 @@ fn allocation_denial_and_late_copy_denial_preserve_actual_prefix() {
         0,
     )
     .expect_err("vector admission must fail");
-    assert_eq!(denied.work.allocation_operations, 0);
-    assert_eq!(denied.work.source_path_components, 2);
+    assert_eq!(denied.work().unwrap().allocation_operations, 0);
+    assert_eq!(denied.work().unwrap().source_path_components, 2);
     let failure = parse_path(
         "/a/bb",
         FilesystemProfile::Portable,
@@ -395,10 +401,10 @@ fn allocation_denial_and_late_copy_denial_preserve_actual_prefix() {
         0,
     )
     .expect_err("second name copy must fail");
-    assert_eq!(failure.work.bytes_copied, 1);
-    assert_eq!(failure.work.allocation_operations, 2);
+    assert_eq!(failure.work().unwrap().bytes_copied, 1);
+    assert_eq!(failure.work().unwrap().allocation_operations, 2);
     assert_eq!(
-        failure.work.peak_allocation_bytes,
+        failure.work().unwrap().peak_allocation_bytes,
         2 * std::mem::size_of::<LogicalName>() as u64 + 1
     );
 }
@@ -493,7 +499,7 @@ fn canonical_case_fold_matches_unicode_full_folding() -> Result<(), Box<dyn std:
         let (bridged, allocation) =
             crate::kernel::types::case_fold_unicode(&text, &mut accounting, &cancellation)?;
         assert_eq!(bridged, expected, "accounting bridge: {text:?}");
-        let bridged_work = accounting.spent();
+        let bridged_work = accounting.spent().unwrap();
         assert_eq!(
             bridged_work.items_examined,
             work.items_examined - before.items_examined

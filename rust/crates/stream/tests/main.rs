@@ -3,17 +3,11 @@
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod browser_follow_model;
 
-#[cfg(not(loom))]
-mod checked_session_contract;
-
 #[cfg(all(loom, feature = "model-checking"))]
 mod client_pool_loom;
 
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod client_session_loom;
-
-#[cfg(not(loom))]
-mod follow_data_contract;
 
 #[cfg(not(loom))]
 mod http_response_core;
@@ -30,29 +24,11 @@ mod record_formats;
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod retry_recovery_loom;
 
-#[cfg(not(loom))]
-mod session_properties;
-
-#[cfg(all(not(loom), feature = "conformance"))]
-mod wave1_coverage;
-
-#[cfg(all(not(loom), feature = "conformance"))]
-mod wave1_keys;
-
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod wave1_loom;
-
-#[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "conformance"))]
-mod wave1_recovery;
 
 #[cfg(all(loom, feature = "model-checking"))]
 mod revision_frontier_loom;
 
 #[cfg(all(not(loom), target_arch = "wasm32", feature = "wasm"))]
 mod credential_javascript;
-
-#[cfg(not(loom))]
-mod session_framing;
-
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod trust_anchor;

@@ -1,8 +1,8 @@
 //! The process-incarnation decision shared by recovery and its state model.
 use super::NativeMountError;
 
-pub(super) use acyclic_native_runtime::process_identity::ProcessObservation;
-use acyclic_native_runtime::process_identity::{IncarnationState, ProcessIncarnation};
+pub(super) use acyclic_process_identity::process_identity::ProcessObservation;
+use acyclic_process_identity::process_identity::{IncarnationState, ProcessIncarnation};
 
 pub(super) fn require_dead_incarnation(
     pid: u32,

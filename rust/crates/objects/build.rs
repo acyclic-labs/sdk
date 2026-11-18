@@ -2,7 +2,6 @@
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = acyclic_proto_build::Compiler::new()?;
-    let native = std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32";
     // Bodies share the caller's buffer end to end instead of copying it.
     let mut config = compiler.config();
     config.bytes([
@@ -11,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ]);
     compiler.compile(
         config,
-        acyclic_proto_build::services(native),
+        acyclic_proto_build::target_services()?,
         &["proto/objects/v1/objects.proto"],
         "acyclic-objects-v1.bin",
     )?;

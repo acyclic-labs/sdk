@@ -7,6 +7,18 @@ use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn sandbox_policy() {
+    // A host without the native policy API refuses before launch. Prove that
+    // typed refusal; the policy matrix runs where the API is available.
+    #[cfg(windows)]
+    if let Err(error) = super::windows::capability() {
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(
+            error
+                .to_string()
+                .contains(super::windows::REQUIRED_CAPABILITY)
+        );
+        return;
+    }
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let volume = root.path().join("volume");
@@ -31,10 +43,6 @@ fn sandbox_policy() {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let executable = std::env::current_exe().unwrap();
-    #[cfg(target_os = "linux")]
-    let rg = crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-        .resolve_native("rg")
-        .unwrap();
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
     for (confined, access, primary_write, volume_write) in [
         (false, ExecutionAccess::WorkspaceWrite, true, true),
@@ -44,8 +52,6 @@ fn sandbox_policy() {
     ] {
         for custodied in [false, true] {
             let read = vec![executable.clone()];
-            #[cfg(target_os = "linux")]
-            let read = read.into_iter().chain([rg.clone()]).collect::<Vec<_>>();
             let grant =
                 ExecutionGrant::workspace_default(&workspace, access, [volume.clone()], read)
                     .unwrap();
@@ -64,8 +70,14 @@ fn sandbox_policy() {
                 .env_clear()
                 .env("ACYCLIC_POLICY_OUTSIDE", &outside)
                 .env("ACYCLIC_POLICY_VOLUME", &volume)
-                .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
-                .env("SHELL", crate::platform_shell().unwrap())
+                .env(
+                    "ACYCLIC_POLICY_SHELL",
+                    acyclic_executable_search::platform_shell().unwrap(),
+                )
+                .env(
+                    "SHELL",
+                    acyclic_executable_search::platform_shell().unwrap(),
+                )
                 .env("HOME", &workspace)
                 .env(
                     "ACYCLIC_POLICY_DESTINATION",
@@ -90,17 +102,11 @@ fn sandbox_policy() {
             #[cfg(target_os = "linux")]
             command.env(
                 "PATH",
-                std::env::join_paths([
-                    rg.parent().unwrap(),
-                    Path::new("/usr/bin"),
-                    Path::new("/bin"),
-                ])
-                .unwrap(),
+                std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap(),
             );
             #[cfg(windows)]
             command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
             let mut tree = if confined {
-                // Native capability absence is a failure, never a skipped case.
                 ProcessTree::spawn_granted(command, &grant, custodied.then_some(&custody)).unwrap()
             } else {
                 ProcessTree::spawn(&mut command).unwrap()
@@ -220,7 +226,7 @@ fn sandbox_policy_probe() {
     assert_eq!(output.stdout, b"runtime");
     #[cfg(target_os = "linux")]
     {
-        let listing = shell("ls -la && rg --files");
+        let listing = shell("ls -la && ls -1");
         assert!(
             listing.status.success(),
             "workspace browsing failed: {listing:?}"
@@ -278,7 +284,10 @@ fn sandbox_userland_commands() {
         .current_dir(&workspace)
         .env_clear()
         .env("ACYCLIC_USERLAND_PROBE", "1")
-        .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
+        .env(
+            "ACYCLIC_POLICY_SHELL",
+            acyclic_executable_search::platform_shell().unwrap(),
+        )
         .env("HOME", &workspace)
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
@@ -410,10 +419,8 @@ fn linux_boundary_probes(path: &Path, confined: bool, seed: bool) {
         io::Error::last_os_error()
     );
     let mut pthread_policy = -1;
-    let mut pthread_parameters = libc::sched_param {
-        sched_priority: -1,
-        ..parameters
-    };
+    let mut pthread_parameters = parameters;
+    pthread_parameters.sched_priority = -1;
     // SAFETY: pthread_self is a live pthread handle; both outputs are writable.
     let result = unsafe {
         libc::pthread_getschedparam(
@@ -1667,7 +1674,8 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     };
     for input in [true, false] {
         let command = |file_stdio: bool| {
-            let mut command = ProcessCommand::new(crate::platform_shell().unwrap());
+            let mut command =
+                ProcessCommand::new(acyclic_executable_search::platform_shell().unwrap());
             command
                 .args(acyclic_host_platform::shell::PLATFORM.arguments)
                 .arg(match (cfg!(windows), input) {
@@ -2091,7 +2099,7 @@ fn numbered_cat_preserves_file_and_pipeline_content() -> io::Result<()> {
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("sample"), "GC95_CONTENT\n")?;
     let grant = ExecutionGrant::workspace_default(root.path(), ExecutionAccess::ReadOnly, [], [])?;
-    let shell = crate::platform_shell()?;
+    let shell = acyclic_executable_search::platform_shell()?;
     for source in [
         "cat -n sample",
         "cat -A sample",
@@ -2158,29 +2166,23 @@ fn directory_inspection_handles_unavailable_local_sockets() -> io::Result<()> {
         .env("ACYCLIC_LOCAL_SOCKET_PATH", &socket)
         .output()?;
     assert!(control.status.success(), "{control:?}");
-    let rg = crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-        .resolve_native("rg")?;
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::ReadOnly,
         [],
-        [rg.clone(), executable.clone()],
+        [executable.clone()],
     )?;
-    let shell = crate::platform_shell()?;
+    let shell = acyclic_executable_search::platform_shell()?;
     let custody = crate::ProcessCustody::open(&root.path().join("custody"))?;
-    let path = std::env::join_paths([
-        rg.parent().ok_or(io::ErrorKind::NotFound)?,
-        Path::new("/usr/bin"),
-        Path::new("/bin"),
-    ])
-    .map_err(io::Error::other)?;
+    let path = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")])
+        .map_err(io::Error::other)?;
     for custody in [None, Some(&custody)] {
         let mut probe = Command::new(&executable);
         probe.args(probe_arguments);
         let mut inspection = Command::new(shell);
         inspection
             .args(acyclic_host_platform::shell::PLATFORM.arguments)
-            .arg("ls -l readable && stat readable && which -a sh && file readable && rg --files");
+            .arg("ls -l readable && stat readable && which -a sh && file readable && ls -1");
         for mut command in [probe, inspection] {
             command
                 .env_clear()
@@ -2234,17 +2236,15 @@ fn local_socket_unavailability_probe() -> io::Result<()> {
 fn node_capture_preserves_workspace_writes_and_output() -> io::Result<()> {
     crate::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
-    let node =
-        crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-            .resolve_native("node")?;
-    let timeout =
-        crate::ExecutableSearch::from_environment(root.path(), |name| std::env::var_os(name))
-            .resolve_native("timeout")?;
+    let node = acyclic_executable_search::ExecutableSearch::from_environment(root.path(), |name| {
+        std::env::var_os(name)
+    })
+    .resolve_native(acyclic_test_support::host_tool!("node"))?;
     let grant = ExecutionGrant::workspace_default(
         root.path(),
         ExecutionAccess::WorkspaceWrite,
         [],
-        [node.clone(), timeout.clone()],
+        [node.clone()],
     )?;
     std::fs::write(
         root.path().join("capture.mjs"),
@@ -2256,14 +2256,14 @@ process.stdout.write(readFileSync("written"));"#,
         root.path().join("capture.test.mjs"),
         "import {test} from 'node:test'; test('capture', async () => { await import('./capture.mjs'); });",
     )?;
-    // timeout establishes a process group; node --test creates child IPC pairs.
-    // Zero disables the timer: completion must come from the real process exit.
-    let mut commands = [Command::new(&node), Command::new(timeout)];
-    commands[0].arg("capture.mjs");
-    commands[1]
-        .arg("0")
-        .arg(&node)
-        .args(["--test", "capture.test.mjs"]);
+    // A new process group and node --test's child IPC pairs both exercise capture.
+    let mut direct = Command::new(&node);
+    direct.arg("capture.mjs");
+    let mut grouped = Command::new(&node);
+    grouped
+        .args(["--test", "capture.test.mjs"])
+        .process_group(0);
+    let commands = [direct, grouped];
     for mut command in commands {
         command
             .current_dir(root.path())

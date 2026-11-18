@@ -288,7 +288,7 @@ mod tests {
                     || std::future::ready(Ok(())),
                 )
                 .await
-                .map_err(|(cause, _)| cause)?;
+                .map_err(|failure| failure.into_error())?;
                 let writes = work.state.lock().write_probe.take().unwrap().writes;
                 let plan = &receipt.value.plan;
                 let mut rewritten = 0;
@@ -418,7 +418,7 @@ mod tests {
                 || std::future::ready(Ok(())),
             )
             .await
-            .map_err(|(cause, _)| cause);
+            .map_err(|failure| failure.into_error());
             if retry {
                 assert!(matches!(
                     result,

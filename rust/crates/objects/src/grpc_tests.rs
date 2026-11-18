@@ -18,6 +18,7 @@ mod revision_transport;
 /// what `catch_up` applied, at the replica's own applied revision.
 struct Replica {
     primary: MemoryObjects,
+    surplus_batch_receipt: bool,
     view: MemoryObjects,
     applied: AppliedRevisions,
     pending: Mutex<Vec<OwnedBytes>>,
@@ -36,6 +37,7 @@ impl Replica {
         );
         Ok(Arc::new(Self {
             primary,
+            surplus_batch_receipt: false,
             view: MemoryObjects::memory(),
             applied,
             pending: Mutex::default(),
@@ -76,6 +78,22 @@ impl Blobs for Replica {
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         self.primary.put_manifest(manifest).await
     }
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        self.pending
+            .lock()
+            .expect("pending")
+            .extend(requests.iter().map(|(body, _)| body.bytes().clone()));
+        let mut receipts = self.primary.put_batch_durable(requests).await;
+        if self.surplus_batch_receipt
+            && let Some(receipt) = receipts.first().cloned()
+        {
+            receipts.push(receipt);
+        }
+        receipts
+    }
     async fn get(&self, digest: Digest, range: ByteRange, maximum: u64) -> Result<Object, Error> {
         let served = self.applied.current();
         Ok(self
@@ -108,6 +126,17 @@ impl Blobs for Replica {
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         self.primary.release(root).await
     }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        self.primary.retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        self.primary.release_terminal(root, fence).await
+    }
     async fn collect(&self) -> Result<Collection, Error> {
         self.primary.collect().await
     }
@@ -117,6 +146,30 @@ impl Blobs for Replica {
     async fn revisions(&self) -> Result<Option<&AppliedRevisions>, Error> {
         Ok(Some(&self.applied))
     }
+}
+
+#[tokio::test]
+async fn grpc_batch_rejects_a_surplus_provider_receipt() -> TestResult {
+    let mut replica = Replica::new().await?;
+    Arc::get_mut(&mut replica)
+        .ok_or("replica shared before fault admission")?
+        .surplus_batch_receipt = true;
+    let body = crate::Sealed::new(b"durable put with surplus receipt".as_slice().into());
+    let digest = Digest::sealed(&body);
+    let receipts = client(&replica)
+        .put_batch_sealed(vec![(body, Vec::new())])
+        .await;
+    assert!(
+        matches!(receipts.as_slice(), [Err(error)] if error.code == wire::ErrorCode::Unavailable)
+    );
+    replica.primary.head(digest).await?;
+    assert!(matches!(
+        replica.head(digest).await,
+        Err(error) if error.code == wire::ErrorCode::NotFound
+    ));
+    replica.catch_up().await?;
+    replica.head(digest).await?;
+    Ok(())
 }
 
 /// A client of `replica` over an in-process HTTP/2 transport.
@@ -155,6 +208,34 @@ fn channel_over(resolve: AccountResolver) -> Channel {
             }
         },
     ))
+}
+
+#[tokio::test]
+async fn terminal_fence_survives_the_grpc_boundary() -> TestResult {
+    let provider = Arc::new(MemoryObjects::memory());
+    let resolve: AccountResolver = Arc::new(move |_| Ok(provider.clone() as Arc<dyn Blobs>));
+    let client = client_over(
+        resolve,
+        CredentialProvider::new(|| async { Ok("fixture".to_owned()) }),
+    );
+    let digest = client
+        .put(OwnedBytes::from(vec![9; 16]), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"grpc-terminal".to_vec())?;
+    client.retain_fenced(&root, 7, vec![digest]).await?;
+    client.release_terminal(&root, 7).await?;
+    assert_eq!(
+        client
+            .retain_fenced(&root, 7, vec![digest])
+            .await
+            .map_err(|error| error.code),
+        Err(wire::ErrorCode::TerminalFence)
+    );
+    client.retain_fenced(&root, 8, vec![digest]).await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -316,7 +397,7 @@ async fn requested_minimum<T>(
         .ok_or("minimum missing")?
         .to_bytes()?;
     assert_eq!(
-        acyclic_stream::wire::Revision::decode(minimum)?,
+        acyclic_stream_wire::wire::Revision::decode(minimum)?,
         revision_to_wire(expected),
     );
     Ok(())
@@ -642,6 +723,39 @@ fn original(status: &tonic::Status) -> Original {
         status.details().to_vec(),
         metadata,
     )
+}
+
+#[test]
+fn grpc_status_without_details_uses_the_public_failure_category() {
+    for (status, expected) in [
+        (
+            tonic::Code::InvalidArgument,
+            wire::ErrorCode::InvalidArgument,
+        ),
+        (tonic::Code::NotFound, wire::ErrorCode::NotFound),
+        (tonic::Code::PermissionDenied, wire::ErrorCode::AccessDenied),
+        (tonic::Code::Unauthenticated, wire::ErrorCode::AccessDenied),
+        (
+            tonic::Code::ResourceExhausted,
+            wire::ErrorCode::QuotaExceeded,
+        ),
+        (
+            tonic::Code::OutOfRange,
+            wire::ErrorCode::RangeNotSatisfiable,
+        ),
+        (tonic::Code::Unimplemented, wire::ErrorCode::Unsupported),
+        (tonic::Code::DataLoss, wire::ErrorCode::Corrupt),
+        (
+            tonic::Code::DeadlineExceeded,
+            wire::ErrorCode::DeadlineElapsed,
+        ),
+        (tonic::Code::Internal, wire::ErrorCode::Unavailable),
+    ] {
+        assert_eq!(
+            error_from_status(&tonic::Status::new(status, "remote failure")).code,
+            expected
+        );
+    }
 }
 
 /// Every category, canonical or carrying any member refusal, decodes then

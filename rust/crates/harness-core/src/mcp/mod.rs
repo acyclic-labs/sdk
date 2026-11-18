@@ -9,7 +9,6 @@ mod deadline;
 pub use config::{McpConfig, McpServer, McpTransport};
 #[cfg(not(target_arch = "wasm32"))]
 mod install;
-mod layouts;
 mod paging;
 #[cfg(not(target_arch = "wasm32"))]
 pub use install::{McpClientLimits, McpInstallation, McpServerFailure};
@@ -42,7 +41,7 @@ fn error(work: acyclic_fs::NativeWork<'_>, code: ErrorCode, reason: &'static str
 fn charge(work: acyclic_fs::NativeWork<'_>, items: u64, read: u64, copied: u64) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters {
+        work.charge(acyclic_fs_work::performance::WorkCounters {
             items_examined: items,
             source_bytes_read: read,
             bytes_copied: copied,

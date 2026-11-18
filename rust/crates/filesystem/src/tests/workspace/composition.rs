@@ -164,14 +164,14 @@ async fn spawn_shaped_composition_commits_every_fork_with_the_caller_mutations()
         assert!(allocation.work().shares_ledger(&work));
         drop(forked);
         drop(allocation);
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         fs.require_head(&source, &mut commit, &work, &cancel)
             .await?;
-        assert!(work.receipt().items_examined > before.items_examined);
-        let before = work.receipt();
+        assert!(work.receipt().unwrap().items_examined > before.items_examined);
+        let before = work.receipt().unwrap();
         fs.seal_commit(&mut commit, &work, &cancel)?;
         assert!(
-            work.receipt().items_examined > before.items_examined,
+            work.receipt().unwrap().items_examined > before.items_examined,
             "seal lost its original request traversal"
         );
         commit
@@ -527,8 +527,11 @@ async fn a_retired_required_source_refuses_the_consuming_commit() -> Result<(), 
         if retired {
             assert!(matches!(outcome, FilesystemCommitOutcome::Rejected(_)));
             assert_eq!(
-                stream.tail(destination).await,
-                Err(acyclic_stream::StreamError::NotFound)
+                stream
+                    .tail(destination)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(acyclic_stream::StreamCategory::NotFound)
             );
         } else {
             assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
@@ -726,7 +729,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
         )
         .map_err(|(error, _)| error)?;
         let original = commit.request().clone();
-        let before = denied.receipt();
+        let before = denied.receipt().unwrap();
         let failure = fs
             .prepare_create_many(&creations, &mut commit, &denied, &cancel)
             .await
@@ -745,7 +748,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
         );
         assert_eq!(commit.request(), &original);
         assert!(commit.authorities().is_empty());
-        assert_eq!(denied.receipt(), before);
+        assert_eq!(denied.receipt().unwrap(), before);
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
             .map_err(|(error, _)| error)?;
         let result = fs
@@ -757,7 +760,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
             "composed output lost its original backing allocation"
         );
         assert!(result.1.work().shares_ledger(&work));
-        assert!(work.receipt().items_examined > 0);
+        assert!(work.receipt().unwrap().items_examined > 0);
         result
     };
     #[cfg(target_arch = "wasm32")]
@@ -768,13 +771,13 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
     assert!(unbounded!(fs, open_workspace("root-result")).is_err());
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let retained = allocation.work().live_allocation_bytes();
+        let retained = allocation.work().live_allocation_bytes().unwrap();
         let bytes = allocation.bytes();
         let work = allocation.work().clone();
         drop(created);
-        assert_eq!(work.live_allocation_bytes(), retained);
+        assert_eq!(work.live_allocation_bytes().unwrap(), retained);
         drop(allocation);
-        assert_eq!(work.live_allocation_bytes(), retained - bytes);
+        assert_eq!(work.live_allocation_bytes().unwrap(), retained - bytes);
     }
     let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
         return Err("root creation did not commit".into());

@@ -492,7 +492,8 @@ impl<'a> KernelAccounting<'a> {
             Self::NativeOriginal {
                 work, cancellation, ..
             } => {
-                #[cfg(all(test, loom))]
+                #[cfg(test)]
+                #[cfg(all(loom))]
                 if charge_model::split_charge() {
                     work.admit(WorkCounters::UNCHARGED)?;
                     cancellation.check()?;
@@ -517,7 +518,8 @@ impl<'a> KernelAccounting<'a> {
         delta: WorkCounters,
         effect: impl FnOnce() -> T,
     ) -> Result<T, crate::FsError> {
-        #[cfg(all(test, loom, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
         if super::effects::broken_reservation() {
             self.admit(delta)?;
             let output = effect();
@@ -664,8 +666,42 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    pub(crate) fn spent(&self) -> WorkCounters {
-        #[cfg(all(test, not(loom)))]
+    /// Separates a child outcome from its receipt without losing unavailable work.
+    pub(crate) fn split_receipt<T, E>(
+        &mut self,
+        result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
+    ) -> Result<(Result<T, E>, WorkCounters), E> {
+        match result {
+            Ok(receipt) => Ok((Ok(receipt.value), receipt.work)),
+            Err(failure) => match failure.work {
+                Ok(work) => Ok((Err(failure.error), *work)),
+                Err(observation) => {
+                    self.invalidate_receipt(observation);
+                    Err(failure.error)
+                }
+            },
+        }
+    }
+
+    /// An unobserved child prevents any enclosing operation from claiming an exact receipt.
+    pub(crate) fn invalidate_receipt(&mut self, error: crate::WorkObservationError) {
+        match self {
+            Self::Standalone { allocations, .. } => {
+                allocations.observation_error.get_or_insert(error);
+            }
+            Self::BorrowedStandalone { allocations, .. } => {
+                allocations.observation_error.get_or_insert(error);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { work, .. } => {
+                work.with_original_leaf(|state| state.poison_native_original_work());
+            }
+        }
+    }
+
+    pub(crate) fn spent(&self) -> Result<WorkCounters, crate::WorkObservationError> {
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         super::snapshot_tests::observe();
         match self {
             Self::Standalone {

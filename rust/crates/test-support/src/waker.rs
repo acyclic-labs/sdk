@@ -1,7 +1,38 @@
 //! Wakers whose clone and drop callbacks run for each original reference.
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
-use std::task::{RawWaker, RawWakerVTable, Waker};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Wake, Waker};
+
+struct ThreadWake(std::thread::Thread);
+
+impl Wake for ThreadWake {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// A waker that unparks the thread which creates it.
+pub fn thread_waker() -> Waker {
+    Waker::from(Arc::new(ThreadWake(std::thread::current())))
+}
+
+/// Drives a future on this thread and parks between its wake notifications.
+pub fn complete<T>(future: impl Future<Output = T>) -> T {
+    let waker = thread_waker();
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(result) => return result,
+            // A wake before park leaves the token set, so none is lost.
+            Poll::Pending => std::thread::park(),
+        }
+    }
+}
 
 struct Callbacks {
     cloned: Box<dyn Fn() + Send + Sync>,

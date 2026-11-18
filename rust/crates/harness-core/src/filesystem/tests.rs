@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::Digest;
+use acyclic_fs_format::identity::Digest;
 
 use crate::core::{AggregateKind, Authority, AuthorityRoot};
 use crate::{
@@ -13,7 +13,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
     let workspace = filesystem
         .create_workspace(
             "adapter-test",
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -22,7 +22,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
         .map_err(map_error)?;
     let expected = workspace
         .head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -85,11 +85,12 @@ struct AssociatedObjects(bool);
 
 impl AssociatedObjects {
     fn root(
-        kind: acyclic_fs::ObjectKind,
+        kind: acyclic_fs_format::object_reference::ObjectKind,
         bytes: &[u8],
-    ) -> std::result::Result<acyclic_fs::FileId, acyclic_fs::ObjectStoreError> {
-        if kind != acyclic_fs::ObjectKind::GenerationRoot {
-            return Ok(acyclic_fs::FileId::from_bytes([17; 16]));
+    ) -> std::result::Result<acyclic_fs_format::identity::FileId, acyclic_fs::ObjectStoreError>
+    {
+        if kind != acyclic_fs_format::object_reference::ObjectKind::GenerationRoot {
+            return Ok(acyclic_fs_format::identity::FileId::from_bytes([17; 16]));
         }
         acyclic_fs::kernel::decode_generation_root(
             bytes,
@@ -117,7 +118,7 @@ impl acyclic_fs::ObjectSealer for AssociatedObjects {
 
     fn stored_limit(
         &self,
-        id: acyclic_fs::ObjectId,
+        id: acyclic_fs_format::object_reference::ObjectId,
         maximum: u64,
     ) -> std::result::Result<u64, acyclic_fs::ObjectStoreError> {
         if match (self.0, id.storage) {
@@ -135,7 +136,7 @@ impl acyclic_fs::ObjectSealer for AssociatedObjects {
 
     fn open(
         &self,
-        id: acyclic_fs::ObjectId,
+        id: acyclic_fs_format::object_reference::ObjectId,
         bytes: acyclic_fs::ObjectRead,
         _: &mut acyclic_fs::AuthorityWork<'_>,
     ) -> std::result::Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
@@ -287,8 +288,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
     for invalid in [
         decoded.digest().into_bytes().to_vec(),
         decoded.to_bytes()[..decoded.to_bytes().len() - 1].to_vec(),
-        acyclic_fs::ObjectId {
-            kind: acyclic_fs::ObjectKind::BlobChunk,
+        acyclic_fs_format::object_reference::ObjectId {
+            kind: acyclic_fs_format::object_reference::ObjectKind::BlobChunk,
             ..decoded.object_id()
         }
         .to_bytes()
@@ -317,7 +318,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         options: NativeViewOptions {
             root: root.clone(),
             maximum_volumes: 1,
-            work_per_volume: acyclic_fs::performance::work_budget(1, 1024),
+            work_per_volume: acyclic_fs_work::performance::work_budget(1, 1024),
         },
         volumes: vec![NativeVolumeMapping {
             volume: volume.copy(&mut None)?,

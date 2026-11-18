@@ -51,16 +51,17 @@ async fn cold_append_recovery_measurements() -> Result<()> {
                 },
             )?;
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let native_baseline = work.live_allocation_bytes();
+            let native_baseline = work.live_allocation_bytes()?;
             let io = if native {
                 PreparationIo::from_native_work(&work)?
             } else {
                 PreparationIo::from_budget(budget, &cancellation)?
             };
-            let before = io.receipt();
+            let before = io.receipt()?;
             let started = std::time::Instant::now();
             reopened
                 .append(
@@ -70,7 +71,7 @@ async fn cold_append_recovery_measurements() -> Result<()> {
                     Some(&io),
                 )?
                 .await?;
-            let after = io.receipt();
+            let after = io.receipt()?;
             eprintln!(
                 "cold append native={native} steps={count} elapsed_us={} records_received={} authority_bytes={} hashed_bytes={} owned_bytes={}",
                 started.elapsed().as_micros(),
@@ -120,7 +121,7 @@ async fn cold_append_recovery_measurements() -> Result<()> {
     drop(original);
     for (work, baseline) in native_ledgers {
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             baseline,
             "recovered index retained original native allocations"
         );
@@ -140,7 +141,7 @@ where
     O: AsyncObjectStore + 'static,
 {
     // Explicitly exercise the old full-fold path as the recovery control.
-    let before = io.receipt();
+    let before = io.receipt()?;
     let owned = io.owned_bytes()?;
     let mut summary = ExecutionSummary {
         operation: Some(operation),
@@ -156,7 +157,7 @@ where
         "full-fold negative control did not violate the recovered-state bound"
     );
     assert_eq!(
-        io.receipt().authority_records_read - before.authority_records_read,
+        io.receipt()?.authority_records_read - before.authority_records_read,
         u64::from(count) + 2,
         "full-fold negative control did not read the entire history"
     );

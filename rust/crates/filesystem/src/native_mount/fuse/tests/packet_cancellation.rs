@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 fn original_cancellation_wakes_a_quiet_packet_reader() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = crate::CancellationToken::new();
     let work = cache_work(FINITE_CACHE_BUDGET, &cancellation);
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let (reader, _writer) = UnixStream::pair()?;
     let descriptor: OwnedFd = reader.into();
     let io = Arc::new(HostIo::new(File::from(descriptor), &work)?);
@@ -38,7 +38,7 @@ fn original_cancellation_wakes_a_quiet_packet_reader() -> Result<(), Box<dyn std
     ));
     drop(registration);
     drop(io);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 
     // Permanent stop must release every worker, including receivers that have
     // not entered the native wait yet. No device clone keeps it live.

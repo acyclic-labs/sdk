@@ -14,6 +14,13 @@ readme = "README.md"
 keywords = ["agents", "filesystem", "mcp", "workspaces"]
 categories = ["command-line-utilities", "development-tools"]
 
+[package.metadata.bazel]
+# The identity tests start the host Node runtime.
+test-env-inherit = ["PATH"]
+
+[package.metadata.bazel.test-tools.main]
+node = "@nodejs//:node"
+
 [[bin]]
 name = "acyclic"
 path = "src/main.rs"
@@ -31,7 +38,10 @@ acyclic-plugin-identity = { path = "identity", version = "=0.2.0" }
 acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default-features = false }
 acyclic-harness-client = { path = "../rust/crates/harness-client", version = "=0.2.0", default-features = false }
 acyclic-harness-providers = { path = "../rust/crates/harness-providers", version = "=0.2.0", features = ["local"] }
+acyclic-executable-search = { path = "../rust/crates/executable-search", version = "=0.2.0" }
+acyclic-native-lines = { path = "../rust/crates/native-lines", version = "=0.2.0" }
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0" }
+acyclic-native-stdin = { path = "../rust/crates/native-stdin", version = "=0.2.0" }
 acyclic-observability = { path = "../rust/crates/observability", version = "=0.2.0" }
 acyclic-stream = { path = "../rust/crates/stream", version = "=0.2.0", default-features = false }
 blake3.workspace = true

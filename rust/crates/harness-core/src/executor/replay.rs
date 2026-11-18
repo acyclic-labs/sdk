@@ -56,7 +56,7 @@ impl ExecutionReplay {
         let mut keys = [[0; 32]; EXECUTION_REPLAY_PAGE_RECORDS as usize];
         for (index, record) in page.clone().enumerate() {
             if let Some(io) = io {
-                io.preflight(acyclic_fs::WorkCounters {
+                io.preflight(acyclic_fs_work::performance::WorkCounters {
                     bytes_hashed: record.idempotency_key.len() as u64,
                     items_examined: 1,
                     ..Default::default()
@@ -64,7 +64,7 @@ impl ExecutionReplay {
             }
             let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters {
+                io.charge(acyclic_fs_work::performance::WorkCounters {
                     bytes_hashed: record.idempotency_key.len() as u64,
                     items_examined: 1,
                     ..Default::default()

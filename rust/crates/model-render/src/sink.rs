@@ -12,6 +12,7 @@ impl<W: Write> Write for Sink<'_, W> {
 
     fn write_all(&mut self, mut bytes: &[u8]) -> io::Result<()> {
         while !bytes.is_empty() {
+            // Return every write error directly; there is no retry path.
             let written = self.write(bytes)?;
             if written == 0 {
                 return Err(io::ErrorKind::WriteZero.into());

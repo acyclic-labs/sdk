@@ -46,7 +46,10 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .export_manifest(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .export_manifest(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(js_error)?;
         encode_export_manifest(receipt.value, receipt.work)
@@ -55,7 +58,7 @@ impl BrowserCheckout {
 
 pub(in crate::bindings) fn encode_export_manifest(
     manifest: GenerationExportManifest,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<Ts<BrowserExportManifestResult>, JsValue> {
     let manifest_bytes = encode_generation_export_manifest(&manifest).map_err(js_error)?;
     ts(BrowserExportManifestResult {

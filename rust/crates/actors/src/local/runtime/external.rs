@@ -183,7 +183,7 @@ impl Watch {
 
     pub(super) fn next<'a, P: StreamProvider + ?Sized>(
         mut self,
-        provider: &'a Arc<P>,
+        provider: &'a acyclic_stream::ProviderOwner<P>,
     ) -> BoxProviderFuture<'a, Outcome> {
         Box::pin(async move {
             let result = async {

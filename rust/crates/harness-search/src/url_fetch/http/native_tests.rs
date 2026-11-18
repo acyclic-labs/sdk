@@ -1,9 +1,12 @@
 use super::tests::{Framing, joined, nonce, serve};
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 fn budget() -> WorkBudget {
-    acyclic_fs::performance::work_budget(2_000_000, 32 * 1_024 * 1_024)
+    acyclic_fs_work::performance::work_budget(2_000_000, 32 * 1_024 * 1_024)
 }
 
 fn work(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {

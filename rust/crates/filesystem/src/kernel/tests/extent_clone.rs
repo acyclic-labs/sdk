@@ -227,7 +227,7 @@ async fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dy
     .err()
     .ok_or("invalid decode limits unexpectedly succeeded")?;
     assert!(matches!(failure.error, ExtentCloneError::InvalidLimits));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -272,7 +272,7 @@ async fn pre_cancelled_clone_performs_zero_work() -> Result<(), Box<dyn std::err
             crate::ObjectStoreError::Cancelled
         ))
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use super::*;
 pub fn workspace_ref(provider: ProviderRef, name: &str) -> Result<WorkspaceRef> {
     acyclic_fs::WorkspaceName::new(
         name,
-        &acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .map(|receipt| receipt.value)
@@ -45,7 +45,7 @@ pub(super) fn content_metadata_key_in_namespace_io(
 ) -> Result<AttributeName> {
     const PREFIX: &[u8] = b"acyclic.harness.file-metadata.v1.";
     let capacity = PREFIX.len() + 64;
-    let hash_work = acyclic_fs::WorkCounters {
+    let hash_work = acyclic_fs_work::performance::WorkCounters {
         bytes_hashed: path.len() as u64 + namespace.len() as u64 + 1,
         ..Default::default()
     };
@@ -60,7 +60,7 @@ pub(super) fn content_metadata_key_in_namespace_io(
     if let Some(io) = io {
         io.charge(hash_work)?;
         io.retain_owned(capacity as u64)?;
-        io.preflight(acyclic_fs::WorkCounters {
+        io.preflight(acyclic_fs_work::performance::WorkCounters {
             bytes_copied: capacity as u64,
             ..Default::default()
         })?;
@@ -73,7 +73,7 @@ pub(super) fn content_metadata_key_in_namespace_io(
         if name.capacity() > capacity {
             io.retain_owned((name.capacity() - capacity) as u64)?;
         }
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_copied: capacity as u64,
             ..Default::default()
         })?;

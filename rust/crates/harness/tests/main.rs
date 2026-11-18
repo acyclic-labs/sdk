@@ -71,10 +71,6 @@ mod context_discovery;
 #[cfg(not(loom))]
 mod mcp_oauth_provider;
 
-#[path = "cases/plan_markdown.rs"]
-#[cfg(not(loom))]
-mod plan_markdown;
-
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[cfg(not(loom))]
 include!("e2e/root.rs");
@@ -97,11 +93,6 @@ mod client_diff;
 #[path = "local_cloud_actors/mod.rs"]
 #[cfg(not(loom))]
 mod local_cloud_actors;
-
-// Preserve the ordinary allocator/runtime path independently of Loom schedules.
-#[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "test-support"))]
-#[path = "dst/main.rs"]
-mod dst;
 
 #[cfg(all(not(loom), feature = "test-support"))]
 mod filesystem_access;

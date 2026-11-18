@@ -1,0 +1,27 @@
+[package]
+name = "acyclic-fs-format"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Canonical filesystem identity and object reference formats"
+
+[package.metadata.bazel]
+unit-test-only-sources = ["src/storage.rs", "src/tests/**"]
+
+[dependencies]
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
+
+[features]
+test-support = ["dep:acyclic-native-runtime", "acyclic-native-runtime/test-support"]
+
+[lints]
+workspace = true

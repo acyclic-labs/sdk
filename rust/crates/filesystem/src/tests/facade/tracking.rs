@@ -136,21 +136,21 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         let cancel = CancellationToken::new();
         let original =
             crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let prior = RetainedAllocation::claim(29, 1, &mut accounting)?;
-        let retained = original.live_allocation_bytes();
-        let before = accounting.spent();
+        let retained = original.live_allocation_bytes().unwrap();
+        let before = accounting.spent().unwrap();
         let capacity = regions.capacity();
         MemoryCheckout::subsume_mutation_record_dependencies(&mut regions, &mut accounting)?;
-        let spent = accounting.spent();
+        let spent = accounting.spent().unwrap();
         assert_eq!(regions, expected);
         assert_eq!(regions.capacity(), capacity);
         assert!(spent.bytes_copied - before.bytes_copied <= budget.bytes_copied);
         assert!(spent.items_examined - before.items_examined <= budget.items_examined);
-        assert_eq!(original.live_allocation_bytes(), retained);
+        assert_eq!(original.live_allocation_bytes().unwrap(), retained);
         drop(prior);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         counts.push((
             spent.items_examined - before.items_examined,
             spent.bytes_copied - before.bytes_copied,
@@ -201,7 +201,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
     let mut successful = input.clone();
     let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
     MemoryCheckout::subsume_mutation_record_dependencies(&mut successful, &mut accounting)?;
-    let spent = accounting.spent();
+    let spent = accounting.spent().unwrap();
     // Every examined-item refusal and the first denied swap keep all original
     // owners. No new work is needed to retire the private membership index.
     for allowance in 0..spent.items_examined {
@@ -211,7 +211,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         };
         let original =
             crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut regions = input.clone();
         assert!(
@@ -220,7 +220,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         );
         assert_eq!(regions.len(), input.len());
         assert!(input.iter().all(|entry| regions.contains(entry)));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     for budget in [
         WorkBudget {
@@ -251,142 +251,6 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
 }
 
 #[tokio::test]
-async fn sparse_seek_tracks_local_holes_and_remote_boundary_changes() -> TestResult {
-    let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
-    create(
-        &mut seed,
-        "sparse",
-        OwnedBytes::from(vec![b'a'; 256]),
-        &cancel,
-    )
-    .await?;
-    commit(&mut seed, &cancel).await?;
-    let file = path("sparse")?;
-    let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
-    local
-        .change_content(
-            file.clone(),
-            ContentChange::ZeroRange {
-                range: ByteRange {
-                    offset: 128,
-                    length: 16,
-                },
-                allocated: false,
-                extend: false,
-            },
-            ContentTimes::Preserve,
-            B,
-            &cancel,
-        )
-        .await?;
-    assert_eq!(
-        local
-            .seek_file_extent(&file, 128, ExtentSeekTarget::Hole, B, &cancel)
-            .await?
-            .value,
-        Some(128)
-    );
-    let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
-    remote
-        .change_content(
-            file.clone(),
-            ContentChange::ZeroRange {
-                range: ByteRange {
-                    offset: 0,
-                    length: 64,
-                },
-                allocated: false,
-                extend: false,
-            },
-            ContentTimes::Preserve,
-            B,
-            &cancel,
-        )
-        .await?;
-    commit(&mut remote, &cancel).await?;
-    assert!(matches!(
-        local.rebase_head(Some(8), B, &cancel).await?.value,
-        RebaseDecision::Safe { .. }
-    ));
-    assert_eq!(
-        local
-            .seek_file_extent(&file, 128, ExtentSeekTarget::Hole, B, &cancel)
-            .await?
-            .value,
-        Some(128)
-    );
-    let mut reader = open_checkout(&volume, tracking(), &cancel).await?;
-    assert_eq!(
-        reader
-            .seek_file_extent(&file, 128, ExtentSeekTarget::Hole, B, &cancel)
-            .await?
-            .value,
-        Some(256)
-    );
-    let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
-    remote
-        .change_content(
-            file,
-            ContentChange::ZeroRange {
-                range: ByteRange {
-                    offset: 192,
-                    length: 16,
-                },
-                allocated: false,
-                extend: false,
-            },
-            ContentTimes::Preserve,
-            B,
-            &cancel,
-        )
-        .await?;
-    commit(&mut remote, &cancel).await?;
-    assert!(
-        matches!(reader.rebase_head(Some(8), B, &cancel).await?.value, RebaseDecision::Conflicted { conflicts, .. }
-        if conflicts.iter().any(|conflict| matches!(conflict.region,
-            DependencyRegion::SparseSeek { offset: 128, target: ExtentSeekTarget::Hole, .. })))
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn clipped_identity_read_at_eof_tracks_file_length() -> TestResult {
-    let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
-    let id = create(&mut seed, "file", OwnedBytes::from_static(b"abc"), &cancel).await?;
-    commit(&mut seed, &cancel).await?;
-    let mut reader = open_checkout(&volume, tracking(), &cancel).await?;
-    assert!(
-        reader
-            .read_file_up_to(id, 3, 16, B, &cancel)
-            .await?
-            .value
-            .bytes
-            .is_empty()
-    );
-    let mut writer = open_checkout(&volume, writable_pinned(), &cancel).await?;
-    writer
-        .change_content(
-            path("file")?,
-            ContentChange::Write {
-                offset: 3,
-                bytes: OwnedBytes::from_static(b"d"),
-            },
-            ContentTimes::Preserve,
-            B,
-            &cancel,
-        )
-        .await?;
-    commit(&mut writer, &cancel).await?;
-    assert!(
-        matches!(reader.rebase_head(Some(8), B, &cancel).await?.value, RebaseDecision::Conflicted { conflicts, .. }
-        if conflicts.iter().any(|conflict| matches!(conflict.region, DependencyRegion::FileLength(actual) if actual == id)))
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_on_overlap()
 -> TestResult {
     sparse_rebase_across_remote_ranges(false).await
@@ -397,58 +261,4 @@ async fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_o
 async fn original_native_rebase_preserves_disjoint_ranges_and_is_atomic_on_denial_and_conflict()
 -> TestResult {
     sparse_rebase_across_remote_ranges(true).await
-}
-
-#[tokio::test]
-async fn repeated_single_and_batch_lookups_preserve_binding_conflicts() -> TestResult {
-    for (batch, authored) in [(false, true), (true, false), (true, true)] {
-        let cancel = CancellationToken::new();
-        let (volume, _) = fixture(config(), &cancel).await?;
-        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
-        if authored {
-            create(
-                &mut local,
-                "authored",
-                OwnedBytes::from_static(b"local"),
-                &cancel,
-            )
-            .await?;
-        }
-        let paths = [path("first")?, path("second")?];
-        for _ in 0..2 {
-            if batch {
-                assert!(
-                    local
-                        .lookup_batch_no_follow(&paths, B, &cancel)
-                        .await?
-                        .value
-                        .entries
-                        .iter()
-                        .all(|entry| entry.record.is_none())
-                );
-            } else {
-                assert!(
-                    local
-                        .lookup_no_follow_with_metadata(&paths[1], B, &cancel)
-                        .await?
-                        .value
-                        .is_none()
-                );
-            }
-        }
-        let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
-        create(
-            &mut remote,
-            "second",
-            OwnedBytes::from_static(b"remote"),
-            &cancel,
-        )
-        .await?;
-        commit(&mut remote, &cancel).await?;
-        assert!(matches!(
-            local.rebase_head(Some(8), B, &cancel).await?.value,
-            RebaseDecision::Conflicted { .. }
-        ));
-    }
-    Ok(())
 }

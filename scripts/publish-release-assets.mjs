@@ -2,7 +2,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { sha256File } from './file-digest.mjs';
 
 // Annotated tags retain an already-existing immutable object, so each step
@@ -93,4 +92,4 @@ export async function publish({ env = process.env, directory = env.RELEASE_ASSET
   gh('release', 'edit', tag, '--repo', repository, '--draft=false');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await publish();
+if (import.meta.main) await publish();

@@ -453,14 +453,12 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     };
     let krate = attrs
         .krate
-        .unwrap_or_else(|| syn::parse_quote!(::acyclic_harness_core));
+        .unwrap_or_else(|| syn::parse_quote!(::acyclic_harness_layout));
     let name = &input.ident;
     let mut generics = input.generics.clone();
     let generic = !generics.params.is_empty();
     for param in generics.type_params_mut() {
-        param
-            .bounds
-            .push(syn::parse_quote!(#krate::heap_layout::HeapLayout));
+        param.bounds.push(syn::parse_quote!(#krate::HeapLayout));
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     // A non-generic layout lives in a static, so recursive types can refer to
@@ -474,7 +472,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     };
     Ok(quote! {
         const _: () = {
-            use #krate::heap_layout as __layout;
+            use #krate as __layout;
             #[automatically_derived]
             impl #impl_generics __layout::HeapLayout for #name #ty_generics #where_clause {
                 const LAYOUT: &'static __layout::JsonLayout = #value;

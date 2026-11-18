@@ -1,12 +1,15 @@
 //! Browser host conformance through the public canonical volume commit API.
 #![cfg(target_arch = "wasm32")]
 use acyclic_fs::browser::IndexedDbObjectStore;
-use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkCounters};
 use acyclic_stream::StreamProviderExt as _;
 use indexed_db_futures::database::Database;
 use indexed_db_futures::prelude::*;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
+use {
+    acyclic_fs::{CancellationToken, PublicationPermit},
+    acyclic_fs_work::performance::{WorkBudget, WorkCounters},
+};
 wasm_bindgen_test_configure!(run_in_browser);
 #[cfg(feature = "conformance")]
 #[path = "browser_commit/conformance.rs"]
@@ -167,9 +170,12 @@ async fn browser_disjoint_transactions_use_the_canonical_group_and_original_rece
 fn allow_browser_publication(
     _: WorkBudget,
 ) -> std::future::Ready<
-    acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, acyclic_fs::WorkspaceError>,
+    acyclic_fs_work::performance::MeasuredResult<
+        acyclic_fs_work::performance::OperationReceipt<()>,
+        acyclic_fs::WorkspaceError,
+    >,
 > {
-    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+    std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
         value: (),
         work: WorkCounters::UNCHARGED,
     }))

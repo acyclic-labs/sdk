@@ -9,7 +9,7 @@ use super::{
     Arc, Condvar, Mutex, NativeMountError, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, Readiness,
     Runtime, SendContext, lock_recover,
 };
-use crate::native_mount::shared::ready::ReadyViews;
+use acyclic_fs_base::ready::{ReadyLinkError, ReadyViews};
 use std::sync::Weak;
 
 pub(super) struct ServiceHook {
@@ -38,6 +38,19 @@ struct State {
     stopping: bool,
 }
 
+impl State {
+    fn check<T>(&mut self, result: Result<T, ReadyLinkError>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::error!(%error, "stopping shared projector");
+                self.stopping = true;
+                None
+            }
+        }
+    }
+}
+
 struct View {
     runtime: Arc<Runtime>,
     context: SendContext,
@@ -46,7 +59,8 @@ struct View {
 impl Shared {
     fn schedule(&self, id: u64) {
         let mut state = lock_recover(&self.state);
-        if state.views.schedule(id) {
+        let scheduled = state.views.schedule(id);
+        if state.check(scheduled) != Some(false) {
             self.changed.notify_all();
         }
     }
@@ -57,9 +71,15 @@ impl Shared {
             if state.stopping {
                 return;
             }
-            if let Some((id, view)) = state.views.pop() {
-                let runtime = Arc::clone(&view.runtime);
-                let context = view.context.0;
+            let next = state
+                .views
+                .pop()
+                .map(|work| work.map(|(id, view)| (id, Arc::clone(&view.runtime), view.context.0)));
+            let Some(next) = state.check(next) else {
+                self.changed.notify_all();
+                return;
+            };
+            if let Some((id, runtime, context)) = next {
                 state.running = Some(id);
                 drop(state);
                 let readiness = runtime.projector.service_pass(&runtime, context);
@@ -69,7 +89,8 @@ impl Shared {
                 self.changed.notify_all();
                 match readiness {
                     Readiness::Ready => {
-                        state.views.schedule(id);
+                        let scheduled = state.views.schedule(id);
+                        state.check(scheduled);
                     }
                     Readiness::Idle | Readiness::Stopped => {}
                 }
@@ -118,13 +139,16 @@ impl ProjectorService {
             let mut state = lock_recover(&self.shared.state);
             state.next += 1;
             let id = state.next;
-            state.views.insert(
-                id,
-                View {
-                    runtime: Arc::clone(runtime),
-                    context: SendContext(context),
-                },
-            );
+            state
+                .views
+                .insert(
+                    id,
+                    View {
+                        runtime: Arc::clone(runtime),
+                        context: SendContext(context),
+                    },
+                )
+                .map_err(|error| NativeMountError::Io(std::io::Error::other(error)))?;
             id
         };
         if runtime
@@ -136,7 +160,10 @@ impl ProjectorService {
             })
             .is_err()
         {
-            let refused = lock_recover(&self.shared.state).views.remove(id);
+            let mut state = lock_recover(&self.shared.state);
+            let removed = state.views.remove(id);
+            let refused = state.check(removed);
+            self.shared.changed.notify_all();
             drop(refused);
             return Err(NativeMountError::ControlPending);
         }
@@ -148,7 +175,9 @@ impl ProjectorService {
     /// holds no reference to it and never runs it again.
     pub(super) fn detach(&self, id: u64) {
         let mut state = lock_recover(&self.shared.state);
-        state.views.remove(id);
+        let removed = state.views.remove(id);
+        state.check(removed);
+        self.shared.changed.notify_all();
         while state.running == Some(id) {
             state = self
                 .shared

@@ -6,7 +6,7 @@ pub(super) async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> R
         .map_err(|error| error.to_string())?;
     let workspace = Box::pin(fs.create_workspace(
         "consumer-history",
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     ))
     .await
@@ -29,7 +29,7 @@ pub(super) async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> R
                     .read(
                         &path,
                         64,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new(),
                     )
                     .await
@@ -52,7 +52,7 @@ pub(super) async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> R
                     .read(
                         &path,
                         64,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &acyclic_fs::CancellationToken::new(),
                     )
                     .await
@@ -86,7 +86,7 @@ pub(super) async fn verify_reopened_history(
         .map_err(|error| error.to_string())?;
     let workspace = Box::pin(reopened.open_workspace(
         "consumer-history",
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     ))
     .await
@@ -99,7 +99,7 @@ pub(super) async fn verify_reopened_history(
                 .read(
                     &path,
                     64,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
@@ -131,7 +131,7 @@ pub(super) async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), St
         VolumeLimits::default(),
         None,
         None,
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .await
@@ -148,7 +148,7 @@ pub(super) async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), St
         .lookup(
             provider.reference(),
             &wanted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -167,7 +167,7 @@ pub(super) async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), St
             version,
             3,
             4,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -332,7 +332,7 @@ pub(super) async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<()
         .map_err(|error| error.to_string())?;
     let workspace = Box::pin(fs.create_workspace(
         "sqlite-wal",
-        acyclic_fs::WorkBudget::UNBOUNDED,
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     ))
     .await
@@ -352,7 +352,7 @@ pub(super) async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<()
             .read(
                 "/wal.db",
                 1024 * 1024,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -369,7 +369,7 @@ pub(super) async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<()
             .read(
                 "/wal.db-wal",
                 1024 * 1024,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

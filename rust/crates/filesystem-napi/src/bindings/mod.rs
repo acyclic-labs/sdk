@@ -2,7 +2,7 @@ macro_rules! unbounded_future {
     ($owner:expr, $operation:ident($($argument:expr),* $(,)?)) => {
         ($owner).$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
     };
@@ -21,7 +21,7 @@ macro_rules! checkout_call {
     ($owner:ident, $checkout:ident, $operation:ident($($argument:expr),* $(,)?)) => {
         $checkout.$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &$owner.cancellation,
         ).await.map_err(napi_error)
     };
@@ -33,7 +33,7 @@ macro_rules! checkout_mutation {
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         checkout.$operation(
             $($argument,)*
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &$owner.cancellation,
         ).await.map_err(napi_error)
     }};
@@ -92,40 +92,11 @@ mod write;
 
 use acyclic_fs::MountPublication;
 use acyclic_fs::binding_contract::attribute_class_name as native_attribute_class_name;
-use acyclic_fs::kernel::{
-    AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
-    FileMetadata, FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding,
-    NamespacePath, RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata,
-    encode_file_metadata,
-};
 use acyclic_fs::model::{
     AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeLimits,
 };
 use acyclic_fs::path::PortablePath;
-use acyclic_fs::{
-    ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, ConflictSide,
-    DependencyRegion, DependencyState, DependencyUse, DirectoryPage, FileCloneRequest, FileId,
-    ForkOptions, Generation, GenerationExportManifest, GenerationId, IdempotencyKey, JoinHistory,
-    JoinOutcome, JoinPlan, LiveMutationOutcome, LivePublicationObservation, LocalAuthorityBackend,
-    LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions, LocalVolume, MergeConflict,
-    MergePreparation, NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions,
-    ObjectCacheOptions, ObjectId, ObjectReadRequest, ObjectResidency, OperationId,
-    PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions, RebaseConflict,
-    ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencySpeculatorOptions, ResolvedFile,
-    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
-    TransactionCommit, TransactionRebase, VolumeId, WatchBatch, WatchChange,
-    WatchInvalidationReason, Workspace, WorkspaceDelete, WorkspaceExtentKind, WorkspaceExtentPlan,
-    WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceRebase,
-    WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
-    native_watch_capabilities as sdk_native_watch_capabilities,
-};
-use acyclic_fs::{
-    CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions, NativeMountRequest,
-    NativeMountSession, SharedCheckout, WatchCaptureReceipt, capture_baseline, capture_paths,
-    capture_root_identity, capture_watch_batch, materialize_checkout, mount_native,
-    probe_native_mount, seal_checkout,
-};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
@@ -133,3 +104,42 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use {
+    acyclic_fs::kernel::{
+        AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
+        FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding, NamespacePath,
+        RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata, encode_file_metadata,
+    },
+    acyclic_fs_format::metadata::FileMetadata,
+};
+use {
+    acyclic_fs::{
+        ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, ConflictSide,
+        DependencyRegion, DependencyState, DependencyUse, DirectoryPage, FileCloneRequest,
+        ForkOptions, Generation, GenerationExportManifest, GenerationId, IdempotencyKey,
+        JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome, LivePublicationObservation,
+        LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
+        LocalVolume, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+        NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions, ObjectReadRequest,
+        ObjectResidency, PromotionAdmission, PromotionDestination, PromotionSpeculatorOptions,
+        RebaseConflict, ResidencyAdmission, ResidencyHint, ResidencyReason,
+        ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
+        StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionRebase,
+        WatchBatch, WatchChange, WatchInvalidationReason, Workspace, WorkspaceDelete,
+        WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId,
+        WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceRebase, WorkspaceStat,
+        decode_generation_export_manifest, encode_generation_export_manifest,
+        native_watch_capabilities as sdk_native_watch_capabilities,
+    },
+    acyclic_fs_format::identity::{FileId, OperationId, VolumeId},
+    acyclic_fs_format::object_reference::ObjectId,
+};
+use {
+    acyclic_fs::{
+        CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions,
+        NativeMountSession, SharedCheckout, WatchCaptureReceipt, capture_baseline, capture_paths,
+        capture_root_identity, capture_watch_batch, materialize_checkout, mount_native,
+        probe_native_mount, seal_checkout,
+    },
+    acyclic_fs_native_contract::NativeMountRequest,
+};

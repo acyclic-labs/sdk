@@ -261,7 +261,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
             }
             let (schema, gate) = self.schema.child(key.as_bytes(), None);
             let tag_field =
-                !self.schema.tag.is_empty() && key.as_bytes() == self.schema.tag.as_bytes();
+                !self.schema.tag().is_empty() && key.as_bytes() == self.schema.tag().as_bytes();
             let raw_field = index == 0 && key.as_bytes() == RAW;
             // No key survives into its value's walk. Unescaped keys borrow
             // the source; an escaped key holds one owned copy only here.
@@ -290,7 +290,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
                 .map_err(|error| self.error::<A::Error>(error))?;
             index += 1;
         }
-        if !self.schema.tag.is_empty() {
+        if !self.schema.tag().is_empty() {
             counts
                 .resolve(tag.unwrap_or(0))
                 .map_err(|error| self.error::<A::Error>(error))?;
@@ -342,117 +342,9 @@ fn document(
     release?;
     Ok(counts)
 }
+pub(super) type Lexer<const TRACK: bool> =
+    acyclic_harness_json::lexical::Lexer<TRACK, super::RuntimeJson>;
 pub(super) type Lexical = Lexer<false>;
-
-/// Admission records scratch bounds in its existing lexical pass. Encoders
-/// and array indexing use the same lexer with that accounting compiled out.
-#[derive(Default)]
-pub(super) struct Lexer<const TRACK_SCRATCH: bool> {
-    pub(super) items: u64,
-    pub(super) containers: u64,
-    pub(super) arrays: usize,
-    pub(super) depth: u32,
-    pub(super) string: bool,
-    escape: bool,
-    atom: bool,
-    string_bytes: u64,
-    escaped_string: bool,
-    longest_string: u64,
-    longest_escaped: u64,
-    maximum_depth: u32,
-}
-impl<const TRACK_SCRATCH: bool> Lexer<TRACK_SCRATCH> {
-    fn scratch(&self, labels: bool) -> Result<u64> {
-        scratch_bound(u64::from(self.maximum_depth).max(if labels {
-            self.longest_string
-        } else {
-            self.longest_escaped
-        }))
-    }
-    pub(super) fn byte(
-        &mut self,
-        byte: u8,
-        bounds: JsonBounds,
-        code: Option<crate::wire::ErrorCode>,
-        charge: &Charge<'_>,
-    ) -> Result<bool> {
-        if self.string {
-            if TRACK_SCRATCH {
-                self.string_bytes += 1;
-            }
-            if self.escape {
-                self.escape = false;
-            } else if byte == b'\\' {
-                self.escape = true;
-                if TRACK_SCRATCH {
-                    self.escaped_string = true;
-                }
-            } else if byte == b'"' {
-                self.string = false;
-                if TRACK_SCRATCH {
-                    self.longest_string = self.longest_string.max(self.string_bytes);
-                    if self.escaped_string {
-                        self.longest_escaped = self.longest_escaped.max(self.string_bytes);
-                    }
-                }
-            }
-            return Ok(false);
-        }
-        let depth = self.depth;
-        let item = match byte {
-            b'"' => {
-                self.string = true;
-                if TRACK_SCRATCH {
-                    self.string_bytes = 0;
-                    self.escaped_string = false;
-                }
-                self.atom = false;
-                true
-            }
-            b'[' | b'{' => {
-                self.containers += 1;
-                self.arrays += usize::from(byte == b'[');
-                self.depth += 1;
-                if TRACK_SCRATCH {
-                    self.maximum_depth = self.maximum_depth.max(self.depth);
-                }
-                self.atom = false;
-                true
-            }
-            b']' | b'}' => {
-                self.depth = self
-                    .depth
-                    .checked_sub(1)
-                    .ok_or_else(|| input_error(JsonInputError::Nesting, code))?;
-                self.atom = false;
-                false
-            }
-            b':' | b',' | b' ' | b'\n' | b'\r' | b'\t' => {
-                self.atom = false;
-                false
-            }
-            _ => {
-                let first = !self.atom;
-                self.atom = true;
-                first
-            }
-        };
-        if item {
-            if bounds
-                .maximum_items
-                .is_some_and(|maximum| self.items >= maximum)
-            {
-                return Err(boundary("JSON exceeds declared structural bound", code));
-            }
-            if depth > bounds.maximum_depth {
-                return Err(input_error(JsonInputError::Depth, code));
-            }
-            charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            self.items = checked(self.items.checked_add(1), "JSON item count overflow")?;
-        }
-        Ok(item)
-    }
-}
 
 /// One escaped key or enum label may be owned beside the decoder's growing
 /// scratch vector. Its last two capacities plus that copy fit four times
@@ -507,7 +399,7 @@ fn laid_out(
         0,
         false,
         lexical.maximum_depth,
-        lexical.scratch(labels)?,
+        scratch_bound(lexical.scratch_source_bytes(labels))?,
         &charge,
         &RefCell::new(None),
     )?
@@ -659,7 +551,7 @@ fn typed_cost(
     cost: LayoutCost,
     code: Option<crate::wire::ErrorCode>,
 ) -> Result<(JsonValueShape, LayoutCost)> {
-    if shape.unresolved_raw() || cost.refused {
+    if shape.unresolved_raw() || cost.is_refused() {
         // The typed decode would reject this document: an input failure,
         // classified like every other malformed source.
         return Err(input_error(JsonInputError::Shape, code));

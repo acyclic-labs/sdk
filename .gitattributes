@@ -24,6 +24,8 @@ rust/codec-fuzz/captures/*.stdout.jsonl binary
 
 # Preserve byte-exact patch context.
 *.patch -whitespace
+# Vendored sources retain upstream whitespace, like their recorded source bytes.
+rust/vendor/** -whitespace
 # ts-rs emits spaces before line breaks in its generated declarations.
 typescript/packages/actors/src/generated/**/*.ts whitespace=-blank-at-eol
 
@@ -41,7 +43,7 @@ scripts/graphcoder-e2e/fixtures/npm-command.cmd -text whitespace=cr-at-eol
 rust/crates/conformance/fixtures/inference/**/*.body binary
 rust/crates/conformance/fixtures/inference/**/*.request.json -text
 
-# Each path below is exact; every other tracked file is diff --check clean from the empty tree.
+# Outside vendored sources, each exception below is exact; all other paths are diff --check clean.
 # streaming_seed_corpus replays these seeds: spaces before a newline are the hard-break grammar they cover.
 rust/crates/markdown/fuzz/corpus/streaming/grammar-visibility -whitespace
 rust/crates/markdown/fuzz/corpus/streaming/inline-adjacency -whitespace

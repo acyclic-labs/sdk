@@ -73,7 +73,7 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 1_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -115,7 +115,7 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
         );
     }
     let cancellation = acyclic_fs::CancellationToken::new();
-    let mut budget = acyclic_fs::performance::work_budget(100_000, 1_000_000);
+    let mut budget = acyclic_fs_work::performance::work_budget(100_000, 1_000_000);
     budget.bytes_hashed = identity_hash_bytes - 1;
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

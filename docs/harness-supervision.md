@@ -144,7 +144,9 @@ Sequences are zero based. Events include `started`, `turn_done`, `signal`,
 `paused`, `resumed`, `stopped` and `control_rejected`. Explicit owner controls
 carry `run: null`. Source positions identify original publications; observer
 clocks never replace them. Reopening a feed can replay records, so consumers
-retain original positions when deduplicating.
+retain original positions when deduplicating. Actor alarms and session
+admission use the same host clock, so a configured clock drives wait deadlines
+and lease expiry together.
 
 The final `run` result is `{version:1,operation,result}`. Exit zero means the goal
 is done. Signal exits are 20 repeat failure, 21 validation loop, 22 no progress,

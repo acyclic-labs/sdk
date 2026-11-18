@@ -356,6 +356,8 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
 /// It reads the serde attributes `#[derive(Deserialize)]` reads. A field or
 /// variant decoded by a custom function must name its layout with
 /// `#[heap_layout(as = Type)]` or `#[heap_layout(scalar)]`.
+/// The layout owner is `acyclic-harness-layout`; a renamed dependency can be
+/// selected with `#[heap_layout(crate = path_to_layout_crate)]`.
 #[proc_macro_derive(HeapLayout, attributes(heap_layout))]
 pub fn heap_layout(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as syn::DeriveInput);

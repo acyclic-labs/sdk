@@ -436,3 +436,154 @@ async fn inherited_turns_keep_the_original_receiver_authority() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_failed_turn_without_a_completed_step_is_not_replayed() -> Result<()> {
+    use crate::agent::{IntentId, Sender, TurnInput};
+    let (host, root) = fixture().await?;
+    let (_, bindings, _) = host
+        .journal(host.admit(&root)?, &[], &[], None, None)
+        .await?;
+    let (body, _) = bindings
+        .content
+        .writer
+        .as_ref()
+        .unwrap()
+        .stage_once(
+            OperationId::new(),
+            "message.txt",
+            b"same prompt",
+            "text/plain",
+            "message.txt",
+            Default::default(),
+        )?
+        .await?;
+    let turn = OperationId::new();
+    let output = crate::agent::TurnOutputs::stage(
+        bindings.journal.files.as_ref(),
+        turn,
+        &crate::contract::canonical_json_bytes(&crate::executor::TurnOutput::new(
+            "partial reply".into(),
+            serde_json::Value::Null,
+            1,
+        ))?,
+    )
+    .await?;
+    let entry = ConversationEntry {
+        observed_through: 0,
+        steering: None,
+        inbox: 0,
+        input: TurnInput::Message {
+            from: Sender::User {
+                principal: "user".into(),
+            },
+            id: IntentId::try_from("failed").map_err(Error::from)?,
+            re: None,
+            body: Box::new(body),
+            attachments: None,
+        },
+        output,
+        outcome: TurnOutcome::Failed {
+            message: "provider stopped".into(),
+        },
+        goal: None,
+        announcements: Vec::new(),
+        tool_results: None,
+        notices: None,
+    };
+    let input = ModelContent::Text("same prompt".into());
+    let mut context = TurnContext::new(&root, vec![(0, entry)], OperationId::new(), &input)?;
+    context.expand_inputs(&*bindings.content.reader).await?;
+    assert!(
+        context.settled.is_empty(),
+        "a failed turn with no completed step is not history"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn removing_a_failed_inherited_turn_keeps_fork_and_ancestor_positions() -> Result<()> {
+    use crate::agent::{AgentId, IntentId, Sender, TurnInput};
+    let (host, root) = fixture().await?;
+    let parent_path = root
+        .path
+        .child(&AgentId::from_bytes([97; 16]))
+        .map_err(Error::from)?;
+    let parent = state(&host, parent_path.clone(), Some(root.path.clone()), 0).await?;
+    let leaf_path = parent_path
+        .child(&AgentId::from_bytes([98; 16]))
+        .map_err(Error::from)?;
+    let leaf = state(&host, leaf_path, Some(parent_path.clone()), 2).await?;
+    let (_, bindings, _) = host
+        .journal(host.admit(&parent)?, &[], &[], None, None)
+        .await?;
+    let mut history = Vec::new();
+    for (sequence, (outcome, text)) in [
+        (
+            TurnOutcome::Failed {
+                message: "provider stopped".into(),
+            },
+            "partial reply",
+        ),
+        (TurnOutcome::Completed, "answer"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (body, _) = bindings
+            .content
+            .writer
+            .as_ref()
+            .unwrap()
+            .stage_once(
+                OperationId::new(),
+                &format!("message-{sequence}.txt"),
+                b"same prompt",
+                "text/plain",
+                "message.txt",
+                Default::default(),
+            )?
+            .await?;
+        let turn = OperationId::new();
+        let output = crate::agent::TurnOutputs::stage(
+            bindings.journal.files.as_ref(),
+            turn,
+            &crate::contract::canonical_json_bytes(&crate::executor::TurnOutput::new(
+                text.into(),
+                serde_json::Value::Null,
+                1,
+            ))?,
+        )
+        .await?;
+        history.push((
+            sequence as u64,
+            ConversationEntry {
+                observed_through: 0,
+                steering: None,
+                inbox: sequence as u64,
+                input: TurnInput::Message {
+                    from: Sender::User {
+                        principal: "user".into(),
+                    },
+                    id: IntentId::try_from(format!("message-{sequence}")).map_err(Error::from)?,
+                    re: None,
+                    body: Box::new(body),
+                    attachments: None,
+                },
+                output,
+                outcome,
+                goal: None,
+                announcements: Vec::new(),
+                tool_results: None,
+                notices: None,
+            },
+        ));
+    }
+    let input = ModelContent::Text("same prompt".into());
+    let mut context = TurnContext::new(&leaf, history, OperationId::new(), &input)?;
+    context.expand_inputs(&*bindings.content.reader).await?;
+    assert_eq!(context.settled.len(), 1);
+    assert_eq!(context.fork, Some(1));
+    assert_eq!(context.ancestors, vec![(0, parent_path)]);
+    Ok(())
+}

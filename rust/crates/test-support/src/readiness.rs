@@ -4,6 +4,7 @@ use std::io::{self, BufRead, Write};
 /// Publish a complete record even when libtest has left an unterminated prefix.
 /// Hold the stdout lock while calling this function to keep the frame together.
 pub fn signal(writer: &mut impl Write, marker: &str) -> io::Result<()> {
+    // The leading newline makes the marker a separate record for any prefix.
     writeln!(writer, "\n{marker}")?;
     writer.flush()
 }

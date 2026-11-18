@@ -457,12 +457,12 @@ mod tests {
         assert_eq!(ack, Some((None, generation)));
         let after = original.receipt();
         assert_eq!(
-            after.authority_records_appended,
-            before.authority_records_appended
+            after.unwrap().authority_records_appended,
+            before.unwrap().authority_records_appended
         );
         assert_eq!(
-            after.backend_write_operations,
-            before.backend_write_operations
+            after.unwrap().backend_write_operations,
+            before.unwrap().backend_write_operations
         );
         assert_eq!(checkout.generation_id(), generation);
         Ok(())
@@ -532,7 +532,7 @@ mod tests {
                 crate::FsError::Authority(crate::AuthorityStoreError::Indeterminate { .. },)
             ))
         ));
-        let appended = original.receipt().authority_records_appended;
+        let appended = original.receipt().unwrap().authority_records_appended;
         assert!(appended > 0);
         let mismatch = seal_checkout_with_permit_guarded_with_native_work(
             &mut checkout,
@@ -552,7 +552,10 @@ mod tests {
         )
         .await?;
         assert_eq!(mismatch, None);
-        assert_eq!(original.receipt().authority_records_appended, appended);
+        assert_eq!(
+            original.receipt().unwrap().authority_records_appended,
+            appended
+        );
         let (changed_bytes, changed_allocation) = original.copy_bytes(b"changed-source-cut")?;
         let changed_evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(
             changed_bytes,
@@ -578,7 +581,10 @@ mod tests {
         )
         .await?;
         assert_eq!(changed_payload, None);
-        assert_eq!(original.receipt().authority_records_appended, appended);
+        assert_eq!(
+            original.receipt().unwrap().authority_records_appended,
+            appended
+        );
         let ack = seal_checkout_with_permit_guarded_with_native_work(
             &mut checkout,
             operation,
@@ -597,7 +603,10 @@ mod tests {
         )
         .await?;
         assert_eq!(ack, Some((Some(operation), generation)));
-        assert_eq!(original.receipt().authority_records_appended, appended);
+        assert_eq!(
+            original.receipt().unwrap().authority_records_appended,
+            appended
+        );
         let durable = (async {
             let __authority_args = (
                 crate::kernel::volume_authority_id(volume.id()),

@@ -12,6 +12,32 @@ use std::{
 };
 
 struct Woken(AtomicBool);
+
+#[tokio::test]
+async fn finite_driver_retires_native_work_after_its_caller_returns() -> io::Result<()> {
+    crate::initialize_native_io_services()?;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("accepted");
+    let destination = path.clone();
+    let key = crate::PersistenceKey::new(
+        destination.as_os_str().as_encoded_bytes().as_ptr() as usize,
+        0,
+    );
+    let (schedule, mut events) = Schedule::new();
+    drive(&schedule, &mut events, |_| {}, async move {
+        drop(crate::spawn_persistence(
+            "driver-proof",
+            "write",
+            key,
+            move || std::fs::write(destination, b"accepted"),
+        ));
+    })
+    .await;
+    assert_eq!(std::fs::read(path)?, b"accepted");
+    assert_eq!(schedule.pending_native_work(), 0);
+    Ok(())
+}
+
 impl Wake for Woken {
     fn wake(self: Arc<Self>) {
         self.0.store(true, Ordering::SeqCst);

@@ -1,16 +1,22 @@
 //! Captures unchanged merge-directory writer output from a local deployment.
 
-use acyclic_fs::foundation::OperationId;
-use acyclic_fs::kernel::{FileMetadata, MergeConflict, MetadataField};
 use acyclic_fs::workspace::{
     ApplyOptions, DrivenJoinError, ForkOptions, MergeConflictFile, MergeConflictFileKind,
     MergeDirectorySection,
 };
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, LocalOptions,
-    OperationReceipt, PublicationPermit, Transaction, WorkBudget, WorkCounters, WorkspaceError,
-};
+use acyclic_fs_format::identity::OperationId;
 use std::{error::Error, num::NonZeroU32};
+use {
+    acyclic_fs::kernel::MergeConflict,
+    acyclic_fs_format::metadata::{FileMetadata, MetadataField},
+};
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, LocalOptions,
+        PublicationPermit, Transaction, WorkspaceError,
+    },
+    acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters},
+};
 
 async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,

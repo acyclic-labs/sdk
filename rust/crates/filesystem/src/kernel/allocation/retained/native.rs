@@ -88,7 +88,7 @@ impl NativeAccounting {
             if budget != state.budget || *counters != baseline {
                 return Err(crate::FsError::AccountingHandoffActive);
             }
-            state.receipt();
+            state.receipt()?;
             let (owned, owned_counters, _, _) = state.allocation_parts();
             let original = owned.handoff(owned_counters, budget)?;
             allocations.resume(original)?;
@@ -173,9 +173,9 @@ mod tests {
         let decoded = producer.decode_json::<Text>(record.value.as_ref())?;
         assert_eq!(decoded.text, "selected\ntext é");
         drop(producer);
-        let completed = owner.work.receipt();
+        let completed = owner.work.receipt()?;
         owner.restore(&mut caller)?;
-        assert_eq!(caller.spent().items_examined, completed.items_examined);
+        assert_eq!(caller.spent()?.items_examined, completed.items_examined);
         assert_eq!(
             caller.remaining()?.items_examined,
             budget.items_examined - completed.items_examined

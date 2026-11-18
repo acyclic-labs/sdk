@@ -1,5 +1,5 @@
 //! The cargo-fuzz entry point uses the same streaming path as model dispatch.
-use crate::{Adapter, stream};
+use crate::Adapter;
 use acyclic_harness_core::{
     OperationId,
     model::{ModelDispatch, ModelEvent},
@@ -36,14 +36,19 @@ fn parse_at(
         step: 0,
         request_digest: [0; 32],
     };
-    futures::executor::block_on(stream::events(adapter, body, 4096, dispatch).try_collect())
-        .map_err(|error| error.to_string())
+    futures::executor::block_on(
+        crate::event_driver::events(adapter, body, 4096, dispatch).try_collect(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
     // Reuse the shipped framer, then compare original wire values with the
     // adapter output. Counter consensus over output alone cannot detect loss.
-    let body = Box::pin(futures::stream::once(std::future::ready(Ok(
+    let body = Box::pin(futures::stream::once(std::future::ready(Ok::<
+        _,
+        acyclic_harness_core::Error,
+    >(
         Bytes::copy_from_slice(input),
     ))));
     let frames: Vec<String> = futures::executor::block_on(
@@ -54,7 +59,8 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
     .expect("accepted Chat stream has valid original frames");
     let mut expected = None;
     for frame in frames {
-        let value = crate::json(frame.as_bytes()).expect("accepted Chat frame is JSON");
+        let value = acyclic_harness_provider_response::json(frame.as_bytes())
+            .expect("accepted Chat frame is JSON");
         if let Some(usage) = value.get("usage").and_then(serde_json::Value::as_object) {
             expected
                 .get_or_insert_with(serde_json::Map::new)
@@ -80,7 +86,7 @@ pub fn assert_stream_invariants(input: &[u8]) {
     if kind == b'H' {
         if let Ok(header) = std::str::from_utf8(input) {
             let clock = || std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-            let wait = crate::retry::retry_after_at(header, clock);
+            let wait = acyclic_harness_core::http::retry_after_at(header, clock);
             let digits = header.trim();
             if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
                 assert!(wait.is_some());
@@ -88,7 +94,7 @@ pub fn assert_stream_invariants(input: &[u8]) {
             if let Some(wait) = wait {
                 // Normalize either accepted form to delta-seconds without losing its delay.
                 assert_eq!(
-                    crate::retry::retry_after_at(&wait.as_secs().to_string(), clock),
+                    acyclic_harness_core::http::retry_after_at(&wait.as_secs().to_string(), clock),
                     Some(wait)
                 );
             }
@@ -134,7 +140,8 @@ pub fn assert_stream_invariants(input: &[u8]) {
             Adapter::Gemini,
         ][usize::from(kind) % 4];
         assert!(
-            input_round_trip(adapter, input) || crate::json(input).is_err(),
+            input_round_trip(adapter, input)
+                || acyclic_harness_provider_response::json(input).is_err(),
             "production-accepted input skipped fuzz validation"
         );
         return;
@@ -321,12 +328,12 @@ pub fn assert_stream_invariants(input: &[u8]) {
 }
 
 pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
-    let Ok(body) = crate::json(input) else {
+    let Ok(body) = acyclic_harness_provider_response::json(input) else {
         return false;
     };
     let before = crate::validate_input(adapter, &body);
     let encoded = serde_json::to_vec(&body).unwrap();
-    let replay = crate::json(&encoded).unwrap();
+    let replay = acyclic_harness_provider_response::json(&encoded).unwrap();
     assert_eq!(body, replay, "input JSON round trip changed literal values");
     assert_eq!(before, crate::validate_input(adapter, &replay));
     true
@@ -392,7 +399,7 @@ mod properties {
         #[test]
         fn sse_framing_round_trips_unicode_data(lines in prop::collection::vec("[^\\r\\n]{0,64}", 1..8), width in 1usize..64) {
             let input: String = lines.iter().map(|line| format!("data: {line}\n")).chain(["\n".into()]).collect();
-            let chunks = input.as_bytes().chunks(width).map(|part| Ok(Bytes::copy_from_slice(part)));
+            let chunks = input.as_bytes().chunks(width).map(|part| Ok::<_, acyclic_harness_core::Error>(Bytes::copy_from_slice(part)));
             let frames = futures::executor::block_on(sse::decode(Box::pin(futures::stream::iter(chunks)), 4096).try_collect::<Vec<_>>()).unwrap();
             prop_assert_eq!(frames, vec![lines.join("\n")]);
         }
@@ -467,7 +474,7 @@ mod properties {
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result-request").as_slice(),
         ] {
             assert_eq!(&input[..2], b"V\x02");
-            let body = crate::json(&input[2..]).unwrap();
+            let body = acyclic_harness_provider_response::json(&input[2..]).unwrap();
             assert!(crate::validate_input(Adapter::Chat, &body).is_empty());
             assert_stream_invariants(input);
             for marker in [
@@ -485,7 +492,7 @@ mod properties {
                     input_round_trip(Adapter::Chat, mutated.as_bytes()),
                     "accepted captured request skipped input validation"
                 );
-                let value = crate::json(mutated.as_bytes()).unwrap();
+                let value = acyclic_harness_provider_response::json(mutated.as_bytes()).unwrap();
                 assert_eq!(
                     crate::validate_input(Adapter::Chat, &value),
                     crate::validate_input(Adapter::Chat, &body),
@@ -597,9 +604,12 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
 /// every original item without inserting, dropping or reordering content.
 pub fn assert_response_sequence(input: &[u8]) {
     use crate::projection::native_reasoning::replay_responses;
-    let Ok(body) = crate::json(input) else { return };
+    let Ok(body) = acyclic_harness_provider_response::json(input) else {
+        return;
+    };
     let errors = crate::validate_input(Adapter::Responses, &body);
-    let replay = crate::json(&serde_json::to_vec(&body).unwrap()).unwrap();
+    let replay =
+        acyclic_harness_provider_response::json(&serde_json::to_vec(&body).unwrap()).unwrap();
     assert_eq!(body, replay);
     assert_eq!(errors, crate::validate_input(Adapter::Responses, &replay));
     let Some(items) = body["input"].as_array() else {
@@ -652,7 +662,8 @@ pub fn assert_turns(input: &[u8]) {
         return;
     };
     let adapter = [Adapter::Anthropic, Adapter::Gemini][usize::from(selector % 2)];
-    let Ok(serde_json::Value::Array(messages)) = crate::json(input) else {
+    let Ok(serde_json::Value::Array(messages)) = acyclic_harness_provider_response::json(input)
+    else {
         return;
     };
     let errors = crate::validate_input(adapter, &turn_body(adapter, &messages));

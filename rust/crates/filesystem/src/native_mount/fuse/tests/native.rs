@@ -242,7 +242,7 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
         "revocation after the real remove cannot report success"
     );
     assert!(around.lookup(&path)?.is_none(), "no fictitious rollback");
-    let first_prefix = original.receipt();
+    let first_prefix = original.receipt().unwrap();
     let second = name("second-write-authority");
     let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&second, FileMetadata::default(), None, work)
@@ -268,9 +268,9 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
         retained.0,
         crate::NativeMountError::CallbackDenied { .. }
     ));
-    assert_eq!(retained.1, first_prefix);
+    assert_eq!(retained.1.unwrap(), first_prefix);
     assert_eq!(
-        core.completed_callback_work(),
+        core.completed_callback_work().unwrap(),
         crate::WorkCounters::UNCHARGED
     );
     Ok(())
@@ -323,7 +323,7 @@ fn failed_completion_keeps_its_fuse_failure_and_work_prefix()
         ))
     });
     let prefix = failure.as_ref().expect_err("failed completion").1;
-    assert_ne!(prefix, crate::WorkCounters::UNCHARGED);
+    assert_ne!(prefix.unwrap(), crate::WorkCounters::UNCHARGED);
     assert_eq!(core.finish(failure), Err(libc::ENOENT));
     let retained = core
         .take_handler_failure()
@@ -378,11 +378,11 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
                 .is_some()
         );
         assert_eq!(
-            core.completed_callback_work(),
+            core.completed_callback_work().unwrap(),
             crate::WorkCounters::UNCHARGED
         );
     }
-    assert!(original.receipt().bytes_copied != 0);
+    assert!(original.receipt().unwrap().bytes_copied != 0);
     let missing = core.request(|work| {
         let path = super::super::fuse_clone_path(&name("authentically-absent"), work)?;
         source
@@ -406,7 +406,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     let Err(failure) = result else {
         return Err("post-effect cancellation was reported as success".into());
     };
-    assert_ne!(failure.1, crate::WorkCounters::UNCHARGED);
+    assert_ne!(failure.1.unwrap(), crate::WorkCounters::UNCHARGED);
     let prefix = failure.1;
     assert_eq!(
         core.finish::<Option<MountLookup>>(Err(failure)),
@@ -419,8 +419,8 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     assert!(core.handler_failed.load(Ordering::Acquire));
     assert_eq!(retained.1, prefix);
     assert_eq!(
-        core.completed_callback_work(),
-        missing_prefix.checked_add(prefix)?
+        core.completed_callback_work().unwrap(),
+        missing_prefix.unwrap().checked_add(prefix.unwrap())?
     );
     assert!(
         around.lookup(&path)?.is_none(),
@@ -470,32 +470,6 @@ pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellati
     )
     .map_err(|(cause, _)| cause)?;
     session.stop_with_meter(&cleanup)?;
-    Ok(())
-}
-
-#[test]
-pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
--> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources(posix_config())?;
-    let path = name("copy-denied");
-    crate::native_mount::adapter::boundary(source.cancellation(), |work| {
-        source.create_file(&path, FileMetadata::default(), None, work)
-    })?;
-    let opened = source.open_file(&path)?;
-    opened.write_range(0, Bytes::from_static(b"original"))?;
-    let cancellation = crate::CancellationToken::new();
-    let mut budget = FINITE_HANDLER_POLICY;
-    budget.bytes_copied = 0;
-    let failure = crate::native_mount::run_native_mount_handler(budget, &cancellation, |work| {
-        let bytes = crate::native_mount::fuse::fuse_source_chunk(b"replacement", work)?;
-        opened
-            .write_range_with_meter(0, bytes, false, work)
-            .map_err(crate::NativeMountError::Source)
-    })
-    .expect_err("zero copied-byte authority must refuse the packet before source mutation");
-    assert_eq!(failure.1.bytes_copied, 0);
-    assert_eq!(failure.1.backend_write_operations, 0);
-    assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");
     Ok(())
 }
 
@@ -683,7 +657,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
         state: Arc::clone(&state),
         invalidator: None,
     };
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     cancellation.cancel();
     drop(facade);
     terminal.recv_timeout(std::time::Duration::from_secs(10))?;
@@ -699,7 +673,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
             .is_some_and(crate::native_mount::NativeMountRetirement::is_retired)
     );
     assert_eq!(
-        original.receipt().allocation_operations,
+        original.receipt().unwrap().allocation_operations,
         before.allocation_operations,
         "last facade drop and the real keeper terminal phase allocate no new controls"
     );
