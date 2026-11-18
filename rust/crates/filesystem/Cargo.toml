@@ -56,6 +56,7 @@ acyclic-fs-work = "observations"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
+memory_authority = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "bytes", "tokio"]
 mount_routing = ["acyclic_fs", "acyclic_fs_work", "tokio"]
 checkout_cancellation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_content = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
@@ -209,6 +210,10 @@ path = "tests/checkout_profiles.rs"
 [[test]]
 name = "mount_routing"
 path = "tests/mount_routing.rs"
+
+[[test]]
+name = "memory_authority"
+path = "tests/memory_authority.rs"
 
 [[test]]
 name = "checkout_cancellation"
