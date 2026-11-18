@@ -617,13 +617,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Ac
 
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
-        format!(
-            "{}p/{}/{}.{}",
-            self.state.prefix,
-            digest.hex_prefix(),
-            digest.to_hex(),
-            hex::encode(version)
-        )
+        self.sharded_key('p', digest, format_args!(".{}", hex::encode(version)))
     }
 
     /// This account's revisions, opening them on first use.
@@ -855,12 +849,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     pub(crate) fn envelope_key(&self, digest: &Digest) -> String {
-        format!(
-            "{}e/{}/{}",
-            self.state.prefix,
-            digest.hex_prefix(),
-            digest.to_hex()
-        )
+        self.sharded_key('e', digest, "")
+    }
+
+    fn sharded_key(&self, kind: char, digest: &Digest, suffix: impl std::fmt::Display) -> String {
+        let hex = digest.to_hex();
+        format!("{}{kind}/{}/{hex}{suffix}", self.state.prefix, &hex[..2])
     }
 
     fn root_prefix(&self, root: &RootId) -> String {
