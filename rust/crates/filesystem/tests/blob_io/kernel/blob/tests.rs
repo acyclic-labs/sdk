@@ -676,3 +676,61 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
     assert!(failure.work()?.peak_allocation_bytes <= maximum);
     Ok(())
 }
+
+#[tokio::test]
+async fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let mut chunks = Vec::new();
+    for bytes in [b"abc".as_slice(), b"def".as_slice(), b"ghi".as_slice()] {
+        chunks.push(
+            put_object(
+                &store,
+                ObjectKind::BlobChunk,
+                OwnedBytes::from(bytes.to_vec()),
+            )
+            .await?,
+        );
+    }
+    let [first, second, third] = chunks.as_slice() else {
+        return Err("expected exactly three chunks".into());
+    };
+    let page = BlobPage {
+        first_offset: 0,
+        end_offset: 9,
+        node: BlobNode::Leaf(vec![
+            BlobChunkRef {
+                first_offset: 0,
+                end_offset: 3,
+                chunk: *first,
+            },
+            BlobChunkRef {
+                first_offset: 3,
+                end_offset: 6,
+                chunk: *second,
+            },
+            BlobChunkRef {
+                first_offset: 6,
+                end_offset: 9,
+                chunk: *third,
+            },
+        ]),
+    };
+    let root = put_blob_page(&store, &page, 8).await?;
+    let read = (read_blob_range(
+        &store,
+        root,
+        ByteRange {
+            offset: 1,
+            length: 7,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    ))
+    .await?;
+    assert_eq!(read.bytes.as_ref(), b"bcdefgh");
+    assert_eq!(read.work.backend_read_operations, 2);
+    assert_eq!(read.work.object_probes, 4);
+    Ok(())
+}
