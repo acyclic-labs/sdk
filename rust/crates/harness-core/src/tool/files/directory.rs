@@ -236,7 +236,12 @@ pub(super) fn project(
     if let Some(after) = after {
         decode_cursor(after, work)?;
     }
-    if let Some(next) = &result.next {
+    if let Some(next) = &result.next
+        && result
+            .entries
+            .last()
+            .is_none_or(|entry| entry.cursor != *next)
+    {
         decode_cursor(next, work)?;
     }
     let mut previous: Option<&str> = None;
