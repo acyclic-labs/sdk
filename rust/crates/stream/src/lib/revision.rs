@@ -396,7 +396,7 @@ impl RevisionTracker {
     ))]
     pub(crate) fn raise_uncovered(
         &self,
-        at_least: &mut Vec<crate::wire::Revision>,
+        at_least: &mut Vec<acyclic_stream_wire::wire::Revision>,
         served: &RevisionCut,
     ) -> Result<(), StreamError> {
         let mut positions = std::collections::BTreeMap::new();

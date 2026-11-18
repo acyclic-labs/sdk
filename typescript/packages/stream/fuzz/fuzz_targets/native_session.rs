@@ -38,10 +38,10 @@ fn check(bytes: &[u8]) -> Result<(), String> {
         );
         assert_eq!(limits.message_bytes(), bytes.len());
     }
-    let generated = acyclic_stream::wire::SessionFrame {
+    let generated = acyclic_stream_wire::wire::SessionFrame {
         channel_id: u64::from(bytes.first().copied().unwrap_or_default()),
-        body: Some(acyclic_stream::wire::session_frame::Body::Window(
-            acyclic_stream::wire::SessionWindow {
+        body: Some(acyclic_stream_wire::wire::session_frame::Body::Window(
+            acyclic_stream_wire::wire::SessionWindow {
                 bytes: bytes.len() as u64,
                 frames: 1,
             },

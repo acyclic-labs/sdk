@@ -1,6 +1,7 @@
 //! Filesystem changes use the ordinary credential-bound record channel.
 use acyclic_auth::{contract::*, testing as signed};
-use acyclic_stream::{StreamError, session as engine, wire};
+use acyclic_stream::{StreamError, session as engine};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt, channel::mpsc};
 use prost::Message;

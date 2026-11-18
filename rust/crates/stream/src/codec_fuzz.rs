@@ -104,11 +104,11 @@ pub fn grpc_status(bytes: &[u8]) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn session_admission() -> crate::wire::SessionFrame {
+fn session_admission() -> acyclic_stream_wire::wire::SessionFrame {
     static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();
-    crate::wire::SessionFrame {
-        body: Some(crate::wire::session_frame::Body::Hello(
-            crate::wire::SessionHello {
+    acyclic_stream_wire::wire::SessionFrame {
+        body: Some(acyclic_stream_wire::wire::session_frame::Body::Hello(
+            acyclic_stream_wire::wire::SessionHello {
                 version: crate::session::VERSION,
                 client_id: bytes::Bytes::from_static(b"codec"),
                 destination_node: "node".into(),
@@ -119,7 +119,7 @@ fn session_admission() -> crate::wire::SessionFrame {
                         .get_or_init(crate::session::testing::credential)
                         .clone(),
                 ],
-                interest: Some(crate::wire::SessionInterest {
+                interest: Some(acyclic_stream_wire::wire::SessionInterest {
                     revision: 1,
                     ..Default::default()
                 }),
@@ -142,9 +142,10 @@ pub fn session_seed() -> Vec<u8> {
 /// Hello. Closing the request producer must end every source without a timer.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn session(bytes: &[u8]) -> bool {
-    use crate::{MemoryStream, session, wire::session_frame::Body};
+    use crate::{MemoryStream, session};
+    use acyclic_stream_wire::wire::session_frame::Body;
     use futures::{StreamExt as _, stream};
-    let Ok(frame) = crate::wire::SessionFrame::decode(bytes) else {
+    let Ok(frame) = acyclic_stream_wire::wire::SessionFrame::decode(bytes) else {
         return true;
     };
     let version = match &frame.body {
@@ -189,7 +190,7 @@ pub(crate) fn command(bytes: &[u8]) -> bool {
     }
 }
 
-fn record(value: &crate::wire::Record) -> bool {
+fn record(value: &acyclic_stream_wire::wire::Record) -> bool {
     let Ok(followed) = crate::StreamPath::new("codec/events") else {
         return false;
     };
@@ -318,7 +319,7 @@ pub fn check(bytes: &[u8]) -> bool {
     let Ok(origin) = crate::StreamPath::new("codec/events") else {
         return false;
     };
-    if let Ok(value) = crate::wire::AppendRecord::decode(bytes)
+    if let Ok(value) = acyclic_stream_wire::wire::AppendRecord::decode(bytes)
         && let Ok(record) = crate::wire_codec::append_record(value)
         && (crate::wire_codec::append_record(crate::wire_codec::append_record_wire(record.clone()))
             .map_err(|error| error.category())
@@ -335,12 +336,12 @@ pub fn check(bytes: &[u8]) -> bool {
     {
         return false;
     }
-    if let Ok(value) = crate::wire::Record::decode(bytes)
+    if let Ok(value) = acyclic_stream_wire::wire::Record::decode(bytes)
         && !record(&value)
     {
         return false;
     }
-    if let Ok(value) = crate::wire::ReadResponse::decode(bytes)
+    if let Ok(value) = acyclic_stream_wire::wire::ReadResponse::decode(bytes)
         && let Ok(records) = crate::wire_codec::read_response_records(value)
         && (records.iter().any(|value| !record(value))
             || crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
@@ -650,7 +651,7 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     ] {
         let entries = keys
             .iter()
-            .map(|key| crate::wire::ChangeEntry {
+            .map(|key| acyclic_stream_wire::wire::ChangeEntry {
                 key: bytes::Bytes::copy_from_slice(key),
                 operation: "write".into(),
                 metadata: bytes::Bytes::from_static(b"metadata"),
@@ -684,7 +685,8 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
 }
 
 fn projection_seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
-    use crate::{AppendRecord, Attribute, RecordHeaders, wire, wire_codec};
+    use crate::{AppendRecord, Attribute, RecordHeaders, wire_codec};
+    use acyclic_stream_wire::wire;
     let changes = wire::ChangeRecord {
         context: bytes::Bytes::from_static(b"publication"),
         entries: [b"file/a", b"file/b", b"file/c"]

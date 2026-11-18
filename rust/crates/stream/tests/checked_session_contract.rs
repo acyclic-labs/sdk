@@ -1,8 +1,9 @@
 //! Atomic follow preconditions and legacy-peer confirmation compatibility.
 use acyclic_stream::{
-    CommitId, StreamCategory, wire,
+    CommitId, StreamCategory,
     wire_codec::session::{confirm_follow, preceding_follow, record_anchor, record_cursor},
 };
+use acyclic_stream_wire::wire;
 use proptest::prelude::*;
 use prost::Message;
 mod checks {

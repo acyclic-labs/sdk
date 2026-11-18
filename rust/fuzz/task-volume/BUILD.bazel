@@ -32,6 +32,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness:acyclic_harness",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//prost-0.14.4",

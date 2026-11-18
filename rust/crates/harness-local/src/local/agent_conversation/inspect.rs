@@ -6,7 +6,8 @@ use crate::{
     executor::{ContextUsage, ModelUsageTotals, ToolUsage, UsageTotal, WaitUsage},
 };
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply};
-use acyclic_stream::{FollowFilter, FollowRequest, RecordStream, StreamError, wire};
+use acyclic_stream::{FollowFilter, FollowRequest, RecordStream, StreamError};
+use acyclic_stream_wire::wire;
 use futures::TryStreamExt as _;
 use serde::Serialize;
 use std::{collections::BTreeMap, sync::Arc};

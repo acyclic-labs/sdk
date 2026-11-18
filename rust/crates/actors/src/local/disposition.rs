@@ -93,7 +93,7 @@ struct InputV1 {
     #[prost(string, tag = "4")]
     source: String,
     #[prost(message, optional, tag = "5")]
-    input: Option<acyclic_stream::wire::Record>,
+    input: Option<acyclic_stream_wire::wire::Record>,
     #[prost(bytes = "vec", tag = "6")]
     cause: Vec<u8>,
 }

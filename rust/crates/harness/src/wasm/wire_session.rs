@@ -2,7 +2,8 @@
 
 use super::optional_from_js;
 use acyclic_harness_client::{DemandPolicy, StreamView, ViewDemand, WireSession, WireSessionError};
-use acyclic_stream::{StreamPath, WasmStream, wire};
+use acyclic_stream::{StreamPath, WasmStream};
+use acyclic_stream_wire::wire;
 use js_sys::{Array, JsString, Uint8Array};
 use prost::Message as _;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, task::Waker};

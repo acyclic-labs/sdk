@@ -256,8 +256,9 @@ impl JournalStream {
                 if retained.length() as usize > MAX_COMMAND_BYTES {
                     return Err(StreamError::LimitExceeded);
                 }
-                let authority = crate::wire::Revision::decode(retained.to_vec().as_slice())
-                    .map_err(unavailable)?;
+                let authority =
+                    acyclic_stream_wire::wire::Revision::decode(retained.to_vec().as_slice())
+                        .map_err(unavailable)?;
                 let authority = crate::wire_codec::revision_from_wire(&authority)?;
                 if authority.scope.as_bytes().is_empty() || authority.index != 0 {
                     return Err(StreamError::InvalidResponse);

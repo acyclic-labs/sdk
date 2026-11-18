@@ -165,7 +165,7 @@ mod tests {
             .ok_or("changes path encoding failed")?;
         Ok(acyclic_stream::StreamPath::new(text)?)
     }
-    use acyclic_stream::wire;
+    use acyclic_stream_wire::wire;
     #[test]
     fn volume_changes_subtree_checks_lossless_paths_and_appender_identity()
     -> Result<(), Box<dyn std::error::Error>> {

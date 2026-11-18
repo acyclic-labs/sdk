@@ -1,5 +1,6 @@
 use acyclic_stream::wire_codec::session::validate_follow;
-use acyclic_stream::{StreamCategory, wire, wire_codec::session::follow_sequence};
+use acyclic_stream::{StreamCategory, wire_codec::session::follow_sequence};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use prost::Message;
 use wire::{SessionDelivery, session_data::Item};

@@ -1,4 +1,5 @@
-use crate::{StreamError, StreamWatermarks, wire};
+use crate::{StreamError, StreamWatermarks};
+use acyclic_stream_wire::wire;
 
 /// Decodes an explicit accepted observation, rejecting legacy peers and
 /// impossible persistence claims instead of inferring durability from acceptance.

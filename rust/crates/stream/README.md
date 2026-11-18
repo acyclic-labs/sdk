@@ -272,7 +272,7 @@ Recovery rejects unknown or duplicate protobuf fields, duplicate retained identi
 
 The crash model permits a torn final append or header and a crash between durable snapshot installation and journal restart. A valid checksummed frame after an invalid frame indicates corruption and fails closed. Checksums detect damage; they do not authenticate a hostile storage device or prove arbitrary power-loss behavior.
 
-The [Rust API](https://docs.rs/acyclic-stream/latest/acyclic_stream/) and [v1 protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/stream/proto/stream/v1) are the sources for exact limits and commit behavior.
+The [Rust API](https://docs.rs/acyclic-stream/latest/acyclic_stream/) and [v1 protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/stream-wire/proto/stream/v1) are the sources for exact limits and commit behavior.
 
 Stream helpers require the caller's `IdempotencyKey` for every mutation. Conditional rejection stores no outcome and writes no journal frame; the same key may be retried with fresh conditions. Successful bindings remain fixed for the authority lifetime. After an uncertain completion, retry the exact request; an empty inspection alone does not prove that an in-flight request failed. `Tail { expected: 0 }` accepts absent and existing-empty paths; `Absent` requires absence.
 

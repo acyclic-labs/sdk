@@ -89,7 +89,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     while low < high {
         let middle = low + (high - low).div_ceil(2);
         let path = StreamPath::new("x".repeat(middle))?;
-        let wire = crate::wire::AppendRequest {
+        let wire = acyclic_stream_wire::wire::AppendRequest {
             path: path.to_string(),
             records: records
                 .iter()
@@ -113,7 +113,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     };
     assert!(validate_append_size(&request).is_ok());
     let next = StreamPath::new("x".repeat(low + 1))?;
-    let next_wire = crate::wire::AppendRequest {
+    let next_wire = acyclic_stream_wire::wire::AppendRequest {
         path: next.to_string(),
         records: request
             .records

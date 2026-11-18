@@ -1,5 +1,6 @@
 //! ALL/LATEST wire admission has an independent shrinking and fuzz oracle.
-use acyclic_stream::{StreamCategory, wire, wire_codec::session::follow_sequence};
+use acyclic_stream::{StreamCategory, wire_codec::session::follow_sequence};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use proptest::prelude::*;
 use prost::Message;

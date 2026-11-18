@@ -1,6 +1,7 @@
 //! Platform I/O for the shared session pool, without another session protocol.
 pub(crate) use crate::ProviderOwner as Shared;
-use crate::{BoxProviderFuture, BoxProviderStream, ProviderPlatform, StreamError, wire};
+use crate::{BoxProviderFuture, BoxProviderStream, ProviderPlatform, StreamError};
+use acyclic_stream_wire::wire;
 
 /// Canonical inbound frames, with the owning boundary's error contract.
 pub type Responses<E = StreamError> = BoxProviderStream<'static, Result<super::super::Frame, E>>;

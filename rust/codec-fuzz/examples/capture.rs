@@ -680,7 +680,8 @@ fn capture() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    use acyclic_stream::{wire, wire_codec::session::encode_grpc_frame};
+    use acyclic_stream::wire_codec::session::encode_grpc_frame;
+    use acyclic_stream_wire::wire;
     let frame = wire::SessionFrame {
         body: Some(wire::session_frame::Body::Window(wire::SessionWindow {
             bytes: 1024,

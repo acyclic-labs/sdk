@@ -86,7 +86,7 @@ fn parse_append(value: &Value) -> Result<AppendOutcome, StreamError> {
 }
 /// Parses the hosted spelling of a peer-issued revision.
 fn parse_revision(value: &Value) -> Result<crate::Revision, StreamError> {
-    crate::wire_codec::issued_from_wire(Some(crate::wire::Revision {
+    crate::wire_codec::issued_from_wire(Some(acyclic_stream_wire::wire::Revision {
         scope: parse_bytes(field(value, "scope")?)?,
         incarnation: parse_bytes(field(value, "incarnation")?)?,
         index: parse_u64(field(value, "index")?)?,

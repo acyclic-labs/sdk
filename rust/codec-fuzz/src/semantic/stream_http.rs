@@ -1,5 +1,6 @@
 //! The hosted response projection decodes binary input at its own boundary.
-use acyclic_stream::{http_response, wire};
+use acyclic_stream::http_response;
+use acyclic_stream_wire::wire;
 use prost::Message;
 
 fn value(bytes: &[u8]) -> serde_json::Value {

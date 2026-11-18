@@ -14,7 +14,8 @@ use super::{
     Transition, Trigger,
 };
 use crate::{addressing::ActorReference, domain};
-use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, wire_codec};
+use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire_codec};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 
 /// Fixed key of the encoded effect commit; publication supplies its own key.

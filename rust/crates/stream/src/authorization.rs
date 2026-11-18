@@ -6,10 +6,7 @@ use acyclic_auth::{
 
 /// Compiler-linked unary service admission. Raw RPC Read and the public bounded
 /// Session Follow are distinct operations with distinct admission.
-pub mod rpc {
-    use acyclic_auth::action as auth_action;
-    include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
-}
+use acyclic_stream_wire::rpc;
 
 const FOLLOW: MethodAuth<()> = MethodAuth {
     method: (),

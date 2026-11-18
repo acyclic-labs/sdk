@@ -14,7 +14,8 @@ use crate::{
 use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentSelection, ReadTarget, WireSessionError,
 };
-use acyclic_stream::{StreamPath, wire};
+use acyclic_stream::StreamPath;
+use acyclic_stream_wire::wire;
 
 /// What an observer sees, in commit order per stream.
 pub enum Event {

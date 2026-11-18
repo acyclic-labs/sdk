@@ -306,7 +306,7 @@ rust_test(
         "//rust/crates/inference:tree/proto",
         "//rust/crates/machines:tree/proto",
         "//rust/crates/objects:tree/proto",
-        "//rust/crates/stream:tree/proto",
+        "//rust/crates/stream-wire:tree/proto",
     ],
     tags = ["manual"],
 )

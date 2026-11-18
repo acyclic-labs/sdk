@@ -1991,9 +1991,9 @@ where
 {
     fn failure(
         &self,
-        subscription: &acyclic_stream::wire::SessionSubscription,
+        subscription: &acyclic_stream_wire::wire::SessionSubscription,
     ) -> Option<BoxProviderFuture<'static, StreamError>> {
-        use acyclic_stream::wire::session_subscription::Kind;
+        use acyclic_stream_wire::wire::session_subscription::Kind;
         let agent = match subscription.kind.as_ref()? {
             Kind::Follow(follow) if follow.until.is_none() => {
                 let path =

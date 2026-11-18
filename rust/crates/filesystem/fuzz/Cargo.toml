@@ -15,6 +15,7 @@ fuzz-targets = ["dep:libfuzzer-sys", "dep:acyclic-fs-native-contract"]
 
 [dependencies]
 acyclic-stream = { path = "../../stream" }
+acyclic-stream-wire = { path = "../../stream-wire" }
 acyclic-auth = { path = "../../auth" }
 prost.workspace = true
 acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }

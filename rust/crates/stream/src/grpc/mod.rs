@@ -22,8 +22,9 @@ use crate::wire_codec::{
 };
 use crate::{
     AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider,
 };
+use acyclic_stream_wire::wire;
 
 mod client;
 #[cfg(test)]

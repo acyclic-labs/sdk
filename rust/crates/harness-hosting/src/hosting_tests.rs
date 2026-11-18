@@ -399,7 +399,7 @@ mod machine_results;
 async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {
     use crate::conversation::{ContentAccess, ContentPublisher};
     use acyclic_harness_client::{CommandError, MAX_READ_BYTES, ReadTarget};
-    use acyclic_stream::wire as session_wire;
+    use acyclic_stream_wire::wire as session_wire;
     use futures::StreamExt as _;
 
     let bound = binding()?;

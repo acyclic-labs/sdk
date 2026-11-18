@@ -141,13 +141,14 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         cursor,
         Default::default(),
     )?;
-    let hidden_filter = acyclic_stream::FollowFilter::new(acyclic_stream::wire::SessionFilter {
-        attributes: vec![acyclic_stream::wire::AttributeMatch {
-            name: "unselected".into(),
-            any_of: vec![b"selected".as_slice().into()],
-        }],
-        ..Default::default()
-    })?;
+    let hidden_filter =
+        acyclic_stream::FollowFilter::new(acyclic_stream_wire::wire::SessionFilter {
+            attributes: vec![acyclic_stream_wire::wire::AttributeMatch {
+                name: "unselected".into(),
+                any_of: vec![b"selected".as_slice().into()],
+            }],
+            ..Default::default()
+        })?;
     let hidden = host
         .change_provider(streams.clone())?
         .follow(ResourceFollowRequest {

@@ -19,7 +19,8 @@ use acyclic_machines::{
     MachineContract, MachineId, MachineObservation, MachineState, Platform as MachinePlatform,
     SuspensionPolicy,
 };
-use acyclic_stream::{StreamProvider as _, wire as session_wire};
+use acyclic_stream::StreamProvider as _;
+use acyclic_stream_wire::wire as session_wire;
 use futures::StreamExt as _;
 use std::sync::Mutex;
 

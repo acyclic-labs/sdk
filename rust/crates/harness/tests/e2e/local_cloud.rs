@@ -116,7 +116,8 @@ impl Drop for Loopback {
 async fn loopback<P: acyclic_harness::store::JournalProvider + 'static>(
     provider: Arc<P>,
 ) -> TestResult<Loopback> {
-    use acyclic_stream::{grpc, session, wire};
+    use acyclic_stream::{grpc, session};
+    use acyclic_stream_wire::wire;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
     let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;

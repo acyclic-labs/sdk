@@ -1,4 +1,5 @@
-use crate::{RecordHeaders, StreamError, wire};
+use crate::{RecordHeaders, StreamError};
+use acyclic_stream_wire::wire;
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;

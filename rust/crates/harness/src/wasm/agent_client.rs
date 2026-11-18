@@ -130,7 +130,7 @@ impl WasmAgentClient {
                 Ok(())
             }
         })?;
-        let subscription = acyclic_stream::wire::SessionSubscription::decode(bytes.as_slice())
+        let subscription = acyclic_stream_wire::wire::SessionSubscription::decode(bytes.as_slice())
             .map_err(|cause| error("invalid_subscription", cause))?;
         self.client
             .borrow_mut()
@@ -276,7 +276,7 @@ impl WasmAgentClient {
                 }
             })?;
             subscriptions.push(
-                acyclic_stream::wire::SessionSubscription::decode(bytes.as_slice())
+                acyclic_stream_wire::wire::SessionSubscription::decode(bytes.as_slice())
                     .map_err(|cause| error("invalid_subscription", cause))?,
             );
         }

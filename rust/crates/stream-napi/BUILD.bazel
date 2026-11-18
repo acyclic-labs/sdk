@@ -63,6 +63,7 @@ rust_shared_library(
         ":build_script",
     ] + [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//futures-0.3.34",
@@ -100,6 +101,7 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//futures-0.3.34",
@@ -131,6 +133,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//parking_lot-0.13.0",
         "@sdk_crates//proptest-1.12.0",

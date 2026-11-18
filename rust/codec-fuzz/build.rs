@@ -92,9 +92,9 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
             false,
         ),
         (
-            "stream",
+            "stream-wire",
             &["acyclic.stream.v1"],
-            "acyclic_stream::wire",
+            "acyclic_stream_wire::wire",
             false,
         ),
         (

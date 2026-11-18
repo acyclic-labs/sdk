@@ -259,7 +259,7 @@ fn issued(metadata: &MetadataMap) -> Result<Option<Revision>, Error> {
             let bytes = value
                 .to_bytes()
                 .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
-            acyclic_stream::wire::Revision::decode(bytes)
+            acyclic_stream_wire::wire::Revision::decode(bytes)
                 .ok()
                 .and_then(|revision| revision_from_wire(&revision).ok())
                 .ok_or_else(|| wire::ErrorCode::Unavailable.into())

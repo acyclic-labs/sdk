@@ -2,7 +2,8 @@
 
 use crate::StreamProvider;
 use crate::StreamProviderExt as _;
-use crate::{StreamError, StreamPath, wire, wire_codec};
+use crate::{StreamError, StreamPath, wire_codec};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::stream::BoxStream;

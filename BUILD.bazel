@@ -283,8 +283,8 @@ proto_js(
     name = "workspace_acyclic_labs_stream_proto",
     schemas = {
         "//compatibility:proto/validation/v1/options.proto": "compatibility/proto/validation/v1/options.proto",
-        "//rust/crates/stream:proto/stream/v1/stream.proto": "rust/crates/stream/proto/stream/v1/stream.proto",
-        "//rust/crates/stream:proto/stream/v1/session.proto": "rust/crates/stream/proto/stream/v1/session.proto",
+        "//rust/crates/stream-wire:proto/stream/v1/stream.proto": "rust/crates/stream-wire/proto/stream/v1/stream.proto",
+        "//rust/crates/stream-wire:proto/stream/v1/session.proto": "rust/crates/stream-wire/proto/stream/v1/session.proto",
     },
 )
 

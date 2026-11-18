@@ -4,7 +4,8 @@ compile_error!(
 );
 
 pub use acyclic_stream::StreamError;
-use acyclic_stream::{StreamSelection, wire};
+use acyclic_stream::StreamSelection;
+use acyclic_stream_wire::wire;
 #[path = "../src/runtime/sync.rs"]
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};

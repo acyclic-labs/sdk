@@ -30,6 +30,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["native-javascript"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 napi = { workspace = true, features = ["tokio_rt"] }
 napi-derive.workspace = true
 futures.workspace = true
@@ -44,6 +45,7 @@ napi-build = "2.6.0"
 
 [dev-dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 parking_lot.workspace = true
 proptest.workspace = true
 async-trait.workspace = true

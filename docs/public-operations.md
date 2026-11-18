@@ -80,7 +80,7 @@ open_resource,release_resource,next}` in `control.rs` and `agents.rs` compose
 existing Session interests and local bounded projections. Likewise Session
 credential replacement, interest removal, flow credit, acknowledgements and
 streamed actor input are distinct protocol branches within
-`rust/crates/stream/proto/stream/v1/session.proto`, not new RPC methods.
+`rust/crates/stream-wire/proto/stream/v1/session.proto`, not new RPC methods.
 Machines Exec input/control frames and filesystem transaction operations also
 need branch coverage within their declared carriers. An RPC-level happy path
 alone does not cover those operations.

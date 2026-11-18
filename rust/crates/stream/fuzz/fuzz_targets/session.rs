@@ -1,10 +1,8 @@
 //! Checks production session codecs, credit accounting and follow-data contracts.
 #![no_main]
 
-use acyclic_stream::{
-    wire,
-    wire_codec::session::{consume_credit, grant_credit},
-};
+use acyclic_stream::wire_codec::session::{consume_credit, grant_credit};
+use acyclic_stream_wire::wire;
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 

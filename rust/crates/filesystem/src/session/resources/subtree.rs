@@ -1,7 +1,8 @@
 //! One indexed candidate selection and its lossless namespace boundary.
 use crate::kernel::NamespacePath;
 use crate::{VolumeConfig, VolumeId};
-use acyclic_stream::{FollowFilter, StreamError, wire};
+use acyclic_stream::{FollowFilter, StreamError};
+use acyclic_stream_wire::wire;
 
 pub(super) struct Selection {
     resource: String,

@@ -17,6 +17,7 @@ acyclic_test_support::counting_allocator!();
 use std::sync::Arc;
 
 use crate::OwnedBytes as Bytes;
+use acyclic_stream_wire::wire;
 use async_trait::async_trait;
 #[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
@@ -128,21 +129,6 @@ pub use local::replay_model::{
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
 
-/// Generated canonical Stream v1 protocol.
-#[allow(
-    missing_docs,
-    clippy::pedantic,
-    clippy::allow_attributes_without_reason,
-    reason = "generated prost and tonic bindings"
-)]
-pub mod wire {
-    // All session data variants have total equality, including repeated headers.
-    impl Eq for SessionData {}
-    include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
-}
-/// Canonical public descriptor set used by compatibility gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 #[cfg(not(target_arch = "wasm32"))]

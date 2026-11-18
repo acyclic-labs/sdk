@@ -1,7 +1,8 @@
 #![no_main]
 //! Preserve protobuf round trips and explicit acceptance/durability boundaries.
 
-use acyclic_stream::{StreamCategory, StreamWatermarks, wire, wire_codec::watermarks_from_wire};
+use acyclic_stream::{StreamCategory, StreamWatermarks, wire_codec::watermarks_from_wire};
+use acyclic_stream_wire::wire;
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 

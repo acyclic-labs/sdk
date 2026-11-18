@@ -14,7 +14,7 @@ test("descriptor checking rejects breaking changes to a secondary root and an im
       cpSync(proto, join(root, proto), { recursive: true });
     }
     for (const [relative, before, after, family] of [
-      ["stream/proto/stream/v1/session.proto", "string destination_node = 3;", "string destination_node = 99;", "stream"],
+      ["stream-wire/proto/stream/v1/session.proto", "string destination_node = 3;", "string destination_node = 99;", "stream"],
       ["filesystem-wire/proto/protocol/v1/protocol.proto", "string descriptor_digest = 2;", "string descriptor_digest = 99;", "filesystem"],
     ]) {
       const path = join(root, "rust/crates", relative);

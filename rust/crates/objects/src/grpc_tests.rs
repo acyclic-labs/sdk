@@ -397,7 +397,7 @@ async fn requested_minimum<T>(
         .ok_or("minimum missing")?
         .to_bytes()?;
     assert_eq!(
-        acyclic_stream::wire::Revision::decode(minimum)?,
+        acyclic_stream_wire::wire::Revision::decode(minimum)?,
         revision_to_wire(expected),
     );
     Ok(())

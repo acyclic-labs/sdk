@@ -212,7 +212,7 @@ impl Transport for JavaScriptTransport {
             let revision: Uint8Array = revision.dyn_into().map_err(|_| unavailable())?;
             let (revision, ()) = acyclic_stream::javascript_bytes::snapshot(&revision, |_| Ok(()))
                 .map_err(|error| original_error(&error))?;
-            let revision = acyclic_stream::wire::Revision::decode(Bytes::from(revision))
+            let revision = acyclic_stream_wire::wire::Revision::decode(Bytes::from(revision))
                 .map_err(|_| unavailable())?;
             Some(
                 acyclic_stream::wire_codec::revision_from_wire(&revision)

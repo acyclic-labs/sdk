@@ -26,8 +26,8 @@ impl Handler for IndexedInterests {
         } else {
             (b"watched/", b"watched0")
         };
-        acyclic_stream::FollowFilter::new(acyclic_stream::wire::SessionFilter {
-            keys: vec![acyclic_stream::wire::KeyRange {
+        acyclic_stream::FollowFilter::new(acyclic_stream_wire::wire::SessionFilter {
+            keys: vec![acyclic_stream_wire::wire::KeyRange {
                 start: Bytes::copy_from_slice(start),
                 end: Bytes::copy_from_slice(end),
             }],
