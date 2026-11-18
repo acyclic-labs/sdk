@@ -17,8 +17,10 @@ encoders; they are not claimed as captured service traffic.
 readable as raw wire data; semantic admission refuses its old format marker.
 It is a refusal fixture, not a migration input or supported reader version.
 
-Run `bazel run //rust/codec-fuzz:capture_example` from the repository root to
-produce fuzz seeds. The `corpus/SOURCES.tsv` records the producing call,
+From the SDK repository root, run `export ACYCLIC_TEST_SOURCE_ROOT="$PWD"`
+before using the Bazel commands below. Run
+`bazel run //rust/codec-fuzz:capture_example` to produce fuzz seeds.
+The `corpus/SOURCES.tsv` records the producing call,
 byte length and SHA-256. Run `bazel run //rust/codec-fuzz:replay_example` to
 validate those captured bytes without rewriting them. Never replace provider or external-tool
 output with manually authored fixtures.

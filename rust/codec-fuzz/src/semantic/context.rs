@@ -13,7 +13,7 @@ pub(super) fn seeds()
     }
     .encode_to_vec();
     validate_customer_wire("mutation_receipt", &receipt, &[], &[])
-        .map_err(|error| format!("mutation receipt seed admission failed: {error}; recovery: review semantic::context::seeds, then run cargo run --example capture"))?;
+        .map_err(|error| format!("mutation receipt seed admission failed: {error}; recovery: review semantic::context::seeds, then run sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example"))?;
     let mut outputs = vec![(
         "inference.customer.v1.MutationReceipt",
         "published",
@@ -71,7 +71,7 @@ pub(super) fn seeds()
         };
         let encoded = view.encode_to_vec();
         validate_customer_wire("context_view", &encoded, &view.revision, &[])
-            .map_err(|error| format!("Context {variant} seed admission failed: {error}; recovery: review semantic::context::seeds, then run cargo run --example capture"))?;
+            .map_err(|error| format!("Context {variant} seed admission failed: {error}; recovery: review semantic::context::seeds, then run sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example"))?;
         outputs.push(("inference.customer.v1.ContextView", variant, encoded));
     }
     Ok(outputs)

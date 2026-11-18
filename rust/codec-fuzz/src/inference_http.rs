@@ -68,13 +68,13 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
     for (index, route) in routes().iter().enumerate() {
         let input = DynamicMessage::new(route.method.input()).encode_to_vec();
         let request = acyclic_protobuf_json::encode(route.method.input(), &input)
-            .map_err(|error| format!("HTTP request producer failed for {}: {error:?}; recovery: bazel run //rust/codec-fuzz:capture_example", route.path))?;
+            .map_err(|error| format!("HTTP request producer failed for {}: {error:?}; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example", route.path))?;
         let output = DynamicMessage::new(route.method.output()).encode_to_vec();
         let response = http_codec::encode_http_response(&route.path, &output)?;
         // Both directions are positively readmitted before publication.
         http_codec::decode_http_request(&route.path, &request)?;
         acyclic_protobuf_json::decode(route.method.output(), &response, MAXIMUM_HTTP_JSON_BYTES)
-            .map_err(|error| format!("HTTP response producer failed for {}: {error:?}; recovery: bazel run //rust/codec-fuzz:capture_example", route.path))?;
+            .map_err(|error| format!("HTTP response producer failed for {}: {error:?}; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example", route.path))?;
         let prefix = u64::try_from(index)?
             .checked_mul(2)
             .ok_or("HTTP route selector overflow")?;
@@ -111,7 +111,7 @@ pub fn semantic_seeds(
                 wire.to_vec()
             } else {
                 let json = acyclic_protobuf_json::encode(descriptor, wire)
-                    .map_err(|error| format!("HTTP semantic producer failed for {}: {error:?}; recovery: bazel run //rust/codec-fuzz:capture_example", route.path))?;
+                    .map_err(|error| format!("HTTP semantic producer failed for {}: {error:?}; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example", route.path))?;
                 http_codec::decode_http_request(&route.path, &json)?;
                 json
             };

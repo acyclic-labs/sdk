@@ -77,7 +77,7 @@ answer oracle, for example:
 Supply `ACYCLIC_API_KEY` through the process environment, then run:
 
 ```sh
-bazel run //rust/crates/conformance:client-conformance -- --scenario scenario.json
+bazel run //rust/crates/conformance:client-conformance -- --scenario "$PWD/scenario.json"
 ```
 
 `--endpoint URL` overrides `ACYCLIC_ENDPOINT`, which overrides

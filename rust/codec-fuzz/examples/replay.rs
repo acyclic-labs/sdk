@@ -129,7 +129,7 @@ fn main() {
     let selected = arguments.next();
     let entry = arguments.next();
     let recovery = format!(
-        "bazel run //rust/codec-fuzz:replay_example -- {}",
+        "sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:replay_example -- {}",
         [selected.as_deref(), entry.as_deref()]
             .into_iter()
             .flatten()

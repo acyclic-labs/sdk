@@ -8,7 +8,7 @@ async fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!(
-                "STEP client-conformance failed: {error}; recovery: cargo run -p acyclic-conformance --features client-session --bin client-conformance -- [--endpoint URL] --scenario FILE"
+                "STEP client-conformance failed: {error}; recovery: bazel run //rust/crates/conformance:client-conformance -- [--endpoint URL] --scenario /absolute/path/to/scenario.json"
             );
             std::process::ExitCode::FAILURE
         }

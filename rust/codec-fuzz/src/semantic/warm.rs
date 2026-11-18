@@ -128,9 +128,9 @@ pub(super) fn seeds()
         let (retain, renew) = requests(&view);
         let encoded = view.encode_to_vec();
         validate_customer_wire("warm_context", &encoded, &view.context, &retain.encode_to_vec())
-            .map_err(|error| format!("warm retain seed admission failed: {error}; recovery: review semantic::warm::seeds, then run cargo run --example capture"))?;
+            .map_err(|error| format!("warm retain seed admission failed: {error}; recovery: review semantic::warm::seeds, then run sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example"))?;
         validate_customer_wire("warm_commitment", &encoded, &view.commitment, &renew.encode_to_vec())
-            .map_err(|error| format!("warm renew seed admission failed: {error}; recovery: review semantic::warm::seeds, then run cargo run --example capture"))?;
+            .map_err(|error| format!("warm renew seed admission failed: {error}; recovery: review semantic::warm::seeds, then run sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example"))?;
         outputs.extend([
             ("inference.customer.v1.WarmView", variant, encoded),
             (

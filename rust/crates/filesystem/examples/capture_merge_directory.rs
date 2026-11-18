@@ -54,7 +54,7 @@ fn emit(name: &str, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
 async fn main() {
     if let Err(error) = capture().await {
         eprintln!(
-            "step=merge-directory-capture; cause={error}; recovery: cargo run --locked -p acyclic-fs --no-default-features --example capture_merge_directory"
+            "step=merge-directory-capture; cause={error}; recovery: bazel run //rust/crates/filesystem:capture_merge_directory_example"
         );
         std::process::exit(1);
     }

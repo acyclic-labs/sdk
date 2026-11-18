@@ -103,13 +103,13 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         #[cfg(feature = "object-revisions")]
         "object_revisions" => assert!(acyclic_objects::grpc::check_revision_metadata(bytes)),
         #[cfg(not(feature = "object-revisions"))]
-        "object_revisions" => return Err("revision transport replay requires object-revisions; recovery: bazel run //rust/codec-fuzz:replay_example".into()),
+        "object_revisions" => return Err("revision transport replay requires object-revisions; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:replay_example".into()),
         #[cfg(feature = "storage-schedules")]
         "object_schedule" => {
             object_schedule::check(bytes).map_err(|error| error.to_string())?;
         }
         #[cfg(not(feature = "storage-schedules"))]
-        "object_schedule" => return Err("physical schedule replay requires storage-schedules; recovery: bazel run //rust/codec-fuzz:replay_example".into()),
+        "object_schedule" => return Err("physical schedule replay requires storage-schedules; recovery: sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:replay_example".into()),
         "ids" => ids(bytes),
         "auth" => auth(bytes),
         "identities" => identities(bytes),

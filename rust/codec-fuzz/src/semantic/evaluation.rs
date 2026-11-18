@@ -72,7 +72,7 @@ pub(super) fn seeds()
     };
     let encoded = view.encode_to_vec();
     validate_customer_wire("evaluation_view", &encoded, &view.evaluation_id, &related)
-        .map_err(|error| format!("evaluation pair seed admission failed: {error}; recovery: review semantic::evaluation::seeds, then run cargo run --example capture"))?;
+        .map_err(|error| format!("evaluation pair seed admission failed: {error}; recovery: review semantic::evaluation::seeds, then run sdk_root=$(git rev-parse --show-toplevel) && ACYCLIC_TEST_SOURCE_ROOT=\"$sdk_root\" bazel run //rust/codec-fuzz:capture_example"))?;
     Ok(vec![
         ("inference.customer.v1.EvaluationSpec", "admitted", related),
         ("inference.customer.v1.EvaluationView", "admitted", encoded),
