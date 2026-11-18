@@ -1,6 +1,6 @@
 use acyclic_fs::kernel::{
-    DecodeLimits, Extent, ExtentKind, ExtentPage, ExtentRangeRequest, ExtentReadError,
-    ExtentSeekRequest, ExtentSeekTarget, plan_extent_range, seek_extent,
+    DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage, ExtentRangeRequest, ExtentReadError,
+    ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent,
 };
 use acyclic_fs::{ByteRange, CancellationToken};
 use acyclic_fs_format::{
@@ -8,6 +8,8 @@ use acyclic_fs_format::{
     object_reference::{ObjectId, ObjectKind},
 };
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
+
+use std::task::{Context, Poll, Waker};
 
 use super::super::extent_objects::put_extent_page;
 use super::super::memory::memory_objects;
@@ -281,5 +283,345 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
     .ok_or("pre-cancelled sparse seek succeeded")?;
     assert!(matches!(failure.error, ExtentReadError::Cancelled));
     assert_eq!(*failure.work()?, WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
+async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let first = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 100,
+            kind: ExtentKind::Hole,
+        }]),
+        16,
+    )
+    .await?;
+    let second = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 100,
+            length: 100,
+            kind: ExtentKind::AllocatedZero,
+        }]),
+        16,
+    )
+    .await?;
+    let root = put_extent_page(
+        &store,
+        &ExtentPage::Internal(vec![
+            ExtentChild {
+                first: 0,
+                page: first,
+            },
+            ExtentChild {
+                first: 100,
+                page: second,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    let request = ExtentRangeRequest {
+        root,
+        file_size: 200,
+        range: ByteRange {
+            offset: 150,
+            length: 10,
+        },
+        maximum_spans: Some(1),
+        limits: DecodeLimits::default(),
+        budget: WorkBudget::UNBOUNDED,
+    };
+    let plan = plan_extent_range(&store, request, &CancellationToken::new()).await?;
+    assert_eq!(plan.work.page_reads, 2);
+    assert_eq!(
+        plan.spans,
+        vec![ExtentSlice {
+            offset: 150,
+            length: 10,
+            source_end: 200,
+            kind: ExtentKind::AllocatedZero,
+        }]
+    );
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let mut future = std::pin::pin!(plan_extent_range(&store, request, &cancelled));
+    let mut context = Context::from_waker(Waker::noop());
+    let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
+        return Err("pre-cancelled asynchronous extent planning remained pending".into());
+    };
+    let failure = result
+        .err()
+        .ok_or("pre-cancelled asynchronous extent planning unexpectedly succeeded")?;
+    assert!(matches!(failure.error, ExtentReadError::Cancelled));
+    assert_eq!(*failure.work()?, WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = memory_objects();
+    let first = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 100,
+            kind: ExtentKind::Hole,
+        }]),
+        16,
+    )
+    .await?;
+    let second = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 100,
+            length: 100,
+            kind: ExtentKind::Hole,
+        }]),
+        16,
+    )
+    .await?;
+    let content = ObjectId {
+        storage: None,
+        kind: ObjectKind::Blob,
+        digest: Digest::from_bytes([9; 32]),
+    };
+    let third = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 200,
+            length: 100,
+            kind: ExtentKind::Content {
+                object: content,
+                object_offset: 0,
+            },
+        }]),
+        16,
+    )
+    .await?;
+    let root = put_extent_page(
+        &store,
+        &ExtentPage::Internal(vec![
+            ExtentChild {
+                first: 0,
+                page: first,
+            },
+            ExtentChild {
+                first: 100,
+                page: second,
+            },
+            ExtentChild {
+                first: 200,
+                page: third,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    let data = seek_extent(
+        &store,
+        ExtentSeekRequest {
+            root,
+            file_size: 300,
+            offset: 10,
+            target: ExtentSeekTarget::Data,
+            limits: DecodeLimits::default(),
+            budget: WorkBudget::UNBOUNDED,
+        },
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(data.value, Some(200));
+    assert_eq!(data.work.page_reads, 4);
+    assert_eq!(data.work.backend_read_operations, 4);
+    let hole = seek_extent(
+        &store,
+        ExtentSeekRequest {
+            root,
+            file_size: 300,
+            offset: 250,
+            target: ExtentSeekTarget::Hole,
+            limits: DecodeLimits::default(),
+            budget: WorkBudget::UNBOUNDED,
+        },
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(hole.value, Some(300));
+    assert_eq!(hole.work.page_reads, 2);
+    let eof = seek_extent(
+        &store,
+        ExtentSeekRequest {
+            root,
+            file_size: 300,
+            offset: 300,
+            target: ExtentSeekTarget::Hole,
+            limits: DecodeLimits::default(),
+            budget: WorkBudget::UNBOUNDED,
+        },
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(eof.value, Some(300));
+    assert_eq!(eof.work.page_reads, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = memory_objects();
+    let leaf = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 1,
+            kind: ExtentKind::Hole,
+        }]),
+        16,
+    )
+    .await?;
+    let nested = put_extent_page(
+        &store,
+        &ExtentPage::Internal(vec![ExtentChild {
+            first: 0,
+            page: leaf,
+        }]),
+        16,
+    )
+    .await?;
+    let root = put_extent_page(
+        &store,
+        &ExtentPage::Internal(vec![ExtentChild {
+            first: 0,
+            page: nested,
+        }]),
+        16,
+    )
+    .await?;
+    let failure = plan_extent_range(
+        &store,
+        ExtentRangeRequest {
+            root,
+            file_size: 2,
+            range: ByteRange {
+                offset: 0,
+                length: 2,
+            },
+            maximum_spans: Some(2),
+            limits: DecodeLimits {
+                maximum_page_height: 3,
+                ..DecodeLimits::default()
+            },
+            budget: WorkBudget::UNBOUNDED,
+        },
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("forged nested child bounds succeeded")?;
+    assert!(matches!(
+        failure.error,
+        ExtentReadError::ChildBoundsMismatch
+    ));
+    // Children carry no end of their own: the leaf under the forged
+    // parent is what disagrees.
+    assert_eq!(failure.work()?.page_reads, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let leaf = put_extent_page(
+        &store,
+        &ExtentPage::Leaf(vec![Extent {
+            offset: 0,
+            length: 1,
+            kind: ExtentKind::Hole,
+        }]),
+        16,
+    )
+    .await?;
+    let one_child = put_extent_page(
+        &store,
+        &ExtentPage::Internal(vec![ExtentChild {
+            first: 0,
+            page: leaf,
+        }]),
+        16,
+    )
+    .await?;
+    let request = |root, limits| ExtentRangeRequest {
+        root,
+        file_size: 2,
+        range: ByteRange {
+            offset: 0,
+            length: 2,
+        },
+        maximum_spans: Some(2),
+        limits,
+        budget: WorkBudget::UNBOUNDED,
+    };
+    let bounds = plan_extent_range(
+        &store,
+        request(one_child, DecodeLimits::default()),
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("forged child bounds succeeded")?;
+    assert!(matches!(bounds.error, ExtentReadError::ChildBoundsMismatch));
+    assert_eq!(bounds.work()?.page_reads, 2);
+
+    let height = plan_extent_range(
+        &store,
+        request(
+            one_child,
+            DecodeLimits {
+                maximum_page_height: 1,
+                ..DecodeLimits::default()
+            },
+        ),
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("height-limited internal traversal succeeded")?;
+    assert!(matches!(height.error, ExtentReadError::HeightExceeded));
+    assert_eq!(height.work()?.page_reads, 1);
+
+    let alias_root = put_extent_page(
+        &store,
+        &ExtentPage::Internal(vec![
+            ExtentChild {
+                first: 0,
+                page: leaf,
+            },
+            ExtentChild {
+                first: 1,
+                page: leaf,
+            },
+        ]),
+        16,
+    )
+    .await?;
+    let alias = plan_extent_range(
+        &store,
+        request(alias_root, DecodeLimits::default()),
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("aliased extent page succeeded")?;
+    assert!(matches!(alias.error, ExtentReadError::Cycle));
+    assert_eq!(alias.work()?.page_reads, 2);
+
     Ok(())
 }
