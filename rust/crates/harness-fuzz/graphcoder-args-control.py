@@ -366,9 +366,9 @@ def run(target, seed, witness, *, capture=False, runs=0):
         environment["ACYCLIC_FUZZ_CORPUS"] = str(root / seed)
     if target == "native_stdin_binary":
         command = [
-            "cargo", "nextest", "run", "--locked", "-p", "acyclic-plugin",
-            "--test", "main", "--profile", "ci", "-E",
-            "test(native_input::native_input_failures_stop_before_workspace_effects)",
+            "bazel", "test", "//plugin:main", "--test_output=all",
+            "--test_filter=native_input::native_input_failures_stop_before_workspace_effects",
+            "--test_arg=--exact",
         ]
     else:
         command = [
