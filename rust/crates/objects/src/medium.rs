@@ -145,7 +145,8 @@ pub trait Medium: acyclic_stream::ProviderPlatform {
     /// A stale version returns false; another source is refused before effect.
     async fn remove_if(&self, observed: Observation<'_>) -> Result<bool, MediumError>;
     /// Lists up to `limit` keys under `prefix` strictly after `after`, in
-    /// ascending byte order, with their stored sizes.
+    /// ascending byte order, with their stored sizes. A short page means the
+    /// matching range is exhausted.
     async fn list(
         &self,
         prefix: &str,

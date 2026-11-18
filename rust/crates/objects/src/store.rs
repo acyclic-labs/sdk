@@ -483,9 +483,12 @@ impl<M: Medium> Pages<'_, M> {
             .list(&self.prefix, self.after.as_deref(), PAGE)
             .await
             .map_err(medium)?;
-        if page.len() > PAGE {
+        if page.len() > PAGE
+            || matches!((self.after.as_ref(), page.first()), (Some(after), Some((first, _))) if first <= after)
+        {
             return Err(corrupt());
         }
+        // A full page must also advance its continuation key.
         self.done = page.len() < PAGE;
         if let Some((last, _)) = page.last().filter(|_| !self.done) {
             if self.after.as_ref().is_some_and(|after| last <= after) {
@@ -493,7 +496,7 @@ impl<M: Medium> Pages<'_, M> {
             }
             self.after = Some(last.clone());
         }
-        Ok(Some(page))
+        Ok((!page.is_empty()).then_some(page))
     }
 }
 
