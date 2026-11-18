@@ -1,5 +1,6 @@
 """Exercise the original writer corpus against unchanged production-code oracles."""
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -8,14 +9,17 @@ package = Path(__file__).resolve().parents[1]
 root = package.parents[1]
 oracle = package / 'src/harness_resources.rs'
 oracle_digest = hashlib.sha256(oracle.read_bytes()).digest()
-command = ['cargo', 'run', '--locked', '--example', 'replay', '--',
+command = ['bazel', 'run', '//rust/codec-fuzz:replay_example', '--',
            'harness_codecs/resource-']
 
 
 def run(step, diagnostic=None):
     if hashlib.sha256(oracle.read_bytes()).digest() != oracle_digest:
         raise RuntimeError(f'{step}: fuzz oracle changed; recovery: git diff -- src/harness_resources.rs')
-    result = subprocess.run(command, cwd=package, capture_output=True, text=True)
+    result = subprocess.run(
+        command, cwd=root, env={**os.environ, 'ACYCLIC_TEST_SOURCE_ROOT': str(root)},
+        capture_output=True, text=True,
+    )
     print(result.stdout, end='', flush=True)
     print(result.stderr, end='', flush=True)
     failed_oracle = (
@@ -26,7 +30,10 @@ def run(step, diagnostic=None):
     if (diagnostic is not None and (result.returncode == 0 or not failed_oracle)) or (
         diagnostic is None and result.returncode != 0
     ):
-        raise RuntimeError(f'{step}: expected {diagnostic or "successful writer replay"}, exit={result.returncode}; recovery: cargo run --locked --example replay -- harness_codecs/resource-')
+        raise RuntimeError(
+            f'{step}: expected {diagnostic or "successful writer replay"}, exit={result.returncode}; '
+            f'recovery: run {" ".join(command)} from {root} with ACYCLIC_TEST_SOURCE_ROOT={root}'
+        )
     print(f'{step}: {"REJECTED" if diagnostic is not None else "PASS"}', flush=True)
 
 
