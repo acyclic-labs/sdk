@@ -260,7 +260,23 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     let fixture = Fixture::new();
     let metadata = fixture.metadata();
     let revision = "a".repeat(40);
-    let (release, archive) = fixture.archive(&revision, "");
+    let entry = fixture.stage_archive(&revision, "", false);
+    let embedded = [
+        "descriptor.bin",
+        "input.json",
+        "schema.proto",
+        "build.rs",
+        ".cargo/config.toml",
+    ];
+    let original = b"original archived input";
+    for root in [fixture.path(), entry.as_path()] {
+        for name in embedded {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, original).unwrap();
+        }
+    }
+    let (release, archive) = fixture.pack_archive(&entry);
     let verify = |revision: &str, release: &RegistryVersion, archive: &Path| {
         verify_archive(&metadata, fixture.path(), revision, release, archive)
     };
@@ -270,19 +286,21 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
         accepted.1.get("src/lib.rs"),
         Some(&crate::sha256_file(&fixture.path().join("src/lib.rs")).unwrap())
     );
-    fs::write(
-        fixture.path().join("src/lib.rs"),
-        "//! Divergent checkout Rust bytes.\n",
-    )
-    .unwrap();
-    assert!(verify(&revision, &release, &archive)
-        .unwrap_err()
-        .contains("source bytes differ"));
-    fs::copy(
-        fixture.path().join("historical-fixture-0.1.0/src/lib.rs"),
-        fixture.path().join("src/lib.rs"),
-    )
-    .unwrap();
+    for name in embedded {
+        assert!(accepted.1.contains_key(name), "{name}");
+    }
+    for source in ["src/lib.rs", "Cargo.toml"].into_iter().chain(embedded) {
+        let path = fixture.path().join(source);
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, b"changed checkout bytes").unwrap();
+        let error = verify(&revision, &release, &archive)
+            .expect_err("changed checkout source must be rejected");
+        assert!(
+            error.contains("source bytes differ") && error.ends_with(source),
+            "{source}: {error}"
+        );
+        fs::write(path, original).unwrap();
+    }
     let mut wrong = release.clone();
     wrong.checksum = "b".repeat(64);
     assert!(verify(&revision, &wrong, &archive)
@@ -291,13 +309,6 @@ fn archive_requires_checksum_vcs_cargo_identity_and_intact_sources() {
     assert!(verify(&"c".repeat(40), &release, &archive)
         .unwrap_err()
         .contains("revision differs"));
-    let manifest = fixture.path().join("Cargo.toml");
-    fs::write(&manifest, "different manifest").unwrap();
-    assert!(verify(&revision, &release, &archive)
-        .unwrap_err()
-        .contains("source bytes differ"));
-    let entry = fixture.path().join("historical-fixture-0.1.0");
-    fs::copy(entry.join("Cargo.toml.orig"), manifest).unwrap();
     fs::remove_file(entry.join("src/lib.rs")).unwrap();
     let (release, archive) = fixture.pack_archive(&entry);
     assert!(verify(&revision, &release, &archive)
@@ -428,44 +439,6 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     .unwrap_err()
     .contains("absent"));
 }
-#[test]
-fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
-    let fixture = Fixture::new();
-    let metadata = fixture.metadata();
-    let revision = "a".repeat(40);
-    let names = [
-        "descriptor.bin",
-        "input.json",
-        "schema.proto",
-        "build.rs",
-        ".cargo/config.toml",
-    ];
-    let entry = fixture.stage_archive(&revision, "", false);
-    let original = b"original archived input";
-    for root in [fixture.path(), entry.as_path()] {
-        for name in names {
-            let path = root.join(name);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, original).unwrap();
-        }
-    }
-    let (release, archive) = fixture.pack_archive(&entry);
-    let (_, files) =
-        verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap();
-    for name in names {
-        assert!(files.contains_key(name));
-        let path = fixture.path().join(name);
-        fs::write(&path, b"changed source input").unwrap();
-        let error =
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap_err();
-        assert!(
-            error.contains("source bytes differ") && error.ends_with(name),
-            "{name}: {error}"
-        );
-        fs::write(path, original).unwrap();
-    }
-}
-
 #[test]
 fn executed_examples_reject_library_build_script_readme_manifest_and_lock_mutations() {
     let fixture = Fixture::new();
