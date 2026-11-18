@@ -156,15 +156,23 @@ pub fn valid_environment_name(value: &str) -> bool {
 /// Frozen guest ABI version, independent of artifact codec versions.
 pub const GUEST_ABI_VERSION: u32 = 1;
 
-/// Render the portable guest ABI declarations before the host authoring types.
-pub fn typescript(config: &ts_rs::Config) -> String {
+#[derive(TS)]
+#[ts(
+    bound = "State: TS",
+    type = "{ with: (mutate: (state: State) => undefined) => void }"
+)]
+struct GuestState<State>(std::marker::PhantomData<State>);
+
+/// Render the complete guest authoring contract.
+pub fn typescript() -> String {
+    let config = ts_rs::Config::default();
     let mut output = format!(
         "// Generated from acyclic_actors::guest. Do not edit.\nexport const GUEST_ABI_VERSION = {GUEST_ABI_VERSION} as const;\n"
     );
     macro_rules! declarations {
         ($($ty:ty),+ $(,)?) => {$(
             output.push_str("export ");
-            output.push_str(&<$ty as TS>::decl(config));
+            output.push_str(&<$ty as TS>::decl(&config));
             output.push('\n');
         )+};
     }
@@ -194,6 +202,14 @@ pub fn typescript(config: &ts_rs::Config) -> String {
         ActorStateAlarm,
         ActorStateSeed,
         ActorStateCommit,
+        GuestState<()>,
+        GuestContext<(), ()>,
+        ActorDefinition<(), (), (), ()>,
     );
     output
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }

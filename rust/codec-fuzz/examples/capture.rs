@@ -1186,7 +1186,10 @@ fn capture_actors_selected(
     manifest: &mut String,
     selected: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
-    std::fs::write("corpus/actor-guest.ts", acyclic_actors::guest::typescript())?;
+    std::fs::write(
+        "corpus/actor-guest.ts",
+        acyclic_actors_guest_wire::typescript(),
+    )?;
     let mut found = false;
     for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
         if selected.is_none_or(|selected| selected == name) {

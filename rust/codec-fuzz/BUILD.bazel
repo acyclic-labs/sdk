@@ -1217,6 +1217,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-guest-wire:acyclic_actors_guest_wire",
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-format:acyclic_fs_format",
@@ -1274,6 +1275,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-guest-wire:acyclic_actors_guest_wire",
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-format:acyclic_fs_format",
@@ -1331,6 +1333,7 @@ rust_binary(
         ":build_script",
     ] + [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/actors-guest-wire:acyclic_actors_guest_wire",
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem-format:acyclic_fs_format",

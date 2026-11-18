@@ -1,6 +1,5 @@
 use super::GuestError;
 use std::cell::Cell;
-use ts_rs::TS;
 
 #[cfg(loom)]
 use loom::{
@@ -28,11 +27,6 @@ impl Drop for MutationScope {
 /// Shared guest state. Lock order: no nested mutation locks, including distinct states.
 /// The synchronous closure cannot borrow state into an async future. No lock survives
 /// the operation; other subscriptions and Invoke handlers may run across awaits.
-#[derive(TS)]
-#[ts(
-    bound = "State: TS",
-    type = "{ with: (mutate: (state: State) => undefined) => void }"
-)]
 pub struct GuestState<State> {
     value: Arc<Mutex<State>>,
 }

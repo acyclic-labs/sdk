@@ -8,7 +8,6 @@ pub use acyclic_actors_guest_wire::{
     RuntimeHandle, SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply,
     SocketTransport, WebSocketAutoResponse, WebSocketId, retry_key,
 };
-use ts_rs::{Config, TS};
 
 mod activation;
 pub use activation::GuestActivation;
@@ -56,25 +55,4 @@ pub fn negotiate_abi(version: u32) -> Result<(), GuestError> {
     } else {
         Err(GuestError::UnsupportedAbi(version))
     }
-}
-
-/// Generate one self-contained authoring contract directly from Rust declarations.
-pub fn typescript() -> String {
-    let config = Config::default();
-    let mut output = acyclic_actors_guest_wire::typescript(&config);
-    macro_rules! declarations {
-        ($($ty:ty),+ $(,)?) => {$(
-            output.push_str("export ");
-            output.push_str(&<$ty as TS>::decl(&config));
-            output.push('\n');
-        )+};
-    }
-    declarations!(
-        GuestState<()>, acyclic_actors_guest_wire::GuestContext<(), ()>, acyclic_actors_guest_wire::ActorDefinition<(), (), (), ()>);
-    output
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
 }

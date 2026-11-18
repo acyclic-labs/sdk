@@ -11,7 +11,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(parent) = std::path::Path::new(&output).parent() {
             std::fs::create_dir_all(parent)?;
             std::fs::write(parent.join("nominal.ts"), render_nominal())?;
-            std::fs::write(parent.join("guest.ts"), acyclic_actors::guest::typescript())?;
+            std::fs::write(
+                parent.join("guest.ts"),
+                acyclic_actors_guest_wire::typescript(),
+            )?;
             std::fs::write(
                 parent.join("live-update.ts"),
                 acyclic_actors_guest_wire::compatibility::typescript(),

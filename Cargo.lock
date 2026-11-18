@@ -263,6 +263,7 @@ name = "acyclic-codec-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-actors-guest-wire",
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-format",
