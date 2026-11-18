@@ -55,26 +55,6 @@ fn modes_exclude_exactly_their_conflicts() -> io::Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_nonblocking_acquisition_never_waits_for_another_operation() -> io::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("lock");
-    let lock = FileLock::new(open(&path)?);
-    // An OS operation owns the state mutex until its syscall completes.
-    let operation = lock
-        .held
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(
-        lock.try_lock(FileLockMode::Exclusive).unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
-    drop(operation);
-    lock.try_lock(FileLockMode::Exclusive)?;
-    assert!(lock.is_held());
-    Ok(())
-}
-
 /// An explicit release ends this handle's custody only: a lock retaken
 /// through another handle on the same description survives its drop.
 #[test]

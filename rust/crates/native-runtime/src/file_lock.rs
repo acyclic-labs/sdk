@@ -229,3 +229,27 @@ impl Drop for FileLock {
         let _ = self.unlock();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{FileLock, FileLockMode};
+    use std::io;
+
+    #[test]
+    fn a_nonblocking_acquisition_never_waits_for_another_operation() -> io::Result<()> {
+        let lock = FileLock::new(tempfile::tempfile()?);
+        // An OS operation owns the state mutex until its syscall completes.
+        let operation = lock
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            lock.try_lock(FileLockMode::Exclusive).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(operation);
+        lock.try_lock(FileLockMode::Exclusive)?;
+        assert!(lock.is_held());
+        Ok(())
+    }
+}
