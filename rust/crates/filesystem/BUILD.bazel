@@ -1652,6 +1652,7 @@ rust_test(
         "tests/support/workspace.rs",
         "tests/workspace_contracts.rs",
         "tests/workspace_contracts/tests/conditions.rs",
+        "tests/workspace_contracts/tests/discovery.rs",
         "tests/workspace_contracts/tests/generation.rs",
         "tests/workspace_contracts/tests/mod.rs",
         "tests/workspace_contracts/workspace.rs",
