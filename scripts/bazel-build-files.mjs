@@ -1179,18 +1179,17 @@ function moduleFile() {
   ].join("");
 }
 
+const builtRuntimeDeps = new Map(wasmSelections.filter(selection => selection.build)
+  .flatMap(selection => wasmNodeModules.get(selection.name) ?? []).filter(dep => dep.dir).map(dep => [dep.name, dep]));
+const runtimePackageNames = [...builtRuntimeDeps.values()].map(dep => dep.dir.split("/").at(-1));
 const harnessTools = new Set();
-const runtimeTools = new Set();
+let runtimeTools = [];
 if (wasm) {
   const {packageClosure} = await import(pathToFileURL(path.join(root,"scripts/package-closure.mjs")).href);
   const {bindingTools} = await import(pathToFileURL(path.join(root,"scripts/project-bindings.mjs")).href);
+  if (runtimePackageNames.length) runtimeTools = await bindingTools(new Set(runtimePackageNames));
   for (const tool of await bindingTools(packageClosure(root,"harness-actor"))) harnessTools.add(tool);
-  for (const selection of wasmSelections.filter(selection => selection.build)) {
-    for (const tool of await bindingTools(packageClosure(root, selection.outputPackage))) {
-      runtimeTools.add(tool);
-      harnessTools.add(tool);
-    }
-  }
+  for (const tool of runtimeTools) harnessTools.add(tool);
 }
 
 // Bodies first: rendering them records every file another package takes by label.
@@ -1285,9 +1284,6 @@ const runtimeFilegroups = [...workspaceRuntimeDeps.values()].map(dep => {
       }))],
     ])}` : "");
 }).join("\n");
-const builtRuntimeDeps = new Map(wasmSelections.filter(selection => selection.build)
-  .flatMap(selection => wasmNodeModules.get(selection.name) ?? []).filter(dep => dep.dir).map(dep => [dep.name, dep]));
-const runtimePackageNames = [...builtRuntimeDeps.values()].map(dep => dep.dir.split("/").at(-1));
 const runtimeBuild = runtimePackageNames.length ? `\n${rule("typescript_packages", [
   ["name", q("sdk_typescript_packages")],
   ["packages", list(runtimePackageNames)],
@@ -1298,7 +1294,7 @@ const runtimeBuild = runtimePackageNames.length ? `\n${rule("typescript_packages
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
     return generated ? [[generated.name, dep.dir.split("/").at(-1)]] : [];
   }))],
-  ["tools", starlarkDict([...runtimeTools].sort().map(label => [label, label]))],
+  ["tools", starlarkDict(runtimeTools.map(label => [label, label]))],
 ])}` + runtimePackageNames.map(name => `\n${rule("filegroup", [
   ["name", q(`sdk_typescript_${name}`)],
   ["srcs", list([":sdk_typescript_packages"])],
