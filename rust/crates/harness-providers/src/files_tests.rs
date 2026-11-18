@@ -81,7 +81,7 @@ impl ContentResidencyVerifier for Reader {
         &'a self,
         _file: &'a FileRef,
         _maximum: u64,
-        _ceiling: Option<&'a acyclic_harness::Capabilities>,
+        _ceiling: Option<&'a acyclic_harness_core::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
         BoundedContentFuture::new(io, || async move {
@@ -283,7 +283,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
             &'a self,
             file: &'a FileRef,
             maximum: u64,
-            ceiling: Option<&'a acyclic_harness::Capabilities>,
+            ceiling: Option<&'a acyclic_harness_core::Capabilities>,
             io: Option<&'a ContentIo>,
         ) -> Result<BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
             let reader = if file == &self.source {
@@ -954,7 +954,7 @@ fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> 
     provider.files.maximum_bytes = Some(4096);
     let file = file(body.as_bytes(), "text/plain")?;
     let policy = FileProjectionPolicy::ProjectInstructions(Box::new(
-        acyclic_harness::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
+        acyclic_harness_core::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
     ));
     let request = with_parts(
         &provider,

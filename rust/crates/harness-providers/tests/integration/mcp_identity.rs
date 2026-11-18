@@ -1,10 +1,10 @@
 //! Adapter output must retain one identity through hooks and approval admission.
 use super::TestResult;
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest, ModelRole,
     PreparedModelRequest,
 };
-use acyclic_harness::tool::ToolDefinition;
+use acyclic_harness_core::tool::ToolDefinition;
 use acyclic_harness_providers::{Credentials, Registry};
 use futures::TryStreamExt as _;
 use serde_json::Value;
@@ -111,11 +111,11 @@ async fn canonical_consumers(adapter: &str) -> TestResult {
             tools: vec![serde_json::from_value(serde_json::to_value(&definition)?)?],
             sampling: Default::default(),
         },
-        acyclic_harness::conversation::Limits::default(),
+        acyclic_harness_core::conversation::Limits::default(),
         None,
     )?;
     let dispatch = ModelDispatch {
-        operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+        operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
         step: 0,
         request_digest: request.request_digest(),
     };
@@ -132,7 +132,7 @@ async fn canonical_consumers(adapter: &str) -> TestResult {
         return Err(format!("expected one tool call, got {}", calls.len()).into());
     };
     assert_eq!(call.name, CANONICAL);
-    acyclic_harness::test_support::assert_canonical_tool_consumers(call).await?;
+    acyclic_harness_local::test_support::assert_canonical_tool_consumers(call).await?;
     Ok(())
 }
 #[tokio::test]

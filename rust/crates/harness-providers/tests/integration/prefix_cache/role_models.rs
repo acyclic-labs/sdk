@@ -1,7 +1,7 @@
 //! Full shared-host run: files select roles, model spawns commit their selection,
 //! both HTTP adapters execute, and a new host resumes the retained child.
 use super::*;
-use acyclic_harness::model::{ModelBinding, ModelResolver};
+use acyclic_harness_core::model::{ModelBinding, ModelResolver};
 
 struct Routes {
     /// The shared fixture catalog: the root's recorded binding serves its own
@@ -12,7 +12,7 @@ struct Routes {
 }
 
 impl Routes {
-    fn resolve(&self, selection: &str) -> acyclic_harness::Result<ModelBinding> {
+    fn resolve(&self, selection: &str) -> acyclic_harness_core::Result<ModelBinding> {
         match selection {
             "workers/luna" if self.misroute => self.roles.resolve("recorded/model"),
             "workers/luna" => Ok((self.child.model().clone(), self.child.clone())),
@@ -101,7 +101,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     spec.models.insert("luna".into(), model);
     catalog.register("workers".into(), spec)?;
     let routes = Arc::new(Routes {
-        roles: acyclic_harness::test_support::role_models((
+        roles: acyclic_harness_local::test_support::role_models((
             root_model.model().clone(),
             root_model.clone(),
         ))?,
@@ -111,13 +111,13 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     let root_default = "recorded/model";
     let selected = ["code", "spawn"].map(String::from);
     let make_executors = |root: Arc<acyclic_harness_providers::ResolvedModel>| -> TestResult<Arc<dyn TurnExecutors>> {
-        let tools = acyclic_harness::tools::registry(&selected, |_| false, Vec::new())?;
+        let tools = acyclic_harness_core::tools::registry(&selected, |_| false, Vec::new())?;
         let limits = Limits::default();
-        let grants = acyclic_harness::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
+        let grants = acyclic_harness_core::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
         let compaction = None;
-        let executors = acyclic_harness::filesystem::StockExecutors::new(
+        let executors = acyclic_harness_core::filesystem::StockExecutors::new(
             (root.model().clone(), root), tools, (limits, compaction),
-            Arc::new(acyclic_harness::filesystem::Grants(grants)),
+            Arc::new(acyclic_harness_core::filesystem::Grants(grants)),
         ).with_models(Arc::new(ModelResolver::new(root_default, {
             let routes = routes.clone();
             move |selection| routes.resolve(selection)
@@ -133,11 +133,11 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     );
     let make_bound = |executors| -> TestResult<_> {
         Ok(Bound::local_root(
-            acyclic_harness::core::AuthorityRoot::new(
+            acyclic_harness_core::core::AuthorityRoot::new(
                 "agents",
                 [7; 32],
-                acyclic_harness::core::Authority {
-                    kind: acyclic_harness::core::AggregateKind::Conversation,
+                acyclic_harness_core::core::Authority {
+                    kind: acyclic_harness_core::core::AggregateKind::Conversation,
                     id: "local".into(),
                 },
             ),
@@ -168,14 +168,16 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
             RootRequest {
                 peer: true,
                 agent: id.clone(),
-                fresh: vec![acyclic_harness::agent::WorkspaceEntry::initial_volume(
+                fresh: vec![acyclic_harness_core::agent::WorkspaceEntry::initial_volume(
                     acyclic_harness_core::agent::WorkspaceRole::Private,
                     PRIVATE_VOLUME.into(),
                     VolumeRef::new(
                         provider.clone(),
                         "agent-private".into(),
                         VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes(id.to_bytes())),
+                        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                            id.to_bytes(),
+                        )),
                         &mut None,
                     )?,
                 )],
@@ -189,9 +191,10 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         return Err("uncertain root".into());
     };
     bound.agents().drain(&root).await?;
-    let role = acyclic_harness::templates::root()?.model;
-    let inherited = acyclic_harness::templates::resolve_model(role.as_deref(), Some(root_default))
-        .map(str::to_owned);
+    let role = acyclic_harness_core::templates::root()?.model;
+    let inherited =
+        acyclic_harness_core::templates::resolve_model(role.as_deref(), Some(root_default))
+            .map(str::to_owned);
     assert_eq!(
         bound
             .agents()
@@ -204,7 +207,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     );
     // A private role file, read by the original authorized template reader.
     let state = bound.agents().state(&root).await?;
-    let authority = acyclic_harness::filesystem::agent_authority(
+    let authority = acyclic_harness_core::filesystem::agent_authority(
         bound.issuer(),
         bound.admission(),
         &root,
@@ -213,8 +216,8 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     )
     .await?;
     let files =
-        acyclic_harness::filesystem::FilesystemHost::new(filesystem.clone(), &provider, None)?;
-    let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+        acyclic_harness_core::filesystem::FilesystemHost::new(filesystem.clone(), &provider, None)?;
+    let writer = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
         files,
         authority.private.volume()?,
         &authority.verifier,
@@ -222,15 +225,15 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         1 << 20,
         None,
     )?;
-    use acyclic_harness::conversation::{ContentAccess, ContentPublisher};
-    writer.stage(acyclic_harness::OperationId::new(),"templates/worker/AGENT.md",
+    use acyclic_harness_core::conversation::{ContentAccess, ContentPublisher};
+    writer.stage(acyclic_harness_core::OperationId::new(),"templates/worker/AGENT.md",
         b"---\nversion: 1\ncontext: fork\nmay_spawn: [worker]\nmodel: workers/luna\n---\nCount carefully.",
         "text/markdown","AGENT.md",ContentAccess::default())?.await?;
     // A role without a model: an explicit request is its fallback, otherwise
     // the child inherits its parent's model.
     writer
         .stage(
-            acyclic_harness::OperationId::new(),
+            acyclic_harness_core::OperationId::new(),
             "templates/advisor/AGENT.md",
             b"---\nversion: 1\ncontext: fresh\nmay_spawn: []\n---\nAdvise.",
             "text/markdown",
@@ -286,8 +289,8 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         )
         .await?;
     bound.agents().drain(&root).await?;
-    if let acyclic_harness::agent::Phase::Done {
-        outcome: acyclic_harness::agent::AgentOutcome::Failed { message },
+    if let acyclic_harness_core::agent::Phase::Done {
+        outcome: acyclic_harness_core::agent::AgentOutcome::Failed { message },
     } = bound.agents().state(&root).await?.phase
     {
         return Err(format!(
@@ -337,12 +340,15 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         .profile
         .ok_or("child profile")?;
     assert_eq!(creation.model.as_deref(), Some("workers/luna"));
-    assert_eq!(creation.context, acyclic_harness::agent::SpawnContext::Fork);
+    assert_eq!(
+        creation.context,
+        acyclic_harness_core::agent::SpawnContext::Fork
+    );
     // Role changes cannot change an admitted child. Resume on a new composition
     // with a different root default; the child's stream remains authoritative.
     writer
         .stage(
-            acyclic_harness::OperationId::new(),
+            acyclic_harness_core::OperationId::new(),
             "templates/worker/AGENT.md",
             b"---\nversion: 1\ncontext: fork\nmay_spawn: []\nmodel: recorded/model\n---\nChanged.",
             "text/markdown",
@@ -365,14 +371,14 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     let resumed = make_bound(make_executors(root_model.clone())?)?;
     // The kid's own home is fresh, so its worker is the seed role: its model
     // wins, and without one descendants inherit their actual parent.
-    let role = acyclic_harness::templates::seed_model("worker")?;
+    let role = acyclic_harness_core::templates::seed_model("worker")?;
     assert_eq!(
         resumed
             .child_profile(&kid, "worker")
             .await?
             .model
             .as_deref(),
-        acyclic_harness::templates::resolve_model(role.as_deref(), creation.model.as_deref())
+        acyclic_harness_core::templates::resolve_model(role.as_deref(), creation.model.as_deref())
     );
     let body = resumed
         .stage_text(
@@ -400,7 +406,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     resumed.agents().drain(&kid).await?;
     assert!(matches!(
         resumed.agents().state(&kid).await?.phase,
-        acyclic_harness::agent::Phase::Idle
+        acyclic_harness_core::agent::Phase::Idle
     ));
     let sent = child.state.lock().unwrap_or_else(|p| p.into_inner());
     // The negative control binds every child to the root provider. It completes

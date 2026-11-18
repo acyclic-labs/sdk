@@ -1,6 +1,6 @@
 //! Requested aliases share one catalog and the existing protocol conformance transport.
 use super::*;
-use acyclic_harness::model::{
+use acyclic_harness_core::model::{
     ModelDispatch, ModelEvent, ModelMessage, ModelProvider as _, ModelRequest, ModelRole,
     PreparedModelRequest,
 };
@@ -9,7 +9,7 @@ use futures::TryStreamExt as _;
 struct Mixed(Vec<(String, Arc<Scripted>)>);
 
 impl HttpTransport for Mixed {
-    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, acyclic_harness::Result<()>> {
+    fn delay(&self, _: Duration) -> BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
         Box::pin(async { Ok(()) })
     }
     fn now(&self) -> Duration {
@@ -18,25 +18,29 @@ impl HttpTransport for Mixed {
     fn send(
         &self,
         request: HttpRequest,
-    ) -> BoxProviderFuture<'_, acyclic_harness::Result<HttpResponse>> {
+    ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
         Box::pin(async move {
             let route = self
                 .0
                 .iter()
                 .find(|(prefix, _)| request.url.starts_with(prefix))
-                .ok_or_else(|| acyclic_harness::Error::Invalid("unknown mixed route".into()))?;
+                .ok_or_else(|| {
+                    acyclic_harness_core::Error::Invalid("unknown mixed route".into())
+                })?;
             let provider = route
                 .0
                 .strip_prefix("https://")
                 .and_then(|url| url.split('.').next())
-                .ok_or_else(|| acyclic_harness::Error::Invalid("invalid mixed route".into()))?;
+                .ok_or_else(|| {
+                    acyclic_harness_core::Error::Invalid("invalid mixed route".into())
+                })?;
             let (header, value) = match provider {
                 "anthropic" => ("x-api-key", format!("fixture-{provider}")),
                 "google" => ("x-goog-api-key", format!("fixture-{provider}")),
                 _ => ("authorization", format!("Bearer fixture-{provider}")),
             };
             if request.headers.get(header) != Some(&value) {
-                return Err(acyclic_harness::Error::Invalid(
+                return Err(acyclic_harness_core::Error::Invalid(
                     "mixed provider credential route differs".into(),
                 ));
             }
@@ -102,7 +106,7 @@ async fn mixed_provider_catalog_executes_every_route_and_rejects_a_swapped_adapt
             None,
         )?;
         let dispatch = ModelDispatch {
-            operation_id: acyclic_harness::OperationId::from_bytes([42; 16]),
+            operation_id: acyclic_harness_core::OperationId::from_bytes([42; 16]),
             step: u32::try_from(index)?,
             request_digest: request.request_digest(),
         };

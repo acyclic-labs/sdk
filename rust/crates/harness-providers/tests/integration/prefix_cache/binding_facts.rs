@@ -1,7 +1,7 @@
 //! Identical manifests, different physical cwd, growing
 //! conversations and two forks from one pinned parent, through every encoder.
 use super::*;
-use acyclic_harness::{
+use acyclic_harness_core::{
     context::{Context, ContextInput, ContextManifest, ContextPipeline, EnvironmentFacts},
     model::{
         ModelDispatch, ModelMessage, ModelPrefix, ModelProvider as _, ModelRequest, ModelRole,
@@ -26,13 +26,13 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
             cache: Mutex::new(harness_mock_model::PromptCache::default().with_implicit_chat()),
         });
         let provider = resolve(adapter, PromptCache::Native, transport.clone())?;
-        let storage = acyclic_harness::filesystem::MemoryHarnessStorage::new(
-            acyclic_harness::AgentId::from_bytes([96; 16]),
+        let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+            acyclic_harness_core::AgentId::from_bytes([96; 16]),
             1 << 20,
         )
         .await?;
         let bindings = storage.content_bindings();
-        let tools = acyclic_harness::tools::registry(
+        let tools = acyclic_harness_core::tools::registry(
             &[],
             |_| false,
             vec![super::super::providers::echo_tool("cached.echo")],
@@ -71,7 +71,7 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
             let reference = manifest
                 .publish(
                     bindings.writer.as_deref().unwrap(),
-                    acyclic_harness::OperationId::from_bytes([agent + 1; 16]),
+                    acyclic_harness_core::OperationId::from_bytes([agent + 1; 16]),
                     &format!("manifests/{agent}.json"),
                     limits,
                 )
@@ -146,7 +146,7 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
                     None => PreparedModelRequest::prepare(local, limits, None)?,
                 };
                 let dispatch = ModelDispatch {
-                    operation_id: acyclic_harness::OperationId::from_bytes([agent + 1; 16]),
+                    operation_id: acyclic_harness_core::OperationId::from_bytes([agent + 1; 16]),
                     step: turn as u32,
                     request_digest: prepared.request_digest(),
                 };
@@ -179,7 +179,7 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
                 inherited = Some(
                     storage
                         .stage(
-                            acyclic_harness::OperationId::from_bytes([99; 16]),
+                            acyclic_harness_core::OperationId::from_bytes([99; 16]),
                             "prefix.json",
                             &bytes,
                             ModelPrefix::MEDIA_TYPE,

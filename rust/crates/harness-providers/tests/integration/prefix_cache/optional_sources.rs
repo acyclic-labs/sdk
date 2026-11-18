@@ -1,6 +1,6 @@
 //! Pinned execution inputs never become unsolicited provider context.
 use super::*;
-use acyclic_harness::{
+use acyclic_harness_core::{
     context::{ContextInput, ContextManifest, ContextPipeline, EnvironmentFacts},
     model::{ModelDispatch, ModelProvider as _, ModelRequest, ModelRole, PreparedModelRequest},
     tool::ToolRegistry,
@@ -40,8 +40,8 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                 Some("OPTIONAL_SOURCE_OFF"),
                 Some("OPTIONAL_SOURCE_ON"),
             ] {
-                let storage = acyclic_harness::filesystem::MemoryHarnessStorage::new(
-                    acyclic_harness::AgentId::new(),
+                let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+                    acyclic_harness_core::AgentId::new(),
                     1 << 20,
                 )
                 .await?;
@@ -49,7 +49,8 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                 let tools = ToolRegistry::default();
                 let mut manifest = ContextManifest::new(Default::default(), Vec::new(), &tools)?;
                 manifest.conventions.push(
-                    std::str::from_utf8(acyclic_harness::seed::file("AGENT.md").unwrap())?.into(),
+                    std::str::from_utf8(acyclic_harness_core::seed::file("AGENT.md").unwrap())?
+                        .into(),
                 );
                 manifest.environment = Some(EnvironmentFacts {
                     cwd: Some("/project".into()),
@@ -63,7 +64,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                     manifest.sources.push(
                         storage
                             .stage(
-                                acyclic_harness::OperationId::new(),
+                                acyclic_harness_core::OperationId::new(),
                                 source,
                                 body.as_bytes(),
                                 "text/plain",
@@ -75,7 +76,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                 let reference = manifest
                     .publish(
                         bindings.writer.as_deref().unwrap(),
-                        acyclic_harness::OperationId::new(),
+                        acyclic_harness_core::OperationId::new(),
                         "manifest.json",
                         Limits::default(),
                     )
@@ -121,7 +122,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                     None,
                 )?;
                 let dispatch = ModelDispatch {
-                    operation_id: acyclic_harness::OperationId::from_bytes([42; 16]),
+                    operation_id: acyclic_harness_core::OperationId::from_bytes([42; 16]),
                     step: 0,
                     request_digest: prepared.request_digest(),
                 };
