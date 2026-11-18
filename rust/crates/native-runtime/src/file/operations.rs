@@ -641,15 +641,15 @@ pub(crate) fn open_directory_for_sync(path: &Path) -> io::Result<File> {
 
 #[cfg(windows)]
 fn open_directory_for_sync(path: &Path) -> io::Result<File> {
-    use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
 
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    const FILE_SHARE_READ_WRITE_DELETE: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_0004;
-    let directory = OpenOptions::new()
+    let directory = File::options()
         .read(true)
         .write(true)
-        .share_mode(FILE_SHARE_READ_WRITE_DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
     // BACKUP_SEMANTICS also opens regular files. Validate the held handle.
