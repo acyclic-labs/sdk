@@ -129,7 +129,9 @@ impl MemoryStream {
         window: FollowWindow,
         subscribe: impl FnOnce(&State, u64) -> Result<(Option<SignalRegistration>, I), StreamError>,
     ) -> Result<PreparedFollow<I>, StreamError> {
-        let state = self.state.write().await;
+        // Keep the observed cut stable through registration. The registry
+        // serializes its own updates, so other readers can share this guard.
+        let state = self.state.read().await;
         let snapshot = self.observe_follow(|| state.paths.get(path).cloned())?;
         let revision = self.revisions.at(state.decision);
         let selection = follow_selection(
