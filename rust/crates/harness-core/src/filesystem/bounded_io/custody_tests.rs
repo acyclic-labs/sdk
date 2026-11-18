@@ -16,12 +16,12 @@ fn returned_native_output_transfers_paid_custody_and_retires_after_cancellation(
         let allocation = owner.work.claim(337, 1, WorkCounters::UNCHARGED)?;
         let allocation = owner.return_allocation(allocation, 337)?;
         io.account(|ctx| owner.restore(ctx))?;
-        let charged = io.receipt();
+        let charged = io.receipt()?;
         let remaining = io.remaining()?;
         let held = io.adopt_native_output(allocation, 337)?;
         assert_eq!(io.owned_bytes()?, 350);
         assert_eq!(
-            io.receipt(),
+            io.receipt()?,
             charged,
             "transfer charged the allocation twice"
         );
@@ -166,7 +166,7 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         index.get([255; 16], &mut OwnedIndexWork(Some(&reader)))?,
         None
     );
-    assert_eq!(reader.receipt().allocation_operations, 0);
+    assert_eq!(reader.receipt()?.allocation_operations, 0);
     let exhausted = PreparationIo::from_budget(
         WorkBudget {
             items_examined: 0,
@@ -179,16 +179,16 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
             .get([0; 16], &mut OwnedIndexWork(Some(&exhausted)))
             .is_err()
     );
-    assert_eq!(exhausted.receipt().items_examined, 0);
+    assert_eq!(exhausted.receipt()?.items_examined, 0);
     cancellation.cancel();
     assert!(
         index
             .get([0; 16], &mut OwnedIndexWork(Some(&reader)))
             .is_err()
     );
-    let before = reader.receipt();
+    let before = reader.receipt()?;
     drop(index);
-    assert_eq!(reader.receipt(), before);
+    assert_eq!(reader.receipt()?, before);
     assert_eq!(original.lock().unwrap().1.as_ref().unwrap().live_bytes(), 0);
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -198,14 +198,14 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = native.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&native)?;
-        let before = native.receipt().allocation_operations;
+        let before = native.receipt()?.allocation_operations;
         let mut index = FixedIndex::<u64, OwnedIndexAllocation>::default();
         for key in 0..3 {
             index.get_or_try_insert_with([key; 16], &mut OwnedIndexWork(Some(&io)), |_| {
                 Ok(u64::from(key))
             })?;
         }
-        assert_eq!(native.receipt().allocation_operations - before, 5);
+        assert_eq!(native.receipt()?.allocation_operations - before, 5);
         drop(io);
         assert!(native.live_allocation_bytes()? > baseline);
         let reader = PreparationIo::from_native_work(&native)?;
@@ -217,10 +217,10 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
                 ..
             })
         ));
-        let before = native.receipt();
+        let before = native.receipt()?;
         assert!(index.retire_if([0; 16], |_| true));
         drop(index);
-        assert_eq!(native.receipt(), before);
+        assert_eq!(native.receipt()?, before);
         assert_eq!(native.live_allocation_bytes()?, baseline);
     }
     Ok(())
