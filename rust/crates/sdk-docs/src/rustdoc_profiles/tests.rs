@@ -285,10 +285,17 @@ fn real_binding_rustdoc_preserves_documentation_and_ownership_when_requested() {
         rustdoc_package: "acyclic-fs-napi".into(),
         kind: ApiOwnerKind::NapiBinding,
     };
+    let profile = ProfileSpec {
+        package: "acyclic-fs-napi".into(),
+        target: "x86_64-pc-windows-msvc".into(),
+        default_features: true,
+        features: BTreeSet::new(),
+    };
+    let profile_id = profile.id();
     let items = extract_owned_api(
         path,
         &owner,
-        ProfileId("binding-host-default".into()),
+        profile_id,
         &owner.rustdoc_package.replace('-', "_"),
     )
     .unwrap();
@@ -307,6 +314,9 @@ fn real_binding_rustdoc_preserves_documentation_and_ownership_when_requested() {
     assert!(items.iter().any(|item| {
         item.key.kind == "struct" && item.key.path.starts_with("acyclic_fs_napi::Native")
     }));
+    if let Some(metadata) = cargo_metadata_fixture() {
+        assert_binding_sidecar(metadata, profile, items);
+    }
 }
 
 #[test]
@@ -340,33 +350,8 @@ fn real_wasm_binding_rustdoc_retains_browser_owned_api_when_requested() {
     });
 }
 
-#[test]
-fn projection_sidecar_preserves_binding_identity_versions_and_capabilities() {
-    let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
-        return;
-    };
-    let Some(metadata) = cargo_metadata_fixture() else {
-        return;
-    };
-    let owner = ApiOwner {
-        published_package: "acyclic-fs".into(),
-        rustdoc_package: "acyclic-fs-napi".into(),
-        kind: ApiOwnerKind::NapiBinding,
-    };
-    let profile = ProfileSpec {
-        package: "acyclic-fs-napi".into(),
-        target: "x86_64-pc-windows-msvc".into(),
-        default_features: true,
-        features: BTreeSet::new(),
-    };
+fn assert_binding_sidecar(metadata: &Metadata, profile: ProfileSpec, items: Vec<OwnedApiItem>) {
     let profile_id = profile.id();
-    let items = extract_owned_api(
-        path,
-        &owner,
-        profile_id.clone(),
-        &owner.rustdoc_package.replace('-', "_"),
-    )
-    .unwrap();
     let api_items = items
         .iter()
         .map(|item| crate::ApiItem {
