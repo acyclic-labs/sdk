@@ -1,8 +1,10 @@
-use crate::key_decode::{DecodedKey, decode_key, event_chord};
+use crate::config::{ConfigView, Diagnostic, ThemeStyles};
 use crate::key_event::{
     KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use crate::term::Capabilities;
 use crate::{Action, CompletionMenu, Editor, InputKeymap, Motion, Viewport};
+use acyclic_harness_tui_core::{DecodedKey, decode_key, event_chord};
 use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -116,6 +118,21 @@ pub struct PromptInput {
 }
 
 impl PromptInput {
+    /// Apply accepted configuration while retaining drafts, history and undo state.
+    pub fn apply_config(
+        &mut self,
+        view: &ConfigView,
+        profile: &Capabilities,
+    ) -> Result<(), Vec<Diagnostic>> {
+        let settings = view.settings()?;
+        let keymap = view.keymap()?;
+        let theme = ThemeStyles::from_config(view, profile)?;
+        self.set_settings(settings);
+        self.set_keymap(keymap);
+        self.theme = theme;
+        Ok(())
+    }
+
     /// Invalidate pending history replies when the selected source changes.
     pub fn reset_history_source(&mut self) {
         self.history_active = false;

@@ -295,9 +295,9 @@ mod tests {
             }),
         );
         let mut input = PromptInput::default();
-        config
-            .apply(
-                &mut input,
+        input
+            .apply_config(
+                &config,
                 &Capabilities {
                     colour: depth,
                     ..Capabilities::default()

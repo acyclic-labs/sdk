@@ -1,4 +1,4 @@
-use crate::{CompletionMenu, Editor, buffer::slice, widget::cells};
+use crate::{CompletionMenu, Editor, widget::cells};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -137,7 +137,7 @@ pub(crate) fn render_part(
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    let prefix = slice(text, ..end);
+    let prefix = text.get(..end).unwrap_or_default();
     for (at, grapheme) in prefix.grapheme_indices(true) {
         if *x >= right {
             break;

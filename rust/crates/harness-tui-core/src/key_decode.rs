@@ -87,7 +87,8 @@ fn normalize_key(mut key: KeyEvent) -> KeyEvent {
     key
 }
 
-pub(crate) fn event_chord(key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
+/// Canonical spelling of a key event, kept inline for allocation-free routing.
+pub fn event_chord(key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
     normalized_chord(normalize_key(key))
 }
 

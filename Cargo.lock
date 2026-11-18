@@ -1353,12 +1353,11 @@ dependencies = [
 name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
+ "acyclic-harness-tui-core",
  "acyclic-markdown",
  "acyclic-native-runtime",
  "acyclic-test-support",
  "alacritty_terminal",
- "arrayvec",
- "caseless",
  "crossterm",
  "futures",
  "image",
@@ -1377,6 +1376,21 @@ dependencies = [
  "unicode-width",
  "vte",
  "zeroize",
+]
+
+[[package]]
+name = "acyclic-harness-tui-core"
+version = "0.2.0"
+dependencies = [
+ "acyclic-test-support",
+ "arrayvec",
+ "caseless",
+ "crossterm",
+ "proptest",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

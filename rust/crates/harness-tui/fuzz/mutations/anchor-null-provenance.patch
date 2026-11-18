@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness-tui/src/transcript_anchor.rs b/rust/crates/harness-tui/src/transcript_anchor.rs
---- a/rust/crates/harness-tui/src/transcript_anchor.rs
-+++ b/rust/crates/harness-tui/src/transcript_anchor.rs
+diff --git a/rust/crates/harness-tui-core/src/transcript_anchor.rs b/rust/crates/harness-tui-core/src/transcript_anchor.rs
+--- a/rust/crates/harness-tui-core/src/transcript_anchor.rs
++++ b/rust/crates/harness-tui-core/src/transcript_anchor.rs
 @@ -67,5 +67,5 @@
  fn source_origin<'de, D: serde::Deserializer<'de>>(
      deserializer: D,

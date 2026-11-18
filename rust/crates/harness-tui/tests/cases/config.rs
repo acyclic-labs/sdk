@@ -4,8 +4,8 @@ use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, style::Color}
 use acyclic_harness_tui::{
     ACTIONS, Action, AppAction, Editor, InputEffect, PromptInput, PromptWidget, Viewport,
     config::{
-        ConfigDiagnostics, ConfigFile, ConfigView, DiagnosticKind, Scope, ThemeRole, Token, fold,
-        parse,
+        ConfigDiagnostics, ConfigFile, ConfigView, DiagnosticKind, Scope, ThemeRole, ThemeStyles,
+        Token, fold, parse,
     },
     key_event::{KeyCode, KeyEvent, KeyModifiers as M},
     term::{Capabilities, ColourDepth},
@@ -19,7 +19,7 @@ use serde_json::json;
 mod sequences;
 
 fn apply(view: &ConfigView, input: &mut PromptInput) {
-    assert!(view.apply(input, &Capabilities::default()).is_ok());
+    assert!(input.apply_config(view, &Capabilities::default()).is_ok());
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn live_theme_and_no_wrap_render_with_test_backend() {
         colour: ColourDepth::TrueColour,
         ..Default::default()
     };
-    view.apply(&mut input, &profile).unwrap();
+    input.apply_config(&view, &profile).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(4, 1)).unwrap();
     let mut viewport = Viewport::default();
     terminal
@@ -199,12 +199,14 @@ fn live_theme_and_no_wrap_render_with_test_backend() {
         ColourDepth::Ansi16,
         ColourDepth::Indexed256,
     ] {
-        let theme = view
-            .theme(&Capabilities {
+        let theme = ThemeStyles::from_config(
+            &view,
+            &Capabilities {
                 colour: depth,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         let style = theme.style(ThemeRole::Text);
         match depth {
             ColourDepth::Monochrome => assert_eq!(style.fg, Some(Color::Reset)),
@@ -220,11 +222,14 @@ fn live_theme_and_no_wrap_render_with_test_backend() {
 #[test]
 fn theme_mode_follows_the_probed_background_unless_the_file_sets_it() {
     let accent = |view: &ConfigView, background| {
-        view.theme(&Capabilities {
-            colour: ColourDepth::TrueColour,
-            background,
-            ..Default::default()
-        })
+        ThemeStyles::from_config(
+            view,
+            &Capabilities {
+                colour: ColourDepth::TrueColour,
+                background,
+                ..Default::default()
+            },
+        )
         .unwrap()
         .token(Token::Accent)
         .fg
@@ -257,7 +262,7 @@ fn theme_mode_follows_the_probed_background_unless_the_file_sets_it() {
         accent(&view, Some([0xff, 0xff, 0xff])),
         Some(Color::Rgb(0xff, 0, 0))
     );
-    let theme = view.theme(&Capabilities::default()).unwrap();
+    let theme = ThemeStyles::from_config(&view, &Capabilities::default()).unwrap();
     assert_eq!(theme.token(Token::Error).fg, Some(Color::LightRed));
 }
 
@@ -599,12 +604,14 @@ mod projection {
         let text =
             json!({"dark":{"fg":format!("#{:02x}{:02x}{:02x}",rgb[0],rgb[1],rgb[2])}}).to_string();
         view.set_file(Scope::User, ConfigFile::Theme, Some(&text));
-        let theme = view
-            .theme(&Capabilities {
+        let theme = ThemeStyles::from_config(
+            &view,
+            &Capabilities {
                 colour: ColourDepth::Indexed256,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         let Some(Color::Indexed(index)) = theme.style(ThemeRole::Text).fg else {
             panic!("indexed palette required")
         };

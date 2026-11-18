@@ -42,6 +42,7 @@
   "acyclic-markdown-work",
   "acyclic-syntect",
   "acyclic-markdown",
+  "acyclic-harness-tui-core",
   "acyclic-harness-tui",
   "acyclic-model-render",
   "acyclic-mcp",

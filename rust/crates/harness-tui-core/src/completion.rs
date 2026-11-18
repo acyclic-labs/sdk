@@ -322,7 +322,8 @@ impl CompletionMenu {
         }
     }
 
-    pub(crate) fn action(
+    /// Handle a decoded edit action while the popup is active.
+    pub fn action(
         &mut self,
         editor: &mut Editor,
         action: Action,

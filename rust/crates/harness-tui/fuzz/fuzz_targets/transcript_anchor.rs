@@ -3,7 +3,7 @@
 use acyclic_harness_tui::TranscriptAnchor;
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../transcript_anchor.rs"]
+#[path = "../../../harness-tui-core/src/transcript_anchor/oracle.rs"]
 mod oracle;
 
 fuzz_target!(|data: &[u8]| {

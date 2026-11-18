@@ -1034,8 +1034,8 @@ async fn run_current(
     let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
     let mut prompt_history = prompt_history::History::new(Arc::clone(&conversation));
-    ui.config
-        .apply(&mut input, &profile)
+    input
+        .apply_config(&ui.config, &profile)
         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
     view.transcript.set_theme(input.theme);
     view.transcript
@@ -1956,8 +1956,8 @@ async fn run_current(
         }
         if files_changed {
             ui.complete(&mut input)?;
-            ui.config
-                .apply(&mut input, &profile)
+            input
+                .apply_config(&ui.config, &profile)
                 .map_err(|errors| format!("UI configuration: {errors:?}"))?;
             view.transcript.set_theme(input.theme);
             view.transcript
