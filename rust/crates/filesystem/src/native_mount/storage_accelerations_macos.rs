@@ -113,12 +113,13 @@ pub(super) fn probe(
 mod tests {
     use super::super::NativeSparseAccelerationEvidence;
     use super::*;
+    use acyclic_fs_storage_probe::native_mount::storage_capabilities::probe_native_storage_capabilities;
 
     #[test]
     fn apfs_accelerations_preserve_sparse_and_clone_semantics()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let capabilities = acyclic_fs_storage_probe::native_mount::storage_capabilities::probe_native_storage_capabilities(directory.path())?;
+        let capabilities = probe_native_storage_capabilities(directory.path())?;
         if capabilities.filesystem != "apfs" {
             return Ok(());
         }

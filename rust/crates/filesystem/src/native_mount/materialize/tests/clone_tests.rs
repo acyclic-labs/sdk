@@ -2,6 +2,7 @@ use super::*;
 use crate::VolumeId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
+use acyclic_fs_storage_probe::native_mount::storage_capabilities::probe_native_storage_capabilities;
 
 #[tokio::test]
 async fn identical_regular_payloads_use_native_clone_without_aliasing()
@@ -18,7 +19,7 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
             tempfile::tempdir()?
         }
     };
-    let clone_available = acyclic_fs_storage_probe::native_mount::storage_capabilities::probe_native_storage_capabilities(directory.path())?.block_cloning;
+    let clone_available = probe_native_storage_capabilities(directory.path())?.block_cloning;
     let limits = VolumeLimits::default();
     let cancellation = CancellationToken::new();
     let volume = super::super::tests::memory_volume(

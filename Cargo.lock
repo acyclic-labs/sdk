@@ -607,6 +607,7 @@ dependencies = [
 name = "acyclic-fs-storage-probe"
 version = "0.2.0"
 dependencies = [
+ "acyclic-fs-native-contract",
  "libc",
  "tempfile",
  "thiserror 2.0.21",
