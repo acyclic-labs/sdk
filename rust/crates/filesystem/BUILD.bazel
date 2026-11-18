@@ -557,7 +557,6 @@ rust_test(
         "tests/support/checkout_serialized.rs",
         "tests/support/checkout_tracking.rs",
         "tests/support/creation_budget.rs",
-        "tests/support/export_manifest.rs",
         "tests/support/extent_objects.rs",
         "tests/support/generation_root.rs",
         "tests/support/git_history.rs",
@@ -2868,7 +2867,9 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//tokio-1.54.1",
     ],
     tags = ["manual"],
 )

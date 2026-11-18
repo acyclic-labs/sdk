@@ -183,7 +183,3 @@ fn validate_envelope(
 fn encode_object_id(encoder: &mut Encoder, object: ObjectId) {
     encoder.object(object);
 }
-
-#[cfg(test)]
-#[path = "tests/export.rs"]
-mod tests;
