@@ -1050,28 +1050,48 @@ ${rule("cc_toolchain_config", [
     ["win32_winnt_flag", q("/D_WIN32_WINNT=0x0A00")],
 ])}
 ${rule("filegroup", [
+    ["name", q("windows_cc_llvm_tools")],
+    ["visibility", q(["//:__pkg__"])],
+    ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
+    // The toolchain runs six LLVM binaries through four symlinks; the distribution's `bin` is 8.9 GB of
+    // tools no Windows action starts, so each action declares only the tools it runs and their targets.
+    ["srcs", q([
+        "@llvm_toolchain_llvm//:bin/clang-cl",
+        "@llvm_toolchain_llvm//:bin/clang",
+        "@llvm_toolchain_llvm//:bin/clang-22",
+        "@llvm_toolchain_llvm//:bin/lld-link",
+        "@llvm_toolchain_llvm//:bin/lld",
+        "@llvm_toolchain_llvm//:bin/llvm-lib",
+        "@llvm_toolchain_llvm//:bin/llvm-ar",
+        "@llvm_toolchain_llvm//:bin/llvm-nm",
+        "@llvm_toolchain_llvm//:bin/llvm-objdump",
+        "@llvm_toolchain_llvm//:bin/llvm-strip",
+        "@llvm_toolchain_llvm//:bin/llvm-objcopy",
+    ])],
+])}
+${rule("filegroup", [
     ["name", q("windows_cc_all_files")],
     ["visibility", q(["//:__pkg__"])],
     ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
-    ["srcs", q(["@xwin//:includes", "@xwin//:libs", "@llvm_toolchain_llvm//:bin"])],
+    ["srcs", q(["@xwin//:includes", "@xwin//:libs", ":windows_cc_llvm_tools"])],
 ])}
 ${rule("filegroup", [
     ["name", q("windows_cc_compiler_files")],
     ["visibility", q(["//:__pkg__"])],
     ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
-    ["srcs", q(["@xwin//:includes", "@llvm_toolchain_llvm//:bin"])],
+    ["srcs", q(["@xwin//:includes", ":windows_cc_llvm_tools"])],
 ])}
 ${rule("filegroup", [
     ["name", q("windows_cc_linker_files")],
     ["visibility", q(["//:__pkg__"])],
     ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
-    ["srcs", q(["@xwin//:libs", "@llvm_toolchain_llvm//:bin"])],
+    ["srcs", q(["@xwin//:libs", ":windows_cc_llvm_tools"])],
 ])}
 ${rule("filegroup", [
     ["name", q("windows_cc_tool_files")],
     ["visibility", q(["//:__pkg__"])],
     ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
-    ["srcs", q(["@llvm_toolchain_llvm//:bin"])],
+    ["srcs", q([":windows_cc_llvm_tools"])],
 ])}
 ${rule("toolchain", [
     ["name", q("windows_cc_toolchain_registration")],

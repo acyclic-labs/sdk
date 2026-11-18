@@ -42,13 +42,23 @@ cc_toolchain_config(
 )
 
 filegroup(
+    name = "windows_cc_llvm_tools",
+    visibility = ["//:__pkg__"],
+    target_compatible_with = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+    srcs = ["@llvm_toolchain_llvm//:bin/clang-cl","@llvm_toolchain_llvm//:bin/clang","@llvm_toolchain_llvm//:bin/clang-22","@llvm_toolchain_llvm//:bin/lld-link","@llvm_toolchain_llvm//:bin/lld","@llvm_toolchain_llvm//:bin/llvm-lib","@llvm_toolchain_llvm//:bin/llvm-ar","@llvm_toolchain_llvm//:bin/llvm-nm","@llvm_toolchain_llvm//:bin/llvm-objdump","@llvm_toolchain_llvm//:bin/llvm-strip","@llvm_toolchain_llvm//:bin/llvm-objcopy"],
+)
+
+filegroup(
     name = "windows_cc_all_files",
     visibility = ["//:__pkg__"],
     target_compatible_with = [
         "@platforms//os:windows",
         "@platforms//cpu:x86_64",
     ],
-    srcs = ["@xwin//:includes","@xwin//:libs","@llvm_toolchain_llvm//:bin"],
+    srcs = ["@xwin//:includes","@xwin//:libs",":windows_cc_llvm_tools"],
 )
 
 filegroup(
@@ -58,7 +68,7 @@ filegroup(
         "@platforms//os:windows",
         "@platforms//cpu:x86_64",
     ],
-    srcs = ["@xwin//:includes","@llvm_toolchain_llvm//:bin"],
+    srcs = ["@xwin//:includes",":windows_cc_llvm_tools"],
 )
 
 filegroup(
@@ -68,7 +78,7 @@ filegroup(
         "@platforms//os:windows",
         "@platforms//cpu:x86_64",
     ],
-    srcs = ["@xwin//:libs","@llvm_toolchain_llvm//:bin"],
+    srcs = ["@xwin//:libs",":windows_cc_llvm_tools"],
 )
 
 filegroup(
@@ -78,7 +88,7 @@ filegroup(
         "@platforms//os:windows",
         "@platforms//cpu:x86_64",
     ],
-    srcs = ["@llvm_toolchain_llvm//:bin"],
+    srcs = [":windows_cc_llvm_tools"],
 )
 
 toolchain(
