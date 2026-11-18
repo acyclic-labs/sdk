@@ -413,58 +413,45 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
     assert_eq!(discovered.len(), 1);
     assert_eq!(discovered[0].target, "old-example");
     assert_eq!(discovered[0].required_features, vec!["old-feature"]);
-    let execution = execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &discovered,
-        None,
-        None,
-    )
-    .unwrap();
-    assert_eq!(execution[0].stdout_sha256, crate::sha256_bytes(b"7\n"));
+    let target_dir = fixture.path().join("target");
+    fs::create_dir(&target_dir).unwrap();
+    let mode = target_dir.join("example-mode");
     fs::write(
         fixture.path().join("examples/old-example.rs"),
-        "fn main() { panic!(\"failure\"); }\n",
+        r#"fn main() {
+            match std::fs::read_to_string("target/example-mode").unwrap().as_str() {
+                "success" => println!("{}", historical_fixture::value()),
+                "failure" => panic!("example deliberately failed"),
+                "mutate" => std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(),
+                mode => panic!("unexpected example mode: {mode}"),
+            }
+        }"#,
     )
     .unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &discovered,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed before execution"));
-    let failing = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &failing,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("failed"));
-    fs::write(
-        fixture.path().join("examples/old-example.rs"),
-        r#"fn main() { std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(); }"#,
-    )
-    .unwrap();
-    let mutating = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &mutating,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed during execution"));
+    let cargo = cargo();
+    let run = |examples: &[_]| {
+        execute_examples(fixture.path(), &cargo, &target_dir, examples, None, None)
+    };
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("changed before execution"));
+
+    // Cargo's output directory is outside the source closure. Changing the
+    // mode exercises all outcomes without rebuilding the example.
+    let discovered = examples(&metadata, fixture.path(), &owners).unwrap();
+    fs::write(&mode, "success").unwrap();
+    assert_eq!(
+        run(&discovered).unwrap()[0].stdout_sha256,
+        crate::sha256_bytes(b"7\n")
+    );
+    fs::write(&mode, "failure").unwrap();
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("example deliberately failed"));
+    fs::write(&mode, "mutate").unwrap();
+    assert!(run(&discovered)
+        .unwrap_err()
+        .contains("changed during execution"));
     assert!(examples(
         &metadata,
         fixture.path(),
