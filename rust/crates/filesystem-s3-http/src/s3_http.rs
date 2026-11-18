@@ -412,6 +412,7 @@ where
 include!("s3_http/operations_0.rs");
 include!("s3_http/operations_1.rs");
 include!("s3_http/body.rs");
+include!("s3_http/multipart_record.rs");
 include!("s3_http/helpers.rs");
 
 #[cfg(feature = "test-support")]
