@@ -44,7 +44,7 @@ fn metadata() -> &'static Metadata {
 }
 
 #[test]
-fn browser_profiles_follow_features_and_fail_if_target_is_missing() {
+fn browser_profiles_follow_cargo_features_and_binding_policy() {
     let mut package = metadata().packages[0].clone();
     let targets = BTreeSet::from(["wasm32-unknown-unknown".into()]);
     let profile = browser_profile_for_package(&package, false, &targets)
@@ -61,19 +61,6 @@ fn browser_profiles_follow_features_and_fail_if_target_is_missing() {
             target: "wasm32-unknown-unknown".into(),
         })
     );
-    package.features.clear();
-    assert!(browser_profile_for_package(&package, false, &targets)
-        .unwrap()
-        .is_none());
-    assert!(browser_profile_for_package(&package, true, &targets)
-        .unwrap()
-        .is_some());
-}
-
-#[test]
-fn browser_binding_policy_excludes_native_features_and_rejects_invalid_policy() {
-    let mut package = metadata().packages[0].clone();
-    let targets = BTreeSet::from(["wasm32-unknown-unknown".into()]);
     package.metadata = serde_json::json!({"napi":{
         "wasm-package":"feature-rich", "wasm-features":["wasm"], "wasm-no-default-features":true}});
     let profile = browser_profile_for_package(&package, true, &targets)
@@ -83,6 +70,15 @@ fn browser_binding_policy_excludes_native_features_and_rejects_invalid_policy() 
     assert!(!profile.features.contains("json"));
     package.metadata["napi"]["wasm-features"] = serde_json::json!("wasm");
     assert!(browser_profile_for_package(&package, true, &targets).is_err());
+
+    package.metadata = serde_json::Value::Null;
+    package.features.clear();
+    assert!(browser_profile_for_package(&package, false, &targets)
+        .unwrap()
+        .is_none());
+    assert!(browser_profile_for_package(&package, true, &targets)
+        .unwrap()
+        .is_some());
 }
 
 #[test]
