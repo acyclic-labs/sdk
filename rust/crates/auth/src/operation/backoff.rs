@@ -84,11 +84,7 @@ impl Backoff {
     /// that ceiling. The caller supplies its sample and owns the absolute timer.
     #[must_use]
     pub fn reconnect_delay_ms(ceiling_ms: u64, sample: u64) -> u64 {
-        ceiling_ms.saturating_add(Self::offset(ceiling_ms / 4, sample))
-    }
-
-    fn offset(span: u64, sample: u64) -> u64 {
-        sample % (span + 1)
+        ceiling_ms.saturating_add(sample % (ceiling_ms / 4 + 1))
     }
 
     fn advance(&mut self, draw: impl FnOnce(u32) -> u32) -> u32 {
@@ -100,9 +96,7 @@ impl Backoff {
         ))
         .unwrap_or(self.maximum_ms);
         let lower = ceiling.div_ceil(2);
-        let span = ceiling - lower;
-        lower
-            + u32::try_from(Self::offset(u64::from(span), u64::from(draw(span + 1))))
-                .expect("jitter offset is bounded by the u32 span")
+        let choices = ceiling - lower + 1;
+        lower + draw(choices) % choices
     }
 }
