@@ -49,11 +49,15 @@ struct YieldStream {
 }
 
 impl YieldStream {
-    async fn pause(&self) {
-        let call = self.calls.lock().map_or(0, |mut calls| {
+    async fn pause(&self) -> Result<(), acyclic_stream::StreamError> {
+        let call = {
+            let mut calls = self
+                .calls
+                .lock()
+                .map_err(|_| acyclic_stream::StreamError::Unavailable)?;
             calls.push(RUNNING.with(Cell::get));
-            calls.len() as u64
-        });
+            u64::try_from(calls.len()).map_err(|_| acyclic_stream::StreamError::LimitExceeded)?
+        };
         // splitmix64 over (seed, call): reproducible and independent per call.
         let mut mixed = self
             .seed
@@ -63,18 +67,23 @@ impl YieldStream {
         for _ in 0..(mixed ^ (mixed >> 31)) % 4 {
             tokio::task::yield_now().await;
         }
+        Ok(())
     }
 
     /// Whether provider calls of the two operations interleaved.
-    fn interleaved(&self) -> bool {
-        self.calls.lock().is_ok_and(|calls| {
-            let attributed: Vec<u8> = calls.iter().copied().filter(|id| *id != 0).collect();
-            attributed
-                .windows(2)
-                .filter(|pair| pair[0] != pair[1])
-                .count()
-                > 1
-        })
+    fn interleaved(&self) -> Result<bool, acyclic_stream::StreamError> {
+        let calls = self
+            .calls
+            .lock()
+            .map_err(|_| acyclic_stream::StreamError::Unavailable)?;
+        let attributed = calls.iter().copied().filter(|id| *id != 0);
+        Ok(attributed
+            .clone()
+            .zip(attributed.skip(1))
+            .filter(|(first, second)| first != second)
+            .take(2)
+            .count()
+            == 2)
     }
 }
 
@@ -89,7 +98,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
         &self,
         key: acyclic_stream::IdempotencyKey,
     ) -> Result<Option<acyclic_stream::IdempotencyObservation>, acyclic_stream::StreamError> {
-        self.pause().await;
+        self.pause().await?;
         self.inner.inspect_idempotency(key).await
     }
 
@@ -97,7 +106,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
-        self.pause().await;
+        self.pause().await?;
         self.inner.heads(request).await
     }
 
@@ -115,7 +124,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
             acyclic_stream::WriteRequest::Append(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {
-                        self.pause().await;
+                        self.pause().await?;
                         self.inner.append(request).await
                     },
                     acyclic_stream::WriteOutcome::Append,
@@ -123,7 +132,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
             }
             acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    self.pause().await;
+                    self.pause().await?;
                     self.inner.fork(request).await
                 },
                 acyclic_stream::WriteOutcome::Fork,
@@ -131,7 +140,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
             acyclic_stream::WriteRequest::Commit(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {
-                        self.pause().await;
+                        self.pause().await?;
                         self.inner.commit(request).await
                     },
                     acyclic_stream::WriteOutcome::Commit,
@@ -144,7 +153,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
         &self,
         request: acyclic_stream::ReadRequest,
     ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
-        self.pause().await;
+        self.pause().await?;
         self.inner.read(request).await
     }
 
@@ -152,7 +161,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
         &self,
         request: acyclic_stream::FollowRequest,
     ) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
-        self.pause().await;
+        self.pause().await?;
         self.inner.follow(request).await
     }
 
@@ -160,7 +169,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
         &self,
         commit_id: acyclic_stream::CommitId,
     ) -> Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
-        self.pause().await;
+        self.pause().await?;
         self.inner.read_commit(commit_id).await
     }
 }
@@ -188,9 +197,11 @@ async fn race(seed: u64, keys: [IdempotencyKey; 2]) -> Result<(usize, bool), Box
     let parent = unbounded!(fs, create_workspace("race-parent"))?;
     parent.write_text("/base.txt", "base").await?;
     let pinned = unbounded!(parent, head())?;
-    if let Ok(mut calls) = stream.calls.lock() {
-        calls.clear();
-    }
+    stream
+        .calls
+        .lock()
+        .map_err(|_| "provider call log poisoned")?
+        .clear();
     let fork = |operation: u8, key: IdempotencyKey| Attributed {
         operation,
         inner: Box::pin(fork_workspace(
@@ -200,7 +211,7 @@ async fn race(seed: u64, keys: [IdempotencyKey; 2]) -> Result<(usize, bool), Box
         )),
     };
     let (first, second) = futures::join!(fork(1, keys[0]), fork(2, keys[1]));
-    let interleaved = stream.interleaved();
+    let interleaved = stream.interleaved()?;
     let mut winners = Vec::new();
     for outcome in [first, second] {
         match outcome {

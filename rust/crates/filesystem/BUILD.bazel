@@ -1666,6 +1666,7 @@ rust_test(
         "tests/workspace_contracts/tests/conditions.rs",
         "tests/workspace_contracts/tests/discovery.rs",
         "tests/workspace_contracts/tests/generation.rs",
+        "tests/workspace_contracts/tests/identity.rs",
         "tests/workspace_contracts/tests/mod.rs",
         "tests/workspace_contracts/workspace.rs",
     ],
@@ -1688,6 +1689,7 @@ rust_test(
     ] + [
         "@sdk_crates//sha2-0.11.1",
         "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//unicode-normalization-0.1.26",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/stream:acyclic_stream",
