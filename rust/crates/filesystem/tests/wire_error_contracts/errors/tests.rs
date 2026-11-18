@@ -1,7 +1,9 @@
 use acyclic_fs::{
-    AuthorityStoreError, CancellationError, FsError, ObjectStoreError, WorkCounters, WorkError,
-    WorkspaceError, WorkspaceNameError, kernel::*,
+    AuthorityStoreError, CancellationError, FsError, ObjectStoreError, WorkspaceError,
+    WorkspaceNameError, kernel::*,
 };
+use acyclic_fs_native_contract::NativeRootIdentity;
+use acyclic_fs_work::performance::{WorkBudget, WorkCounters, WorkError};
 use tonic::{Code, Status};
 
 #[path = "../../support/wire_errors.rs"]
@@ -321,7 +323,7 @@ cases! {
     fs_native_kernel: fs(FsError::NativeKernel(acyclic_fs::NativeTreeMaterializationError::MissingEntry)) => NotFound;
     fs_native_conflict: fs(FsError::NativeLiveConflict {
         conflicts: Vec::new(), truncated: true,
-        allocation: acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        allocation: acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
             .map_err(|(error, _)| error)?.claim(1, 1, WorkCounters::UNCHARGED)?,
     }) => Aborted;
     fs_local_stream: fs(FsError::LocalStream(acyclic_stream::LocalStreamError::Corrupt)) => DataLoss;
@@ -358,8 +360,8 @@ fn every_native_materialization_category_keeps_its_wire_code()
         (E::AllocationFailed(allocation()?), Code::ResourceExhausted),
         (
             E::AllocationChanged {
-                expected: acyclic_fs::NativeRootIdentity::from_bytes([1; 16]),
-                actual: acyclic_fs::NativeRootIdentity::from_bytes([2; 16]),
+                expected: NativeRootIdentity::from_bytes([1; 16]),
+                actual: NativeRootIdentity::from_bytes([2; 16]),
             },
             Code::Aborted,
         ),

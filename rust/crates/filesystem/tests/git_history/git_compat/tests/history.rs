@@ -2,9 +2,7 @@ use acyclic_fs::WorkspaceId;
 use acyclic_fs::git_compat::*;
 use std::collections::BTreeSet;
 
-use crate::fixtures::{
-    TestExecutor, TestExecutorError, generation, tree, workspace, workspace_identity,
-};
+use crate::fixtures::{TestExecutor, TestExecutorError, generation, tree, workspace};
 
 #[tokio::test]
 async fn log_pages_stop_at_external_publication_parents() {
@@ -270,7 +268,7 @@ async fn composed_run_finalizes_commit_and_branch_actions() {
             ..
         })
     ));
-    let child = workspace_identity([9; 16], "feature-run");
+    let child = WorkspaceId::from_bytes([21; 16]);
     let branch_executor = TestExecutor::returning(GitFilesystemResult::Forked {
         workspace_id: child,
     });
@@ -314,7 +312,7 @@ async fn composed_run_leaves_failed_transition_for_exact_resume() {
         )
         .await
         .expect("initial commit");
-    let child = workspace_identity([9; 16], "recover-run");
+    let child = WorkspaceId::from_bytes([22; 16]);
     repository
         .run(
             GitCommand::Branch {
@@ -403,7 +401,7 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
         ));
     }
 
-    let child = workspace_identity([9; 16], "merge-control");
+    let child = WorkspaceId::from_bytes([23; 16]);
     let continued = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     pending_merge(&continued, child).await;
     assert_eq!(
@@ -498,7 +496,7 @@ async fn discard_retires_only_an_idle_non_current_branch() {
     fn argv(command: &str, branch: &str) -> Vec<String> {
         vec![command.to_owned(), branch.to_owned()]
     }
-    let child = workspace_identity([9; 16], "discard");
+    let child = WorkspaceId::from_bytes([24; 16]);
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     repository
         .run(
@@ -843,7 +841,7 @@ async fn distributed_publication_records_one_idempotent_merge_commit() {
     else {
         panic!("expected initial commit");
     };
-    let source = workspace_identity([0x51; 16], "publication-source");
+    let source = WorkspaceId::from_bytes([25; 16]);
     repository
         .register_branch_workspace("agents/child", source, Some(initial.id), false)
         .await
@@ -990,7 +988,7 @@ async fn every_branch_requests_and_registers_a_distinct_workspace() {
     assert_eq!(source_tree, tree(4));
     assert!(head.is_none());
     assert!(switch);
-    let child = workspace_identity([9; 16], "feature");
+    let child = WorkspaceId::from_bytes([26; 16]);
     repository
         .complete_transition_result(
             transition,
@@ -1103,7 +1101,7 @@ async fn merge_reachable_branch(advance_head: bool) -> (GitCommit, GitCommit) {
     else {
         panic!("expected initial commit");
     };
-    let source = workspace_identity([0x61; 16], "reachable-merge-source");
+    let source = WorkspaceId::from_bytes([27; 16]);
     repository
         .register_branch_workspace("agents/kid", source, Some(initial.id), false)
         .await
@@ -1169,7 +1167,7 @@ enum DiscardedChild {
 
 #[tokio::test]
 async fn discard_keeps_every_record_a_discarded_branch_produced() {
-    let child = workspace_identity([9; 16], "discard-history");
+    let child = WorkspaceId::from_bytes([28; 16]);
     let child_tree = |byte| GitTreeRef::exact(child, generation(byte));
     let applied = |tree: GitTreeRef, tracked: Option<&[&str]>| {
         TestExecutor::returning(GitFilesystemResult::Applied {

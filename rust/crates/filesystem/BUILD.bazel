@@ -1424,7 +1424,6 @@ rust_test(
     ] + [
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
-        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
@@ -1847,10 +1846,14 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//tonic-0.14.9",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-wire:acyclic_fs_wire",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
     ],

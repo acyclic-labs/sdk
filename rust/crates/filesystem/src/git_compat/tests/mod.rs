@@ -2,13 +2,27 @@ use super::*;
 
 use crate::kernel::{FileMetadata, MetadataField};
 
-use crate::{Digest, Fs};
+use crate::{Digest, Fs, WorkspaceName};
 
 use std::sync::Mutex;
 
 #[path = "../../../tests/support/git_history.rs"]
 mod fixtures;
-use fixtures::{TestExecutor, generation, tree, workspace, workspace_identity};
+use fixtures::{TestExecutor, generation, tree, workspace};
+
+fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
+    let name = WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .expect("workspace name")
+        .value;
+    WorkspaceId::derive(
+        namespace,
+        &name,
+        &WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .expect("workspace identity")
+    .value
+}
 
 pub(super) fn declared_fields(declaration: &str, variant: &str) -> BTreeSet<String> {
     declaration

@@ -1,5 +1,5 @@
 use acyclic_fs::s3::{S3Error, S3ListCursor, S3ListOptions, S3MultipartOptions};
-use acyclic_fs::{CancellationToken, Fs, IdempotencyKey, TransactionCommit};
+use acyclic_fs::{ByteRange, CancellationToken, Fs, IdempotencyKey, TransactionCommit};
 use acyclic_fs_work::performance::WorkBudget;
 use bytes::Bytes;
 use std::collections::BTreeSet;

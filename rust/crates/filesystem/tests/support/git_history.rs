@@ -1,10 +1,7 @@
 use acyclic_fs::git_compat::{
     GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitTreeRef,
 };
-use acyclic_fs::{
-    CancellationToken, Digest, GenerationId, OperationId, WorkspaceId, WorkspaceName,
-};
-use acyclic_fs_work::performance::WorkBudget;
+use acyclic_fs::{Digest, GenerationId, OperationId, WorkspaceId};
 use std::sync::Mutex;
 use thiserror::Error;
 
@@ -81,21 +78,7 @@ pub(crate) fn generation(byte: u8) -> GenerationId {
 }
 
 pub(crate) fn workspace() -> WorkspaceId {
-    workspace_identity([9; 16], "repo")
-}
-
-pub(crate) fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
-    let name = WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .expect("workspace name")
-        .value;
-    WorkspaceId::derive(
-        namespace,
-        &name,
-        &WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value
+    WorkspaceId::from_bytes([9; 16])
 }
 
 pub(crate) fn tree(byte: u8) -> GitTreeRef {
