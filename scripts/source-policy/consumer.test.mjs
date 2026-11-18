@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {fuzzProject} from '../no-polling.fuzz.mjs';
 import {newProjectPollingSites} from './project.mjs';
+import {pollingSites} from './index.mjs';
 
 const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
 const indexUrl = new URL('./index.mjs', import.meta.url);
@@ -57,4 +58,17 @@ test('closed project consumers use the original parser and production graph orac
  const negative = await import(moduleUrl(source.replace(JSON.stringify(sourceUrl), JSON.stringify(freshUrl))
   .replace('pollingUnit(file, source, ts)', 'pollingUnit(file, source)')));
  assert.throws(() => replay(negative), /runtime parser lookup/);
+});
+
+test('Bash substitutions and heredocs preserve the following command', () => {
+ const source = [
+  String.raw`channel="$(sed -nE 's/^channel = "([^"]+)"$/\1/p' rust-toolchain.toml)"`,
+  String.raw`IFS=$'\t' read -r label <<< "$channel"`,
+  "node --input-type=module - <<'JS'",
+  "// a payload's quote does not start shell syntax",
+  'JS',
+  'sleep 1',
+ ].join('\n');
+ assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));
+ assert.throws(() => pollingSites('control.sh', "cat <<'EOF'\nunterminated"), /unterminated shell here-document/);
 });
