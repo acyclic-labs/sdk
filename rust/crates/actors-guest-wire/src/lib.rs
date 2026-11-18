@@ -13,6 +13,10 @@ pub mod compatibility;
 pub use codec::{Checkpoint, CheckpointCodec, CodecIdentity, GuestError};
 /// Portable live-update selection contract.
 pub mod live_selection;
+mod metadata;
+pub use metadata::{
+    ActorRuntime, AdmittedCaller, CallerCapability, GuestMetadataError, RuntimeHandle,
+};
 mod sockets;
 mod state_packets;
 use serde::{Deserialize, Serialize};
@@ -178,6 +182,14 @@ pub fn typescript(config: &ts_rs::Config) -> String {
         Checkpoint,
         GuestError,
         CheckpointCodec<()>,
+        CallerCapability,
+        AdmittedCaller,
+        RuntimeHandle,
+        ActorRuntime,
+        ActorMetadataWrite,
+        ActorStateAlarm,
+        ActorStateSeed,
+        ActorStateCommit,
     );
     output
 }

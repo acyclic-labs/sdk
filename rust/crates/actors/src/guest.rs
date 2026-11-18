@@ -1,10 +1,11 @@
 //! Guest ABI v1. Artifacts own their codec; hosts own admission and publication.
 
 pub use acyclic_actors_guest_wire::{
-    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateSeed, Checkpoint,
-    CheckpointCodec, CodecIdentity, GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent,
-    GuestEventResult, GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest,
-    GuestStreamingResponse, SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply,
+    ActorMetadataWrite, ActorRuntime, ActorStateAlarm, ActorStateCommit, ActorStateSeed,
+    AdmittedCaller, CallerCapability, Checkpoint, CheckpointCodec, CodecIdentity,
+    GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent, GuestEventResult, GuestMetadataError,
+    GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest, GuestStreamingResponse,
+    RuntimeHandle, SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply,
     SocketTransport, WebSocketAutoResponse, WebSocketId,
 };
 use ts_rs::{Config, TS};
@@ -17,8 +18,6 @@ mod authoring;
 pub use authoring::*;
 mod update;
 pub use update::*;
-mod runtime;
-pub use runtime::*;
 mod socket_host;
 pub use socket_host::{decode_socket_reply, dispatch_socket_request, encode_socket_request};
 mod body;
@@ -83,8 +82,6 @@ pub fn typescript() -> String {
         )+};
     }
     declarations!(
-        CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,
-        ActorMetadataWrite, ActorStateAlarm, ActorStateSeed, ActorStateCommit,
         GuestState<()>, GuestContext<()>, ActorDefinition<(), ()>);
     output
         .lines()

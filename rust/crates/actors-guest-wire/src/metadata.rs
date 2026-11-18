@@ -128,7 +128,7 @@ impl AdmittedCaller {
 
     /// Set the exact admitted namespace; omitted legacy fields map to the reserved namespace.
     pub fn with_namespace(mut self, namespace: String) -> Result<Self, GuestMetadataError> {
-        crate::addressing::NamespaceId::validate(namespace.as_bytes())
+        acyclic_auth::addressing::NamespaceId::validate(namespace.as_bytes())
             .map_err(|_| GuestMetadataError("namespace"))?;
         self.namespace = namespace;
         Ok(self)
@@ -138,8 +138,10 @@ impl AdmittedCaller {
         &self.namespace
     }
     /// Full address for audience comparison; carries no authority.
-    pub fn reference(&self) -> Result<crate::addressing::ActorReference, GuestMetadataError> {
-        crate::addressing::ActorReference::new(
+    pub fn reference(
+        &self,
+    ) -> Result<acyclic_auth::addressing::ActorReference, GuestMetadataError> {
+        acyclic_auth::addressing::ActorReference::new(
             &self.account_id,
             self.namespace.as_bytes(),
             self.actor_id.as_bytes(),
@@ -228,11 +230,11 @@ impl TryFrom<RawCaller> for AdmittedCaller {
         ] {
             identity(value, field)?;
         }
-        crate::addressing::validate_account(&raw.account_id)
+        acyclic_auth::addressing::validate_account(&raw.account_id)
             .map_err(|_| GuestMetadataError("accountId"))?;
-        crate::addressing::validate_actor_id(raw.namespace.as_bytes())
+        acyclic_auth::addressing::validate_actor_id(raw.namespace.as_bytes())
             .map_err(|_| GuestMetadataError("namespace"))?;
-        crate::addressing::validate_actor_id(raw.actor_id.as_bytes())
+        acyclic_auth::addressing::validate_actor_id(raw.actor_id.as_bytes())
             .map_err(|_| GuestMetadataError("actorId"))?;
         let expiry = raw
             .expires_at_ms
@@ -255,7 +257,7 @@ impl TryFrom<RawCaller> for AdmittedCaller {
 }
 
 fn default_namespace() -> String {
-    crate::addressing::DEFAULT_ACTOR_NAMESPACE.into()
+    acyclic_auth::addressing::DEFAULT_ACTOR_NAMESPACE.into()
 }
 
 fn canonical_expiry(value: &str) -> bool {
@@ -327,14 +329,14 @@ impl ActorRuntime {
     /// Compose the existing local fields into a globally unique address.
     pub fn reference(
         &self,
-    ) -> Result<Option<crate::addressing::ActorReference>, GuestMetadataError> {
+    ) -> Result<Option<acyclic_auth::addressing::ActorReference>, GuestMetadataError> {
         match (&self.account, &self.id) {
             (None, None) if self.namespace.is_none() => Ok(None),
-            (Some(account), Some(id)) => crate::addressing::ActorReference::new(
+            (Some(account), Some(id)) => acyclic_auth::addressing::ActorReference::new(
                 account,
                 self.namespace
                     .as_deref()
-                    .unwrap_or(crate::addressing::DEFAULT_ACTOR_NAMESPACE)
+                    .unwrap_or(acyclic_auth::addressing::DEFAULT_ACTOR_NAMESPACE)
                     .as_bytes(),
                 id.as_bytes(),
             )
