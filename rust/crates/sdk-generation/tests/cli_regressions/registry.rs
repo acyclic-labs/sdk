@@ -185,7 +185,20 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
             ),
         )
         .unwrap();
-        fs::write(package.join("build.rs"), "fn main() { std::fs::write(std::path::Path::new(&std::env::var(\"CARGO_MANIFEST_DIR\").unwrap()).join(\"unverified-added.json\"), \"{}\").unwrap(); }\n").unwrap();
+        fs::write(
+            package.join("build.rs"),
+            r#"fn main() {
+    if std::env::var_os("CARGO_FEATURE_EXTRA").is_some() {
+        std::fs::write(
+            std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+                .join("unverified-added.json"),
+            "{}",
+        ).unwrap();
+    }
+}
+"#,
+        )
+        .unwrap();
     }
     std::thread::scope(|scope| {
         for during_profile in [false, true] {
