@@ -151,7 +151,7 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes()?;
             let projected = native_signal_file(
                 &provider,
                 &agent,
@@ -172,11 +172,11 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
             );
             assert_eq!(projected.sequence, values[0].input.sequence);
             assert!(
-                original.live_allocation_bytes() > baseline,
+                original.live_allocation_bytes()? > baseline,
                 "native signal output lost its original allocation owner"
             );
             drop(projected);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes()?, baseline);
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -199,7 +199,7 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes()?;
             if cancelled {
                 cancellation.cancel();
             }
@@ -224,12 +224,12 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
                 );
                 drop(result);
             }
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes()?, baseline);
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes()?;
         let foreign = AgentPath::root(&AgentId::from_bytes([90; 16]));
         assert!(
             native_signal_file(
@@ -307,7 +307,7 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
             .is_err(),
             "native signal accepted an indexed payload for another kind"
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
