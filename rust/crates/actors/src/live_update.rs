@@ -6,7 +6,6 @@
 //! call envelopes. Epochs and version numbers are comparable only within their
 //! deployment. Selection changes use the original conditional Stream commit.
 
-use crate::guest::Checkpoint;
 use acyclic_stream::{CommitCondition, CommitId, StreamPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -282,35 +281,11 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<CallEnvelope, Error> {
     Ok(envelope)
 }
 
-/// A reference into the existing journal, not a second journal or effect owner.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct JournalPosition {
-    /// Original admitted journal stream.
-    #[ts(type = "string")]
-    pub stream: StreamPath,
-    /// Publication containing the accepted operation/continuation.
-    pub commit: [u8; 32],
-    /// Original operation slot, including zero.
-    #[serde(with = "decimal")]
-    #[ts(type = "string")]
-    pub sequence: u64,
-    /// Stable external operation identity; receipt completion keeps this identity.
-    pub operation: Vec<u8>,
-}
+/// A reference into the existing admitted journal.
+pub type JournalPosition = acyclic_actors_guest_wire::compatibility::JournalPosition<StreamPath>;
 
-/// Only a committed resumable continuation is a durable handoff point. Hosts
-/// verify the checkpoint and journal cut share the original publication before
-/// changing selection. An arbitrary in-memory await cannot produce this proof.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DurableAwait {
-    /// Artifact-owned resumable continuation and its codec.
-    #[ts(type = "{ codec: CodecIdentity; bytes: number[] }")]
-    pub continuation: Checkpoint,
-    /// Pending original operations, whose producers/unknown outcomes remain owned.
-    pub pending: Vec<JournalPosition>,
-}
+/// A committed resumable continuation at an admitted journal cut.
+pub type DurableAwait = acyclic_actors_guest_wire::compatibility::DurableAwait<StreamPath>;
 
 /// Self-contained TypeScript JSON declarations, emitted by the existing Actors
 /// producer. u64 values are decimal strings, including epochs above 2^53.
@@ -342,8 +317,8 @@ pub fn typescript() -> String {
         CompatibilityManifest,
         PublicationUpload,
         CallEnvelope,
-        JournalPosition,
-        DurableAwait,
+        acyclic_actors_guest_wire::compatibility::JournalPosition<String>,
+        acyclic_actors_guest_wire::compatibility::DurableAwait<String>,
         CallPair,
         GuardDecision,
         RolloutPolicy,

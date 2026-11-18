@@ -1,7 +1,7 @@
 //! Wire declarations for live-update compatibility manifests.
 
 use crate::{
-    CodecIdentity,
+    Checkpoint, CodecIdentity,
     live_selection::{Artifact, DeploymentId, Error, decimal, encode, optional_decimal},
 };
 use serde::{Deserialize, Serialize};
@@ -111,4 +111,36 @@ pub struct PublicationUpload {
     pub artifacts: BTreeMap<String, Artifact>,
     /// Rust-owned contract submitted for Cloud's upload gate.
     pub compatibility: CompatibilityManifest,
+}
+
+/// A reference into the existing journal, not a second journal or effect owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(concrete(Path = String))]
+pub struct JournalPosition<Path> {
+    /// Original admitted journal stream.
+    #[ts(type = "string")]
+    pub stream: Path,
+    /// Publication containing the accepted operation/continuation.
+    pub commit: [u8; 32],
+    /// Original operation slot, including zero.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub sequence: u64,
+    /// Stable external operation identity; receipt completion keeps this identity.
+    pub operation: Vec<u8>,
+}
+
+/// Only a committed resumable continuation is a durable handoff point. Hosts
+/// verify the checkpoint and journal cut share the original publication before
+/// changing selection. An arbitrary in-memory await cannot produce this proof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(concrete(Path = String))]
+pub struct DurableAwait<Path> {
+    /// Artifact-owned resumable continuation and its codec.
+    #[ts(type = "{ codec: CodecIdentity; bytes: number[] }")]
+    pub continuation: Checkpoint,
+    /// Pending original operations, whose producers/unknown outcomes remain owned.
+    pub pending: Vec<JournalPosition<Path>>,
 }
