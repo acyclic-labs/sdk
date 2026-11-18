@@ -3,7 +3,7 @@
 use acyclic_auth::addressing::ActorReference;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
-use std::num::NonZeroU64;
+use std::{collections::BTreeMap, num::NonZeroU64};
 use ts_rs::TS;
 
 /// Invalid declaration, incompatible retained work or exhausted monotonic space.
@@ -308,4 +308,173 @@ pub fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T, Error>
         return Err(Error::Invalid("noncanonical v1 document"));
     }
     Ok(document.value)
+}
+
+/// Bounded version-pair aggregates, never Actor-id metric labels.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallPair {
+    /// Original caller deployment/version; direction is significant.
+    pub caller: Version,
+    /// Actual callee deployment/version.
+    pub callee: Version,
+    /// Original caller scope, avoiding unrelated version-number comparisons.
+    pub caller_deployment: DeploymentId,
+    /// Actual callee scope.
+    pub callee_deployment: DeploymentId,
+    /// Admitted attempts; zero cannot establish coverage.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub attempted: u64,
+    /// Original terminal successful results, excluding injected guard evidence.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub completed: u64,
+    /// Stable typed failure category to count.
+    #[serde(with = "decimal_map")]
+    #[ts(type = "{ [kind: string]: string }")]
+    pub failures: BTreeMap<String, u64>,
+    /// Aggregate time awaiting the admitted selection/journal/inbox event.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub queue_micros: u64,
+    /// Aggregate end-to-end time, reported separately from queue time.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub latency_micros: u64,
+}
+
+/// Declared rollout SLI policy in the deployment volume. Cloud checks every
+/// reachable mixed-version direction separately from same-version traffic.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RolloutPolicy {
+    /// Required terminal successes per direction; zero traffic is not coverage.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub minimum_completed: NonZeroU64,
+    /// Maximum typed-failure fraction among original attempts.
+    pub maximum_failure_fraction: Fraction,
+    /// Optional mean queue threshold; None means truly unbounded.
+    #[serde(with = "optional_decimal")]
+    #[ts(type = "string | null")]
+    pub maximum_mean_queue_micros: Option<NonZeroU64>,
+    /// Optional mean latency threshold, independently reported from queue time.
+    #[serde(with = "optional_decimal")]
+    #[ts(type = "string | null")]
+    pub maximum_mean_latency_micros: Option<NonZeroU64>,
+}
+
+/// Guard evidence and policy outcome persisted beside wave progress.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "decision", rename_all = "camelCase", deny_unknown_fields)]
+pub enum GuardDecision {
+    /// At least one required direction lacks observed terminal traffic.
+    AwaitingCoverage,
+    /// The declared SLI policy admits this next wave.
+    Advance {
+        /// Digest of the admitted SLI policy.
+        policy: [u8; 32],
+    },
+    /// Retain the original evidence; rollback advances the selection epoch.
+    Rollback {
+        /// Digest of the admitted SLI policy.
+        policy: [u8; 32],
+        /// Typed guard failure, independent of application calls.
+        reason: String,
+    },
+    /// An unsupported/non-yielding handler prevents safe preparation of the cut.
+    HandoffBlocked {
+        /// Stable reason reported to the deployment owner.
+        reason: String,
+    },
+}
+
+/// Files plus live queries expose rollout progress. Hosts append/update the
+/// original volume files with their selection transaction; followers use the
+/// existing filesystem/Streams query, never a status polling endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RolloutStatus {
+    /// Original currently selected cut.
+    pub selection: Selection,
+    /// Opaque existing placement/index page cursor; None means wave complete.
+    pub next_page: Option<Vec<u8>>,
+    /// Pins adopted in this wave; cohorts are the unit, not individual members.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub adopted: u64,
+    /// Guard outcome and retained version-pair evidence.
+    pub guard: GuardDecision,
+    /// Version-pair/direction observations required by the declared policy.
+    pub calls: Vec<CallPair>,
+    /// Fresh epoch allocated for rollback; None means no rollback admitted.
+    #[serde(with = "optional_decimal")]
+    #[ts(type = "string | null")]
+    pub rollback_epoch: Option<NonZeroU64>,
+}
+
+/// Deployment-volume paths, relative to the admitted deployment root.
+pub const SELECTION_FILE: &str = "deployment/selection.json";
+/// Immutable publication files are named by the monotonically assigned version.
+pub const VERSIONS_DIRECTORY: &str = "deployment/versions";
+/// Follow this file through the existing live query to observe wave/guard changes.
+pub const STATUS_FILE: &str = "deployment/rollout.json";
+/// Promotion/rollback controls use the admitted volume's ordinary write path.
+pub const SELECTION_REQUEST_FILE: &str = "deployment/selection.request.json";
+/// The SLI policy is observed through the same deployment live query.
+pub const POLICY_FILE: &str = "deployment/rollout-policy.json";
+
+#[doc(hidden)]
+pub mod optional_decimal {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+    use std::{fmt::Display, str::FromStr};
+    pub fn serialize<T: Display, S: Serializer>(
+        value: &Option<T>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(value) => serializer.serialize_some(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, T: FromStr, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<T>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map(|value| {
+                value
+                    .parse()
+                    .map_err(|_| D::Error::custom("invalid unsigned decimal"))
+            })
+            .transpose()
+    }
+}
+
+mod decimal_map {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+    use std::collections::BTreeMap;
+    pub fn serialize<S: Serializer>(
+        value: &BTreeMap<String, u64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value
+            .iter()
+            .map(|(key, value)| (key, value.to_string()))
+            .collect::<BTreeMap<_, _>>()
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, u64>, D::Error> {
+        BTreeMap::<String, String>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(key, value)| {
+                value
+                    .parse()
+                    .map(|value| (key, value))
+                    .map_err(|_| D::Error::custom("invalid unsigned decimal"))
+            })
+            .collect()
+    }
 }
