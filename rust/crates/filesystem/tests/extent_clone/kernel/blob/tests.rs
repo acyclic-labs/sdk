@@ -6,10 +6,13 @@ use acyclic_fs::kernel::{
 use acyclic_fs::speculation::{ResidencyHint, ResidencyReason};
 use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, ByteRange, CancellationToken, MemoryObjectStore,
-    ObjectReadRequest,
+    ObjectReadRequest, ObjectStoreError,
 };
-use acyclic_fs_format::object_reference::{ObjectId, ObjectKind};
-use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters};
+use acyclic_fs_format::{
+    identity::Digest,
+    object_reference::{ObjectId, ObjectKind},
+};
+use acyclic_fs_work::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 
@@ -181,7 +184,7 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
 async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = memory_objects();
-    let (root, second) = adjacent_chunks(&store).await?;
+    let (root, second) = adjacent_chunks(&store, 8).await?;
     let read = read_blob_range(
         &store,
         root,
@@ -211,6 +214,7 @@ async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 
 async fn adjacent_chunks(
     store: &MemoryObjectStore,
+    maximum_items: u32,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let first = put_object(
         store,
@@ -240,14 +244,14 @@ async fn adjacent_chunks(
             },
         ]),
     };
-    let root = put_blob_page(store, &page, 8).await?;
+    let root = put_blob_page(store, &page, maximum_items).await?;
     Ok((root, second))
 }
 
 #[tokio::test]
 async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::error::Error>> {
     let store = memory_objects();
-    let (root, _) = adjacent_chunks(&store).await?;
+    let (root, _) = adjacent_chunks(&store, 8).await?;
     let result = read_blob_range(
         &store,
         root,
@@ -286,5 +290,208 @@ async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn st
         .ok_or("pre-cancelled asynchronous blob read unexpectedly succeeded")?;
     assert!(matches!(failure.error, BlobReadError::Cancelled));
     assert_eq!(*failure.work()?, WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let missing_chunk = ObjectId {
+        storage: None,
+        kind: ObjectKind::BlobChunk,
+        digest: Digest::from_bytes([88; 32]),
+    };
+    let missing_page = BlobPage {
+        first_offset: 0,
+        end_offset: 4,
+        node: BlobNode::Leaf(vec![BlobChunkRef {
+            first_offset: 0,
+            end_offset: 4,
+            chunk: missing_chunk,
+        }]),
+    };
+    let missing_root = put_blob_page(&store, &missing_page, 8).await?;
+    let missing = read_blob_range(
+        &store,
+        missing_root,
+        ByteRange {
+            offset: 0,
+            length: 4,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("missing blob chunk unexpectedly succeeded")?;
+    assert!(matches!(
+        missing.error,
+        BlobReadError::Storage(ObjectStoreError::Missing)
+    ));
+    assert_eq!(missing.work()?.page_reads, 1);
+
+    let short_chunk = put_object(
+        &store,
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"ab"),
+    )
+    .await?;
+    let short_page = BlobPage {
+        first_offset: 0,
+        end_offset: 4,
+        node: BlobNode::Leaf(vec![BlobChunkRef {
+            first_offset: 0,
+            end_offset: 4,
+            chunk: short_chunk,
+        }]),
+    };
+    let short_root = put_blob_page(&store, &short_page, 8).await?;
+    let short = read_blob_range(
+        &store,
+        short_root,
+        ByteRange {
+            offset: 0,
+            length: 4,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("short blob chunk unexpectedly succeeded")?;
+    assert!(matches!(short.error, BlobReadError::ChunkLengthMismatch));
+    assert_eq!(short.work()?.object_probes, 2);
+
+    for range in [
+        ByteRange {
+            offset: 4,
+            length: 1,
+        },
+        ByteRange {
+            offset: u64::MAX,
+            length: 1,
+        },
+    ] {
+        let failure = read_blob_range(
+            &store,
+            short_root,
+            range,
+            DecodeLimits::default(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .err()
+        .ok_or("invalid blob range unexpectedly succeeded")?;
+        assert!(matches!(failure.error, BlobReadError::InvalidRange));
+    }
+    let empty = read_blob_range(
+        &store,
+        short_root,
+        ByteRange {
+            offset: 0,
+            length: 0,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    assert!(empty.bytes.is_empty());
+    assert_eq!(empty.work.page_reads, 1);
+    let wrong = read_blob_range(
+        &store,
+        short_chunk,
+        ByteRange {
+            offset: 0,
+            length: 1,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("wrong blob root kind unexpectedly succeeded")?;
+    assert!(matches!(wrong.error, BlobReadError::WrongRootKind));
+    assert_eq!(*wrong.work()?, WorkCounters::default());
+    let invalid_limits = DecodeLimits {
+        maximum_page_height: 0,
+        ..DecodeLimits::default()
+    };
+    let invalid = read_blob_range(
+        &store,
+        short_root,
+        ByteRange {
+            offset: 0,
+            length: 1,
+        },
+        invalid_limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("invalid blob limits unexpectedly succeeded")?;
+    assert!(matches!(invalid.error, BlobReadError::InvalidLimits));
+    assert_eq!(*invalid.work()?, WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = memory_objects();
+    let (root, _) = adjacent_chunks(&store, 2).await?;
+    let limits = DecodeLimits {
+        maximum_page_items: 2,
+        maximum_page_height: 1,
+        ..DecodeLimits::default()
+    };
+    let range = ByteRange {
+        offset: 1,
+        length: 6,
+    };
+    let baseline = read_blob_range(
+        &store,
+        root,
+        range,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let maximum = baseline.work.peak_allocation_bytes - 1;
+    let failure = read_blob_range(
+        &store,
+        root,
+        range,
+        limits,
+        WorkBudget {
+            peak_allocation_bytes: maximum,
+            ..WorkBudget::UNBOUNDED
+        },
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("one-byte-short blob read allocation budget unexpectedly succeeded")?;
+    assert!(
+        matches!(
+            failure.error,
+            BlobReadError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                observed,
+                maximum: observed_maximum,
+            }) if observed > observed_maximum && observed_maximum <= maximum
+        ),
+        "{failure:?}"
+    );
+    assert!(failure.work()?.peak_allocation_bytes <= maximum);
+    assert_eq!(failure.work()?.backend_read_operations, 1);
+    assert_eq!(failure.work()?.backend_write_operations, 0);
     Ok(())
 }
