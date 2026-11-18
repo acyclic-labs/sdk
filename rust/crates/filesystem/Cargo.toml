@@ -74,6 +74,7 @@ workspace_contracts = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "sha2"
 workspace_creation_race = ["acyclic_fs", "acyclic_fs_work", "acyclic_objects", "acyclic_stream", "async_trait", "futures", "tokio"]
 workspace_join_history = ["acyclic_fs", "acyclic_fs_work", "tokio"]
 workspace_merge = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
+workspace_fork_selection = ["acyclic_fs", "acyclic_fs_work", "bytes", "futures", "proptest", "tokio"]
 workspace_rebase = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
 workspace_restore = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "tokio"]
 
@@ -142,6 +143,10 @@ path = "tests/workspace_creation_race.rs"
 [[test]]
 name = "workspace_join_history"
 path = "tests/workspace_join_history.rs"
+
+[[test]]
+name = "workspace_fork_selection"
+path = "tests/workspace_fork_selection.rs"
 
 [[test]]
 name = "workspace_rebase"
