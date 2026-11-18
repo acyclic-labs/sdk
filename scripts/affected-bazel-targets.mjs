@@ -21,6 +21,9 @@ const GLOBAL_INPUTS = [
   /^patches\//,
   // Both crate universes' lockfiles: a repin changes every target that reads the universe.
   /^cargo(?:-wasm)?-bazel(?:-lock\.json|\.Cargo\.lock)$/,
+  // Repository-rule inputs: no build graph edge names them, so a change to one changes the
+  // repositories every target resolves through.
+  /^(?:bun\.lock|scripts\/ensure-bun\.(?:sh|ps1))$/,
   /^scripts\/bazel-build-files\.mjs$/,
   /^rust\/vendor\//,
 ];
