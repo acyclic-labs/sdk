@@ -95,7 +95,7 @@ async fn original_file_progress_ignores_storage_layout_and_counts_creation() -> 
         "same bytes counted as progress after a layout change"
     );
     assert!(
-        work.receipt().source_bytes_read > 0,
+        work.receipt()?.source_bytes_read > 0,
         "partial chunk comparison lost its original byte admission"
     );
     let created = host
@@ -338,10 +338,11 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     let io = PreparationIo::from_native_work(&work)?;
     let bytes = host.read_pinned_range(&file, range, Some(&io)).await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
-    assert!(work.receipt().source_bytes_read < 64 * 1024);
-    assert!(work.receipt().bytes_copied < 64 * 1024);
-    assert!(work.receipt().bytes_hashed < file.descriptor().byte_length());
-    assert!(work.receipt().object_bytes_read < file.descriptor().byte_length());
+    let receipt = work.receipt()?;
+    assert!(receipt.source_bytes_read < 64 * 1024);
+    assert!(receipt.bytes_copied < 64 * 1024);
+    assert!(receipt.bytes_hashed < file.descriptor().byte_length());
+    assert!(receipt.object_bytes_read < file.descriptor().byte_length());
     Ok(())
 }
 
@@ -487,9 +488,10 @@ async fn private_metadata_does_not_materialize_file_bodies() -> Result<()> {
         .expect("published file");
     assert_eq!(stat.kind, acyclic_fs::kernel::FileKind::Regular);
     assert_eq!(stat.logical_bytes, Some(file.descriptor().byte_length()));
-    assert!(work.receipt().source_bytes_read < 64 * 1024);
-    assert!(work.receipt().object_bytes_read < file.descriptor().byte_length());
-    assert!(work.receipt().bytes_hashed < 64 * 1024);
+    let receipt = work.receipt()?;
+    assert!(receipt.source_bytes_read < 64 * 1024);
+    assert!(receipt.object_bytes_read < file.descriptor().byte_length());
+    assert!(receipt.bytes_hashed < 64 * 1024);
     let denied_work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs_work::performance::WorkBudget {
             bytes_copied: 0,
@@ -566,7 +568,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         (bytes.as_ref(), length),
         (&body[offset..], body.len() as u64)
     );
-    assert!(work.receipt().source_bytes_read < 64 * 1024);
+    assert!(work.receipt()?.source_bytes_read < 64 * 1024);
     assert_eq!(selected.as_resource().provider(), volume.provider());
     host.apply(
         &workspace,
@@ -600,7 +602,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     assert_eq!(generation, selected);
     assert_eq!(pinned_length, body.len() as u64);
     assert_eq!(pinned.as_ref(), &body[offset..]);
-    assert!(pinned_work.receipt().source_bytes_read < 64 * 1024);
+    assert!(pinned_work.receipt()?.source_bytes_read < 64 * 1024);
     for (path, maximum, code) in [
         ("missing", u64::MAX, crate::wire::ErrorCode::NotFound),
         ("directory", u64::MAX, crate::wire::ErrorCode::Invalid),
@@ -719,6 +721,6 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
             .as_ref(),
         b"xxxxxxxxxxxxxxxx"
     );
-    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
+    assert!(work.receipt()?.peak_allocation_bytes < file.descriptor().byte_length());
     Ok(())
 }
