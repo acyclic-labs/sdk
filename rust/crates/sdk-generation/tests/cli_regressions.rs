@@ -743,24 +743,20 @@ fn run_historical_generate_mode(
     support: &Path,
     mode: Option<&str>,
 ) -> std::process::Output {
-    run_historical_generate_mode_with_env(fixture, support, mode, None)
+    run_historical_generate_mode_with_authority(fixture, support, mode, None)
 }
 
-fn run_historical_generate_mode_with_env(
-    fixture: &Fixture,
-    support: &Path,
-    mode: Option<&str>,
-    override_lock: Option<&Path>,
-) -> std::process::Output {
-    run_historical_generate_mode_with_authority(fixture, support, mode, override_lock, None)
+enum HistoricalAuthority<'a> {
+    Lock(&'a Path),
+    CargoHome(&'a Path),
+    WorkingDirectory(&'a Path),
 }
 
 fn run_historical_generate_mode_with_authority(
     fixture: &Fixture,
     support: &Path,
     mode: Option<&str>,
-    override_lock: Option<&Path>,
-    automatic_config: Option<(&Path, bool)>,
+    authority: Option<HistoricalAuthority<'_>>,
 ) -> std::process::Output {
     let path = fixture_path(support);
     let mut command = Command::new(runtime::binary("sdk-generation"));
@@ -796,15 +792,17 @@ fn run_historical_generate_mode_with_authority(
                 .arg(revisions.trim());
         }
     }
-    if let Some(lock) = override_lock {
-        command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock);
-    }
-    if let Some((directory, cargo_home)) = automatic_config {
-        if cargo_home {
-            command.env("CARGO_HOME", directory);
-        } else {
+    match authority {
+        Some(HistoricalAuthority::Lock(lock)) => {
+            command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock);
+        }
+        Some(HistoricalAuthority::CargoHome(home)) => {
+            command.env("CARGO_HOME", home);
+        }
+        Some(HistoricalAuthority::WorkingDirectory(directory)) => {
             command.current_dir(directory);
         }
+        None => {}
     }
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");

@@ -12,11 +12,11 @@ fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
                 fs::write(&foreign, "invalid foreign lock must never be selected\n").unwrap();
                 let archive = support.join("registry/demo-1.0.0.crate");
                 let original_archive = fs::read(&archive).unwrap();
-                let result = run_historical_generate_mode_with_env(
+                let result = run_historical_generate_mode_with_authority(
                     &fixture,
                     &support,
                     Some("registry-archives"),
-                    Some(&foreign),
+                    Some(HistoricalAuthority::Lock(&foreign)),
                 );
                 assert!(result.status.success(), "{}", output_message(&result));
                 assert_eq!(
@@ -107,8 +107,11 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                             &fixture,
                             &support,
                             Some("registry-archives"),
-                            None,
-                            Some((&directory, cargo_home)),
+                            Some(if cargo_home {
+                                HistoricalAuthority::CargoHome(&directory)
+                            } else {
+                                HistoricalAuthority::WorkingDirectory(&directory)
+                            }),
                         )
                     });
                     assert!(result.status.success(), "{}", output_message(&result));
