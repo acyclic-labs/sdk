@@ -212,7 +212,7 @@ impl HttpObjects {
     async fn call(&self, route: &str, input: Bytes) -> Result<Bytes, Error> {
         crate::operation::run(self.context.as_ref(), async {
             let (input_name, output_name) = crate::ObjectsMethod::from_http_route(route)
-                .filter(|method| *method != crate::ObjectsMethod::Availability)
+                .filter(|method| !method.is_streaming_http())
                 .map(crate::ObjectsMethod::http_message_types)
                 .ok_or_else(unavailable)?;
             let url = self

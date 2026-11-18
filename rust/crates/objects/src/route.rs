@@ -16,12 +16,12 @@ macro_rules! http_routes {
     ) => {
         /// Canonical unary HTTP route and message names relative to `/v1/objects/`.
         pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
-            $(($route, stringify!($input), stringify!($output))),+
+            $(ObjectsMethod::$method.http_metadata()),+
         ];
 
         /// Streaming HTTP routes with length-delimited Protobuf frames.
         pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[
-            $(($stream_route, stringify!($stream_in), stringify!($stream_out))),+
+            $(ObjectsMethod::$stream.http_metadata()),+
         ];
 
         impl ObjectsMethod {
@@ -38,18 +38,25 @@ macro_rules! http_routes {
             /// Canonical binary HTTP route relative to `/v1/objects/`.
             #[must_use]
             pub const fn http_route(self) -> &'static str {
-                match self {
-                    $(Self::$method => $route,)+
-                    $(Self::$stream => $stream_route,)+
-                }
+                self.http_metadata().0
             }
 
             /// Canonical Protobuf request and response (or stream item) names.
             #[must_use]
             pub const fn http_message_types(self) -> (&'static str, &'static str) {
+                let (_, input, output) = self.http_metadata();
+                (input, output)
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            pub(crate) const fn is_streaming_http(self) -> bool {
+                matches!(self, $(Self::$stream)|+)
+            }
+
+            const fn http_metadata(self) -> (&'static str, &'static str, &'static str) {
                 match self {
-                    $(Self::$method => (stringify!($input), stringify!($output)),)+
-                    $(Self::$stream => (stringify!($stream_in), stringify!($stream_out)),)+
+                    $(Self::$method => ($route, stringify!($input), stringify!($output)),)+
+                    $(Self::$stream => ($stream_route, stringify!($stream_in), stringify!($stream_out)),)+
                 }
             }
         }

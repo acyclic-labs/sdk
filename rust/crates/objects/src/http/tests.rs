@@ -49,7 +49,7 @@ async fn dispatch(
     let (input, output) = method.http_message_types();
     let input = json::decode_binary(input, &body, Some(1024 * 1024))
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    if method == crate::ObjectsMethod::Availability {
+    if method.is_streaming_http() {
         let events = crate::route::invoke_stream(&blobs, route, input.into())
             .await
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
