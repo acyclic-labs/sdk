@@ -336,9 +336,17 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                 "rustc_compiles_inside_a_linux_mount" => {
                     std::fs::write(temporary.path().join("main.rs"), b"fn main() {}\n")?;
                     let output = acyclic_native_runtime::process_output(
-                        acyclic_native_runtime::ProcessCommand::new("rustc")
-                            .current_dir(temporary.path())
-                            .args(["--edition", "2021", "main.rs", "-o", "main"]),
+                        acyclic_native_runtime::ProcessCommand::new(
+                            crate::test_support::mount_test_compiler()?,
+                        )
+                        .current_dir(temporary.path())
+                        .args([
+                            "--edition",
+                            "2021",
+                            "main.rs",
+                            "-o",
+                            "main",
+                        ]),
                         std::time::Duration::from_secs(120),
                         8 * 1024 * 1024,
                     )?;

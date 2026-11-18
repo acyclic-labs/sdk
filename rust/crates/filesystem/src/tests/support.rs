@@ -9,6 +9,18 @@ use crate::storage::{
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn mount_test_compiler() -> std::io::Result<std::path::PathBuf> {
+    let compiler = std::path::PathBuf::from(acyclic_test_support::host_tool!("rustc"));
+    // Bazel aliases the executable into runfiles. Its sysroot remains with
+    // the real toolchain, so launch from that canonical location.
+    if compiler.is_absolute() {
+        compiler.canonicalize()
+    } else {
+        Ok(compiler)
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     pub(crate) static JSON_OUTPUT_CUT: std::cell::RefCell<Option<(crate::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };

@@ -739,7 +739,9 @@ async fn rustc_links_object_files_created_inside_projection()
     let compiler_path = path.clone();
     let output = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(
-            acyclic_native_runtime::ProcessCommand::new("rustc")
+            acyclic_native_runtime::ProcessCommand::new(
+                crate::test_support::mount_test_compiler()?,
+            )
                 .current_dir(compiler_path)
                 .args([
                     "--edition",

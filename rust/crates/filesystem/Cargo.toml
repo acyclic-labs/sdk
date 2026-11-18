@@ -40,6 +40,9 @@ test-build-script = ["operation_claim_model"]
 [package.metadata.bazel.unit-test-dependency-variants]
 acyclic-fs-work = "observations"
 
+[package.metadata.bazel.test-tools.acyclic_fs_test]
+rustc = "//:rustc"
+
 [package.metadata.bazel.test-dependencies]
 operation_claim_model = ["acyclic_stream", "loom"]
 native_view_table = []
