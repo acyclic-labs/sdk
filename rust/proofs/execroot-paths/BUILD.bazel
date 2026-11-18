@@ -1,6 +1,6 @@
 # The paths a Rust compile action derives from its execution root, checked under whichever sandbox runs it
-# (linux-sandbox, darwin-sandbox, Windows local): a build script's OUT_DIR, read back by the crate compiled
-# from it, and the same crate's metadata and rlib, linked through a dependent that compiled against the
+# (linux-sandbox, darwin-sandbox, Windows local): the process wrapper's `${exec_root}`, a build script's
+# OUT_DIR, read back by the crate compiled from it, and the same crate's metadata and rlib, linked through a dependent that compiled against the
 # metadata. Hand-written: no Cargo manifest describes a check of the build rules themselves.
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_proc_macro", "rust_test")
@@ -25,6 +25,8 @@ rust_library(
     crate_root = "probe.rs",
     edition = "2024",
     proc_macro_deps = [":execroot_check"],
+    # The process wrapper's own `${exec_root}` substitution, as generated package env values use it.
+    rustc_env = {"PROBE_EXEC_ROOT": "$${exec_root}"},
     deps = [":probe_build_script"],
 )
 

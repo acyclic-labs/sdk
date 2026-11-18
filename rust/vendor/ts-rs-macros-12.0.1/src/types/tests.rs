@@ -115,3 +115,35 @@ fn container_serialization_preserves_transparent_fields() -> syn::Result<()> {
     assert!(syn::parse2::<Serde<EnumAttr>>(quote!(deny_unknown_fields = true)).is_err());
     Ok(())
 }
+
+/// One input expands to one token stream: dependencies and where-clause bounds
+/// follow first use, each once. A hash-ordered set gave a different order per
+/// compiler process, so a crate's metadata and rlib compiles disagreed on its
+/// hash. Control: with `Dependencies` back on `HashSet`, both orders below fail.
+#[test]
+fn dependencies_and_bounds_follow_first_use_once_each() -> syn::Result<()> {
+    let item: ItemStruct = parse_quote! {
+        struct Pair<A, B> { second: B, first: Vec<A>, again: Vec<A>, label: String, other: B }
+    };
+    let derived = crate::types::struct_def(&item)?;
+    let ts = &derived.crate_rename;
+    let dependencies = &derived.dependencies;
+    assert_eq!(
+        quote!(#dependencies).to_string(),
+        quote! {
+            v.visit::<B>();
+            <B as #ts::TS>::visit_generics(v);
+            v.visit::<Vec<A> >();
+            <Vec<A> as #ts::TS>::visit_generics(v);
+            v.visit::<String>();
+            <String as #ts::TS>::visit_generics(v);
+        }
+        .to_string()
+    );
+    let bounds = crate::generate_where_clause(ts, &item.generics, dependencies);
+    assert_eq!(
+        quote!(#bounds).to_string(),
+        quote!(where B: #ts::TS, A: #ts::TS).to_string()
+    );
+    Ok(())
+}
