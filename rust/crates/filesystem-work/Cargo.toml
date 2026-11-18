@@ -8,6 +8,11 @@ repository.workspace = true
 publish = true
 description = "Exact work accounting for Acyclic filesystem operations"
 
+[package.metadata.bazel]
+unit-test-only-sources = ["src/tests/**"]
+library-test-variant = "observations"
+library-test-features = ["test-support"]
+
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true

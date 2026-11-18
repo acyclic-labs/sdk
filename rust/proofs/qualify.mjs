@@ -1301,7 +1301,7 @@ const claims = {
     "reconnect served trust before its original observed tail", ["--no-default-features"],
   ],
   "scalar-charge-cost": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs",
     "performance::tests::native::borrowed::item_only_kernel_charge_preserves_exact_errors_receipts_and_cost",
     "scalar charge performed unrelated counter arithmetic", ["--no-default-features", ],
   ],
@@ -1312,12 +1312,12 @@ const claims = {
     { target: ["--test", "main"], loom: true },
   ],
   "work-arithmetic": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs-work",
     "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals",
     "full-width work sum disagreed with wider arithmetic", [],
   ],
   "work-mixed": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs-work",
     "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals",
     "full-width work sum disagreed with wider arithmetic", [],
   ],
@@ -1327,7 +1327,7 @@ const claims = {
     "ready record scheduling allocated physical heap storage", ["--no-default-features"],
   ],
   "budget-errors": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs",
     "performance::tests::native::borrowed::borrowed_verification_preserves_exact_errors_and_priority",
     "budget refusal lost the exact counter or priority", [],
   ],

@@ -17,6 +17,9 @@ categories = ["filesystem", "data-structures"]
 [package.metadata.bazel]
 mounts-fuse = true
 
+[package.metadata.bazel.unit-test-dependency-variants]
+acyclic-fs-work = "observations"
+
 [[test]]
 name = "main"
 path = "tests/main.rs"
