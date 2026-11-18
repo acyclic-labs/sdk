@@ -84,11 +84,12 @@ jobs:
         shell: bash
         run: npm install --global @bazel/bazelisk@1.26.0
       - name: Restore Bazel caches
+        if: matrix.runner != 'kaizen-linux'
         id: bazel-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cache/bazel-disk
+            /var/tmp/acyclic-bazel-disk
             ~/.cache/bazel-repository-cache
           key: bazel-${{ matrix.target }}-${{ inputs.source_sha }}
           restore-keys: |
@@ -100,7 +101,7 @@ jobs:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
-          flags=(-c opt --disk_cache="$HOME/.cache/bazel-disk" --repository_cache="$HOME/.cache/bazel-repository-cache")
+          flags=(-c opt --repository_cache="$HOME/.cache/bazel-repository-cache")
           if [[ -n "$PLATFORM" ]]; then flags+=(--platforms="$PLATFORM"); fi
           labels=(//plugin:acyclic //plugin:graphcoder //rust/crates/conformance:native-mount-qualify)
           bazelisk build "${flags[@]}" "${labels[@]}"
@@ -184,11 +185,11 @@ jobs:
         run: node scripts/test-install-release-asset.mjs
 
       - name: Save Bazel caches
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.bazel-cache.outputs.cache-hit != 'true'
+        if: matrix.runner != 'kaizen-linux' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.bazel-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cache/bazel-disk
+            /var/tmp/acyclic-bazel-disk
             ~/.cache/bazel-repository-cache
           key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
 
