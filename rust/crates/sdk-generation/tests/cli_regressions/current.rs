@@ -612,24 +612,12 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
 #[test]
 fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims() {
     runtime::time_control();
-    let fixture = feature_profile_fixture();
-    let package = fixture.root.join("rust/crates/demo");
-    fs::write(
-        package.join("Cargo.toml"),
+    let fixture = profile_source(
         include_str!("../fixtures/feature-profile/rust/crates/demo/binary.toml"),
-    )
-    .unwrap();
-    fs::remove_file(package.join("src/lib.rs")).unwrap();
-    fs::write(
-        package.join("src/main.rs"),
+        "src/main.rs",
         include_str!("../fixtures/feature-profile/rust/crates/demo/binary.rs"),
-    )
-    .unwrap();
-    git(&fixture.root, &["add", "."]);
-    git(
-        &fixture.root,
-        &["commit", "--quiet", "-m", "binary-only fixture"],
     );
+    init_git(&fixture.root, "binary-only fixture");
     let hits = commands::DECLARED_RUSTDOC_HITS.get();
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
