@@ -287,13 +287,6 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
         fixture.path().join("src/lib.rs"),
     )
     .unwrap();
-    let (dirty, dirty_archive) = fixture.archive_with_dirty(&revision, "", true);
-    assert!(
-        verify_archive(&metadata, fixture.path(), &revision, &dirty, &dirty_archive)
-            .unwrap_err()
-            .contains("dirty source")
-    );
-    let (release, archive) = fixture.archive(&revision, "");
     let mut wrong = release.clone();
     wrong.checksum = "b".repeat(64);
     assert!(
@@ -310,6 +303,12 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
     )
     .unwrap_err()
     .contains("revision differs"));
+    let (dirty, dirty_archive) = fixture.archive_with_dirty(&revision, "", true);
+    assert!(
+        verify_archive(&metadata, fixture.path(), &revision, &dirty, &dirty_archive)
+            .unwrap_err()
+            .contains("dirty source")
+    );
     let (escaping, archive) = fixture.archive(&revision, "../outside");
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &escaping, &archive)
