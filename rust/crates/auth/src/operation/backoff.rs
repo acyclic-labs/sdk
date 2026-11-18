@@ -55,9 +55,22 @@ impl Backoff {
         std::time::Duration::from_millis(u64::from(self.advance(draw)))
     }
 
+    /// Compute the capped ceiling after `doublings` failures beyond the first.
+    /// Callers retaining their own attempt counter can recover spacing directly.
+    #[must_use]
+    pub fn ceiling_ms_at(base_ms: u64, maximum_ms: u64, doublings: u32) -> u64 {
+        let factor = 1_u64.checked_shl(doublings).unwrap_or(u64::MAX);
+        base_ms.saturating_mul(factor).min(maximum_ms)
+    }
+
     fn advance(&mut self, draw: impl FnOnce(u32) -> u32) -> u32 {
         let ceiling = self.ceiling_ms;
-        self.ceiling_ms = ceiling.saturating_mul(2).min(self.maximum_ms);
+        self.ceiling_ms = u32::try_from(Self::ceiling_ms_at(
+            u64::from(ceiling),
+            u64::from(self.maximum_ms),
+            1,
+        ))
+        .expect("backoff ceiling stays within its u32 maximum");
         let lower = ceiling.div_ceil(2);
         let choices = ceiling - lower + 1;
         lower + draw(choices) % choices
