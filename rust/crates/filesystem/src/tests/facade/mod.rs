@@ -1,6 +1,6 @@
 use super::*;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
-use crate::model::{CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy};
+use crate::model::{ConcurrencyMode, FilesystemProfile};
 use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite};
 use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "../../../tests/support/checkout_fixture.rs"]
 mod checkout_fixture;
 use checkout_fixture::{config, path, path_parts, writable_pinned};
+
+#[path = "../../../tests/support/checkout_tracking.rs"]
+mod checkout_tracking;
+use checkout_tracking::tracking;
 
 fn serialized_config() -> VolumeConfig {
     VolumeConfig {
@@ -32,14 +36,6 @@ fn manual() -> CheckoutMode {
     CheckoutMode {
         access: AccessMode::ReadOnly,
         consistency: ConsistencyMode::Manual,
-        mutations: MutationMode::None,
-    }
-}
-
-fn tracking() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadOnly,
-        consistency: ConsistencyMode::TrackingSafe,
         mutations: MutationMode::None,
     }
 }
@@ -82,28 +78,6 @@ struct CheckoutState {
     prepared_merge_parent: Option<ObjectId>,
     dependencies: CheckoutDependencies,
     mode: CheckoutMode,
-}
-
-// --- Case-folding / Unicode-normalization ---
-//
-// `CaseSensitivity::ProfileFolded` rejects same-directory siblings whose
-// names collide once case-folded (`FsError::NameCollision`) and resolves
-// lookups case-insensitively; `UnicodePolicy::RequireNfc` rejects any new
-// name that is not canonical NFC (`FsError::NonNormalizedName`). Both are
-// admitted at volume creation (pinned above).
-
-fn folded_config() -> VolumeConfig {
-    VolumeConfig {
-        case_sensitivity: CaseSensitivity::ProfileFolded,
-        ..config()
-    }
-}
-
-fn nfc_config() -> VolumeConfig {
-    VolumeConfig {
-        unicode: UnicodePolicy::RequireNfc,
-        ..config()
-    }
 }
 
 fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
