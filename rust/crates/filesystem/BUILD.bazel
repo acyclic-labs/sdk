@@ -293,7 +293,7 @@ cargo_build_script(
 rust_library(
     name = "acyclic_fs",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs","src/tests/**"], allow_empty = True) + [
         "tests/support/git_markers_oracle.rs",
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
@@ -534,6 +534,7 @@ rust_test(
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
         "tests/support/unbounded.rs",
+        "tests/support/workspace.rs",
     ] + select({
         "@platforms//os:linux": glob(["src/native_mount/fuse/**/*.rs"], allow_empty = True),
         "@platforms//os:macos": glob(["src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs"], allow_empty = True),
@@ -1527,7 +1528,7 @@ rust_library(
     name = "acyclic_fs_wasm",
     crate_name = "acyclic_fs",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/native_mount/fuse/**/*.rs","src/fsevents/**/*.rs","src/native_mount/darwin_mount/**/*.rs","src/native_mount/projfs/**/*.rs","src/windows_usn.rs","tests/cases/projfs_metadata/metadata/client.rs","tests/projfs_metadata_support.rs","src/tests/**"], allow_empty = True) + [
         "tests/support/git_markers_oracle.rs",
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",

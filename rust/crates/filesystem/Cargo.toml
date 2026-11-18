@@ -17,6 +17,7 @@ categories = ["filesystem", "data-structures"]
 [package.metadata.bazel]
 mounts-fuse = true
 share-separate-deps = true
+unit-test-only-sources = ["src/tests/**"]
 build-script-inputs = [
     "src/native_mount/darwin_mount_bridge.c",
     "src/native_mount/darwin_mount_retirement.c",
