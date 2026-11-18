@@ -273,7 +273,9 @@ pub async fn apply_file_table_mutations<S: crate::AsyncObjectStore>(
         cancellation,
     )
     .await
-    .map_err(|error| OperationFailure::new(project_file_table_error(error), accounting.spent()))
+    .map_err(|error| {
+        OperationFailure::observed(project_file_table_error(error), accounting.spent())
+    })
 }
 
 pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncObjectStore>(

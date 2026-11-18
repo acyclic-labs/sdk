@@ -2,6 +2,12 @@ use super::*;
 
 #[test]
 fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates() {
+    compiler::with(
+        actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates_world,
+    );
+}
+
+fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates_world() {
     let fixture = Fixture::new();
     let root = fixture.path().canonicalize().unwrap();
     let directory = "historical-fixture-0.1.0";
@@ -22,7 +28,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     .unwrap();
     let cargo = cargo();
     command_output(
-        Command::new(&cargo)
+        sdk_docs::command(&cargo)
             .args([
                 "package",
                 "--offline",
@@ -59,7 +65,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         .unwrap()
         .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
     command_output(
-        Command::new(rustc)
+        sdk_docs::command(rustc)
             .args(["--edition=2021"])
             .arg(&curl_source)
             .arg("-o")
@@ -82,7 +88,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
             .collect::<BTreeSet<_>>();
         let linked = producer_dir.join("dependencies");
         std::os::unix::fs::symlink(&foreign, &linked).unwrap();
-        let rejected = Command::new(std::env::current_exe().unwrap())
+        let rejected = sdk_docs::command(std::env::current_exe().unwrap())
             .args([
                 "historical::tests::dependency_archive_initial_import_uses_verified_registry_facts",
                 "--exact",
@@ -104,7 +110,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         );
         fs::remove_file(linked).unwrap();
     }
-    let imported = Command::new(std::env::current_exe().unwrap())
+    let imported = sdk_docs::command(std::env::current_exe().unwrap())
         .args([
             "historical::tests::dependency_archive_initial_import_uses_verified_registry_facts",
             "--exact",
@@ -150,7 +156,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
             &config_path,
         )),
     };
-    let mut generate = Command::new(&cargo);
+    let mut generate = sdk_docs::command(&cargo);
     generate
         .args(["generate-lockfile", "--offline", "--manifest-path"])
         .arg(root.join("Cargo.toml"));
@@ -165,7 +171,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     };
     let files = verify_producer_resolution(&root, directory, &producer).unwrap();
     // Default Cargo metadata legitimately omits an optional renamed dependency.
-    let mut default_metadata = Command::new(&cargo);
+    let mut default_metadata = sdk_docs::command(&cargo);
     default_metadata
         .args([
             "metadata",
@@ -198,7 +204,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         fs::read_to_string(root.join("Cargo.toml")).unwrap(),
         original_manifest
     );
-    let mut original = Command::new(&cargo);
+    let mut original = sdk_docs::command(&cargo);
     original
         .args(["metadata", "--locked", "--offline", "--manifest-path"])
         .arg(root.join("Cargo.toml"));
@@ -248,7 +254,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         .parent()
         .unwrap()
         .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
-    let host = String::from_utf8(command_output(Command::new(rustc).arg("-vV")).unwrap())
+    let host = String::from_utf8(command_output(sdk_docs::command(rustc).arg("-vV")).unwrap())
         .unwrap()
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
@@ -438,7 +444,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     )
     .unwrap();
     command_output(
-        Command::new(&cargo)
+        sdk_docs::command(&cargo)
             .args([
                 "package",
                 "--offline",
@@ -460,7 +466,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     )
     .unwrap();
     command_output(
-        Command::new("tar")
+        sdk_docs::command("tar")
             .arg("-xf")
             .arg(&unused_archive)
             .arg("-C")
@@ -483,7 +489,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         producer_config_bytes(directory, &unused_records).unwrap(),
     )
     .unwrap();
-    let mut generate = Command::new(&cargo);
+    let mut generate = sdk_docs::command(&cargo);
     generate
         .args(["generate-lockfile", "--offline", "--manifest-path"])
         .arg(root.join("Cargo.toml"));
@@ -551,7 +557,7 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     )
     .unwrap();
     fs::write(&config_path, &config).unwrap();
-    let mut generate = Command::new(&cargo);
+    let mut generate = sdk_docs::command(&cargo);
     generate
         .args(["generate-lockfile", "--offline", "--manifest-path"])
         .arg(root.join("Cargo.toml"));

@@ -411,7 +411,9 @@ mod unix {
     /// group ID stays reserved while any member of the warden's group lives.
     fn fence_group(group: libc::pid_t, start: &[u8]) -> io::Result<()> {
         let mut current = [0; super::super::record::START_BYTES];
-        use crate::process_identity::{IncarnationState, ProcessIncarnation, ProcessObservation};
+        use acyclic_process_identity::process_identity::{
+            IncarnationState, ProcessIncarnation, ProcessObservation,
+        };
         let owner = ProcessIncarnation::new(
             u32::try_from(group).map_err(|_| io::ErrorKind::InvalidData)?,
             start,
@@ -642,7 +644,7 @@ mod windows {
             let name = format!(
                 "{PREFIX}{}-{}-{tree}",
                 std::process::id(),
-                crate::process_identity::current_process_started()?
+                acyclic_process_identity::process_identity::current_process_started()?
             );
             // The custodian identity detects loss of the original tree's
             // retirement producer; it is never a barrier for unrelated trees.

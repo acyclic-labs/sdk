@@ -232,17 +232,11 @@ pub(crate) fn run_native_mount_handler<T>(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
     operation: impl FnOnce(&NativeMaterializationWork) -> Result<T, NativeMountError>,
-) -> Result<crate::OperationReceipt<T>, (NativeMountError, Box<crate::WorkCounters>)> {
+) -> crate::MeasuredResult<crate::OperationReceipt<T>, NativeMountError> {
     let work = crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(cause, work)| (cause.into(), work))?;
+        .map_err(|(cause, work)| crate::OperationFailure::new(cause.into(), *work))?;
     let result = run_native_mount_handler_on_meter(&work, operation);
-    match result {
-        Ok(value) => Ok(crate::OperationReceipt {
-            value,
-            work: work.receipt(),
-        }),
-        Err(cause) => Err((cause, Box::new(work.receipt()))),
-    }
+    crate::performance::finish_measured(result, work.receipt(), Into::into)
 }
 
 /// Startup/revalidation handlers use the already operative invocation.

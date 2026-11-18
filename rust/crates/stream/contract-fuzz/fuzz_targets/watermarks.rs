@@ -1,7 +1,8 @@
 #![no_main]
 //! Preserve protobuf round trips and explicit acceptance/durability boundaries.
 
-use acyclic_stream::{StreamError, StreamWatermarks, wire, wire_codec::watermarks_from_wire};
+use acyclic_stream::{StreamCategory, StreamWatermarks, wire_codec::watermarks_from_wire};
+use acyclic_stream_wire::wire;
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 
@@ -22,13 +23,16 @@ fuzz_target!(|input: &[u8]| {
             Some(&response)
         );
         let expected = match response.durable {
-            None => Err(StreamError::Unsupported),
-            Some(durable) if durable > response.tail => Err(StreamError::Unavailable),
+            None => Err(StreamCategory::Unsupported),
+            Some(durable) if durable > response.tail => Err(StreamCategory::Unavailable),
             Some(durable) => Ok(StreamWatermarks {
                 accepted: response.tail,
                 durable,
             }),
         };
-        assert_eq!(watermarks_from_wire(&response), expected);
+        assert_eq!(
+            watermarks_from_wire(&response).map_err(|error| error.category()),
+            expected
+        );
     }
 });

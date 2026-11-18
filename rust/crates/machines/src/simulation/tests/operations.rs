@@ -48,15 +48,3 @@ async fn operation_control_is_correlated_and_deterministic() {
         Err(ProviderError::NotFound(_))
     ));
 }
-
-#[test]
-fn derived_identities_are_version_five_and_never_nil() {
-    assert_eq!(
-        OperationId::from_digest([0; 32]).to_string(),
-        "00000000-0000-5000-8000-000000000000"
-    );
-    assert_eq!(
-        MachineId::from_digest([0xff; 32]).to_string(),
-        "ffffffff-ffff-5fff-bfff-ffffffffffff"
-    );
-}

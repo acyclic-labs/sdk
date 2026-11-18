@@ -129,7 +129,7 @@ fn main() {
     let selected = arguments.next();
     let entry = arguments.next();
     let recovery = format!(
-        "cargo run --locked --example replay -- {}",
+        "bazel run //rust/codec-fuzz:replay_example -- {}",
         [selected.as_deref(), entry.as_deref()]
             .into_iter()
             .flatten()

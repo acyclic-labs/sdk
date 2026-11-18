@@ -341,7 +341,7 @@ pub(crate) fn tool_approval_binding(
     let prefix = b"harness:tool-approval:v2";
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters {
+        work.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: (prefix.len() + digest.len()) as u64,
             ..Default::default()
         })?;

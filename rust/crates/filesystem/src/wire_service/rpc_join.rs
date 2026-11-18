@@ -23,14 +23,14 @@ where
         if source_workspace
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
             .id()
             != source.id()
             || target_workspace
                 .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(|failure| status(&failure.error))?
+                .map_err(|failure| Status::from(&failure.error))?
                 .value
                 .id()
                 != target.id()
@@ -49,7 +49,7 @@ where
             )
             .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value;
         if plan.source_head() != source.id() || plan.target_head() != target.id() {
             return Err(Status::failed_precondition(
@@ -81,7 +81,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| status(&failure.error))?
+            .map_err(|failure| Status::from(&failure.error))?
             .value
             .0;
         let file_changes = changes.files.iter().map(file_record_change).collect();
@@ -159,7 +159,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|error| Status::from(&error))?;
         let expected_base_ref =
             join_common_ancestor_ref(&plan, &source_workspace, &target_workspace);
         if plan.source_head() != source_id
@@ -169,7 +169,7 @@ where
             let actual = target_workspace
                 .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(|failure| status(&failure.error))?
+                .map_err(|failure| Status::from(&failure.error))?
                 .value;
             return Ok(Response::new(wire::JoinResponse {
                 status: wire::JoinStatus::StaleTarget as i32,
@@ -188,7 +188,7 @@ where
                 crate::PublicationPermit::Unrestricted,
             )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|error| Status::from(&error))?;
         let outcome = if existing_operation
             && !matches!(
                 &outcome,

@@ -1,8 +1,13 @@
 use super::*;
-use crate::conversation::ContentGrant;
+use crate::{
+    conversation::ContentGrant,
+    runtime::RuntimeScope,
+    tool::{ToolInvocation, ToolResult},
+};
+use serde_json::{Value, json};
 
-const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =
-    acyclic_fs::performance::work_budget(100_000, 16_000_000);
+const FINITE_CONTENT_BUDGET: acyclic_fs_work::performance::WorkBudget =
+    acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
 
 mod access;
 mod approvals;
@@ -32,7 +37,6 @@ where
             "tool:call:read".into(),
             "tool:call:write".into(),
             "tool:call:edit".into(),
-            "tool:call:acyclic.list_files".into(),
         ]),
         limits,
     )?;
@@ -275,20 +279,6 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             .iter()
             .any(|entry| { entry.name == "one.txt" })
     );
-    let limits = Limits {
-        file_bytes: Some(4_096),
-        render_bytes: Some(1_024),
-        ..Limits::default()
-    };
-    let tool = storage.list_files_tool(limits)?;
-    let invocation = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: "list-1".into(),
-        name: "acyclic.list_files".into(),
-        arguments: json!({"path": "notes", "maximum_entries": 65}),
-    };
-    let page = tool.executor.execute(invocation.clone(), None).await?;
-    assert_eq!(page.value["entries"][0]["name"], "one.txt");
     storage
         .stage(
             OperationId::new(),
@@ -298,7 +288,6 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             "two.txt",
         )
         .await?;
-    assert_eq!(tool.executor.reconcile(invocation, None).await?, Some(page));
     let pinned_notes = storage
         .list_private_directory("notes", Some(&generation), None, 8)
         .await?;
@@ -341,8 +330,7 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         render_bytes: Some(4_096),
         ..Limits::default()
     };
-    let mut tools = crate::tools::defaults()?;
-    tools.register((storage.list_files_tool(limits)?, None), &mut None, None)?;
+    let tools = crate::tools::defaults()?;
     let file = storage
         .stage(
             OperationId::new(),
@@ -361,7 +349,6 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
                     "tool:call:read",
                     "tool:call:write",
                     "tool:call:edit",
-                    "tool:call:acyclic.list_files",
                 ]),
                 limits,
             )?;
@@ -389,20 +376,6 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
                     Err(Error::Unauthorized(_))
                 ));
             }
-            let invocation = ToolInvocation {
-                operation_id: OperationId::new(),
-                call_id: "list".into(),
-                name: "acyclic.list_files".into(),
-                arguments: json!({"path":"","maximum_entries":8}),
-            };
-            assert!(matches!(
-                tools
-                    .get("acyclic.list_files", None, None)?
-                    .ok_or_else(|| Error::NotFound("list tool".into()))?
-                    .executor
-                    .authorize(Some(task.scope()), None, &invocation, None),
-                Err(Error::Unauthorized(_))
-            ));
             Ok(())
         }
     })
@@ -478,7 +451,7 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
     let cancellation = acyclic_fs::CancellationToken::new();
     #[cfg(not(target_arch = "wasm32"))]
     let range_work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             source_bytes_read: 64 * 1024,
             bytes_copied: 64 * 1024,
             ..FINITE_CONTENT_BUDGET
@@ -543,8 +516,8 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
                 reference.definition.validate_projection(&projected.0, limits, None)?;
                 assert!(projected.0["value"].get("text").is_none());
             }
-            assert!(work.receipt().source_bytes_read < 64 * 1024);
-            assert!(work.receipt().bytes_copied < 64 * 1024);
+            assert!(work.receipt()?.source_bytes_read < 64 * 1024);
+            assert!(work.receipt()?.bytes_copied < 64 * 1024);
             // The shared object adapter retains decoded pages on the original
             // ledger. Reusing the pinned selection must not retain more pages
             // or result storage; the cache owner is dropped below.

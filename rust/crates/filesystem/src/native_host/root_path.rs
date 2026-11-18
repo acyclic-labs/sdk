@@ -61,9 +61,9 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
         let input = if length == 0 { &[46, 0][..] } else { &input };
         let query = |output: Option<&mut [u16]>, work: &mut W| {
             work.attempt_io(ITEM, || {
-                // SAFETY: terminated input and any initialized output remain live.
                 #[cfg(test)]
                 super::stat_probe::event("GetFullPathNameW");
+                // SAFETY: terminated input and any initialized output remain live.
                 let count = unsafe {
                     fs::GetFullPathNameW(windows::core::PCWSTR(input.as_ptr()), output, None)
                 };
@@ -129,9 +129,9 @@ pub(super) fn windows_file_information(
     file: &impl std::os::windows::io::AsRawHandle,
 ) -> io::Result<fs::BY_HANDLE_FILE_INFORMATION> {
     let mut information = fs::BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: held handle and complete output remain live for this query.
     #[cfg(test)]
     super::stat_probe::event("GetFileInformationByHandle");
+    // SAFETY: held handle and complete output remain live for this query.
     unsafe { fs::GetFileInformationByHandle(win::HANDLE(file.as_raw_handle()), &mut information) }
         .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
     Ok(information)

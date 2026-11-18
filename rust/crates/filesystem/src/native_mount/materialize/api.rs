@@ -50,10 +50,12 @@ where
             let result = future.as_mut().await;
             // OwnedFuture destroys the physical body before its funding.
             drop(future);
-            let work = meter.receipt();
-            result.map(|mut receipt| {
-                receipt.work = work;
-                receipt
+            result.and_then(|mut receipt| {
+                receipt.work = meter
+                    .receipt()
+                    .map_err(MaterializeError::from)
+                    .map_err(E::from)?;
+                Ok(receipt)
             })
         }),
         Err(error) => futures::future::Either::Right(std::future::ready(Err(error))),
@@ -78,11 +80,11 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
         crate::NativeMaterializationWork::new(budget, cancellation).map_err(|(error, work)| {
             OperationFailure {
                 error: MaterializeError::from(error),
-                work,
+                work: Ok(work),
             }
         })?;
     let receipt = GenerationReceipt::from_work(&original)
-        .map_err(|error| OperationFailure::new(error, original.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error, original.receipt()))?;
     materialize_heap_future_on_receipt(
         move |receipt| {
             materialize_source(
@@ -97,7 +99,7 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
         receipt,
     )
     .await
-    .map_err(|error| OperationFailure::new(error, original.receipt()))
+    .map_err(|error| OperationFailure::observed(error, original.receipt()))
 }
 
 pub(super) enum GenerationSource<'a, A: 'static, O: 'static> {
@@ -513,7 +515,11 @@ where
         )
         .await?;
     }
-    let work = receipt.custody.work().receipt();
+    let work = receipt
+        .custody
+        .work()
+        .receipt()
+        .map_err(MaterializeError::from)?;
     Ok(OperationReceipt {
         value: receipt.value,
         work,
@@ -730,7 +736,5 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     }
     .await;
     let spent = native_work.receipt();
-    result
-        .map(|value| OperationReceipt { value, work: spent })
-        .map_err(|error| OperationFailure::new(error, spent))
+    crate::performance::finish_measured(result, spent, MaterializeError::from)
 }

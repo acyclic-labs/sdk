@@ -1,0 +1,43 @@
+use crate::ExecutableSearch;
+use acyclic_host_platform::shell::PLATFORM;
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
+
+static EXECUTABLE: OnceLock<Result<PathBuf, (io::ErrorKind, String)>> = OnceLock::new();
+
+/// The native host's shell is selected once; later PATH changes cannot retarget it.
+pub fn platform_shell() -> io::Result<&'static Path> {
+    match EXECUTABLE.get_or_init(|| {
+        (|| {
+            let cwd = std::env::current_dir()?;
+            let search = ExecutableSearch::from_environment(&cwd, |key| std::env::var_os(key));
+            select(|name| search.resolve_native(name).ok())
+        })()
+        .map_err(|error: io::Error| (error.kind(), error.to_string()))
+    }) {
+        Ok(path) => Ok(path),
+        Err((kind, message)) => Err(io::Error::new(*kind, message.clone())),
+    }
+}
+
+fn select(mut lookup: impl FnMut(&str) -> Option<PathBuf>) -> io::Result<PathBuf> {
+    PLATFORM
+        .executables
+        .iter()
+        .find_map(|name| lookup(name))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "native platform shell is unavailable",
+            )
+        })
+}
+
+/// Resolves a native host launcher through the shared executable search policy.
+pub fn host_command(program: impl AsRef<std::ffi::OsStr>) -> io::Result<std::process::Command> {
+    let cwd = std::env::current_dir()?;
+    ExecutableSearch::from_environment(&cwd, |key| std::env::var_os(key)).command(program)
+}

@@ -27,7 +27,7 @@ fn assert_rejected(
         .err()
         .ok_or("invalid mutation unexpectedly compiled")?;
     assert_eq!(failure.error, expected);
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -135,7 +135,7 @@ fn malformed_ranges_and_root_mutation_fail_before_external_work()
     .err()
     .ok_or("root mutation unexpectedly compiled")?;
     assert_eq!(root.error, MutationPlanError::RootMutation);
-    assert_eq!(*root.work, WorkCounters::default());
+    assert_eq!(*root.work().unwrap(), WorkCounters::default());
 
     let range = MutationPlan::compile(
         vec![Mutation::ZeroRange {
@@ -150,7 +150,7 @@ fn malformed_ranges_and_root_mutation_fail_before_external_work()
     .err()
     .ok_or("empty range unexpectedly compiled")?;
     assert_eq!(range.error, MutationPlanError::EmptyRange);
-    assert_eq!(*range.work, WorkCounters::default());
+    assert_eq!(*range.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -289,13 +289,13 @@ fn flat_plan_memory_is_admitted_before_allocator_access() -> Result<(), Box<dyn 
     let operation_failure = MutationPlan::compile(vec![operation.clone()], operation_budget)
         .err()
         .ok_or("allocation operation unexpectedly admitted")?;
-    assert_eq!(*operation_failure.work, WorkCounters::default());
+    assert_eq!(*operation_failure.work().unwrap(), WorkCounters::default());
 
     let mut peak_budget = WorkBudget::UNBOUNDED;
     peak_budget.peak_allocation_bytes = 0;
     let peak_failure = MutationPlan::compile(vec![operation], peak_budget)
         .err()
         .ok_or("allocation peak unexpectedly admitted")?;
-    assert_eq!(*peak_failure.work, WorkCounters::default());
+    assert_eq!(*peak_failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }

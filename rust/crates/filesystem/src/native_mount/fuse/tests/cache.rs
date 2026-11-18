@@ -486,7 +486,7 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
     });
     assert_eq!(attempted.get(), 2);
     assert_eq!(replied.get(), 2);
-    assert_eq!(denied.receipt().bytes_copied, 0);
+    assert_eq!(denied.receipt().unwrap().bytes_copied, 0);
     Ok(())
 }
 #[test]
@@ -507,7 +507,7 @@ pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_bu
     )
     .map_err(|error| creator.runtime_error(error))?;
     control.helper = helper.map(Into::into);
-    let creator_receipt = creator.receipt();
+    let creator_receipt = creator.receipt().unwrap();
     let denied = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
             backend_write_operations: 0,
@@ -531,7 +531,7 @@ pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_bu
             .is_reaped()
     );
     assert!(!control.namespace_detach_confirmed());
-    assert_eq!(denied.receipt().backend_write_operations, 0);
+    assert_eq!(denied.receipt().unwrap().backend_write_operations, 0);
 
     let denied_probe = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
@@ -554,10 +554,10 @@ pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_bu
     let cancelled =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancelled_token)
             .map_err(|(cause, _)| cause)?;
-    let cancelled_receipt = cancelled.receipt();
+    let cancelled_receipt = cancelled.receipt().unwrap();
     cancelled_token.cancel();
     assert!(control.retire_controls(&cancelled).is_err());
-    assert_eq!(cancelled.receipt(), cancelled_receipt);
+    assert_eq!(cancelled.receipt().unwrap(), cancelled_receipt);
     assert!(control.controls_pending());
 
     let original_admin = crate::NativeMaterializationWork::new(
@@ -576,12 +576,12 @@ pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_bu
         "the real directory probe establishes namespace absence"
     );
     assert_eq!(
-        creator.receipt(),
+        creator.receipt().unwrap(),
         creator_receipt,
         "retirement uses the supplied original administrative work"
     );
-    assert!(original_admin.receipt().backend_write_operations > 0);
-    assert!(original_admin.receipt().backend_read_operations > 0);
+    assert!(original_admin.receipt().unwrap().backend_write_operations > 0);
+    assert!(original_admin.receipt().unwrap().backend_read_operations > 0);
     Ok(())
 }
 

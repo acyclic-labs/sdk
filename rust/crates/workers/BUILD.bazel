@@ -28,6 +28,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -36,7 +37,7 @@ rust_library(
         "//rust/crates/manifest:acyclic_manifest",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
-        "@crates//thiserror-2.0.21",
+        "@sdk_crates//thiserror-2.0.21",
     ],
     visibility = ["//visibility:public"],
 )
@@ -53,18 +54,19 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
-        "@crates//hex-0.4.3",
-        "@crates//proptest-1.12.0",
-        "@crates//prost-0.14.4",
-        "@crates//serde_json-1.0.154",
-        "@crates//sha2_0_11_1-0.11.1",
-        "@crates//tokio-1.54.1",
+        "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//prost-0.14.4",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//sha2-0.11.1",
+        "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -74,14 +76,29 @@ isolated_test(
     name = "acyclic_workers_test",
     binary = ":acyclic_workers_test_cases",
     id = "acyclic-workers",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_workers_test_full-cloud",
+    binary = ":acyclic_workers_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-workers",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
     name = "entry_attachment_cases",
     crate_root = "tests/entry_attachment.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "tests/entry_attachment.rs",
+    ],
+    compile_data = [
         "//rust/crates/manifest/fuzz:corpus/manifest_json/valid.json",
     ],
     edition = "2024",
@@ -94,6 +111,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -105,13 +123,13 @@ rust_test(
         "//rust/crates/manifest:acyclic_manifest",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
-        "@crates//hex-0.4.3",
-        "@crates//proptest-1.12.0",
-        "@crates//prost-0.14.4",
-        "@crates//serde_json-1.0.154",
-        "@crates//sha2_0_11_1-0.11.1",
-        "@crates//thiserror-2.0.21",
-        "@crates//tokio-1.54.1",
+        "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//prost-0.14.4",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//sha2-0.11.1",
+        "@sdk_crates//thiserror-2.0.21",
+        "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -121,14 +139,28 @@ isolated_test(
     name = "entry_attachment",
     binary = ":entry_attachment_cases",
     id = "acyclic-workers::entry_attachment",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "entry_attachment_full-cloud",
+    binary = ":entry_attachment_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-workers::entry_attachment",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
     name = "workers-authorization_example",
     crate_root = "examples/workers-authorization.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/workers-authorization.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -139,6 +171,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -150,14 +183,15 @@ rust_binary(
         "//rust/crates/manifest:acyclic_manifest",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
-        "@crates//hex-0.4.3",
-        "@crates//proptest-1.12.0",
-        "@crates//prost-0.14.4",
-        "@crates//serde_json-1.0.154",
-        "@crates//sha2_0_11_1-0.11.1",
-        "@crates//thiserror-2.0.21",
-        "@crates//tokio-1.54.1",
+        "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//prost-0.14.4",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//sha2-0.11.1",
+        "@sdk_crates//thiserror-2.0.21",
+        "@sdk_crates//tokio-1.54.1",
     ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(
@@ -166,6 +200,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

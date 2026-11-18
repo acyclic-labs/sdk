@@ -143,7 +143,7 @@ pub(super) fn with_lazy_mount<T>(
                 VolumeLimits::default(),
                 None,
                 None,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -159,11 +159,11 @@ pub(super) fn with_lazy_mount<T>(
                     config: VolumeConfig::native(Lifecycle::Durable),
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 &mut acyclic_fs::kernel::KernelAccounting::Standalone {
                     allocations: Default::default(),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                    budget: acyclic_fs::WorkBudget::UNBOUNDED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                    budget: acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     cancellation: &acyclic_fs::CancellationToken::new(),
                     construction: Default::default(),
                 },
@@ -218,8 +218,8 @@ pub(super) fn with_workspace_mount<T>(
                         config: VolumeConfig::native(Lifecycle::Durable),
                         access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                     },
-                    acyclic_fs::OperationId::new(),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_format::identity::OperationId::new(),
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                     None,
                 )

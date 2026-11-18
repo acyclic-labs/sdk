@@ -47,7 +47,7 @@ pub fn allocation(
         return Ok(Some(work.claim(
             bytes as u64,
             0,
-            acyclic_fs::WorkCounters::UNCHARGED,
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED,
         )?));
     }
     let _ = (work, bytes);
@@ -200,11 +200,13 @@ pub fn charge(
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(custody) = work {
-        custody.work().charge(acyclic_fs::WorkCounters {
-            bytes_copied,
-            items_examined,
-            ..Default::default()
-        })?;
+        custody
+            .work()
+            .charge(acyclic_fs_work::performance::WorkCounters {
+                bytes_copied,
+                items_examined,
+                ..Default::default()
+            })?;
     }
     let _ = (work, bytes_copied, items_examined);
     Ok(())
@@ -215,11 +217,13 @@ pub fn charge(
 pub(super) fn scan_source(work: &acyclic_fs::NativeCustody, bytes: u64) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(custody) = work {
-        custody.work().charge(acyclic_fs::WorkCounters {
-            source_bytes_read: bytes,
-            items_examined: 1,
-            ..Default::default()
-        })?;
+        custody
+            .work()
+            .charge(acyclic_fs_work::performance::WorkCounters {
+                source_bytes_read: bytes,
+                items_examined: 1,
+                ..Default::default()
+            })?;
     }
     let _ = (work, bytes);
     Ok(())
@@ -421,10 +425,10 @@ mod tests {
     fn edit_sequences_retain_only_their_output_and_refuse_invalid_later_edits() -> Result<()> {
         for length in [1, 2, 33] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(64 * 1024, 64 * 1024);
+            let budget = acyclic_fs_work::performance::work_budget(64 * 1024, 64 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let mut custody = allocation(Some(&work), 0)?;
             let edits = (0..length).map(|index| Replacement {
                 old_text: if index % 2 == 0 { "one" } else { "two" },
@@ -436,12 +440,12 @@ mod tests {
             // An allocation retained for every prior intermediate result would
             // fail this same bound as the sequence grows.
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 baseline + output.capacity() as u64
             );
             drop(output);
             drop(custody);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
 
             let invalid = [
                 Replacement {
@@ -463,7 +467,7 @@ mod tests {
             // Failure retires its buffers while the original caller keeps
             // the same custody alive for later planning.
             assert_eq!(custody.as_ref().unwrap().bytes(), 0);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
         Ok(())
     }

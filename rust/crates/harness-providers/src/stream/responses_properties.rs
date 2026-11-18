@@ -1,6 +1,9 @@
-use super::*;
+use crate::Adapter;
+use acyclic_harness_core::model::ModelEvent;
+use acyclic_harness_provider_response::stream::{State, parse};
 use futures::StreamExt as _;
 use proptest::prelude::*;
+use serde_json::Value;
 use serde_json::json;
 
 fn frames(item: Value) -> [Value; 4] {
@@ -41,17 +44,17 @@ proptest! {
         ] {
             for frame in frames(item) {
                 let mut state = State::new(16384);
-                let used = state.budget.used();
-                let result = super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string());
+                let used = state.observe().retained_bytes;
+                let result = acyclic_harness_provider_response::stream::parse(&mut state, crate::Adapter::Responses, &frame.to_string());
                 prop_assert!(result.is_err(), "unsupported semantics must refuse at every output boundary");
-                prop_assert!(!state.terminal, "unsupported output must not commit completion");
-                prop_assert!(state.calls.is_empty() && state.thinking.is_empty());
-                prop_assert_eq!(state.budget.used(), used);
+                prop_assert!(!state.is_terminal(), "unsupported output must not commit completion");
+                prop_assert!(state.observe().calls == 0 && state.observe().thinking == 0);
+                prop_assert_eq!(state.observe().retained_bytes, used);
 
                 // A later unsupported item must also stop the original stream
                 // before an earlier complete call can reach the executor.
                 let input = format!("data: {ordinary}\n\ndata: {frame}\n\ndata: {terminal}\n\n");
-                let observed = futures::executor::block_on(super::super::events(
+                let observed = futures::executor::block_on(crate::event_driver::events(
                     crate::Adapter::Responses, crate::tests::chunks(&input, chunk),
                     16384, dispatch,
                 ).collect::<Vec<_>>());
@@ -70,14 +73,14 @@ proptest! {
             }
             let mut state = State::new(16384);
             for frame in frames(item).into_iter().take(3) {
-                super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string()).unwrap();
+                acyclic_harness_provider_response::stream::parse(&mut state, crate::Adapter::Responses, &frame.to_string()).unwrap();
             }
-            let events = super::super::finish(state, crate::Adapter::Responses, dispatch).unwrap();
+            let events = acyclic_harness_provider_response::stream::finish(state, crate::Adapter::Responses, dispatch).unwrap();
             prop_assert!(events.iter().any(|event| matches!(event, ModelEvent::ToolCall(call) if call.name == "tool" && call.arguments == json!({}))), "ordinary unnamespaced calls must survive admission");
         }
 
         let input = format!("data: {ordinary}\n\ndata: {terminal}\n\n");
-        let observed = futures::executor::block_on(super::super::events(
+        let observed = futures::executor::block_on(crate::event_driver::events(
             crate::Adapter::Responses, crate::tests::chunks(&input, chunk),
             16384, dispatch,
         ).collect::<Vec<_>>());
@@ -122,7 +125,7 @@ proptest! {
             json!({"type":"response.completed","response":{"status":"completed"}}),
         ];
         let wire: String = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect();
-        let events = futures::executor::block_on(super::super::events(
+        let events = futures::executor::block_on(crate::event_driver::events(
             crate::Adapter::Responses, crate::tests::chunks(&wire, width), 32768, dispatch,
         ).collect::<Vec<_>>());
         let mut calls = Vec::new();
@@ -190,7 +193,7 @@ proptest! {
         // Dropping the terminal producer ends with the transport's typed
         // interruption, and no tool in the incomplete batch becomes executable.
         let unfinished: String = frames[..4].iter().map(|frame| format!("data: {frame}\n\n")).collect();
-        let observed = futures::executor::block_on(super::super::events(
+        let observed = futures::executor::block_on(crate::event_driver::events(
             crate::Adapter::Responses, crate::tests::chunks(&unfinished, width), 32768, dispatch,
         ).collect::<Vec<_>>());
         prop_assert_eq!(observed.len(), 1);
@@ -222,15 +225,24 @@ fn function_and_freeform_events_cannot_share_an_item() {
             let mut state = State::new(16384);
             let added = json!({"type":"response.output_item.added","output_index":0,
                 "item":{"type":kind,"name":"tool","call_id":"call"}});
-            super::super::parse(&mut state, crate::Adapter::Responses, &added.to_string()).unwrap();
+            acyclic_harness_provider_response::stream::parse(
+                &mut state,
+                crate::Adapter::Responses,
+                &added.to_string(),
+            )
+            .unwrap();
             event["output_index"] = json!(0);
-            let used = state.budget.used();
+            let used = state.observe().retained_bytes;
             assert!(
-                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
-                    .is_err()
+                acyclic_harness_provider_response::stream::parse(
+                    &mut state,
+                    crate::Adapter::Responses,
+                    &event.to_string()
+                )
+                .is_err()
             );
-            assert_eq!(state.budget.used(), used);
-            assert!(state.calls[&0].arguments.is_empty());
+            assert_eq!(state.observe().retained_bytes, used);
+            assert!(state.observe_call(0).unwrap().arguments.is_empty());
         }
     }
 }
@@ -243,7 +255,12 @@ fn responses_call_identity_and_completed_input_are_immutable() {
             let mut state = State::new(16384);
             let added =
                 json!({"type":"response.output_item.added","output_index":0,"item":original});
-            super::super::parse(&mut state, crate::Adapter::Responses, &added.to_string()).unwrap();
+            acyclic_harness_provider_response::stream::parse(
+                &mut state,
+                crate::Adapter::Responses,
+                &added.to_string(),
+            )
+            .unwrap();
             let mut changed = original.clone();
             changed[field] = json!(if field == "type" {
                 if kind == "function_call" {
@@ -255,15 +272,19 @@ fn responses_call_identity_and_completed_input_are_immutable() {
                 "replacement"
             });
             let done = json!({"type":"response.output_item.done","output_index":0,"item":changed});
-            let used = state.budget.used();
+            let used = state.observe().retained_bytes;
             assert!(
-                super::super::parse(&mut state, crate::Adapter::Responses, &done.to_string())
-                    .is_err()
+                acyclic_harness_provider_response::stream::parse(
+                    &mut state,
+                    crate::Adapter::Responses,
+                    &done.to_string()
+                )
+                .is_err()
             );
-            assert_eq!(state.budget.used(), used);
-            assert_eq!(state.calls[&0].id, "call");
-            assert_eq!(state.calls[&0].item_id, "item");
-            assert_eq!(state.calls[&0].name, "tool");
+            assert_eq!(state.observe().retained_bytes, used);
+            assert_eq!(state.observe_call(0).unwrap().id, "call");
+            assert_eq!(state.observe_call(0).unwrap().item_id, "item");
+            assert_eq!(state.observe_call(0).unwrap().name, "tool");
         }
         for event_kind in if kind == "function_call" {
             [
@@ -277,23 +298,22 @@ fn responses_call_identity_and_completed_input_are_immutable() {
             ]
         } {
             let mut state = State::new(16384);
-            super::admit_call(
-                &mut state,
-                0,
-                &original,
-                super::Output::admit(&original).unwrap(),
-                false,
-            )
-            .unwrap();
+            let added =
+                json!({"type":"response.output_item.added","output_index":0,"item":original});
+            parse(&mut state, Adapter::Responses, &added.to_string()).unwrap();
             let event = json!({"type":event_kind,"output_index":0,"item_id":"other",
                 "delta":"changed","input":"changed","arguments":"{}"});
-            let used = state.budget.used();
+            let used = state.observe().retained_bytes;
             assert!(
-                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
-                    .is_err()
+                acyclic_harness_provider_response::stream::parse(
+                    &mut state,
+                    crate::Adapter::Responses,
+                    &event.to_string()
+                )
+                .is_err()
             );
-            assert_eq!(state.budget.used(), used);
-            assert!(state.calls[&0].arguments.is_empty());
+            assert_eq!(state.observe().retained_bytes, used);
+            assert!(state.observe_call(0).unwrap().arguments.is_empty());
         }
         let (input_key, delta_kind, done_kind, input) = if kind == "function_call" {
             (
@@ -330,26 +350,30 @@ fn responses_call_identity_and_completed_input_are_immutable() {
             ] {
                 let mut state = State::new(16384);
                 for frame in [&added, completion] {
-                    super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string())
-                        .unwrap();
+                    acyclic_harness_provider_response::stream::parse(
+                        &mut state,
+                        crate::Adapter::Responses,
+                        &frame.to_string(),
+                    )
+                    .unwrap();
                 }
-                let used = state.budget.used();
+                let used = state.observe().retained_bytes;
                 assert!(
-                    super::super::parse(
+                    acyclic_harness_provider_response::stream::parse(
                         &mut state,
                         crate::Adapter::Responses,
                         &mutation.to_string()
                     )
                     .is_err()
                 );
-                assert_eq!(state.budget.used(), used);
-                assert_eq!(state.calls[&0].arguments, input);
+                assert_eq!(state.observe().retained_bytes, used);
+                assert_eq!(state.observe_call(0).unwrap().arguments, input);
 
                 let wire = format!(
                     "data: {added}\n\ndata: {completion}\n\ndata: {mutation}\n\ndata: {terminal}\n\n"
                 );
                 let events = futures::executor::block_on(
-                    super::super::events(
+                    crate::event_driver::events(
                         crate::Adapter::Responses,
                         crate::tests::chunks(&wire, 1),
                         16384,
@@ -363,23 +387,37 @@ fn responses_call_identity_and_completed_input_are_immutable() {
         }
         for delta in [Value::Null, json!(false), json!(0), json!({}), json!([])] {
             let mut state = State::new(16384);
-            super::super::parse(&mut state, crate::Adapter::Responses, &added.to_string()).unwrap();
-            let used = state.budget.used();
+            acyclic_harness_provider_response::stream::parse(
+                &mut state,
+                crate::Adapter::Responses,
+                &added.to_string(),
+            )
+            .unwrap();
+            let used = state.observe().retained_bytes;
             let event = json!({"type":delta_kind,"output_index":0,"item_id":"item","delta":delta});
             assert!(
-                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
-                    .is_err()
+                acyclic_harness_provider_response::stream::parse(
+                    &mut state,
+                    crate::Adapter::Responses,
+                    &event.to_string()
+                )
+                .is_err()
             );
-            assert_eq!(state.budget.used(), used);
-            assert!(state.calls[&0].arguments.is_empty());
+            assert_eq!(state.observe().retained_bytes, used);
+            assert!(state.observe_call(0).unwrap().arguments.is_empty());
         }
         // Repeated identical completions preserve the original input and batch.
         let mut state = State::new(16384);
         for frame in [&added, &input_done, &input_done, &item_done, &terminal] {
-            super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string()).unwrap();
+            acyclic_harness_provider_response::stream::parse(
+                &mut state,
+                crate::Adapter::Responses,
+                &frame.to_string(),
+            )
+            .unwrap();
         }
         assert_eq!(
-            super::super::finish(
+            acyclic_harness_provider_response::stream::finish(
                 state,
                 crate::Adapter::Responses,
                 crate::tests::parser_dispatch()
@@ -402,8 +440,13 @@ fn responses_call_identity_and_completed_input_are_immutable() {
         let terminal = json!({"type":"response.completed","response":{
             "status":"completed","output":[final_item]
         }});
-        super::super::parse(&mut state, crate::Adapter::Responses, &terminal.to_string()).unwrap();
-        let events = super::super::finish(
+        acyclic_harness_provider_response::stream::parse(
+            &mut state,
+            crate::Adapter::Responses,
+            &terminal.to_string(),
+        )
+        .unwrap();
+        let events = acyclic_harness_provider_response::stream::finish(
             state,
             crate::Adapter::Responses,
             crate::tests::parser_dispatch(),
@@ -428,13 +471,17 @@ fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
         malformed["input"] = input;
         for event in frames(malformed) {
             let mut state = State::new(16384);
-            let used = state.budget.used();
+            let used = state.observe().retained_bytes;
             assert!(
-                super::super::parse(&mut state, crate::Adapter::Responses, &event.to_string())
-                    .is_err()
+                acyclic_harness_provider_response::stream::parse(
+                    &mut state,
+                    crate::Adapter::Responses,
+                    &event.to_string()
+                )
+                .is_err()
             );
-            assert_eq!(state.budget.used(), used);
-            assert!(state.calls.is_empty());
+            assert_eq!(state.observe().retained_bytes, used);
+            assert!(state.observe().calls == 0);
         }
     }
     for output in [json!([]), json!([{"type":"reasoning","id":"replacement"}])] {
@@ -443,7 +490,7 @@ fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
             json!({"type":"response.completed","response":{"status":"completed","output":output}});
         let wire = format!("data: {added}\n\ndata: {terminal}\n\n");
         let events = futures::executor::block_on(
-            super::super::events(
+            crate::event_driver::events(
                 crate::Adapter::Responses,
                 crate::tests::chunks(&wire, 1),
                 16384,
@@ -466,7 +513,7 @@ fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
         let terminal = json!({"type":"response.completed","response":{"status":"completed"}});
         let wire = format!("data: {added}\n\ndata: {terminal}\n\n");
         let events = futures::executor::block_on(
-            super::super::events(
+            crate::event_driver::events(
                 crate::Adapter::Responses,
                 crate::tests::chunks(&wire, 1),
                 16384,
@@ -482,8 +529,13 @@ fn malformed_or_omitted_custom_input_cannot_publish_a_partial_batch() {
     for frame in frames(omitted).into_iter().skip(1) {
         let mut state = State::new(16384);
         assert!(
-            super::super::parse(&mut state, crate::Adapter::Responses, &frame.to_string()).is_err()
+            acyclic_harness_provider_response::stream::parse(
+                &mut state,
+                crate::Adapter::Responses,
+                &frame.to_string()
+            )
+            .is_err()
         );
-        assert!(state.calls.is_empty());
+        assert!(state.observe().calls == 0);
     }
 }

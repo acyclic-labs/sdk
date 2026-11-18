@@ -2,7 +2,6 @@ use acyclic_fs::kernel::{
     DecodeLimits, Extent, ExtentKind, ExtentMutation, ExtentPage, apply_extent_mutations,
     encode_extent_page,
 };
-use acyclic_fs::storage::{HashedObject, ObjectKind};
 use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, LogicalObjectStore};
 use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;
@@ -10,6 +9,7 @@ use divan::Bencher;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use {acyclic_fs::storage::HashedObject, acyclic_fs_format::object_reference::ObjectKind};
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
     eprintln!("extent benchmark failed: {error:?}");
@@ -32,7 +32,7 @@ fn extent_replace(bencher: Bencher, patches: usize) {
     let provider = MemoryObjects::memory();
     let store = LogicalObjectStore::new(Arc::new(provider));
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let page = ExtentPage::Leaf(vec![Extent {
         offset: 0,
         length: 64,

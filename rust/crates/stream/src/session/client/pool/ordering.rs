@@ -134,10 +134,13 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
             opened.selection = selection;
         }
         pool.receive("good", refused)?;
-        assert_eq!(reset_opened.await?, Err(error.clone()));
+        assert_eq!(
+            reset_opened.await?.map_err(|error| error.category()),
+            Err(error.category())
+        );
         assert!(matches!(
             records.recv().await,
-            Some(Err(ref received)) if received == &error
+            Some(Err(ref received)) if received.category() == error.category()
         ));
         assert!(records.recv().await.is_none());
         assert!(!pool.routes.contains_key(&3));
@@ -157,7 +160,13 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
         pool.subscribe(5)?;
         assert!(pool.routes.contains_key(&5));
         pool.receive("good", opened(5, 1, Some(&original)))?;
-        assert_eq!(sibling_opened.await?.map(|(id, _)| id), Ok(5));
+        assert_eq!(
+            sibling_opened
+                .await?
+                .map(|(id, _)| id)
+                .map_err(|error| error.category()),
+            Ok(5)
+        );
     }
     Ok(())
 }

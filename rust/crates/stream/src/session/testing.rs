@@ -50,6 +50,7 @@ pub fn credential() -> Bytes {
             "streams/follow".into(),
             "streams/list".into(),
             "streams/read".into(),
+            "streams/tail".into(),
         ],
     }])
 }

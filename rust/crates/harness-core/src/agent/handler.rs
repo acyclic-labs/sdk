@@ -73,25 +73,6 @@ struct DiagnosticAttempt<'a> {
     prepared: Option<super::machine::PreparedStep>,
 }
 
-impl std::ops::Deref for DiagnosticAttempt<'_> {
-    type Target = super::machine::PreparedStep;
-    fn deref(&self) -> &Self::Target {
-        self.prepared.as_ref().expect("original diagnostic attempt")
-    }
-}
-impl std::ops::DerefMut for DiagnosticAttempt<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.prepared.as_mut().expect("original diagnostic attempt")
-    }
-}
-impl DiagnosticAttempt<'_> {
-    fn into_checkpoint(mut self) -> Checkpoint {
-        self.prepared
-            .take()
-            .expect("original diagnostic attempt")
-            .into_checkpoint()
-    }
-}
 impl Drop for DiagnosticAttempt<'_> {
     fn drop(&mut self) {
         if let (Some(prepared), Some((path, trigger, checkpoint))) =
@@ -188,7 +169,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
     /// diagnostic data is shared; neither handler retains the other's driver.
     pub fn with_diagnostics_from(mut self, source: &Self) -> Result<Self, GuestError> {
         if self.agents.store.root() != source.agents.store.root()
-            || !Arc::ptr_eq(self.agents.store.provider(), source.agents.store.provider())
+            || !acyclic_stream::ProviderOwner::ptr_eq(
+                self.agents.store.provider(),
+                source.agents.store.provider(),
+            )
         {
             return Err(GuestError::Handler("diagnostic store differs".into()));
         }
@@ -465,23 +449,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         observed
             .state
             .open_children
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
         observed
             .state
             .archive_pending
-            .bind(Arc::clone(self.store.provider()));
-        observed
-            .state
-            .awaiting
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
+        observed.state.awaiting.bind(self.store.provider().clone());
         observed
             .state
             .topology_refusals
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
         observed
             .state
             .spawned_children
-            .bind(Arc::clone(self.store.provider()));
+            .bind(self.store.provider().clone());
         Ok((observed, cursor))
     }
 }
@@ -646,7 +627,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 let watch: super::ReplyWatch = serde_json::from_str(
                     subscription
                         .strip_prefix(REPLY_SUBSCRIPTION)
-                        .expect("reply prefix"),
+                        .ok_or(Error::Record("reply subscription is malformed"))?,
                 )
                 .map_err(|_| Error::Record("reply subscription is malformed"))?;
                 let bound = delivery
@@ -731,19 +712,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         if let Some(state) = state.as_mut() {
             state
                 .open_children
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
             state
                 .archive_pending
-                .bind(Arc::clone(self.agents.store.provider()));
-            state
-                .awaiting
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
+            state.awaiting.bind(self.agents.store.provider().clone());
             state
                 .topology_refusals
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
             state
                 .spawned_children
-                .bind(Arc::clone(self.agents.store.provider()));
+                .bind(self.agents.store.provider().clone());
         }
         let retained = self
             .diagnostics
@@ -776,11 +755,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .outs
             .iter()
             .any(|out| matches!(out, Out::Diagnostic { .. }));
-        let mut prepared = DiagnosticAttempt {
+        let mut attempt = DiagnosticAttempt {
             owner: &self.diagnostics,
             identity: diagnostic.then(|| (path.clone(), trigger.clone(), checkpoint.cloned())),
             prepared: Some(prepared),
         };
+        let prepared = attempt
+            .prepared
+            .as_mut()
+            .ok_or(Error::Record("original diagnostic attempt is missing"))?;
         for out in &prepared.step().outs {
             if let Out::Send {
                 to,
@@ -795,7 +778,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
         }
         prepared
-            .persist_indexes(Arc::clone(self.agents.store.provider()), checkpoint)
+            .persist_indexes(self.agents.store.provider().clone(), checkpoint)
             .await?;
         let participant = match &self.volumes {
             Some(volumes) => {
@@ -932,7 +915,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             pause,
             response: None,
             participant,
-            checkpoint: prepared.into_checkpoint(),
+            checkpoint: attempt
+                .prepared
+                .take()
+                .ok_or(Error::Record("original diagnostic attempt is missing"))?
+                .into_checkpoint(),
             alarm: match alarm {
                 Alarm::Clear => AlarmChange::Clear,
                 Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
@@ -1152,7 +1139,7 @@ where
 
 /// Host controls use the same original checkpoint/adoption reader as AgentHost.
 pub(crate) async fn observe_state<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &std::sync::Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     within: &ActorReference,
     agent: &AgentPath,
 ) -> Result<AgentState, Error> {

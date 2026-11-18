@@ -1,7 +1,8 @@
 //! One receipt owner across validation, semantic confirmation and retirement.
 use super::*;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 mod tests;
 
 /// A provider result retaining its original backing capacity.

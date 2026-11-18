@@ -17,7 +17,8 @@ pub struct FileDescription {
 /// always uses the reader that authenticated it.
 /// ```no_run
 /// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
-/// use acyclic_fs::{ResolvedFile, WorkBudget};
+/// use acyclic_fs::ResolvedFile;
+/// use acyclic_fs_work::performance::WorkBudget;
 /// async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(file: &ResolvedFile<A, O>) {
 ///     let range = ByteRange { offset: 0, length: 1 };
 ///     let cancel = CancellationToken::new();
@@ -28,7 +29,8 @@ pub struct FileDescription {
 /// A raw record cannot be read through an arbitrary reader.
 /// ```compile_fail,E0599
 /// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
-/// use acyclic_fs::{PinnedReader, WorkBudget, kernel::FileRecord};
+/// use acyclic_fs::{PinnedReader, kernel::FileRecord};
+/// use acyclic_fs_work::performance::WorkBudget;
 /// async fn transplant<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ///     reader: &PinnedReader<A, O>,
 ///     record: FileRecord,
@@ -41,7 +43,8 @@ pub struct FileDescription {
 /// Nor can its extents be planned through an arbitrary reader.
 /// ```compile_fail,E0599
 /// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
-/// use acyclic_fs::{PinnedReader, WorkBudget, kernel::FileRecord};
+/// use acyclic_fs::{PinnedReader, kernel::FileRecord};
+/// use acyclic_fs_work::performance::WorkBudget;
 /// async fn transplant<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ///     reader: &PinnedReader<A, O>,
 ///     record: FileRecord,
@@ -55,7 +58,7 @@ pub struct FileDescription {
 /// ```compile_fail,E0616
 /// use acyclic_fs::ResolvedFile;
 /// fn transplant<A, O>(file: &mut ResolvedFile<A, O>) {
-///     file.record.file_id = acyclic_fs::FileId::new();
+///     file.record.file_id = acyclic_fs_format::identity::FileId::new();
 /// }
 /// ```
 pub struct ResolvedFile<A: 'static, O: 'static> {
@@ -204,14 +207,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                         .await
                 };
                 let result = order_batch_results(results, WorkBudget::UNBOUNDED);
-                let work = match &result {
-                    Ok(receipt) => receipt.work,
-                    Err(failure) => *failure.work,
-                };
+                let (result, work) = accounting.split_receipt(result)?;
                 accounting.record_completed(work)?;
-                let receipt = result.map_err(|failure| failure.error)?;
+                let value = result?;
                 let allocation = accounting.claim_owned(
-                    usize_to_u64(receipt.value.capacity() * size_of::<FileRangeRead>()),
+                    usize_to_u64(value.capacity() * size_of::<FileRangeRead>()),
                     u64::from(!requests.is_empty()),
                 )?;
                 accounting.charge(WorkCounters {
@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                     bytes_copied: usize_to_u64(requests.len() * size_of::<FileRangeRead>()),
                     ..WorkCounters::UNCHARGED
                 })?;
-                return Ok((receipt.value, allocation));
+                return Ok((value, allocation));
             }
             let mut reads = Owned::<Vec<FileRangeRead>>::allocate(requests.len(), &mut accounting)?;
             for request in requests {
@@ -267,7 +267,16 @@ pub(super) fn order_batch_results<T>(
                 completed.push(receipt.value);
             }
             Err(failure) => {
-                work = add(work, *failure.work)?;
+                let completed = match failure.work {
+                    Ok(completed) => completed,
+                    Err(observation) => {
+                        return Err(OperationFailure::without_receipt(
+                            failure.error,
+                            observation,
+                        ));
+                    }
+                };
+                work = add(work, *completed)?;
                 if first_failure.is_none() {
                     first_failure = Some(failure.error);
                 }

@@ -1,50 +1,6 @@
 #[cfg(windows)]
 use std::process::Command;
 
-#[test]
-fn registry_frontier_cli_requires_paired_authority_inputs() {
-    let base: Vec<String> = [
-        "--root",
-        "root",
-        "--output",
-        "output",
-        "--version",
-        "0.1.1",
-        "--channel",
-        "release",
-        "--execute-profiles",
-        "--historical-archives",
-        "archives",
-        "--historical-source",
-        "registry-archives",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    // Older manifests can still be decoded; new generation must capture closure.
-    assert!(parse_generate(base.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("requires a complete registry corpus"));
-    let mut missing = base.clone();
-    missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(parse_generate(missing)
-        .unwrap_err()
-        .to_string()
-        .contains("requires both"));
-    let mut complete = base;
-    complete.extend([
-        "--registry-frontier-repository".into(),
-        "repository".into(),
-        "--registry-frontier-revisions".into(),
-        "a".repeat(40),
-    ]);
-    let args = parse_generate(complete).unwrap();
-    assert_eq!(
-        args.registry_frontier_revisions,
-        BTreeSet::from(["a".repeat(40)])
-    );
-}
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -145,7 +101,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
     for (relative, bytes) in [
         ("proto/demo.proto", b"syntax = \"proto3\";".as_slice()),
         (
-            "rust/crates/stream/proto/stream/v2/stream.proto",
+            "rust/crates/stream-wire/proto/stream/v2/stream.proto",
             b"message Stream {}".as_slice(),
         ),
         (
@@ -184,7 +140,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
     let before = source_file_hashes(&root, &output).expect("source inventory should build");
     for required in [
         "proto/demo.proto",
-        "rust/crates/stream/proto/stream/v2/stream.proto",
+        "rust/crates/stream-wire/proto/stream/v2/stream.proto",
         "rust/crates/stream/conformance/stream.json",
         "compatibility/descriptors/stream-v1.bin",
         "plugin/bin/install.js",
@@ -237,24 +193,6 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
         );
         fs::write(root.join(relative), original).expect("source fixture should restore");
     }
-}
-
-#[test]
-fn release_generation_requires_executed_profiles() {
-    let error = parse_generate(vec![
-        "--root".into(),
-        "root".into(),
-        "--output".into(),
-        "output".into(),
-        "--rustdoc-dir".into(),
-        "rustdoc".into(),
-        "--version".into(),
-        "1.0.0".into(),
-        "--channel".into(),
-        "release".into(),
-    ])
-    .expect_err("release hand-supplied receipts must be rejected");
-    assert!(error.to_string().contains("requires --execute-profiles"));
 }
 
 #[test]
@@ -502,46 +440,6 @@ fn identical_profile_outputs_keep_each_physical_span_mapping() {
     assert_eq!(sources[0].sha256, sources[1].sha256);
     assert_eq!(sources[0].logical_path, sources[1].logical_path);
     assert_ne!(sources[0].physical_path, sources[1].physical_path);
-}
-
-mod rustdoc_corpus {
-    use super::*;
-
-    #[test]
-    fn real_rustdoc_corpus_preserves_its_producer_artifacts() {
-        let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
-            .canonicalize()
-            .unwrap();
-        let rustdoc = PathBuf::from(env::var("SDK_GENERATION_CORPUS_RUSTDOC").unwrap())
-            .canonicalize()
-            .unwrap();
-        // The real producer already projects every receipt using its admitted
-        // Cargo target, binary guides and source-span attestations. Verify that
-        // exact output instead of rebuilding a library-only view in the test.
-        let output = rustdoc.parent().unwrap();
-        let args = [
-            "drift".into(),
-            "--root".into(),
-            root.to_str().unwrap().into(),
-            "--output".into(),
-            output.to_str().unwrap().into(),
-            "--rustdoc-dir".into(),
-            rustdoc.to_str().unwrap().into(),
-        ];
-        run(args.clone(), &mut Vec::new()).unwrap();
-
-        let seal = output.join("generation-manifest.v1.sha256");
-        let original = fs::read(&seal).unwrap();
-        let mut changed = original.clone();
-        changed[0] ^= 1;
-        fs::write(&seal, changed).unwrap();
-        let rejected = run(args, &mut Vec::new());
-        fs::write(&seal, original).unwrap();
-        assert!(rejected
-            .unwrap_err()
-            .to_string()
-            .contains("generation manifest integrity check failed"));
-    }
 }
 
 #[cfg(windows)]

@@ -66,12 +66,12 @@ proptest! {
         let (b_cancel, b_root, b_view) = fixture(limit, used, &nested, recheck);
         if cancelled { a_cancel.cancel(); b_cancel.cancel(); }
         prop_assert_eq!(outcome(block_has_data(&block, &a_view)), outcome(legacy(&block, &b_view)));
-        prop_assert_eq!(a_root.receipt(), b_root.receipt());
+        prop_assert_eq!(a_root.receipt().unwrap(), b_root.receipt().unwrap());
         prop_assert_eq!(outcome(a_view.remaining()), outcome(b_view.remaining()));
         // A subsequent operation detects leaked reservations and pending credit.
         let item = crate::materializer::NativeResourceCredit::Items.delta(1);
         prop_assert_eq!(outcome(a_view.charge(item)), outcome(b_view.charge(item)));
-        prop_assert_eq!(a_root.receipt(), b_root.receipt());
+        prop_assert_eq!(a_root.receipt().unwrap(), b_root.receipt().unwrap());
     }
 }
 
@@ -94,7 +94,7 @@ fn differential_property_rejects_charging_the_unexamined_tail() {
             .charge(crate::materializer::NativeResourceCredit::Items.delta(length as u64))
             .unwrap();
         prop_assert_eq!(block.iter().any(|byte| *byte != 0), correct);
-        prop_assert_eq!(root.receipt(), expected_root.receipt());
+        prop_assert_eq!(root.receipt().unwrap(), expected_root.receipt().unwrap());
         Ok(())
     });
     assert!(matches!(

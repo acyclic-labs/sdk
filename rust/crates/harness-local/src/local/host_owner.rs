@@ -1,0 +1,629 @@
+//! Native-host workspace effects over the native agent runtime and git facade.
+use super::*;
+use crate::agent::AgentPath;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+
+mod agents;
+mod events;
+mod native_events;
+mod sessions;
+pub use crate::native_host::{Control, HostAction, SessionAction, TurnClaim};
+pub(crate) use agents::child;
+/// Exercises the production native session storage codecs.
+#[cfg(feature = "test-support")]
+pub use agents::validation::check_native_session_storage;
+/// Exercises resume selection on the production streamed event source.
+#[cfg(any(test, feature = "test-support"))]
+pub use native_events::check_native_event_resume;
+/// The production closed-log selector, exposed only for validation.
+#[cfg(feature = "test-support")]
+pub use sessions::logged_session_id;
+#[cfg(all(test, not(loom)))]
+mod tests;
+
+/// One agent's view, attached once however many requests await it.
+type AttachedView = Arc<tokio::sync::OnceCell<Arc<host_workspace::HostWorkspace>>>;
+
+enum View {
+    Attached(AttachedView),
+    Retiring(tokio::sync::watch::Receiver<bool>),
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self::Attached(AttachedView::default())
+    }
+}
+
+impl View {
+    fn get(&self) -> Option<&Arc<host_workspace::HostWorkspace>> {
+        match self {
+            Self::Attached(view) => view.get(),
+            Self::Retiring(_) => None,
+        }
+    }
+}
+
+type Views = Arc<std::sync::Mutex<BTreeMap<AgentPath, View>>>;
+
+#[cfg(test)]
+type RetirementGate = (
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<bool>,
+);
+
+/// Disposable view handles over the native agent runtime; agents, lineage,
+/// files and history are its commits, so this holds no durable index. Only
+/// roots and children whose sessions run or wait on input stay resident.
+///
+/// Requests dispatch concurrently. Each one that changes an agent holds that
+/// agent's lock, taken in one global order, so effects on one agent stay
+/// serial while unrelated agents, reads and cancels never wait behind them.
+pub struct HostWorkspaceOwner {
+    local: Arc<LocalHarness>,
+    native: agents::NativeAgents,
+    views: Views,
+    locks: AgentLocks,
+    /// Serializes root creation, whose agent is not named before it.
+    opening: tokio::sync::Mutex<()>,
+    /// The original request directory, held through namespace replacement.
+    requests: Option<Arc<acyclic_fs::HeldRoot>>,
+    #[cfg(test)]
+    retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
+    #[cfg(test)]
+    retirement_gate: std::sync::Mutex<Option<RetirementGate>>,
+}
+
+impl HostWorkspaceOwner {
+    /// Admits one explicitly enrolled local volume through this host's Bound,
+    /// retaining its original issuer and canonical filesystem provider.
+    #[cfg(target_os = "linux")]
+    pub async fn guest_session(
+        &self,
+        enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::native_mount::GuestSessionAdmission> {
+        self.local.guest_session(enrollment, work).await
+    }
+
+    /// Uses an already-running harness, with no provider or agent executor.
+    pub fn new(local: Arc<LocalHarness>) -> Result<Self> {
+        if local.agent.is_some() || !local.tools().definitions(None)?.is_empty() {
+            return Err(Error::Invalid(
+                "native host owner must have no agent or tools".into(),
+            ));
+        }
+        Ok(Self {
+            native: agents::NativeAgents::new(&local)?,
+            local,
+            views: Views::default(),
+            locks: AgentLocks::default(),
+            opening: tokio::sync::Mutex::new(()),
+            requests: None,
+            #[cfg(test)]
+            retirement_observer: None,
+            #[cfg(test)]
+            retirement_gate: std::sync::Mutex::default(),
+        })
+    }
+
+    /// Keeps each native filesystem request's saved result until its client
+    /// withdraws it from this original held directory after reading its reply.
+    /// An uncertain observation retains the result.
+    #[must_use]
+    pub fn with_requests(mut self, requests: Arc<acyclic_fs::HeldRoot>) -> Self {
+        self.requests = Some(requests);
+        self
+    }
+
+    /// Joins native view retirement while the coordination runtime can still
+    /// service callbacks. The caller must release its other harness handles.
+    pub async fn retire(self) -> Result<()> {
+        let local = Arc::clone(&self.local);
+        acyclic_native_runtime::spawn_blocking(move || drop(self))
+            .await
+            .map_err(storage)?;
+        Arc::try_unwrap(local)
+            .map_err(|_| Error::Conflict("native owner still has live harness handles".into()))?
+            .disconnect()
+            .await
+    }
+
+    /// Dispatches a workspace request. Calling this never executes a model, a
+    /// native host, a shell command or another harness tool.
+    pub fn dispatch(
+        &self,
+        operation: OperationId,
+        action: HostAction,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<Value>> {
+        // Every caller, including read-only observations, crosses the same
+        // erased boundary. A caller's future cannot embed the complete agent,
+        // filesystem and publication state machines in its own layout.
+        // The original dispatch future owns this diagnostic lifetime. The key
+        // is the same opaque identity the file bridge publishes and answers.
+        let request = acyclic_stream::trace::Request {
+            name: "native-workspace-dispatch",
+            mechanism: acyclic_stream::trace::Mechanism::Wait,
+            parent: None,
+            guarantee: Some("dispatched_workspace_action"),
+            key: Some(acyclic_stream::trace::Key::Identity(operation.into_bytes())),
+        };
+        Box::pin(async move {
+            acyclic_stream::trace::observe(
+                &request,
+                self.dispatch_action(operation, action),
+                |_| None,
+            )
+            .await
+        })
+    }
+
+    async fn dispatch_action(&self, operation: OperationId, action: HostAction) -> Result<Value> {
+        match action {
+            HostAction::Resources { task } => {
+                let resources = {
+                    let _view = self.attach(&task).await?;
+                    self.resources()
+                };
+                self.release_idle([task], resources).await
+            }
+            HostAction::Sessions {
+                parent,
+                after,
+                limit,
+            } => {
+                let sessions = {
+                    let _view = self.attach(&parent).await?;
+                    self.sessions(&parent, after.as_ref(), limit).await
+                };
+                self.release_idle([parent], sessions).await
+            }
+            HostAction::Session {
+                parent,
+                reference,
+                action,
+                next,
+            } => {
+                let child = agents::child(&parent, &reference)?;
+                let mut changed = vec![child.clone()];
+                if matches!(action, SessionAction::Spawn { .. }) {
+                    changed.push(parent.clone());
+                }
+                // An observed child's cwd stays resident for the claim that follows.
+                let observe = matches!(action, SessionAction::Observe {});
+                let session = {
+                    let _locks = self.locks.hold(changed).await;
+                    self.session(operation, &parent, &reference, action, next)
+                        .await
+                };
+                let child = (!observe).then_some(child);
+                self.release_idle(child.into_iter().chain([parent]), session)
+                    .await
+            }
+            HostAction::Hook { host, event, input } => {
+                self.hook(operation, &host, &event, input).await
+            }
+            HostAction::Locate { cwd } => self.locate(&cwd).await,
+            HostAction::Open { host, session } => {
+                let agent = self.open(&host, &session).await?;
+                let view = self.attach(&agent).await?;
+                Ok(json!({"task":agent,"cwd":view.host_cwd(),"environment":view.environment()?}))
+            }
+            HostAction::Reopen { task } => {
+                let view = self.attach(&task).await?;
+                Ok(json!({"task":task,"cwd":view.host_cwd(),"environment":view.environment()?}))
+            }
+            HostAction::Capture { task } => {
+                let _lock = self.locks.hold(vec![task.clone()]).await;
+                self.capture_native(operation, &task).await
+            }
+            HostAction::Fs { task, command } => {
+                let output = self.native_fs(operation, &task, &command).await;
+                self.release_idle([task], output).await
+            }
+            HostAction::Agents { task, after, limit } => {
+                let agents = {
+                    let _view = self.attach(&task).await?;
+                    self.agents(&task, after.as_ref(), limit).await
+                };
+                self.release_idle([task], agents).await
+            }
+        }
+    }
+
+    /// Creates or replays a root session; root creation is serial.
+    async fn open(&self, host: &str, session: &str) -> Result<AgentPath> {
+        let _opening = self.opening.lock().await;
+        self.native.open(host, session).await
+    }
+
+    async fn agents(
+        &self,
+        task: &AgentPath,
+        after: Option<&crate::agent::AgentId>,
+        limit: u32,
+    ) -> Result<Value> {
+        if limit == 0 {
+            return Err(Error::Invalid("agent page size must be positive".into()));
+        }
+        let (state, _) = self.native.session(task).await?;
+        let children = state
+            .open_children
+            .page(after, limit as usize)
+            .await
+            .map_err(storage)?;
+        let next = (children.len() == limit as usize)
+            .then(|| children.last().cloned())
+            .flatten();
+        let mut agents = Vec::with_capacity(children.len());
+        for id in children {
+            let child = task.child(&id).map_err(storage)?;
+            let (child_state, session) = self.native.session(&child).await?;
+            agents.push(json!({"task":child,"reference":session.reference,
+                "control":session.control,"settled":session.settled,
+                "running":session.claimed().is_some(),
+                "pending":session.pending(&child_state)}));
+        }
+        Ok(json!({ "agents": agents, "next": next }))
+    }
+
+    /// Retires each resident child view in `agents` whose session neither
+    /// runs nor waits on input, after `result`'s request: a later request
+    /// attaches it again lazily, so mounts and descriptors stay O(active
+    /// sessions), not O(every agent this owner touched). Root views live
+    /// until owner retirement. Only a solely held view can retire; its table
+    /// entry fences replacement attachment until physical teardown completes
+    /// off the coordination thread.
+    async fn release_idle(
+        &self,
+        agents: impl IntoIterator<Item = AgentPath>,
+        result: Result<Value>,
+    ) -> Result<Value> {
+        Error::after_cleanup(result, self.retire_idle(agents).await)
+    }
+
+    async fn retire_idle(&self, agents: impl IntoIterator<Item = AgentPath>) -> Result<()> {
+        let agents: Vec<_> = {
+            let views = self.views()?;
+            agents
+                .into_iter()
+                .filter(|agent| agent.parent().is_some() && views.contains_key(agent))
+                .collect()
+        };
+        let locks = self.locks.hold(agents.clone()).await;
+        let mut candidates = Vec::new();
+        for agent in agents {
+            let (state, session) = self.native.session(&agent).await?;
+            if session.claimed().is_some() || session.pending(&state) != 0 {
+                continue;
+            }
+            candidates.push(agent);
+        }
+        // Finish every cancellable lookup before taking physical custody.
+        // From replacement through spawning its producer there is no await.
+        #[cfg(test)]
+        let gate = self.retirement_gate.lock().map_err(storage)?.take();
+        let mut idle = Vec::new();
+        {
+            let mut views = self.views()?;
+            for agent in candidates {
+                let sole = views.get(&agent).is_some_and(|entry| {
+                    let View::Attached(view) = entry else {
+                        return false;
+                    };
+                    Arc::strong_count(view) == 1
+                        && view.get().is_none_or(|view| Arc::strong_count(view) == 1)
+                });
+                if sole {
+                    let (finished, retirement) = tokio::sync::watch::channel(false);
+                    if let Some(View::Attached(view)) =
+                        views.insert(agent.clone(), View::Retiring(retirement))
+                    {
+                        idle.push((agent, view, finished));
+                    }
+                }
+            }
+        }
+        if !idle.is_empty() {
+            let views = Arc::clone(&self.views);
+            let retirement = acyclic_native_runtime::spawn_blocking(move || -> Result<()> {
+                #[cfg(test)]
+                let complete = gate.is_none_or(|(entered, release)| {
+                    let _ = entered.send(());
+                    release.recv().unwrap_or(false)
+                });
+                for (agent, view, finished) in idle {
+                    drop(view);
+                    #[cfg(test)]
+                    if !complete {
+                        return Err(Error::Conflict(
+                            "native view retirement producer lost".into(),
+                        ));
+                    }
+                    views
+                        .lock()
+                        .map_err(|_| Error::Conflict("native view table poisoned".into()))?
+                        .remove(&agent);
+                    let _ = finished.send(true);
+                }
+                Ok(())
+            });
+            drop(locks);
+            retirement.await.map_err(storage)??;
+        }
+        Ok(())
+    }
+
+    fn resources(&self) -> Result<Value> {
+        use acyclic_process_resources::resources::{mounts_beneath, sample_process_resources};
+        let process = sample_process_resources().map_err(storage)?;
+        let workspace = self.local.workspace_path().ok_or_else(|| {
+            Error::Invalid(
+                "step=sample owner resources: workspace absent; recovery: acyclic agents".into(),
+            )
+        })?;
+        // The mount table is shared with every other process; this owner's
+        // mounts are the ones beneath the workspace it serves.
+        let mounts = mounts_beneath(workspace).map_err(storage)?;
+        let views = self.views()?.len();
+        Ok(json!({
+            "views": views,
+            "memory_bytes": process.memory_bytes,
+            "threads": process.threads,
+            "descriptors": process.descriptors,
+            "mounts": mounts,
+            "cpu_centiseconds": process.cpu_centiseconds,
+        }))
+    }
+
+    async fn native_fs(
+        &self,
+        operation: OperationId,
+        task: &AgentPath,
+        command: &str,
+    ) -> Result<Value> {
+        let mut parsed = crate::tools::parse_fs_command(command)?;
+        let child = crate::tools::resolve_child_branch(task, &mut parsed.arguments, agents::child)?;
+        let merged = child.filter(|_| parsed.arguments[0] == "merge");
+        // A merge reads its child's settled project: it holds both locks.
+        let changed = [Some(task.clone()), merged.clone()];
+        let _locks = self
+            .locks
+            .hold(changed.into_iter().flatten().collect())
+            .await;
+        let view = self.attach(task).await?;
+        if let Some(child) = &merged {
+            let (state, session) = self.native.session(child).await.map_err(|error| match error {
+                Error::NotFound(_) => Error::Invalid(
+                    "only a parent can merge its direct child's changes; return your result to your parent, which runs acyclic fs merge agents/<reference>".into(),
+                ),
+                error => error,
+            })?;
+            if session.claimed().is_some() || session.pending(&state) > 0 {
+                return Err(Error::Conflict(
+                    "native session is still running; wait for its captured result before merging"
+                        .into(),
+                ));
+            }
+        }
+        // A native request's saved result lives until its client withdraws
+        // the request, which it does once it has read the reply.
+        let request = self
+            .requests
+            .clone()
+            .map(|requests| acyclic_fs::GitRequest {
+                merge_source: None,
+                operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                    operation.into_bytes(),
+                ),
+                unanswered: std::sync::Arc::new(
+                    move |request: acyclic_fs_format::identity::OperationId| {
+                        let file =
+                            format!("{}.json", OperationId::from_bytes(request.into_bytes()));
+                        match requests.open_file(Path::new(&file), false) {
+                            Err(acyclic_fs::DemandError::Absent) => false,
+                            Err(acyclic_fs::DemandError::Io(cause))
+                                if cause.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                false
+                            }
+                            _ => true,
+                        }
+                    },
+                ),
+            });
+        serde_json::to_value(view.fs(operation, parsed, request).await?).map_err(storage)
+    }
+
+    fn views(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<AgentPath, View>>> {
+        self.views
+            .lock()
+            .map_err(|_| Error::Conflict("native view table poisoned".into()))
+    }
+
+    fn view(&self, agent: &AgentPath) -> Result<Arc<host_workspace::HostWorkspace>> {
+        self.views()?
+            .get(agent)
+            .and_then(|view| view.get().cloned())
+            .ok_or_else(|| Error::NotFound("native agent view".into()))
+    }
+
+    /// Every attached view, for cwd discovery.
+    fn attached(&self) -> Result<Vec<(AgentPath, Arc<host_workspace::HostWorkspace>)>> {
+        Ok(self
+            .views()?
+            .iter()
+            .filter_map(|(agent, view)| Some((agent.clone(), Arc::clone(view.get()?))))
+            .collect())
+    }
+
+    /// Attaches `agent`'s view, idempotently: a root views the checkout
+    /// itself, a spawned child mounts its forked project under its parent.
+    /// Concurrent requests share the one attachment in flight.
+    fn attach<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Arc<host_workspace::HostWorkspace>>> {
+        Box::pin(async move {
+            let cell = loop {
+                let retirement = {
+                    let mut views = self.views()?;
+                    match views.entry(agent.clone()).or_default() {
+                        View::Attached(cell) => break Arc::clone(cell),
+                        View::Retiring(retirement) => retirement.clone(),
+                    }
+                };
+                let mut retirement = retirement;
+                retirement
+                    .wait_for(|finished| *finished)
+                    .await
+                    .map_err(|_| Error::Conflict("native view retirement producer lost".into()))?;
+            };
+            let mut opened = false;
+            let view = cell
+                .get_or_try_init(|| {
+                    opened = true;
+                    async { self.open_view(agent).await.map(Arc::new) }
+                })
+                .await?;
+            if !opened {
+                view.verify().await?;
+            }
+            Ok(Arc::clone(view))
+        })
+    }
+
+    async fn open_view(&self, agent: &AgentPath) -> Result<host_workspace::HostWorkspace> {
+        let (mut state, mut session) = self.native.session(agent).await?;
+        if state.parent.is_some() && session.reference.is_none() {
+            // The spawn committed but the child never ran its brief.
+            self.native.resume(agent).await?;
+            (state, session) = self.native.session(agent).await?;
+        }
+        self.local.require_shared_binding(&state)?;
+        let workspace = if let Some(parent) = &state.parent {
+            let parent_view = self.attach(parent).await?;
+            let reference = session
+                .reference
+                .as_deref()
+                .ok_or_else(|| Error::Invalid("native child has no recorded reference".into()))?;
+            parent_view
+                .open_child(
+                    agent,
+                    &state.volumes,
+                    self.native.view_scope(&state).await?,
+                    reference,
+                )
+                .await?
+        } else {
+            let workspace = self
+                .local
+                .workspace()
+                .ok_or_else(|| Error::Unsupported("native hosts require a checkout".into()))?;
+            let root = workspace.held_task_mount_root()?;
+            host_workspace::HostWorkspace::attach(
+                Arc::clone(workspace),
+                agent.clone(),
+                &self.local.signed,
+                &self.local.verifier,
+                root,
+            )
+            .await?
+        };
+        Ok(workspace)
+    }
+
+    async fn capture_native(&self, operation: OperationId, task: &AgentPath) -> Result<Value> {
+        let view = self.attach(task).await?;
+        let _quiescence = if task.depth() != 0 {
+            Some(
+                super::host_process::HostProcessLease::acquire(
+                    &self
+                        .local
+                        .workspace()
+                        .ok_or_else(|| Error::Invalid("native owner workspace absent".into()))?
+                        .host_state,
+                    self.local.workspace_path().ok_or_else(|| {
+                        Error::Invalid(
+                            "step=capture native agent: workspace absent; recovery: acyclic agents"
+                                .into(),
+                        )
+                    })?,
+                    task,
+                    view.path(),
+                )?
+                .quiescent(),
+            )
+        } else {
+            None
+        };
+        view.capture(operation).await?;
+        Ok(json!({"task":task,"cwd":view.host_cwd()}))
+    }
+}
+
+/// The lock table: one async lock per agent some request changes.
+type LockTable = Arc<std::sync::Mutex<BTreeMap<AgentPath, Arc<tokio::sync::Mutex<()>>>>>;
+
+/// One lock per agent a request changes, present only while a request holds
+/// or awaits it.
+#[derive(Default)]
+struct AgentLocks(LockTable);
+
+/// The locks one request holds; releasing them retires each unused one.
+struct Held {
+    locks: LockTable,
+    held: Vec<(AgentPath, tokio::sync::OwnedMutexGuard<()>)>,
+}
+
+impl AgentLocks {
+    /// Holds the lock of every agent in `agents`, in the one global agent
+    /// order, so no two requests each hold a lock the other awaits.
+    async fn hold(&self, agents: Vec<AgentPath>) -> Held {
+        let agents = agents.into_iter().collect::<BTreeSet<_>>();
+        let mut held = Held {
+            locks: Arc::clone(&self.0),
+            held: Vec::with_capacity(agents.len()),
+        };
+        for agent in agents {
+            let lock = Arc::clone(
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(agent.clone())
+                    .or_default(),
+            );
+            held.held.push((agent, lock.lock_owned().await));
+        }
+        held
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut locks = self
+            .locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (agent, guard) in self.held.drain(..) {
+            drop(guard);
+            // Only the table refers to it: nothing holds or awaits the lock.
+            if locks
+                .get(&agent)
+                .is_some_and(|lock| Arc::strong_count(lock) == 1)
+            {
+                locks.remove(&agent);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for HostWorkspaceOwner {
+    fn drop(&mut self) {
+        if let Some(observer) = &self.retirement_observer {
+            let _ = observer.send(std::thread::current().id());
+        }
+    }
+}

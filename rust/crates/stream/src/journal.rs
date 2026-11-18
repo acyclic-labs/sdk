@@ -136,20 +136,16 @@ mod journal_command {
     #[derive(Clone, PartialEq, prost::Oneof)]
     pub(super) enum Operation {
         #[prost(message, tag = "1")]
-        Append(crate::wire::AppendRequest),
+        Append(acyclic_stream_wire::wire::AppendRequest),
         #[prost(message, tag = "2")]
-        Fork(crate::wire::ForkRequest),
+        Fork(acyclic_stream_wire::wire::ForkRequest),
         #[prost(message, tag = "5")]
-        Commit(crate::wire::CommitRequest),
+        Commit(acyclic_stream_wire::wire::CommitRequest),
     }
 }
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "Malformed codec fixtures deliberately slice canonical bytes at every boundary"
-)]
 mod tests {
     use super::*;
     use crate::{AppendRequest, CommitEffect, CommitRequest, ForkRequest, StreamProviderExt};

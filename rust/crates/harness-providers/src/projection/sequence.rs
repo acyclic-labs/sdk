@@ -1,10 +1,8 @@
 //! Portable role boundaries and stateless reasoning-item adjacency.
 use super::wire::{Item, Message};
-use crate::{
-    Adapter,
-    protocol::sequence::{self, ResponseItem},
-};
+use crate::Adapter;
 use acyclic_harness_core::Result;
+use acyclic_harness_provider_protocol::sequence::{self, ResponseItem};
 use serde_json::json;
 
 pub(super) fn push<'a>(

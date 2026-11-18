@@ -19,7 +19,7 @@ fn select_cached(
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let bytes = (values.capacity() * std::mem::size_of::<AttributeEntry>()) as u64
         + values
             .iter()
@@ -47,7 +47,7 @@ fn select_cached(
         native_custody: Some(source_custody.clone()),
     };
     let allocation = accounting.claim_owned(0, 0)?;
-    let start = work.receipt().items_examined;
+    let start = work.receipt().unwrap().items_examined;
     // Mutation: the former path clones the complete cache hit before selecting.
     let (decoded, allocation) = if eager {
         let ((page, bytes), allocation) =
@@ -65,7 +65,7 @@ fn select_cached(
     };
     machine.accept(request, decoded, allocation, &mut accounting)?;
     let output = machine.finish(&mut accounting)?;
-    let examined = work.receipt().items_examined - start;
+    let examined = work.receipt().unwrap().items_examined - start;
     let result = output
         .value
         .iter()
@@ -75,7 +75,7 @@ fn select_cached(
     assert!(matches!(original.as_ref(), Page::Leaf(values) if values.len() == count as usize));
     drop((original, source_custody));
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         baseline,
         "batch lookup leaked custody"
     );

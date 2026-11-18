@@ -10,7 +10,7 @@ mod oracle;
 // decode returns every byte it charged to its ledger.
 pub fn check(bytes: Vec<u8>, exa: bool) {
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &CancellationToken::new(),
     )
     .unwrap();

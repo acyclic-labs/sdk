@@ -40,7 +40,38 @@ pub(crate) struct FollowWindow {
     pub(crate) until: Option<u64>,
 }
 
+type PreparedFollow<I> = (crate::Revision, crate::StreamSelection, I, HistoryCursor);
+
 impl MemoryStream {
+    /// Refreshes either follow projection from the same checked history cut.
+    async fn refresh_follow(
+        &self,
+        path: &StreamPath,
+        cursor: &mut HistoryCursor,
+        anchor: Option<CommitId>,
+    ) -> Result<bool, StreamError> {
+        if cursor.end.is_some() {
+            return Ok(true);
+        }
+        let state = self.state.read().await;
+        let snapshot = cursor.observe(|| state.paths.get(path).cloned())?;
+        drop(state);
+        let path = snapshot.as_ref();
+        if !cursor.observe_creation(path, anchor).await? {
+            return Ok(false);
+        }
+        let path = path.ok_or(if anchor.is_some() {
+            StreamError::PrefixNotRetained
+        } else {
+            StreamError::NotFound
+        })?;
+        if let Some(anchor) = anchor {
+            cursor.check_anchor(path, anchor).await?;
+        }
+        cursor.sync(path)?;
+        Ok(true)
+    }
+
     pub(crate) async fn prepare_follow(
         &self,
         path: &StreamPath,
@@ -49,15 +80,22 @@ impl MemoryStream {
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
         window: FollowWindow,
-    ) -> Result<
-        (
-            crate::Revision,
-            crate::StreamSelection,
-            crate::follow_index::FollowInterest,
-            HistoryCursor,
-        ),
-        StreamError,
-    > {
+    ) -> Result<PreparedFollow<crate::follow_index::FollowInterest>, StreamError> {
+        self.prepare_cursor(path, from, anchor, when_absent, window, |signals, tail| {
+            crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)
+        })
+        .await
+    }
+
+    async fn prepare_cursor<I>(
+        &self,
+        path: &StreamPath,
+        from: u64,
+        anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
+        window: FollowWindow,
+        subscribe: impl FnOnce(&Signals, u64) -> Result<I, StreamError>,
+    ) -> Result<PreparedFollow<I>, StreamError> {
         let state = self.state.write().await;
         let snapshot = self.observe_follow(|| state.paths.get(path).cloned())?;
         let revision = self.revisions.at(state.decision);
@@ -72,7 +110,7 @@ impl MemoryStream {
         let tail = snapshot.as_ref().map_or(0, |path| path.tail);
         let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
         let signals = registration.value();
-        let interest = crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?;
+        let interest = subscribe(signals, tail)?;
         drop(state);
         let mut cursor = HistoryCursor::initial(
             snapshot.as_ref(),
@@ -85,6 +123,8 @@ impl MemoryStream {
         .await?;
         cursor.registration = Some(registration);
         cursor.end = selection.end;
+        // Both projections retain the opening cut captured with registration.
+        cursor.opening_tail = Some(tail);
         Ok((revision, selection, interest, cursor))
     }
 
@@ -95,23 +135,8 @@ impl MemoryStream {
         anchor: &mut Option<CommitId>,
         filter: &crate::FollowFilter,
     ) -> Result<Option<Record>, StreamError> {
-        if cursor.end.is_none() {
-            let state = self.state.read().await;
-            let snapshot = cursor.observe(|| state.paths.get(path).cloned())?;
-            drop(state);
-            let path = snapshot.as_ref();
-            if !cursor.observe_creation(path, *anchor).await? {
-                return Ok(None);
-            }
-            let path = path.ok_or(if anchor.is_some() {
-                StreamError::PrefixNotRetained
-            } else {
-                StreamError::NotFound
-            })?;
-            if let Some(anchor) = anchor {
-                cursor.check_anchor(path, *anchor).await?;
-            }
-            cursor.sync(path);
+        if !self.refresh_follow(path, cursor, *anchor).await? {
+            return Ok(None);
         }
         let mut examined = 0;
         while let Some(record) = cursor.next_record().await? {

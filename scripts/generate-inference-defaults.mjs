@@ -1,4 +1,4 @@
-export const rust = [["acyclic-inference", "example", "inference-typescript-defaults"]];
+export const rust = ["//rust/crates/inference:inference-typescript-defaults_example"];
 
 export function render([stdout]) {
   const values = stdout.trim().split(/\s+/);

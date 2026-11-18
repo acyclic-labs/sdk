@@ -1,7 +1,10 @@
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use futures::StreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 pub(super) struct NativeServer {
     pub(super) inner: Arc<Server>,
@@ -67,14 +70,16 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
         (200, RESPONSE.into()),
     ])?;
     let path = root.path().join("auth.json");
-    let mut auth = crate::json(&std::fs::read(&path).expect("fixture credentials"))?;
+    let mut auth = acyclic_harness_provider_response::json(
+        &std::fs::read(&path).expect("fixture credentials"),
+    )?;
     auth["tokens"]["access_token"] = json!(format!(
         "header.{}.signature",
         URL_SAFE_NO_PAD.encode(json!({"exp":0}).to_string())
     ));
     std::fs::write(&path, auth.to_string()).expect("expired fixture credentials");
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -124,7 +129,7 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
 async fn unfunded_credential_reads_stop_before_reading_or_http() -> Result<()> {
     for exhausted_memory in [false, true] {
         let (_root, login, inner, _) = fixture(Vec::new())?;
-        let mut budget = acyclic_fs::performance::work_budget(100_000, 4_000_000);
+        let mut budget = acyclic_fs_work::performance::work_budget(100_000, 4_000_000);
         if exhausted_memory {
             budget.peak_allocation_bytes =
                 NativeMaterializationWork::accounting_state_bytes() + 1024;

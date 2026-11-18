@@ -5,7 +5,8 @@ use crate::NativeMaterializationWork;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[path = "ownership_backing_tests.rs"]
 mod backing_tests;
 #[cfg(not(target_arch = "wasm32"))]
@@ -211,7 +212,8 @@ impl NativeMountAllocationCustody {
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn claimed_bytes() -> u64 {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         if backing_tests::PAYLOAD_ONLY.get() {
             return std::mem::size_of::<MountAllocationCustody>() as u64;
         }
@@ -239,6 +241,35 @@ impl NativeMountAllocationCustody {
                 original,
             })))
         })
+    }
+    /// Retain already-funded backing, or drop it before returning its credit.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn adopt<T>(
+        value: T,
+        bytes: u64,
+        work: &NativeMaterializationWork,
+    ) -> Result<(T, Option<Self>), DemandError> {
+        if bytes == 0 {
+            work.admit(WorkCounters::UNCHARGED)?;
+            return Ok((value, None));
+        }
+        let admitted = (|| {
+            let custody = Self::new(&mut work.clone())?;
+            work.with_original_leaf(|original| {
+                original.check()?;
+                custody.retain(bytes, original)?;
+                Ok::<_, DemandError>(())
+            })?;
+            Ok::<_, DemandError>(custody)
+        })();
+        match admitted {
+            Ok(custody) => Ok((value, Some(custody))),
+            Err(error) => {
+                drop(value);
+                work.with_original_leaf(|original| original.release(bytes))?;
+                Err(error)
+            }
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_admitted(&self, work: &DemandWork) -> bool {

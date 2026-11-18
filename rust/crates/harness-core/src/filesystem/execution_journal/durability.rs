@@ -51,7 +51,7 @@ where
         let budget = io
             .map(PreparationIo::remaining)
             .transpose()?
-            .unwrap_or(acyclic_fs::WorkBudget::UNBOUNDED);
+            .unwrap_or(acyclic_fs_work::performance::WorkBudget::UNBOUNDED);
         let mut authority = acyclic_fs::AuthorityWork::new(budget, &cancellation);
         let barrier = self
             .host
@@ -64,7 +64,8 @@ where
             io.charge(
                 authority
                     .spent()
-                    .checked_add(acyclic_fs::WorkCounters {
+                    .map_err(acyclic_fs::FsError::from)?
+                    .checked_add(acyclic_fs_work::performance::WorkCounters {
                         durability_operations: 1,
                         ..Default::default()
                     })

@@ -6,6 +6,12 @@ tool; `team:N` admits N total workers over the run, even across settled turns,
 and workers cannot spawn. The root's tool declarations remain fixed when its
 reservation is exhausted. An excess spawn returns
 `tool execution failed: forced topology permits at most N total spawns`.
+`--max-children N` caps open children per agent; an excess spawn returns
+`tool execution failed: forced topology permits at most N open children`.
+`--max-depth D` counts the root as zero and omits the spawn tool from every
+agent at depth D, so no child can be created below it. Both caps are unbounded
+when absent. `--topology-file FILE` reads the same version-one topology JSON
+(`mode`, `max_children`, `max_depth`); explicit flags override its fields.
 `swarm` has no implicit child count, depth, active-delivery or run deadline.
 User reservations and the selected model's native capacity still apply.
 

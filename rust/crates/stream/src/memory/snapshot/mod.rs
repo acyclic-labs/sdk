@@ -409,17 +409,18 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), Strea
         let observation = if flags & RETAINS_REPLAY == 0 {
             None
         } else {
-            let wire = crate::persistence::decode::<crate::wire::IdempotencyObservation>(
-                input.bytes().ok_or_else(invalid)?,
-                retained_fact_bound().ok_or_else(invalid)?,
-            )?;
+            let wire =
+                crate::persistence::decode::<acyclic_stream_wire::wire::IdempotencyObservation>(
+                    input.bytes().ok_or_else(invalid)?,
+                    retained_fact_bound().ok_or_else(invalid)?,
+                )?;
             Some(crate::persistence::observation_from_wire(wire)?)
         };
         let envelope = if flags & RETAINS_COMMIT == 0 {
             None
         } else {
             Some(crate::persistence::envelope_from_wire(
-                crate::persistence::decode::<crate::wire::CommittedEnvelope>(
+                crate::persistence::decode::<acyclic_stream_wire::wire::CommittedEnvelope>(
                     input.bytes().ok_or_else(invalid)?,
                     retained_fact_bound().ok_or_else(invalid)?,
                 )?,

@@ -33,6 +33,7 @@ function scan(t, files, untracked = {}) {
     }
   };
   write({ "scripts/check-boundaries.mjs": checker,
+    "scripts/policy-core.mjs": readFileSync(join(root, "scripts/policy-core.mjs")),
     "scripts/wasm-source-policy.mjs": readFileSync(join(root, "scripts/wasm-source-policy.mjs")), ...files });
   execFileSync("git", ["init", "--quiet", directory], { maxBuffer: Infinity });
   execFileSync("git", ["add", "."], { maxBuffer: Infinity, cwd: directory });

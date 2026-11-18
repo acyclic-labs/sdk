@@ -2,10 +2,13 @@ use crate::{MAX_PATH_BYTES, StreamError};
 use std::{fmt, sync::Arc};
 
 /// Permanent account-relative slash-separated ASCII path.
+/// The value occupies three machine words and shares its path text.
 pub struct StreamPath {
     text: PathText,
     length: usize,
 }
+
+const _: () = assert!(std::mem::size_of::<StreamPath>() == 3 * std::mem::size_of::<usize>());
 
 #[derive(Clone)]
 enum PathText {
@@ -196,9 +199,11 @@ impl StreamPath {
     /// Canonical path text.
     #[must_use]
     pub fn as_str(&self) -> &str {
+        #[cfg(target_arch = "wasm32")]
+        let PathText::Plain(text) = &self.text;
+        #[cfg(not(target_arch = "wasm32"))]
         let text: &str = match &self.text {
             PathText::Plain(text) => text,
-            #[cfg(not(target_arch = "wasm32"))]
             PathText::Native(text) => &text.text,
         };
         // `length` always ends on a segment boundary of `text`.

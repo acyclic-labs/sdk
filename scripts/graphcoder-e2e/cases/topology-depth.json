@@ -1,0 +1,112 @@
+{
+  "id": "topology-depth",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "prices.jsonl": "{\"version\":1,\"revision\":\"topology-e2e-v1\",\"provider\":\"e2e\",\"model\":\"tiny\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n{\"version\":1,\"revision\":\"topology-e2e-v1\",\"provider\":\"e2e\",\"model\":\"alternate\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "DEPTH_ROOT"
+        },
+        "tools": [
+          {
+            "id": "spawn-one",
+            "name": "spawn",
+            "arguments": {
+              "name": "one",
+              "task": "DEPTH_CHILD",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "DEPTH_ROOT",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait-one",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "one"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "DEPTH_CHILD"
+        },
+        "text": [
+          "DEPTH_CHILD_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "DEPTH_ROOT",
+          "tool_result": "DEPTH_CHILD_DONE"
+        },
+        "text": [
+          "DEPTH_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "DEPTH_ROOT",
+      "answer": "DEPTH_DONE",
+      "extra_args": [
+        "--topology",
+        "swarm",
+        "--max-depth",
+        "1",
+        "--transcripts",
+        "{{workspace}}/../native-traces",
+        "--usage-jsonl",
+        "{{workspace}}/../usage.jsonl",
+        "--prices",
+        "{{workspace}}/prices.jsonl"
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 4,
+    "model_tools": [
+      {
+        "step": 0,
+        "present": [
+          "spawn"
+        ]
+      },
+      {
+        "step": 2,
+        "absent": [
+          "spawn"
+        ]
+      }
+    ],
+    "trace": {
+      "topology": {
+        "version": 1,
+        "mode": "swarm",
+        "max_depth": 1
+      },
+      "usage": "../usage.jsonl",
+      "directory": "../native-traces",
+      "agents": 2,
+      "price_revision": "topology-e2e-v1"
+    }
+  },
+  "physical": true,
+  "adapter": "responses"
+}

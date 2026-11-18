@@ -92,9 +92,9 @@ proptest! {
         let work = meter();
         let mut entries = ordinary(count, &work);
         let missing = missing(count);
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         retire_hydrated(&mut entries, &missing, &work).unwrap();
-        let after = work.receipt();
+        let after = work.receipt().unwrap();
         prop_assert_eq!(entries.len(), count);
         prop_assert!(entries.iter().all(|(path, _)| path.depth() == 2));
         let entry_bytes = std::mem::size_of::<(NamespacePath, (CurrentRecord, CaptureIntent))>() as u64;
@@ -105,21 +105,21 @@ proptest! {
 
         let broken = meter();
         let mut entries = ordinary(count, &broken);
-        let before = broken.receipt();
+        let before = broken.receipt().unwrap();
         // Negative control: execute the former production removal helper.
         for (path, _) in &missing {
             let (key, _) = capture_remove(&mut entries, path, &broken).unwrap().unwrap();
             capture_drop_path(key, &broken).unwrap();
         }
-        prop_assert!(broken.receipt().bytes_copied - before.bytes_copied > copy_bound);
+        prop_assert!(broken.receipt().unwrap().bytes_copied - before.bytes_copied > copy_bound);
         // Negative control: the former ancestry loop examines every missing
         // sibling even when all records are absent.
-        let before = broken.receipt();
+        let before = broken.receipt().unwrap();
         for _ in &entries {
             for _ in &missing {
                 capture_charge(&broken, crate::materializer::NativeResourceCredit::Items.delta(1)).unwrap();
             }
         }
-        prop_assert!(broken.receipt().items_examined - before.items_examined > item_bound);
+        prop_assert!(broken.receipt().unwrap().items_examined - before.items_examined > item_bound);
     }
 }

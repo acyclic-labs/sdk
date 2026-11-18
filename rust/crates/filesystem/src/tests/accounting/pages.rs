@@ -5,7 +5,7 @@ struct OriginalPageAuthority<'a>(&'a StreamAuthorityStore<acyclic_stream::Memory
 impl OriginalPageAuthority<'_> {
     fn observe(work: &mut AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
         assert!(
-            work.spent().bytes_encoded >= 7,
+            work.spent().unwrap().bytes_encoded >= 7,
             "accounting page replaced the original request frame"
         );
         work.charge(crate::WorkCounters {
@@ -90,7 +90,7 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
         independent.value.resize(73, 0xa5);
         let live = |work: &AuthorityWork<'_>| {
             if native {
-                original.live_allocation_bytes()
+                original.live_allocation_bytes().unwrap()
             } else {
                 work.allocations.live_bytes()
             }
@@ -160,11 +160,14 @@ async fn pages_retain_original_frame_and_fact_backing_until_retirement()
         assert!(independent.value.iter().all(|byte| *byte == 0xa5));
         if native {
             drop(work);
-            assert_eq!(original.live_allocation_bytes(), before_read_context);
+            assert_eq!(
+                original.live_allocation_bytes().unwrap(),
+                before_read_context
+            );
             assert!(independent.value.iter().all(|byte| *byte == 0xa5));
             drop(independent);
             assert_eq!(
-                original.live_allocation_bytes(),
+                original.live_allocation_bytes().unwrap(),
                 before_read_context - independent_bytes
             );
         } else {
@@ -597,7 +600,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for RefusingProof<'_, O> {
     ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, crate::ObjectStoreError> {
         if record.sequence == Sequence::new(2) {
             self.later_hash.store(
-                work.spent().bytes_hashed,
+                work.spent().unwrap().bytes_hashed,
                 std::sync::atomic::Ordering::Relaxed,
             );
             if self.archive {
@@ -724,7 +727,7 @@ async fn record_admission_refusals_preserve_proven_prefix() -> Result<(), Box<dy
             assert_eq!(prefix.next, cursor(&durable[0])?);
             assert!(!prefix.complete);
             assert_eq!(prefix.work.items_returned, 1);
-            assert_eq!(prefix.work, work.spent());
+            assert_eq!(prefix.work, work.spent().unwrap());
             prefix.work.verify(budget)?;
         }
     }

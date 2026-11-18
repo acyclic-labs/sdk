@@ -31,7 +31,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         directory.error,
         AuthenticatedProbeError::DirectoryPageTooLarge
     ));
-    assert_eq!(*directory.work, WorkCounters::default());
+    assert_eq!(*directory.work().unwrap(), WorkCounters::default());
 
     let empty = probe
         .probe_async(
@@ -51,7 +51,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         empty.error,
         AuthenticatedProbeError::InvalidDependency(DependencyError::EmptyContentRange)
     ));
-    assert_eq!(*empty.work, WorkCounters::default());
+    assert_eq!(*empty.work().unwrap(), WorkCounters::default());
 
     let overflow = probe
         .probe_async(
@@ -71,7 +71,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         overflow.error,
         AuthenticatedProbeError::InvalidDependency(DependencyError::RangeOverflow)
     ));
-    assert_eq!(*overflow.work, WorkCounters::default());
+    assert_eq!(*overflow.work().unwrap(), WorkCounters::default());
 
     let zero_page = probe
         .probe_async(
@@ -91,7 +91,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         zero_page.error,
         AuthenticatedProbeError::InvalidDependency(DependencyError::ZeroDirectoryPageLimit)
     ));
-    assert_eq!(*zero_page.work, WorkCounters::default());
+    assert_eq!(*zero_page.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -199,10 +199,10 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
             failure.error,
             AuthenticatedProbeError::Work(WorkError::BudgetExceeded { .. })
         ));
-        assert_eq!(failure.work.bytes_copied, 0);
-        assert_eq!(failure.work.items_returned, 0);
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.allocation_operations, 1);
+        assert_eq!(failure.work.as_deref().unwrap().bytes_copied, 0);
+        assert_eq!(failure.work.as_deref().unwrap().items_returned, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 1);
     }
     let copied = usize_to_u64(size_of::<Dependency>());
     let receipt = (probe.capture_records_many_async(
@@ -281,8 +281,8 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
                         .reached
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
-                        self.original.live_allocation_bytes(),
-                        self.original.receipt(),
+                        self.original.live_allocation_bytes().unwrap(),
+                        self.original.receipt().unwrap(),
                     ));
                     std::panic::resume_unwind(Box::new("cold original authenticated probe read"));
                 }
@@ -356,7 +356,7 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
         reads: std::sync::atomic::AtomicU64::new(0),
         reached: Mutex::new(None),
     };
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
         &store,
@@ -381,10 +381,10 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
         ))
     ));
     assert_eq!(store.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
-    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
     probe.retire_with_accounting(&mut accounting)?;
     drop(constructor);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     let store = store.store;
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -395,7 +395,7 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
         reads: std::sync::atomic::AtomicU64::new(0),
         reached: Mutex::new(None),
     };
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
         &store,
@@ -425,14 +425,14 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entries
             .bytes;
-    assert_eq!(original.live_allocation_bytes(), baseline + cached);
-    assert!(reached_live > original.live_allocation_bytes());
-    assert_eq!(original.receipt(), reached_work);
-    assert_eq!(original.receipt().backend_read_operations, 1);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline + cached);
+    assert!(reached_live > original.live_allocation_bytes().unwrap());
+    assert_eq!(original.receipt().unwrap(), reached_work);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 1);
     cancellation.cancel();
     probe.retire_with_accounting(&mut accounting)?;
     drop(constructor);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -468,7 +468,7 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
         &store,
@@ -517,7 +517,7 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
     drop(allocation);
     probe.retire_with_accounting(&mut accounting)?;
     drop(constructor);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -553,7 +553,7 @@ fn stack_dependency_denial_precedes_array_encoding() -> Result<(), Box<dyn std::
             crate::FsError::Work(WorkError::BudgetExceeded { .. })
         ));
         assert!(!reached.get());
-        assert_eq!(accounting.spent(), WorkCounters::UNCHARGED);
+        assert_eq!(accounting.spent().unwrap(), WorkCounters::UNCHARGED);
     }
     Ok(())
 }
@@ -565,7 +565,7 @@ fn original_stack_encoding_retains_completed_prefix_on_late_cancellation()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = capture_stack_state_with_accounting(
         || {
@@ -578,10 +578,16 @@ fn original_stack_encoding_retains_completed_prefix_on_late_cancellation()
         None,
     );
     assert!(result.is_err());
-    assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded + 10);
-    assert_eq!(original.receipt().bytes_hashed, before.bytes_hashed);
     assert_eq!(
-        original.receipt().allocation_operations,
+        original.receipt().unwrap().bytes_encoded,
+        before.bytes_encoded + 10
+    );
+    assert_eq!(
+        original.receipt().unwrap().bytes_hashed,
+        before.bytes_hashed
+    );
+    assert_eq!(
+        original.receipt().unwrap().allocation_operations,
         before.allocation_operations
     );
     Ok(())

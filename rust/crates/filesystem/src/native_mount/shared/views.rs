@@ -7,14 +7,14 @@
 
 use super::view_table::{RetiringView, ViewLease, ViewOwner, ViewTable};
 use crate::NativeMountError;
-use crate::sync::native::RwLock;
+use crate::native_sync::RwLock;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::sync::{Arc, PoisonError};
 
 pub(crate) struct NamedViews<K, C> {
-    table: crate::sync::native::Arc<ViewTable<C>>,
+    table: crate::native_sync::Arc<ViewTable<C>>,
     names: RwLock<Names<K>>,
 }
 
@@ -28,7 +28,7 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
     /// Views with serials `1..=max_serial`.
     pub(crate) fn new(max_serial: u64) -> Self {
         Self {
-            table: crate::sync::native::Arc::new(ViewTable::new(max_serial)),
+            table: crate::native_sync::Arc::new(ViewTable::new(max_serial)),
             names: RwLock::new(Names {
                 by_name: HashMap::new(),
                 by_serial: BTreeMap::new(),
@@ -160,14 +160,20 @@ impl<K: Clone + Eq + Hash, C> NamedView<K, C> {
     }
 
     /// Unlists the view, stops its adapter, then drains admitted callbacks.
-    pub(crate) fn retire_after(&mut self, stop: impl FnOnce()) -> Option<(K, C)> {
+    pub(crate) fn retire_after(
+        &mut self,
+        stop: impl FnOnce(),
+    ) -> Result<Option<(K, C)>, &'static str> {
         self.begin_retirement(stop)
-            .map(|(name, retiring)| (name, retiring.finish()))
+            .map(|(name, retiring)| retiring.finish().map(|core| (name, core)))
+            .transpose()
     }
 }
 
 impl<K: Clone + Eq + Hash, C> Drop for NamedView<K, C> {
     fn drop(&mut self) {
-        drop(self.retire_after(|| {}));
+        if let Err(error) = self.retire_after(|| {}) {
+            tracing::error!(error, "view retirement failed during drop");
+        }
     }
 }

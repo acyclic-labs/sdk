@@ -2,6 +2,7 @@ use super::*;
 use crate::guest::{
     ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateHost, GuestError, Requests,
 };
+use acyclic_stream::StreamCategory;
 
 struct Flushes {
     manifest: Manifest,
@@ -441,7 +442,7 @@ async fn unknown_state_flush_retains_its_publication_without_reentering_the_hand
     let (delivered, released) = futures::join!(delivery, release);
     released?;
     assert!(
-        matches!(&delivered, Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable),
+        matches!(&delivered, Err(Error::Stream(error)) if error.category() == StreamCategory::Unavailable),
         "{delivered:?}"
     );
     let slot = runtime

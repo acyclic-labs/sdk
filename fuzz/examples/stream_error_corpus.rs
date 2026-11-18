@@ -23,7 +23,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "step=capture-stream-failures: {error}; recovery: cargo run --locked -p acyclic-guest-fuzz --example stream_error_corpus -- fuzz/corpus/stream_error"
+            "step=capture-stream-failures: {error}; recovery: bazel run //fuzz:stream_error_corpus_example -- \"$PWD/fuzz/corpus/stream_error\""
         );
         std::process::exit(1);
     }

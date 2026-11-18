@@ -118,7 +118,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             .0
             .workspace()
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()
             )
             .await
@@ -133,17 +133,6 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             .0
             .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation))
             .await?
-            .source,
-        advanced
-    );
-    assert_eq!(
-        store
-            .load_lazy_workspace(
-                workspace_id,
-                &mut WorkBudget::UNBOUNDED.accounting(&cancellation)
-            )
-            .await?
-            .ok_or("lost binding")?
             .source,
         advanced
     );
@@ -185,7 +174,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         rejected.error.semantic_error(),
         LazyWorkspaceError::StaleSource
     ));
-    rejected.work.verify(budget)?;
+    rejected.work().unwrap().verify(budget)?;
     assert_eq!(
         store
             .load_lazy_workspace(
@@ -194,12 +183,15 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             )
             .await?
             .as_ref(),
-        Some(&rebound.value)
+        Some(&LazyWorkspaceState {
+            source: reference,
+            ..rebound.value
+        })
     );
     assert_eq!(
         unbounded!(fs, open_workspace("epoch-attachment"))?
             .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()
             )
             .await

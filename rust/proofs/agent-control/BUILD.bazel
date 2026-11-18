@@ -1,0 +1,26 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+config_setting(
+    name = "negative_control",
+    values = {"define": "agent_control=negative"},
+)
+
+kani_test(
+    name = "condition_wait",
+    src = select({
+        ":negative_control": "//rust/crates/harness-core:tests/formal/agent_control_negative.rs",
+        "//conditions:default": "//rust/crates/harness-core:tests/formal/agent_control.rs",
+    }),
+    srcs = [
+        "//rust/crates/harness-control:src/agent.rs",
+        "//rust/crates/harness-core:src/agent/release.rs",
+        "//rust/crates/harness-core:tests/formal/agent_control_model.rs",
+        "//rust/crates/harness-core:tests/formal/agent_control_contract.rs",
+    ],
+    harness = select({
+        ":negative_control": "an_unreachable_wait_parked_on_its_deadline_is_found",
+        "//conditions:default": "a_condition_wait_parks_only_when_its_open_children_can_meet_it",
+    }),
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

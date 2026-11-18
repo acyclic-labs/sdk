@@ -1,12 +1,12 @@
 //! Markdown task-list parsing and canonical round trips.
 
-use acyclic_harness::client::{TaskList, TaskState, parse_task_list};
+use acyclic_harness_client::{TaskList, TaskState, parse_task_list};
 use proptest::prelude::*;
 
 #[test]
 fn checked_in_fuzz_corpus() {
-    let directory = acyclic_test_support::source_path("rust/crates/harness")
-        .join("../harness-fuzz/corpus/plan_markdown");
+    let directory =
+        acyclic_test_support::source_path("rust/crates/harness-fuzz/corpus/plan_markdown");
     let expected = [
         ("escaped", None),
         ("fenced", Some(1)),

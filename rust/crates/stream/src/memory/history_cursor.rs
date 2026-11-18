@@ -195,7 +195,7 @@ impl HistoryCursor {
             registration: None,
         }
     }
-    fn sync(&mut self, path: &PathState) {
+    fn sync(&mut self, path: &PathState) -> Result<(), StreamError> {
         let root = path.history.as_ref();
         let tail = path.tail;
         let history = &self.records.history;
@@ -205,7 +205,7 @@ impl HistoryCursor {
             _ => false,
         };
         if same && history.tail == tail {
-            return;
+            return Ok(());
         }
         let appended = matches!((&history.root, root.map(AsRef::as_ref)),
             (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
@@ -216,6 +216,7 @@ impl HistoryCursor {
             self.records.window = None;
         }
         self.records.remaining = 0;
+        Ok(())
     }
     async fn next_record(&mut self) -> Result<Option<Record>, StreamError> {
         if self.finished() {

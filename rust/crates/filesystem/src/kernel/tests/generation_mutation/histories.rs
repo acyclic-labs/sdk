@@ -283,7 +283,10 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
         use_before_create.error,
         GenerationMutationError::MissingSource
     ));
-    assert_eq!(use_before_create.work.backend_write_operations, 0);
+    assert_eq!(
+        use_before_create.work().unwrap().backend_write_operations,
+        0
+    );
     for history in 0..128_u64 {
         let store = MemoryObjectStore::default();
         let fixture = fixture(&store).await?;

@@ -13,7 +13,7 @@ pub(super) fn restore_gen(args: &[String]) -> Result<(), Failure> {
         return Err(invalid("expected four arguments").into());
     };
     let volume = uuid::Uuid::parse_str(volume).map_err(|_| invalid("invalid volume UUID"))?;
-    let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+    let mut bytes = [0; acyclic_fs_format::object_reference::ObjectId::ENCODED_LEN];
     let bytes = bytes
         .get_mut(..generation.len() / 2)
         .ok_or_else(|| invalid("invalid canonical generation reference"))?;
@@ -119,8 +119,8 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
             WorkCounters::UNBOUNDED,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: WorkCounters::default(),
                     },
@@ -192,8 +192,8 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
                     WorkCounters::UNBOUNDED,
                     &cancel,
                     |_| async {
-                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                            acyclic_fs::OperationReceipt {
+                        Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                            acyclic_fs_work::performance::OperationReceipt {
                                 value: (),
                                 work: WorkCounters::default(),
                             },
@@ -393,8 +393,8 @@ pub(super) async fn capture_and_commit(
             WorkCounters::UNBOUNDED,
             &cancel,
             |_| async {
-                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                    acyclic_fs::OperationReceipt {
+                Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs_work::performance::OperationReceipt {
                         value: (),
                         work: WorkCounters::default(),
                     },
@@ -419,7 +419,10 @@ pub(super) async fn materialize(
     volume_id: VolumeId,
     generation: GenerationId,
     destination: &Path,
-) -> Result<acyclic_fs::OperationReceipt<acyclic_fs::MaterializationReceipt>, Failure> {
+) -> Result<
+    acyclic_fs_work::performance::OperationReceipt<acyclic_fs::MaterializationReceipt>,
+    Failure,
+> {
     let cancel = CancellationToken::new();
     let mut checkout = reopen_checkout(
         store_dir,

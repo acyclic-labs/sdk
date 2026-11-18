@@ -4,7 +4,7 @@ use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 #[test]
 fn sole_highlight_moves_its_pointer_and_custody_without_copying() -> Result<()> {
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        acyclic_fs_work::performance::work_budget(16_384, 16 * 1_024 * 1_024),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;

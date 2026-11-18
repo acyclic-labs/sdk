@@ -38,10 +38,10 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
             record(Event::Write(write.object_id(), write.bytes().to_vec()));
         }
         let original = work.original.ok_or(ObjectStoreError::NativeUnavailable)?;
-        let before = original.receipt().allocation_operations;
+        let before = original.receipt().unwrap().allocation_operations;
         self.0.put_many_hashed(writes, work).await?;
         self.2.fetch_add(
-            original.receipt().allocation_operations - before,
+            original.receipt().unwrap().allocation_operations - before,
             Ordering::Relaxed,
         );
         if let Some(file) = &self.1 {
@@ -61,11 +61,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
         context: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
         let original = context.original;
-        let before = original.map_or(0, |work| work.receipt().allocation_operations);
+        let before = original.map_or(0, |work| work.receipt().unwrap().allocation_operations);
         let result = self.0.flush_before_publish(scope, context).await;
         if let Some(original) = original {
             self.2.fetch_add(
-                original.receipt().allocation_operations - before,
+                original.receipt().unwrap().allocation_operations - before,
                 Ordering::Relaxed,
             );
         }
@@ -151,13 +151,13 @@ fn run(
         |state| {
             runtime.block_on(async {
                 let (directory, provider, store, writes, ids, token, native) = state?;
-                let initial_allocations = native.receipt().allocation_operations;
+                let initial_allocations = native.receipt().unwrap().allocation_operations;
                 let began = std::time::Instant::now();
                 let mut work = AuthorityWork::native(&native, &token);
                 let result = match mode {
                     Mode::Staged | Mode::ExtraFlush => store
                         .flush_before_publish(
-                            PublicationScope { related_objects: &[], objects: &ids, proven_at: 0 },
+                            PublicationScope { root: None, related_root: None, related_objects: &[], objects: &ids, proven_at: 0 },
                             &mut work,
                         )
                         .await
@@ -168,7 +168,7 @@ fn run(
                                 Ok(()) => store
                                     .inner
                                     .flush_before_publish(
-                                        PublicationScope { related_objects: &[], objects: &ids, proven_at: 0 },
+                                        PublicationScope { root: None, related_root: None, related_objects: &[], objects: &ids, proven_at: 0 },
                                         &mut work,
                                     )
                                     .await
@@ -188,6 +188,8 @@ fn run(
                                     .inner
                                     .flush_before_publish(
                                         PublicationScope {
+                                            root: None,
+                                            related_root: None,
                                             related_objects: &[],
                                             objects: &[write.object_id()],
                                             proven_at: 0,
@@ -202,7 +204,7 @@ fn run(
                     }
                 };
                 let elapsed = began.elapsed();
-                let cost = native.receipt();
+                let cost = native.receipt().unwrap();
                 let backend = store.inner.2.load(Ordering::Relaxed);
                 let backend = (backend != 0).then_some(initial_allocations + backend);
                 let result = if let Err(error) = result {

@@ -70,7 +70,8 @@ pub fn is_private(file: &File) -> io::Result<bool> {
     unsafe_code,
     reason = "geteuid reads the current process identity and has no pointer preconditions"
 )]
-pub(crate) fn effective_user() -> u32 {
+/// The calling process's effective user id, which owns every file it creates.
+pub fn effective_user() -> u32 {
     // SAFETY: geteuid takes no arguments and returns the process effective uid.
     unsafe { libc::geteuid() }
 }
@@ -268,7 +269,12 @@ impl StagedFile {
         self.publish_observed(path, mode, &mut |_| Ok(()))
     }
 
-    fn publish_observed(
+    /// Durably publishes while retaining the original descriptor and reporting
+    /// the sync, installation, and publication boundaries to the observer.
+    /// This staged file already exists, so the observer receives no creation event.
+    ///
+    /// A failure after installation can leave the destination installed.
+    pub fn publish_observed(
         mut self,
         path: &Path,
         mode: crate::RenameMode,

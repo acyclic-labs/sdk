@@ -9,7 +9,7 @@ async fn envelope_admission_retains_original_position_and_rejects_retry_substitu
     let operation = OperationId::new();
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(10_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(10_000_000, 16 * 1024 * 1024),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -115,7 +115,7 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
     let operation = OperationId::new();
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(10_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(10_000_000, 16 * 1024 * 1024),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

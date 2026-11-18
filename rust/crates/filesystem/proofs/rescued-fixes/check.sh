@@ -13,12 +13,20 @@ regressions=(
   foreign_work_is_refused_before_activating_a_real_source
   shared_access_oracle_detects_a_corrupted_decision
 )
-filter=''
-for name in "${regressions[@]}"; do
-  filter+="${filter:+ | }test($name)"
-done
-positive="$filter | test(journal_write_bounds_preserve_wide_budget_allowances) | test(core_state::owners::tests::) | test(lifecycle_operations_retain_the_source_invocation_and_finite_budget) | test(access::roundtrip::)"
-positive+=' | test(native_mount::fuse::tests::retirement::) | test(physical_source_cleanup_joins_last_lease_after_caller_cancellation) | test(physical_driver_packet_joins_last_lease_after_caller_cancellation) | test(physical_lazy_source_joins_last_lease_after_caller_cancellation) | test(physical_fuse_loop_joins_last_lease_after_caller_cancellation)'
+positive=(
+  journal_write_bounds_preserve_wide_budget_allowances
+  core_state::owners::tests::
+  lifecycle_operations_retain_the_source_invocation_and_finite_budget
+  access::roundtrip::
+  native_mount::fuse::tests::retirement::
+  physical_source_cleanup_joins_last_lease_after_caller_cancellation
+  physical_driver_packet_joins_last_lease_after_caller_cancellation
+  physical_lazy_source_joins_last_lease_after_caller_cancellation
+  physical_fuse_loop_joins_last_lease_after_caller_cancellation
+)
+oracle=(bazel test //rust/crates/filesystem:acyclic_fs_test
+  //rust/crates/filesystem:main --test_output=all --nocache_test_results)
+filters=("${regressions[@]/#/--test_arg=}")
 
 patches=(
   rust/crates/filesystem/fuzz/mutations/file-table-writer-admission.patch
@@ -42,11 +50,7 @@ for patch in "${patches[@]}"; do
   git apply --check "$patch"
 done
 cargo fmt -p acyclic-fs --check
-# This proof checks compilation and runtime oracles under the workspace's
-# existing policy, without introducing a crate-wide lint audit.
-cargo check --locked -p acyclic-fs --lib --test main --features test-support
-cargo nextest run --locked -p acyclic-fs --lib --test main --features test-support \
-  --color never -E "$positive"
+"${oracle[@]}" "${filters[@]}" "${positive[@]/#/--test_arg=}"
 
 negative=$(mktemp)
 cleanup() {
@@ -61,12 +65,10 @@ done
 # One mutant compilation, then all seven independent regressions. A compiler
 # failure cannot count as a detected semantic regression.
 set +e
-ACYFS_WRITER_OMIT_GUARD=leaf-order cargo nextest run --locked -p acyclic-fs \
-  --lib --test main --features test-support --color never --no-fail-fast \
-  -E "$filter" 2>&1 | tee "$negative"
+"${oracle[@]}" "${filters[@]}" --test_env=ACYFS_WRITER_OMIT_GUARD=leaf-order 2>&1 | tee "$negative"
 result=${PIPESTATUS[0]}
 set -e
-if [ "$result" -ne 100 ]; then
+if [ "$result" -ne 3 ]; then
   printf 'Expected failing tests from source mutations, got exit %s\n' "$result" >&2
   exit 1
 fi

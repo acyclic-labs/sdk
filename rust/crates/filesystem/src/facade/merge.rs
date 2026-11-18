@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         None,
                     )
                     .await
-                    .map_err(|error| OperationFailure::new(error, original.receipt()))?;
+                    .map_err(|error| OperationFailure::observed(error, original.receipt()))?;
                     let result = OperationReceipt {
                         value: checkout_commit_outcome(&output.receipt),
                         work: output.receipt.work,
@@ -178,7 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             None,
                         )
                         .await
-                        .map_err(|error| OperationFailure::new(error, original.receipt()))?;
+                        .map_err(|error| OperationFailure::observed(error, original.receipt()))?;
                         let receipt = OperationReceipt {
                             value: checkout_commit_outcome(&output.receipt),
                             work: output.receipt.work,
@@ -246,14 +246,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
         };
         let published = publication(request, intent, limits, accounting.remaining()?).await;
+        let (result, spent) = accounting.split_receipt(published)?;
         if accounting.standalone_parts().is_some() {
-            let spent = match &published {
-                Ok(receipt) => receipt.work,
-                Err(failure) => *failure.work,
-            };
             merge_creation_backend_work(accounting, spent)?;
         }
-        let outcome = match published.map_err(|failure| failure.error)?.value {
+        let outcome = match result? {
             LivePublicationObservation::Committed { generation_id, .. } => {
                 WorkspaceJoinOutcome::Joined(generation_id, resolutions_digest)
             }
@@ -593,6 +590,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::PublicationHold, FsError> {
         self.flush_publication(
             crate::PublicationScope {
+                root: Some(parent),
+                related_root: None,
                 related_objects: &[],
                 objects: &[parent],
                 proven_at: self.inner.objects.collection_sweeps(),
@@ -632,8 +631,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .resolve_head_generation(&mut accounting, cancellation)
             .await;
         let (current_head_root, current_head) =
-            result.map_err(|error| OperationFailure::new(error, accounting.spent()))?;
-        let mut work = accounting.spent();
+            result.map_err(|error| OperationFailure::observed(error, accounting.spent()))?;
+        let mut work = accounting.spent().map_err(|observation| {
+            OperationFailure::without_receipt(FsError::from(observation), observation)
+        })?;
         if current_head_root != theirs_id {
             return Err(OperationFailure::new(FsError::MergeParentNotHead, work));
         }

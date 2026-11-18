@@ -192,7 +192,7 @@ impl<'a> OrdinalIndex<'a> {
         let hold = edit::allocation(work, std::mem::size_of::<Self>())?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: domain.len() as u64 + version.len() as u64,
                 ..Default::default()
             })?;
@@ -218,10 +218,11 @@ impl<'a> OrdinalIndex<'a> {
     fn operation(&self, first: u64) -> Result<OperationId> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(hold) = &self._hold {
-            hold.work().charge(acyclic_fs::WorkCounters {
-                bytes_hashed: 8,
-                ..Default::default()
-            })?;
+            hold.work()
+                .charge(acyclic_fs_work::performance::WorkCounters {
+                    bytes_hashed: 8,
+                    ..Default::default()
+                })?;
         }
         let mut identity = self.identity.clone();
         identity.update(&first.to_le_bytes());
@@ -304,10 +305,11 @@ impl<'a> OrdinalIndex<'a> {
         edit::charge(&self._hold, 0, 1)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(hold) = &self._hold {
-            hold.work().charge(acyclic_fs::WorkCounters {
-                bytes_hashed: 4,
-                ..Default::default()
-            })?;
+            hold.work()
+                .charge(acyclic_fs_work::performance::WorkCounters {
+                    bytes_hashed: 4,
+                    ..Default::default()
+                })?;
         }
         let mut identity = self.identity.clone();
         identity.update(b"root");

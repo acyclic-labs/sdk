@@ -1,0 +1,340 @@
+//! The harness server: the one entry point that serves an agent tree to
+//! remote clients, for a managed host and a self-deployed one alike. It
+//! hosts the tree through the same [`crate::hosting::Server`] (admission,
+//! routing, binding publication, approvals and spawn) and speaks the same
+//! stream session protocol over gRPC; a client reaches either with
+//! [`crate::local::Connection::connect`], the endpoint being its only
+//! difference. A host supplies only what [`ServerConfig`] names.
+pub use crate::local::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
+use crate::{Error, LocalHarnessConfig, Result};
+use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
+use acyclic_stream::BoxProviderFuture;
+use std::sync::Arc;
+
+mod actors;
+mod listener;
+mod tls;
+pub use actors::{Actors, ActorsError, Execution, PendingActors, Runtime};
+pub use listener::{Listener, LocalConnection};
+
+/// This server's identity, announced in every [`Endpoint`]: a client or a
+/// test checks that an endpoint is served by this entry point.
+pub const IDENTITY: &str = concat!("acyclic-harness/", env!("CARGO_PKG_VERSION"));
+
+/// The server's TLS identity: its PEM certificate chain and private key,
+/// the URL clients reach it at, which the certificate names, and the peer
+/// it requires, if any.
+pub struct TlsIdentity {
+    /// The `https` URL a remote client connects to: the server's public
+    /// name, not the address it listens on (`0.0.0.0` reaches no one).
+    pub url: String,
+    /// PEM certificate chain.
+    pub certificate: Vec<u8>,
+    /// PEM private key.
+    pub key: Vec<u8>,
+    /// The client every connection must authenticate as, over TLS 1.3,
+    /// before any session is dispatched; with `None`, any client may
+    /// connect, as server-only TLS.
+    pub peer: Option<PeerIdentity>,
+}
+
+/// A required TLS client: a certificate chain its authorities verify, whose
+/// end-entity certificate names `uri_san` exactly. It authenticates the
+/// connecting peer (a gateway or relay, say) and authorizes no account:
+/// every session's credential is still verified against the tree's trust.
+pub struct PeerIdentity {
+    /// PEM certificates of the authorities a client chain must verify against.
+    pub certificate_authorities: Vec<u8>,
+    /// The URI subject alternative name the client certificate must hold,
+    /// such as a SPIFFE ID.
+    pub uri_san: String,
+}
+
+/// Everything a host supplies to [`serve`]: the harness and its seams. A
+/// managed host and a self-deployed one differ only in these values.
+pub struct ServerConfig<C = LocalHarnessConfig> {
+    /// The harness the tree runs on: its storage, model, preset (prompt,
+    /// tools, limits, approval policy) and settings.
+    pub harness: C,
+    /// Verifies the tree's caller and publishes its clients' credential;
+    /// [`KeyFileVerifier`] by default.
+    pub verifier: Arc<dyn Verifier>,
+    /// The TLS identity; without one only a loopback address is served,
+    /// over plain HTTP.
+    pub tls: Option<TlsIdentity>,
+}
+
+/// A host's typed storage composition, opened before any session is admitted.
+/// Native filesystem publication keeps the concrete Stream provider throughout.
+pub trait Composition: Send + 'static {
+    /// Stream storage shared by the agents and their filesystem authority.
+    type Stream: AuthorityProvider + 'static;
+    /// Immutable object storage used by the same filesystem.
+    type Objects: AsyncObjectStore + 'static;
+    /// Keeps the host's runtime and resources alive until serving ends.
+    type Owner: Send + Sync + 'static;
+    /// Opening failures may retain an uncertain publication for exact recovery.
+    type Error: std::error::Error + Send + Sync + From<Error> + 'static;
+    /// Opens the host through the canonical admitted hosting API, its tree's
+    /// caller verified by `verifier`.
+    fn open(
+        self,
+        verifier: &Arc<dyn Verifier>,
+    ) -> BoxProviderFuture<
+        'static,
+        std::result::Result<Hosted<Self::Stream, Self::Objects, Self::Owner>, Self::Error>,
+    >;
+}
+
+impl<C> ServerConfig<C> {
+    /// `harness` served with the self-deployed defaults: the key-file
+    /// verifier and no TLS.
+    #[must_use]
+    pub fn new(harness: C) -> Self {
+        Self {
+            harness,
+            verifier: Arc::new(KeyFileVerifier),
+            tls: None,
+        }
+    }
+}
+
+/// An already admitted tree, its clock and the owner of its running runtime.
+/// Pass this as [`ServerConfig::harness`] to serve any typed storage pair through
+/// the same endpoint as the default local composition.
+pub struct Hosted<P: AuthorityProvider + 'static, O: 'static, L> {
+    server: Arc<crate::hosting::Server<P, O>>,
+    resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
+    pub(crate) completion: Option<BoxProviderFuture<'static, Result<()>>>,
+    pub(crate) shutdown: Option<Box<dyn FnOnce() -> Result<()> + Send + Sync>>,
+    _owner: L,
+}
+
+impl<P, O, L> Hosted<P, O, L>
+where
+    P: AuthorityProvider + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Retains `owner` while serving `server`. The owner must keep this tree's
+    /// runtime running and stop it when dropped; serving starts no second loop.
+    /// `resources` supplies the host's supported resource follows. With `None`,
+    /// resource follows fail closed; ordinary Stream follows remain available.
+    #[must_use]
+    pub fn new(
+        server: Arc<crate::hosting::Server<P, O>>,
+        owner: L,
+        resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
+    ) -> Self {
+        Self {
+            server,
+            resources,
+            completion: None,
+            shutdown: None,
+            _owner: owner,
+        }
+    }
+
+    /// End the endpoint when its runtime stops. Dropping the producer must
+    /// complete this future with an error; clients then see session closure.
+    #[must_use]
+    pub fn with_completion(
+        mut self,
+        completion: impl Future<Output = Result<()>> + Send + 'static,
+    ) -> Self {
+        self.completion = Some(Box::pin(completion));
+        self
+    }
+}
+
+impl<P, O, L> Composition for Hosted<P, O, L>
+where
+    P: AuthorityProvider + 'static,
+    O: AsyncObjectStore + 'static,
+    L: Send + Sync + 'static,
+{
+    type Stream = P;
+    type Objects = O;
+    type Owner = L;
+    type Error = Error;
+    /// An already hosted tree's caller was admitted by its host; `verifier`
+    /// verifies only its clients' credentials.
+    fn open(self, _: &Arc<dyn Verifier>) -> BoxProviderFuture<'static, Result<Self>> {
+        Box::pin(async move { Ok(self) })
+    }
+}
+
+/// What a client needs to reach a running server.
+#[derive(Debug, serde::Serialize)]
+pub struct Endpoint {
+    /// The server's [`IDENTITY`].
+    pub server: &'static str,
+    /// The URL a client connects to.
+    pub endpoint: String,
+    /// The credential its verifier publishes for clients
+    /// ([`Verifier::observation`]); none when clients hold their own.
+    #[serde(flatten)]
+    pub observation: Option<Observation>,
+}
+
+/// Opens `config`'s harness and serves its agent tree on `listener` until
+/// `shutdown`. `ready` receives the endpoint once it accepts connections.
+///
+/// # Errors
+/// When the harness cannot be opened or hosted, a non-loopback address has
+/// no TLS identity, or the listener fails.
+pub async fn serve<C: Composition>(
+    listener: impl Into<Listener>,
+    config: ServerConfig<C>,
+    ready: impl FnOnce(&Endpoint),
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::result::Result<(), C::Error> {
+    let listener = listener.into();
+    let endpoint = match &listener {
+        Listener::Tcp(listener) => {
+            let address = listener.local_addr().map_err(failed)?;
+            if config.tls.is_none() && !address.ip().is_loopback() {
+                return Err(Error::Invalid(
+                    "plain HTTP serves only a loopback address; give a TLS identity".into(),
+                )
+                .into());
+            }
+            format!("http://{address}")
+        }
+        Listener::Local(_) => {
+            if config.tls.is_some() {
+                return Err(
+                    Error::Invalid("local IPC does not use a network TLS identity".into()).into(),
+                );
+            }
+            "ipc://local".into()
+        }
+    };
+    let mut shutdown = std::pin::pin!(shutdown);
+    let mut host = tokio::select! {
+        biased;
+        _ = &mut shutdown => return Err(Error::Cancelled.into()),
+        host = config.harness.open(&config.verifier) => host?,
+    };
+    let server = &host.server;
+    let bound = server.bound();
+    // Every client's credential is the capability envelope its issuer
+    // signs, verified against the issuer's trust.
+    let authority = Arc::new(bound.client_authority(server.root()).map_err(failed)?);
+    let (lifetime, ended) = tokio::sync::watch::channel(());
+    let completion = host.completion.take();
+    let shutdown_result = host.shutdown.take();
+    let mut completion = std::pin::pin!(async move {
+        match completion {
+            Some(completion) => completion.await,
+            None => std::future::pending().await,
+        }
+    });
+    let (completed, mut result) = tokio::sync::oneshot::channel();
+    let service = acyclic_stream::session::Service::new(
+        bound.agents().provider().clone(),
+        authority,
+        "self-hosted".into(),
+        acyclic_stream::session::Limits::default(),
+    )
+    .with_products(host.resources.clone(), server.clone())
+    .with_sockets(server.clone())
+    .with_lifetime(ended);
+    let tls = match config.tls {
+        Some(identity) => {
+            if !identity.url.starts_with("https://") {
+                return Err(Error::Invalid("a TLS server's URL is an https URL".into()).into());
+            }
+            Some((tls::config(&identity)?, identity.url))
+        }
+        None => None,
+    };
+    let endpoint = match &tls {
+        Some((_, url)) => url.clone(),
+        None => endpoint,
+    };
+    let observation = config.verifier.observation(RootCredential(Box::pin(async {
+        let minted = if server.serves_sessions() {
+            bound
+                .session_credential(server.root(), server.resource(), &server.session_resource())
+                .await
+        } else {
+            bound
+                .client_credential(server.root(), server.resource())
+                .await
+        }
+        .map_err(failed)?;
+        Ok((minted.credential, minted.principal))
+    })));
+    let observation = tokio::select! {
+        biased;
+        _ = &mut shutdown => return Err(Error::Cancelled.into()),
+        outcome = &mut completion => {
+            outcome?;
+            return Err(Error::Storage("host runtime completed before serving".into()).into());
+        },
+        observation = observation => observation?,
+    };
+    let completion_shutdown = async move {
+        tokio::select! {
+            _ = shutdown => {
+                let outcome = shutdown_result.map_or(Ok(()), |publish| publish());
+                let _ = completed.send(outcome);
+            },
+            outcome = &mut completion => { let _ = completed.send(outcome); },
+        }
+        drop(lifetime);
+    };
+    ready(&Endpoint {
+        server: IDENTITY,
+        endpoint,
+        observation,
+    });
+    use acyclic_stream_wire::wire::stream_session_service_server::StreamSessionServiceServer;
+    let router =
+        tonic::transport::Server::builder().add_service(StreamSessionServiceServer::new(service));
+    let serving = async {
+        match (listener, tls) {
+            (Listener::Tcp(listener), tls) => {
+                // Incoming sockets bypass the router's bind-time TCP options. Stream
+                // records must leave immediately rather than waiting for a coalescing ACK.
+                let incoming =
+                    tonic::transport::server::TcpIncoming::from(listener).with_nodelay(Some(true));
+                match tls {
+                    Some((tls, _)) => {
+                        router
+                            .serve_with_incoming_shutdown(
+                                tls::incoming(incoming, tls),
+                                completion_shutdown,
+                            )
+                            .await
+                    }
+                    None => {
+                        router
+                            .serve_with_incoming_shutdown(incoming, completion_shutdown)
+                            .await
+                    }
+                }
+            }
+            (Listener::Local(incoming), None) => {
+                router
+                    .serve_with_incoming_shutdown(incoming, completion_shutdown)
+                    .await
+            }
+            (Listener::Local(_), Some(_)) => {
+                unreachable!("local TLS was refused before opening the host")
+            }
+        }
+        .map_err(failed)
+    };
+    let serving = serving.await;
+    let result = match result.try_recv() {
+        Ok(outcome) => Error::after_cleanup(outcome, serving),
+        Err(_) => serving,
+    };
+    drop(host);
+    result.map_err(Into::into)
+}
+
+fn failed(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}

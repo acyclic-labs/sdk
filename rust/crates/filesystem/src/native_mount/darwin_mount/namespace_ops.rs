@@ -123,7 +123,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
         0,
         true,
         |context, destination, work| {
-            let target = copy_bytes(work, c_bytes(target, work)?)?;
+            let target = source_chunk(c_bytes(target, work)?, work)?;
             let destination = mount_path(destination, work)?;
             context.mutate(
                 || {
@@ -180,7 +180,9 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     ffi_path(address, path, 0, true, |context, path, work| {
         let mode_kind = libc::mode_t::try_from(mode & u32::from(libc::S_IFMT))
             .map_err(|_| driver_errno(libc::EINVAL))?;
-        let (kind, device) = MountNodeKind::special(mode_kind, device).map_err(driver_errno)?;
+        let (kind, device) =
+            acyclic_fs_native_contract::device::special_mount_node(mode_kind, device)
+                .map_err(driver_errno)?;
         let path = mount_path(path, work)?;
         context.mutate(
             || {

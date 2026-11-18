@@ -1,82 +1,5 @@
 use super::*;
 
-/// Concrete namespace mechanism selected for this binary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeMountKind {
-    /// Linux kernel FUSE through `/dev/fuse`.
-    LinuxFuse,
-    /// Self-contained macOS loopback-NFS session.
-    MacOsNfs,
-    /// Windows Projected File System provider.
-    WindowsProjFs,
-}
-
-/// Non-destructive compile-time and host capability facts.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeMountCapabilities {
-    /// Driver compiled for this target, if any.
-    pub kind: Option<NativeMountKind>,
-    /// Stable bounded reason when unavailable.
-    pub unavailable_reason: Option<&'static str>,
-}
-
-impl NativeMountCapabilities {
-    /// Whether the host has the required device or framework.
-    pub fn available(&self) -> bool {
-        self.unavailable_reason.is_none()
-    }
-
-    /// Whether the driver observes I/O issued by its provider process.
-    pub fn provider_process_io_observable(&self) -> bool {
-        self.available()
-            && matches!(
-                self.kind,
-                Some(NativeMountKind::LinuxFuse | NativeMountKind::MacOsNfs)
-            )
-    }
-}
-
-/// One exact mount request; cross-volume routing remains in the SDK mount table.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeMountRequest {
-    /// Process-unique mount identity.
-    pub mount_id: MountId,
-    /// Projected volume.
-    pub volume_id: VolumeId,
-    /// Empty, caller-owned destination.
-    pub destination: PathBuf,
-    /// Whether authored effects may be captured.
-    pub writable: bool,
-    /// Lists the view in the process's shared native instance at the
-    /// destination's parent, named by the destination's last component,
-    /// instead of mounting it at the destination.
-    pub shared: bool,
-}
-
-/// Platform-neutral node facts required by kernel callbacks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MountNode {
-    /// Stable path-independent identity.
-    pub file_id: FileId,
-    /// Canonical node kind.
-    pub kind: MountNodeKind,
-    /// Logical regular-file length; zero for non-files.
-    pub logical_bytes: u64,
-    /// Exact namespace binding count for this path-independent file.
-    pub link_count: u64,
-    /// Native device identity for character/block devices only.
-    pub device: Option<(u32, u32)>,
-}
-
-/// One exact mounted path result with complete authenticated metadata.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MountLookup {
-    /// Stable file identity, kind, length, and link count.
-    pub node: MountNode,
-    /// Complete metadata; unavailable fields are never fabricated.
-    pub metadata: FileMetadata,
-}
-
 /// Facts selected from the same candidate that completed a mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MountWriteFacts {
@@ -115,76 +38,6 @@ pub type ContentSink<'a> =
 pub type NativeMountContentSink<'a> =
     dyn FnMut(u64, crate::kernel::OwnedSourceChunk) -> Result<(), MountSourceError> + 'a;
 
-/// Opaque evidence of the exact external content one lookup observed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MountContentPin(pub [u8; 32]);
-
-/// Namespace kinds representable by native projections.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountNodeKind {
-    /// Regular byte stream.
-    Regular,
-    /// Directory.
-    Directory,
-    /// Symbolic link.
-    SymbolicLink,
-    /// POSIX named pipe.
-    Fifo,
-    /// POSIX socket node.
-    Socket,
-    /// POSIX character device.
-    CharacterDevice,
-    /// POSIX block device.
-    BlockDevice,
-    /// A canonical kind this driver cannot project safely.
-    Unsupported,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl MountNodeKind {
-    pub(super) fn special(
-        mode: libc::mode_t,
-        device: u64,
-    ) -> Result<(Self, Option<(u32, u32)>), i32> {
-        let kind = match mode {
-            libc::S_IFIFO => Self::Fifo,
-            libc::S_IFSOCK => Self::Socket,
-            libc::S_IFCHR => Self::CharacterDevice,
-            libc::S_IFBLK => Self::BlockDevice,
-            _ => return Err(libc::EOPNOTSUPP),
-        };
-        let device = matches!(kind, Self::CharacterDevice | Self::BlockDevice)
-            .then(|| crate::native_host::split_device(device));
-        Ok((kind, device))
-    }
-}
-
-/// Native sparse-file seek target.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountSeekTarget {
-    /// First allocated-zero or content byte.
-    Data,
-    /// First unallocated hole byte, including logical end-of-file.
-    Hole,
-}
-
-/// Exact sparse-allocation operation requested by a native mount.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountRangeAllocation {
-    /// Deallocates the range without changing logical size.
-    PunchHole,
-    /// Replaces the range with allocated canonical zeros.
-    ZeroRange {
-        /// Permit logical growth to the range end.
-        extend: bool,
-    },
-    /// Allocates only holes while preserving all existing content.
-    Preallocate {
-        /// Preserve logical file length.
-        keep_size: bool,
-    },
-}
-
 /// One data span within a bounded sparse open-file snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MountSparseSpan {
@@ -201,19 +54,6 @@ pub struct MountSparseRange {
     pub logical_bytes: u64,
     /// Ordered, non-overlapping allocated spans.
     pub spans: Vec<MountSparseSpan>,
-}
-
-/// Content rights requested by a native open that also returns metadata.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountOpenAccess {
-    /// Names and metadata only.
-    Metadata,
-    /// Content reads.
-    Read,
-    /// Content writes or appends; each mutation retains its distinct check.
-    Write,
-    /// Both content reads and writes.
-    ReadWrite,
 }
 
 /// Path-independent regular-file handle used for every native open operation.
@@ -501,17 +341,6 @@ impl MountAttributePage {
             )
             .ok_or(crate::WorkError::Overflow)
     }
-}
-
-/// Native named-attribute write precondition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MountAttributeWriteMode {
-    /// Insert or replace.
-    Upsert,
-    /// Require absence.
-    Create,
-    /// Require presence.
-    Replace,
 }
 
 /// Errors returned by the canonical checkout callback bridge.

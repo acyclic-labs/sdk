@@ -3,44 +3,98 @@ module(name = "acyclic_sdk")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_rust", version = "0.75.0")
+bazel_dep(name = "rules_rust_wasm_bindgen", version = "0.75.0")
 bazel_dep(name = "toolchains_llvm", version = "1.13.0")
 bazel_dep(name = "toolchains_musl", version = "0.2.0")
 
-# rules_rust, patched:
+# rules_rust 0.75.0 from acyclic-labs/rules_rust, whose commits on the release:
+# - a transitive module's crate lockfile labels resolve in that module's repository;
 # - rust_check_aspect type-checks crates to metadata, as cargo check does;
-# - rustc compiles the main repository's crates incrementally into the directory a host names with
-#   --@rules_rust//rust/settings:incremental_dir;
+# - the clippy_driver patch below runs the Rust compile action through clippy-driver, so lints are part of
+#   compilation and no separate clippy aspect type-checks the same tree again;
 # - build scripts see the toolchain's extra rustc flags in CARGO_ENCODED_RUSTFLAGS and CARGO_CFG_*, as
 #   Cargo's do with RUSTFLAGS, so cc-rs compiles C for the static CRT a crt-static target links.
-single_version_override(
+git_override(
     module_name = "rules_rust",
+    remote = "https://github.com/acyclic-labs/rules_rust.git",
+    commit = "4f0293883980add60314edace130d285b89f5941",
+    patches = ["//:rules_rust-clippy-driver.patch"],
     patch_strip = 1,
-    patches = ["//:rules_rust.patch"],
 )
 
+# The C/C++ toolchains are this module's own build setup, so each is a dev dependency: a module that
+# depends on this one registers its own, and needs no patch to drop these.
+
 # Pinned C/C++ toolchain for build scripts, -sys crates and linking.
-llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
-llvm.toolchain(llvm_version = "22.1.8")
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm", dev_dependency = True)
+LLVM_VERSION = "22.1.8"
+llvm.toolchain(llvm_version = LLVM_VERSION)
 use_repo(llvm, "llvm_toolchain", "llvm_toolchain_llvm")
+
+# Browser modules need the same compiler when this SDK is a dependency too.
+# Its distinct repository name keeps a consumer's native toolchain independent.
+wasm_llvm = use_repo_rule("@toolchains_llvm//toolchain:rules.bzl", "llvm")
+wasm_llvm(name = "wasm_llvm_distribution", llvm_versions = {"": LLVM_VERSION})
+register_toolchains("//toolchains/browser:wasm_cc_toolchain", "//toolchains/browser:sdk_wasm_bindgen_toolchain")
 
 # The musl C/C++ toolchain: musl's headers, CRT and libc for the //:linux_musl platform's build
 # scripts, -sys crates and static links. It is registered first, because the LLVM toolchain matches
 # every Linux x86_64 platform and would otherwise compile and link musl targets against glibc.
-toolchains_musl = use_extension("@toolchains_musl//:toolchains_musl.bzl", "toolchains_musl")
+toolchains_musl = use_extension("@toolchains_musl//:toolchains_musl.bzl", "toolchains_musl", dev_dependency = True)
 toolchains_musl.config(extra_target_compatible_with = ["//:libc_musl"])
 use_repo(toolchains_musl, "musl_toolchains_hub")
 
-register_toolchains("@musl_toolchains_hub//:all")
+register_toolchains("@musl_toolchains_hub//:all", dev_dependency = True)
 
-register_toolchains("@llvm_toolchain//:all")
+register_toolchains("@llvm_toolchain//:all", dev_dependency = True)
 
-# crate_universe resolves against a copy of Cargo.lock, so it never rewrites the source.
-cargo_lock = use_repo_rule("//:cargo_lock.bzl", "cargo_lock")
+# Pinned Node serves the shared policy test rule and downstream package builds.
+node = use_extension("//:node_repo.bzl", "node")
+node.node(version = "24.22.2")
+use_repo(node, "nodejs")
 
-cargo_lock(
-    name = "cargo_lock",
-    src = "//:Cargo.lock",
+bun = use_extension("//:bun_repo.bzl", "bun", dev_dependency = True)
+use_repo(bun, "bunjs")
+# The source-policy package's parser runtime, at its bun.lock integrity pin.
+typescript_parser = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+typescript_parser(
+    name = "typescript_parser",
+    urls = ["https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz"],
+    integrity = "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==",
+    strip_prefix = "package",
+    build_file_content = 'exports_files(glob(["package.json", "lib/*.js"]), visibility = ["//visibility:public"])',
 )
+
+npm_codegen_repository = use_repo_rule("//:npm_codegen_repo.bzl", "npm_codegen_repository")
+npm_codegen_repository(name = "npm_codegen_packages")
+npm_tool_repository = use_repo_rule("//:npm_tool_repo.bzl", "npm_tool_repository")
+npm_tool_repository(name = "buf_linux_x64", package = "@bufbuild/buf-linux-x64")
+npm_tool_repository(name = "buf_linux_arm64", package = "@bufbuild/buf-linux-aarch64")
+npm_tool_repository(name = "buf_macos_x64", package = "@bufbuild/buf-darwin-x64")
+npm_tool_repository(name = "buf_macos_arm64", package = "@bufbuild/buf-darwin-arm64")
+npm_tool_repository(name = "buf_windows_x64", package = "@bufbuild/buf-win32-x64")
+npm_tool_repository(name = "buf_windows_arm64", package = "@bufbuild/buf-win32-arm64")
+npm_tool_repository(name = "ts_linux_x64", package = "@typescript/typescript-linux-x64")
+npm_tool_repository(name = "ts_linux_arm64", package = "@typescript/typescript-linux-arm64")
+npm_tool_repository(name = "ts_macos_x64", package = "@typescript/typescript-darwin-x64")
+npm_tool_repository(name = "ts_macos_arm64", package = "@typescript/typescript-darwin-arm64")
+npm_tool_repository(name = "ts_windows_x64", package = "@typescript/typescript-win32-x64")
+npm_tool_repository(name = "ts_windows_arm64", package = "@typescript/typescript-win32-arm64")
+register_toolchains("//toolchains/javascript:all")
+
+# Standalone production proofs use the verifier's own pinned compiler.
+kani = use_extension("//toolchains/kani:repositories.bzl", "kani", dev_dependency = True)
+use_repo(kani, "kani")
 
 # The Rust toolchain, rustc flags and crate universe, generated from the Cargo configuration.
 include("//:cargo.MODULE.bazel")
+
+# Artifact conformance executes the published Cargo and Rustdoc producers.
+sdk_compilers = use_extension("//toolchains/sdk:repositories.bzl", "sdk_compilers", dev_dependency = True)
+use_repo(sdk_compilers, "sdk_compilers")
+# Security policy uses a pinned advisory snapshot.
+cargo_deny = use_extension("//toolchains/cargo-deny:repositories.bzl", "cargo_deny", dev_dependency = True)
+use_repo(cargo_deny, "cargo_deny_advisories")
+
+wasm_bindgen_cli = use_repo_rule("//:wasm_bindgen.bzl", "wasm_bindgen_cli")
+wasm_bindgen_cli(name = "wasm_bindgen")

@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { packageClosure } from "./package-closure.mjs";
+import { repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
 import test from "node:test";
 
 // Run the real selected generators and Cargo build twice on one persistent
 // target. The second invocation is the freshness control, not a retry.
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [family = "workers", mode = "generate"] = process.argv.slice(2);
 assert.ok(family && ["generate", "wasm"].includes(mode),
   "STEP_FAILED selection; recovery: node scripts/check-generation-stability.mjs harness [generate|wasm]");
@@ -24,7 +23,7 @@ test("selected generators preserve source mtimes and WASM Cargo freshness", () =
   const generateBuild = () => run(process.execPath,
     [join(root, mode === "wasm" ? "scripts/build-wasm.mjs" : "scripts/generate.mjs"), family]);
   const first = generateBuild();
-  const paths = new Set(run("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).output.split("\0").filter(Boolean));
+  const paths = new Set(trackedFiles(root, [], {untracked: true}));
   for (const name of packageClosure(root, family)) for (const suffix of ["generated", "src/generated", "test/generated"]) {
     const directory = join(root, "typescript/packages", name, suffix);
     if (!existsSync(directory)) continue;

@@ -154,7 +154,7 @@ async fn check(
     assert_eq!(journal.load(&recovered, None)?.await?.as_ref(), bytes);
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1 << 20, 1 << 20),
+        acyclic_fs_work::performance::work_budget(1 << 20, 1 << 20),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -166,7 +166,7 @@ async fn check(
     let occupied = work.claim(
         work.remaining()?.peak_allocation_bytes,
         1,
-        acyclic_fs::WorkCounters::UNCHARGED,
+        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     )?;
     let refused = match (&journal as &dyn ExecutionJournal).staged_ref(operation, key, Some(&io)) {
         Ok(future) => future.await,

@@ -4,6 +4,8 @@ use crate::kernel::allocation::retained::{Retained, RetainedArc};
 use crate::kernel::closure::{ProofContext, ProofMeter};
 
 pub(super) struct StagedEvidence {
+    /// The evidence blob's root, whose closure is `objects`.
+    pub(super) root: Option<ObjectId>,
     pub(super) objects: Vec<ObjectId>,
     _proof: Option<ProofGuard>,
     availability: Option<RetainedArc<Mutex<Option<crate::collection::Unswept>>>>,
@@ -12,6 +14,7 @@ pub(super) struct StagedEvidence {
 impl StagedEvidence {
     fn empty() -> Self {
         Self {
+            root: None,
             objects: Vec::new(),
             _proof: None,
             availability: None,
@@ -123,6 +126,7 @@ pub(super) async fn prepare<O: crate::AsyncObjectStore>(
     };
     Ok((
         StagedEvidence {
+            root: Some(blob.root),
             objects: proven,
             _proof: Some(guard),
             availability,

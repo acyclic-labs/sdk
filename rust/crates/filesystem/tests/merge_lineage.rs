@@ -13,19 +13,23 @@ mod unbounded;
 #[path = "support/provider_receipt.rs"]
 mod provider_receipt;
 
-use acyclic_fs::{
-    AppendOutcome, ApplyOptions, AsyncAuthorityStore, AttributeRule, AuthorityId,
-    CachedMergeResolution, CancellationToken, ConflictKey, ConflictKind, ConflictSide,
-    ConflictValue, Digest, DrivenJoinError, Epoch, FenceOutcome, FileId, ForkOptions, Fs,
-    GenerationId, Head, IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache, MergeDriver,
-    MergeDriverMode, MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
-    MergeResolutionCache, OperationId, ProposedCommit, ResolutionKey, StreamAuthorityStore,
-    StreamGitCompatStore, WorkBudget, WorkspaceGraph, WorkspaceLineageError, resolve_merge_plan,
-};
 use acyclic_stream::MemoryStream;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use {
+    acyclic_fs::{
+        AppendOutcome, ApplyOptions, AsyncAuthorityStore, AttributeRule, CachedMergeResolution,
+        CancellationToken, ConflictKey, ConflictKind, ConflictSide, ConflictValue, DrivenJoinError,
+        Epoch, FenceOutcome, ForkOptions, Fs, GenerationId, Head, IdempotencyKey, JoinOutcome,
+        MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergePlan,
+        MergePlanResolutionError, MergeResolution, MergeResolutionCache, ProposedCommit,
+        ResolutionKey, StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph,
+        WorkspaceLineageError, resolve_merge_plan,
+    },
+    acyclic_fs_format::identity::{AuthorityId, Digest, FileId, OperationId},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
@@ -389,7 +393,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
     graph
         .register_root(
             &root,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -423,7 +427,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
         .ancestors(
             grandchild.id(),
             3,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -440,7 +444,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
         .authorize_join(
             grandchild.id(),
             child.id(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -451,7 +455,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
             .authorize_join(
                 grandchild.id(),
                 root.id(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()
             )
             .await
@@ -464,7 +468,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
             .ancestors(
                 grandchild.id(),
                 1,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()
             )
             .await
@@ -489,12 +493,12 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
                 IdempotencyKey::from_bytes([3; 16]),
             ),
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -505,7 +509,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
     let immutable_plan = source
         .join_into(&target)
         .plan(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -534,13 +538,13 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
     let stale_plan = source
         .join_into(&target)
         .plan(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    target.write_text("/target-race", "winner").await?;
+    target.write_text("/source-after-plan", "winner").await?;
     assert!(matches!(
         stale_plan
             .apply(
@@ -554,12 +558,13 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .await?,
         JoinOutcome::StaleTarget(_)
     ));
+    target.remove("/source-after-plan").await?;
     assert!(unbounded!(target, read("/source-after-plan", 16)).is_err());
 
     let current_plan = source
         .join_into(&target)
         .plan(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -610,12 +615,12 @@ async fn forged_merge_candidate_is_rejected_before_publication()
                 IdempotencyKey::from_bytes([6; 16]),
             ),
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default(),
+                    work: acyclic_fs_work::performance::WorkCounters::default(),
                 }))
             },
         )
@@ -627,7 +632,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
     let plan = source
         .join_into(&target)
         .plan(
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -822,12 +827,12 @@ async fn join_base_refines_only_to_a_descendant_of_the_common_ancestor()
                     name,
                     ForkOptions::from_generation(from, IdempotencyKey::from_bytes([key; 16])),
                     acyclic_fs::PublicationPermit::Unrestricted,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                     &mut |_| {
-                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::default(),
+                            work: acyclic_fs_work::performance::WorkCounters::default(),
                         }))
                     },
                 )
@@ -849,7 +854,7 @@ async fn join_base_refines_only_to_a_descendant_of_the_common_ancestor()
         source
             .join_into(&target)
             .plan(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await

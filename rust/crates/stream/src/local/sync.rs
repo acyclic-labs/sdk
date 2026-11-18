@@ -61,8 +61,3 @@ fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Dur
         LocalDurability::Barrier => acyclic_native_runtime::Durability::Barrier,
     }
 }
-
-fn sync_directory(path: &Path, durability: LocalDurability) -> Result<(), LocalStreamError> {
-    acyclic_native_runtime::sync_parent(path, native_durability(durability))?;
-    Ok(())
-}

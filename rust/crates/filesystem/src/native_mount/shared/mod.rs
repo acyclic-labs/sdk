@@ -27,8 +27,10 @@
 //! [`outcome::CallbackFailure`].
 
 // FUSE sessions drain through their kernel connection instead.
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", windows))]
 pub(super) mod callback_gate;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) mod input;
 // Every native adapter uses the same instance and view ownership core.
 #[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod instances;
@@ -36,8 +38,6 @@ pub(super) mod instances;
 pub(super) mod metering;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) mod outcome;
-#[cfg(any(target_os = "linux", windows, loom))]
-pub(super) mod ready;
 mod root;
 #[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod view_table;

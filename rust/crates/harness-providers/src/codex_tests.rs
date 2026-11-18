@@ -104,7 +104,7 @@ async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> R
         let (access, account) = login.bearer(&transport, None, None).await?;
         assert_eq!(access, transport.response["access_token"]);
         assert_eq!(account.as_deref(), Some("account"));
-        let stored = crate::json(
+        let stored = acyclic_harness_provider_response::json(
             &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
         )?;
         assert_eq!(stored["agent_identity"], json!({"preserve":true}));
@@ -120,7 +120,7 @@ async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> R
             .map_err(|_| invalid("fixture poisoned"))?;
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
-        let body = crate::json(&requests[0].body)?;
+        let body = acyclic_harness_provider_response::json(&requests[0].body)?;
         assert_eq!(body["client_id"], CLIENT_ID);
         assert_eq!(body["grant_type"], "refresh_token");
         assert_eq!(body["refresh_token"], "old-refresh");
@@ -172,7 +172,7 @@ async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
     }
     assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
     assert_eq!(
-        crate::json(&requests[0].body)?["refresh_token"],
+        acyclic_harness_provider_response::json(&requests[0].body)?["refresh_token"],
         "old-refresh"
     );
     Ok(())
@@ -190,7 +190,7 @@ async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Resu
     transport.response = json!({"access_token":"updated-access"});
     let (updated, _) = login.bearer(&transport, Some(&access), None).await?;
     assert_eq!(updated, "updated-access");
-    let stored = crate::json(
+    let stored = acyclic_harness_provider_response::json(
         &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
     )?;
     assert_eq!(stored["tokens"]["refresh_token"], "old-refresh");
@@ -207,7 +207,7 @@ async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Re
         login.bearer(&transport, Some(&access), None).await?.0,
         access
     );
-    let stored = crate::json(
+    let stored = acyclic_harness_provider_response::json(
         &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
     )?;
     assert_eq!(stored["tokens"]["refresh_token"], "rotated-refresh");
@@ -313,7 +313,7 @@ proptest! {
             "restoring the temporary graph must fail the direct allocation count");
 
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         let baseline = work.live_allocation_bytes();
@@ -349,7 +349,7 @@ proptest! {
         let encoded = serde_json::to_vec(&document).unwrap();
         std::fs::write(&path, &encoded).unwrap();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 4_000_000),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
         let baseline = work.live_allocation_bytes();
@@ -413,7 +413,8 @@ async fn injected_clock_drives_exact_expiry_boundaries_and_publication_time() ->
             usize::from(remaining <= 300)
         );
         if remaining <= 300 {
-            let stored = crate::json(&std::fs::read(&login.path).unwrap())?;
+            let stored =
+                acyclic_harness_provider_response::json(&std::fs::read(&login.path).unwrap())?;
             assert_eq!(
                 stored["last_refresh"],
                 crate::codex::fixed_now().format(&Rfc3339).unwrap()

@@ -12,7 +12,7 @@ use std::borrow::Cow;
 // instead keeps a readable prefix and appends a salted digest of the
 // canonical name. Every retained alias is allocated at its exact size.
 const DIGEST_HEX: usize = 16;
-const MAXIMUM: usize = crate::protocol::name::TOOL.maximum;
+const MAXIMUM: usize = acyclic_harness_provider_protocol::name::TOOL.maximum;
 const DIGEST_DOMAIN: &[u8] = b"acyclic:tool-name:v1\0";
 
 struct Binding<'a> {
@@ -70,7 +70,7 @@ fn names(request: &ModelRequest) -> impl Iterator<Item = &str> {
 }
 
 fn unchanged(name: &str) -> bool {
-    crate::protocol::name::TOOL.accepts(name)
+    acyclic_harness_provider_protocol::name::TOOL.accepts(name)
 }
 
 fn needs_prefix(name: &str) -> bool {
@@ -438,18 +438,18 @@ impl<'a> Names<'a> {
             let custody = work.claim(
                 claim.bytes,
                 claim.allocations,
-                acyclic_fs::WorkCounters {
+                acyclic_fs_work::performance::WorkCounters {
                     bytes_copied: claim.bytes,
                     items_examined: count
                         .checked_add(claim.probes)
                         .ok_or_else(|| crate::invalid("tool name binding size overflow"))?,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
+                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
                 },
             )?;
             let (table, built) = Self::build(request, count as usize, &mut |bytes_hashed| {
-                work.charge(acyclic_fs::WorkCounters {
+                work.charge(acyclic_fs_work::performance::WorkCounters {
                     bytes_hashed,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
+                    ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
                 })?;
                 Ok(())
             })?;

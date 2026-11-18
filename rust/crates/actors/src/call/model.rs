@@ -61,18 +61,23 @@ struct Model {
 }
 
 impl Model {
-    fn new(fault: Fault, result: Outcome) -> Self {
+    fn new(fault: Fault, result: Outcome) -> Result<Self, String> {
         Self::with_provider(MemoryStream::default(), fault, result)
     }
 
-    fn with_provider(provider: MemoryStream, fault: Fault, result: Outcome) -> Self {
-        let root = StreamPath::new("caller").expect("root");
-        let call = CallPath::new(&root, "c1").expect("call");
+    fn with_provider(
+        provider: MemoryStream,
+        fault: Fault,
+        result: Outcome,
+    ) -> Result<Self, String> {
+        let root = StreamPath::new("caller").map_err(|error| error.to_string())?;
+        let call = CallPath::new(&root, "c1").map_err(|error| error.to_string())?;
         let journal = Journal::new(call.log());
-        Self {
+        Ok(Self {
             provider,
             call,
-            fence: StreamPath::new("executor/sessions/1/ended").expect("fence"),
+            fence: StreamPath::new("executor/sessions/1/ended")
+                .map_err(|error| error.to_string())?,
             fault,
             request: false,
             requested: true,
@@ -88,7 +93,7 @@ impl Model {
             expected: None,
             chunks: 0,
             read_chunks: 0,
-        }
+        })
     }
 
     fn guard(&self, mut commit: Commit) -> Commit {
@@ -281,7 +286,8 @@ impl Model {
 
     async fn check(&mut self, hop: Hop) -> Result<(), String> {
         for record in self.records(self.call.log(), self.journal.next()).await? {
-            super::codec_fuzz::check_record(&record, &self.journal);
+            super::codec_fuzz::check_record(&record, &self.journal)
+                .map_err(|error| error.to_string())?;
             match self
                 .journal
                 .apply(&record)
@@ -310,7 +316,8 @@ impl Model {
                 return Err("original lost-session recovery did not settle".into());
             }
             for record in self.records(self.call.log(), self.journal.next()).await? {
-                super::codec_fuzz::check_record(&record, &self.journal);
+                super::codec_fuzz::check_record(&record, &self.journal)
+                    .map_err(|error| error.to_string())?;
                 if matches!(
                     self.journal
                         .apply(&record)
@@ -409,7 +416,7 @@ async fn explore(fault: Fault) -> Result<usize, String> {
     let mut violations = 0;
     for requested in [false, true] {
         for schedule in &all {
-            let mut model = Model::new(fault, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+            let mut model = Model::new(fault, Outcome::Ok(OwnedBytes::from(&b"done"[..])))?;
             model.requested = requested;
             for hop in schedule {
                 if let Err(violation) = model.step(*hop).await {
@@ -438,7 +445,7 @@ async fn terminal_sessions() -> Result<(), String> {
                 Outcome::Indeterminate("lost".into()),
             ] {
                 let mut model =
-                    Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+                    Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])))?;
                 model.requested = false;
                 let mut journal = Journal::new(model.call.log());
                 if accepted {
@@ -562,7 +569,7 @@ async fn terminal_reasons() -> Result<(), String> {
                 Outcome::Indeterminate("lost".into()),
             ] {
                 let mut model =
-                    Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+                    Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])))?;
                 model.requested = false;
                 let mut journal = Journal::new(model.call.log());
                 if accepted {
@@ -645,7 +652,7 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     source_bound_claims().await?;
     // Preserve the owning acceptance control: only its settled guard is
     // removed from the original requestless, already cancelled call.
-    let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+    let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])))?;
     model.step(Hop::Cancel).await?;
     let mut acceptance = model
         .call
@@ -686,7 +693,7 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
 async fn claim_recovery() -> Result<(), String> {
     for requested in [false, true] {
         for cancel in [false, true] {
-            let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")));
+            let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")))?;
             model.requested = requested;
             assert!(
                 model
@@ -744,7 +751,7 @@ async fn claim_recovery() -> Result<(), String> {
         }
     }
     for missing_fence in [false, true] {
-        let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")));
+        let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")))?;
         model.step(Hop::Request).await?;
         model.step(Hop::Executor).await?;
         let mut journal = model.journal.clone();
@@ -784,7 +791,7 @@ async fn claim_recovery() -> Result<(), String> {
 /// the original destination when two different executor sessions share it.
 #[cfg(test)]
 async fn source_bound_claims() -> Result<(), String> {
-    let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")));
+    let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")))?;
     let sibling = CallPath::new(&StreamPath::new("caller").map_err(|e| e.to_string())?, "c2")
         .map_err(|e| e.to_string())?;
     let live_fence = StreamPath::new("other/sessions/1/ended").map_err(|e| e.to_string())?;
@@ -844,7 +851,8 @@ async fn source_bound_claims() -> Result<(), String> {
         assert_eq!(inherited, original);
         let mut branch = Journal::new(destination.log());
         let unchanged = branch.clone();
-        super::codec_fuzz::check_record(&inherited[0], &branch);
+        super::codec_fuzz::check_record(&inherited[0], &branch)
+            .map_err(|error| error.to_string())?;
         assert!(branch.apply(&inherited[0]).is_err());
         assert_eq!(branch, unchanged, "copied prefix supplied a branch hold");
         // Negative control lets the first copied record choose the source,
@@ -858,7 +866,7 @@ async fn source_bound_claims() -> Result<(), String> {
     }
     let mut journal = Journal::new(model.call.log());
     let unstarted = journal.clone();
-    super::codec_fuzz::check_record(&other[0], &journal);
+    super::codec_fuzz::check_record(&other[0], &journal).map_err(|error| error.to_string())?;
     assert!(journal.apply(&other[0]).is_err());
     assert_eq!(
         journal, unstarted,
@@ -868,7 +876,7 @@ async fn source_bound_claims() -> Result<(), String> {
         journal.apply(record).map_err(|e| e.to_string())?;
     }
     let before = journal.clone();
-    super::codec_fuzz::check_record(&other[2], &journal);
+    super::codec_fuzz::check_record(&other[2], &journal).map_err(|error| error.to_string())?;
     assert!(journal.apply(&other[2]).is_err());
     assert_eq!(journal, before, "foreign source changed the reader");
     journal.apply(&original[2]).map_err(|e| e.to_string())?;
@@ -919,7 +927,7 @@ pub async fn check(bytes: &[u8]) -> Result<(), String> {
         2 => Outcome::Cancelled("cancelled".into()),
         _ => Outcome::Indeterminate("unknown".into()),
     };
-    let mut model = Model::new(Fault::None, result);
+    let mut model = Model::new(Fault::None, result)?;
     model.requested = bytes.last().is_none_or(|byte| byte & 8 == 0);
     for byte in bytes {
         let hop = match byte % 7 {
@@ -987,7 +995,7 @@ pub async fn codec_seeds(
             MemoryStream::new_with_clock(MemoryLimits::default(), Arc::clone(&clock)),
             Fault::None,
             outcome.clone(),
-        );
+        )?;
         let call = &model.call;
         let fence = StreamPath::new("codec/executor/ended").map_err(Error::Stream)?;
         let acceptance = Accepted {
@@ -1055,8 +1063,7 @@ pub async fn codec_seeds(
             for (record, (label, expected)) in records.into_iter().zip(expected) {
                 let bytes = wire_codec::record_wire(record, None).encode_to_vec();
                 let record = wire_codec::record(
-                    acyclic_stream::wire::Record::decode(bytes.as_slice())
-                        .expect("original call wire"),
+                    acyclic_stream_wire::wire::Record::decode(bytes.as_slice())?,
                     None,
                 )
                 .map_err(Error::Stream)?;
@@ -1085,7 +1092,7 @@ pub async fn codec_seeds(
         }
         let receipt = journal
             .receipt(call.log())
-            .expect("original terminal receipt");
+            .ok_or("original terminal receipt is absent")?;
         assert_eq!(receipt.request.is_some(), requested);
         assert_eq!(
             receipt.outcome,

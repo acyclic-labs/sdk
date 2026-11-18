@@ -6,17 +6,24 @@ struct Witness<'a> {
     io: &'a PreparationIo,
     work: &'a acyclic_fs::NativeMaterializationWork,
     baseline: u64,
-    observed: &'a Cell<u64>,
+    observed: &'a Cell<Option<Result<u64>>>,
 }
 
 impl Drop for Witness<'_> {
     fn drop(&mut self) {
-        self.observed
-            .set(if self.io.original_native_work().is_some() {
-                self.work.live_allocation_bytes() - self.baseline
-            } else {
-                self.io.owned_bytes().unwrap_or(0)
-            });
+        let observed = if self.io.original_native_work().is_some() {
+            self.work
+                .live_allocation_bytes()
+                .map_err(Error::from)
+                .and_then(|live| {
+                    live.checked_sub(self.baseline).ok_or_else(|| {
+                        Error::Invalid("native custody fell below its baseline".into())
+                    })
+                })
+        } else {
+            self.io.owned_bytes()
+        };
+        self.observed.set(Some(observed));
         self.payload.clear();
     }
 }
@@ -26,17 +33,18 @@ fn scope_finish_cancellation_preserves_output_custody_until_destruction() -> Res
     for native in [false, true] {
         for detached_control in [false, true] {
             let cancellation = CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let io = if native {
                 PreparationIo::from_native_work(&work)?
             } else {
                 PreparationIo::from_budget(budget, &cancellation)?
             };
             let scope = PreparationScope::new(Some(&io))?;
-            let observed = Cell::new(0);
+            let observed = Cell::new(None);
             let payload =
                 crate::executor::stock_string_copy(&"paid value".repeat(100), scope.io())?;
             let retained = payload.capacity() as u64;
@@ -63,18 +71,18 @@ fn scope_finish_cancellation_preserves_output_custody_until_destruction() -> Res
                 assert!(scope.finish(retained).is_err());
             }
             drop(value);
+            let observed = observed
+                .into_inner()
+                .ok_or_else(|| Error::Invalid("custody witness did not run".into()))??;
             if detached_control {
-                assert_eq!(observed.get(), 0);
+                assert_eq!(observed, 0);
             } else {
-                assert!(
-                    observed.get() >= retained,
-                    "output outlived its original custody"
-                );
+                assert!(observed >= retained, "output outlived its original custody");
             }
             drop(scope);
             assert_eq!(io.owned_bytes()?, 0);
             drop(io);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
@@ -84,10 +92,10 @@ fn scope_finish_cancellation_preserves_output_custody_until_destruction() -> Res
 fn scope_finish_moves_only_live_output_and_releases_scratch() -> Result<()> {
     for native in [false, true] {
         let cancellation = CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -106,7 +114,7 @@ fn scope_finish_moves_only_live_output_and_releases_scratch() -> Result<()> {
         drop(hold);
         assert_eq!(io.owned_bytes()?, 0);
         drop(io);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -114,7 +122,7 @@ fn scope_finish_moves_only_live_output_and_releases_scratch() -> Result<()> {
 #[test]
 fn scope_transfer_preserves_parent_and_sibling_custody_on_one_ledger() -> Result<()> {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let parent = PreparationIo::from_budget(budget, &cancellation)?;
     parent.retain_owned(41)?;
     let sibling = parent.scoped()?;
@@ -148,7 +156,7 @@ fn scope_transfer_preserves_parent_and_sibling_custody_on_one_ledger() -> Result
 #[test]
 fn standalone_transfer_rejects_another_ledger_without_releasing_either_owner() -> Result<()> {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000);
     let source = PreparationIo::from_budget(budget, &cancellation)?;
     let target = PreparationIo::from_budget(budget, &cancellation)?;
     source.retain_owned(31)?;

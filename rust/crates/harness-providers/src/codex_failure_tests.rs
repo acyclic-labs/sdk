@@ -1,11 +1,14 @@
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{Error, ModelTransportFailure, wire::ErrorCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 fn work() -> NativeMaterializationWork {
     NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
         &CancellationToken::new(),
     )
     .unwrap_or_else(|_| panic!("fixture work"))
@@ -46,7 +49,11 @@ impl HttpTransport for FailingTransport {
                 Ok(()) => self.failure,
                 Err(_) => ModelTransportFailure::Interrupted,
             };
-            Err(crate::transport_failure(true, failure, "endpoint failure"))
+            Err(acyclic_harness_provider_response::transport_failure(
+                true,
+                failure,
+                "endpoint failure",
+            ))
         })
     }
 }
@@ -143,7 +150,7 @@ proptest! {
         let mut errors = vec![Error::Invalid(text.clone()), Error::Unauthorized(text.clone()), Error::Storage(text.clone())];
         for failure in [ModelTransportFailure::Connect, ModelTransportFailure::Timeout,
             ModelTransportFailure::Interrupted, ModelTransportFailure::Tls, ModelTransportFailure::Status(status)] {
-            errors.push(crate::transport_failure(true, failure, &text));
+            errors.push(acyclic_harness_provider_response::transport_failure(true, failure, &text));
             errors.push(Error::ModelUnavailable { failure, excerpt: text.clone() });
         }
         for error in errors {

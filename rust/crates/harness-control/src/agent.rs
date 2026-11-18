@@ -1,0 +1,376 @@
+//! Dependency-free decisions for one event-driven agent step.
+//!
+//! Every control decision of the agent step is made here, over a `Copy` summary
+//! of the agent, so the runtime's `tests/formal/agent_control.rs` solver checks
+//! the production code exhaustively: exactly one `ChildDone`, no turn after
+//! completion or archive, no lost wake-up (including a condition wait whose
+//! arrivals queue without a turn step, released by its condition or its
+//! deadline), a cascade that terminates, and no lost ask: every child's
+//! approval request is queued for a review step that answers it, including
+//! one that reaches an agent which has completed or been archived.
+
+/// Alarm deadline that is due immediately: continue in a fresh step.
+pub const CONTINUE_NOW: u64 = 1;
+/// Most archive requests sent to children in one step.
+pub const MAX_FANOUT: usize = 32;
+
+/// Control phase of an agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// No turn in progress.
+    Idle,
+    /// A turn continues in the next step.
+    Running,
+    /// A turn waits for its approval response or its host's event hook.
+    Approval,
+    /// A turn waits, holding no delivery, until its monotone condition holds
+    /// (see [`satisfy`]) or, when set, this Unix millisecond deadline passes.
+    /// Arrivals queue; `Control::input` can resume this wait on input.
+    Await(Option<u64>),
+    /// The agent's task is complete.
+    Done,
+}
+
+/// `Copy` summary of the agent the kernel decides over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Control {
+    /// Phase.
+    pub mode: Mode,
+    /// Archived.
+    pub closed: bool,
+    /// A terminal archive refusal retains pending children without retrying.
+    pub archive_refused: bool,
+    /// `ChildDone` has been sent.
+    pub reported: bool,
+    /// A turn is in progress (its driver checkpoint is retained).
+    pub turn: bool,
+    /// A parked condition also resumes when inbox input is queued.
+    pub input: bool,
+    /// Independent approval control is pending, separate from the worker turn.
+    pub review: bool,
+}
+
+impl Control {
+    /// A freshly adopted agent.
+    pub const ADOPTED: Self = Self {
+        mode: Mode::Idle,
+        closed: false,
+        archive_refused: false,
+        reported: false,
+        turn: false,
+        input: false,
+        review: false,
+    };
+}
+
+/// Class of an admitted inbox record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admit {
+    /// Carries turn input (message, approval, hook, child result).
+    Input,
+    /// Stop the current turn.
+    Cancel,
+    /// Close the agent.
+    Archive,
+    /// A child delegates an approval to this agent.
+    Ask,
+}
+
+/// The effect of admitting a record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Admitted {
+    /// Next control.
+    pub control: Control,
+    /// Drop every queued input.
+    pub clear_queue: bool,
+    /// Queue the record's input.
+    pub enqueue: bool,
+}
+
+/// Admits one inbox record.
+#[must_use]
+pub const fn admit(control: Control, kind: Admit) -> Admitted {
+    match kind {
+        Admit::Input => Admitted {
+            control,
+            clear_queue: false,
+            enqueue: !control.closed && !matches!(control.mode, Mode::Done),
+        },
+        Admit::Cancel => Admitted {
+            control: Control {
+                mode: if matches!(control.mode, Mode::Done) {
+                    Mode::Done
+                } else {
+                    Mode::Idle
+                },
+                turn: false,
+                ..control
+            },
+            clear_queue: false,
+            enqueue: false,
+        },
+        Admit::Archive => Admitted {
+            control: Control {
+                closed: true,
+                turn: false,
+                ..control
+            },
+            clear_queue: true,
+            enqueue: false,
+        },
+        // A child waits on this answer and nothing else. Every ask is queued
+        // for review, so none is accepted and then dropped; an agent that can
+        // no longer run a turn still reviews it (see [`pick`]) and refuses.
+        Admit::Ask => Admitted {
+            control,
+            clear_queue: false,
+            enqueue: true,
+        },
+    }
+}
+
+/// Which input the next turn step runs with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// No turn step.
+    Nothing,
+    /// Review independent controls without changing the worker invocation.
+    Review,
+    /// Continue the turn in progress without input.
+    Resume,
+    /// Start or feed the turn with the front of the queue.
+    Front,
+    /// Resume the waiting turn with its queued approval response.
+    Approval,
+}
+
+/// Chooses the turn step. `alarm_wake` is true when the actor alarm fired.
+#[must_use]
+pub const fn pick(control: Control, alarm_wake: bool, queued: bool, approval_ready: bool) -> Pick {
+    let ended = control.closed || matches!(control.mode, Mode::Done);
+    // A completed or archived agent runs no turn, but still answers its
+    // children's queued asks: their turns wait on nothing else.
+    if control.review && (ended || !(alarm_wake && matches!(control.mode, Mode::Await(Some(_))))) {
+        return Pick::Review;
+    }
+    if ended {
+        return Pick::Nothing;
+    }
+    match control.mode {
+        Mode::Approval if control.turn => {
+            if approval_ready {
+                Pick::Approval
+            } else {
+                Pick::Nothing
+            }
+        }
+        Mode::Running if control.turn => Pick::Resume,
+        // The original deadline or explicitly selected input arm resumes
+        // this turn; a child condition resumes it through `satisfy`.
+        Mode::Await(deadline) if control.turn => {
+            if (control.input && queued) || (alarm_wake && deadline.is_some()) {
+                Pick::Resume
+            } else {
+                Pick::Nothing
+            }
+        }
+        _ => {
+            if queued {
+                Pick::Front
+            } else {
+                Pick::Nothing
+            }
+        }
+    }
+}
+
+/// What a turn step waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// Continue at once.
+    Continue,
+    /// Wait for the approval response.
+    Approval,
+    /// Wait for a condition, and at most until this deadline when set.
+    Await {
+        /// Original absolute actor deadline.
+        deadline: Option<u64>,
+        /// Inbox input may resume this wait before its deadline.
+        input: bool,
+    },
+    /// Turn finished; wait for input.
+    Input,
+    /// Task complete.
+    Done,
+}
+
+/// Next control after a turn step, and whether to send `ChildDone`.
+#[must_use]
+pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
+    const fn next(control: Control, mode: Mode, turn: bool) -> Control {
+        Control {
+            mode,
+            turn,
+            input: false,
+            ..control
+        }
+    }
+    match wait {
+        Wait::Continue => (next(control, Mode::Running, true), false),
+        Wait::Approval => (next(control, Mode::Approval, true), false),
+        Wait::Await { deadline, input } => (
+            Control {
+                input,
+                ..next(
+                    control,
+                    Mode::Await(match deadline {
+                        Some(deadline) if deadline < CONTINUE_NOW => Some(CONTINUE_NOW),
+                        deadline => deadline,
+                    }),
+                    true,
+                )
+            },
+            false,
+        ),
+        Wait::Input => (next(control, Mode::Idle, false), false),
+        Wait::Done => report(control),
+    }
+}
+
+/// The wait a condition implies: `need` more settlements, of which `open`
+/// children can still give at most one each, or a `sleep` naming no child.
+/// A condition parks the turn only while its open children can meet it; one
+/// already met, or one they can no longer meet, continues at once and its
+/// call reports why. So a parked wait on children always has a child that
+/// will wake it. A wait without children must select input or an alarm.
+#[must_use]
+pub const fn until(
+    need: u32,
+    open: usize,
+    sleep: bool,
+    deadline: Option<u64>,
+    input: bool,
+) -> Wait {
+    let reachable = need > 0 && need as usize <= open;
+    if reachable || (sleep && (deadline.is_some() || input)) {
+        Wait::Await { deadline, input }
+    } else {
+        Wait::Continue
+    }
+}
+
+/// The awaited condition now holds: the waiting turn continues in a fresh
+/// step. Conditions are monotone, so this runs at most once per wait; any
+/// other control is unchanged, so a late arrival after cancel, archive or
+/// completion cannot start a turn.
+#[must_use]
+pub const fn satisfy(control: Control) -> Control {
+    match control.mode {
+        Mode::Await(_) if control.turn && !control.closed => Control {
+            mode: Mode::Running,
+            ..control
+        },
+        _ => control,
+    }
+}
+
+/// Terminal transition; `ChildDone` is sent only by the first.
+#[must_use]
+pub const fn report(control: Control) -> (Control, bool) {
+    (
+        Control {
+            mode: Mode::Done,
+            turn: false,
+            reported: true,
+            ..control
+        },
+        !control.reported,
+    )
+}
+
+/// One archive cascade step over `pending` unarchived children.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cascade {
+    /// Next control.
+    pub control: Control,
+    /// Children archived in this step.
+    pub archive: usize,
+    /// Send `ChildDone` (outcome `Archived`) now.
+    pub report: bool,
+}
+
+/// Archives at most [`MAX_FANOUT`] children; reports once none remain.
+#[must_use]
+pub const fn cascade(control: Control, pending: usize) -> Cascade {
+    if control.archive_refused {
+        return Cascade {
+            control,
+            archive: 0,
+            report: false,
+        };
+    }
+    let archive = if pending < MAX_FANOUT {
+        pending
+    } else {
+        MAX_FANOUT
+    };
+    if pending > archive || control.reported {
+        return Cascade {
+            control,
+            archive,
+            report: false,
+        };
+    }
+    let (control, report) = report(control);
+    Cascade {
+        control,
+        archive,
+        report,
+    }
+}
+
+/// The single actor alarm implied by the state after a step.
+///
+/// Derived from state, never from the step's history, so an input that runs
+/// nothing cannot drop a pending deadline or continuation.
+///
+/// `approval_ready` is true when the response the waiting turn needs is
+/// already queued.
+#[must_use]
+pub const fn alarm(
+    control: Control,
+    queued: bool,
+    approval_ready: bool,
+    pending: usize,
+) -> Option<u64> {
+    if control.review {
+        return Some(CONTINUE_NOW);
+    }
+    if control.closed {
+        return if pending > 0 && !control.archive_refused {
+            Some(CONTINUE_NOW)
+        } else {
+            None
+        };
+    }
+    match control.mode {
+        Mode::Done => None,
+        Mode::Approval => {
+            if approval_ready {
+                Some(CONTINUE_NOW)
+            } else {
+                None
+            }
+        }
+        Mode::Running => Some(CONTINUE_NOW),
+        Mode::Await(_) if control.input && queued => Some(CONTINUE_NOW),
+        Mode::Await(deadline) => deadline,
+        Mode::Idle => {
+            if queued {
+                Some(CONTINUE_NOW)
+            } else {
+                None
+            }
+        }
+    }
+}

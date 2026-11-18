@@ -33,8 +33,8 @@ fn waiter_count(token: &CancellationToken) -> usize {
             .links
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .and_then(|(_, next)| next.upgrade());
+            .next
+            .upgrade();
     }
     count
 }
@@ -173,17 +173,17 @@ fn native_allocation_matches_backing<T>(
     original: &crate::NativeMaterializationWork,
     allocate: impl FnOnce() -> T,
 ) -> T {
-    let before = original.live_allocation_bytes();
-    let operations = original.receipt().allocation_operations;
+    let before = original.live_allocation_bytes().unwrap();
+    let operations = original.receipt().unwrap().allocation_operations;
     let mut value = None;
     let physical = acyclic_test_support::measure(|| value = Some(allocate()));
     assert_eq!(
-        original.live_allocation_bytes() - before,
+        original.live_allocation_bytes().unwrap() - before,
         u64::try_from(physical.bytes_current).unwrap(),
         "original cancellation credit omits live allocator backing"
     );
     assert_eq!(
-        original.receipt().allocation_operations - operations,
+        original.receipt().unwrap().allocation_operations - operations,
         physical.count_total,
         "cancellation allocation operations differ from the allocator"
     );
@@ -203,12 +203,12 @@ fn native_waiter_replacement_is_reentrant_and_releases_its_original_owner() {
     )
     .map_err(|(error, _)| error)
     .unwrap();
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let owned = native_allocation_matches_backing(&work, || {
         CancellationToken::new_with_native_work(&work).unwrap()
     });
     drop(owned);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     let state = Arc::downgrade(&token.state);
     let accounting = Arc::downgrade(&work.state);
     let mut prepared = native_allocation_matches_backing(&work, || {
@@ -276,7 +276,7 @@ fn linked_children_preserve_local_stop_parent_propagation_and_release_their_owne
                 .poll(&mut Context::from_waker(&waker))
                 .is_ready()
         );
-        scope.receipt().verify(scope.budget()).unwrap();
+        scope.receipt().unwrap().verify(scope.budget()).unwrap();
         drop((waker, prepared, scope, original, parent));
         drop(child);
         assert!(parent_state.upgrade().is_none());

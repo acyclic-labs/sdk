@@ -49,7 +49,7 @@ fn prepared_codec_credit_excludes_competing_work_and_survives_cancellation()
                     hashed: 6,
                 },
             )?;
-            assert_eq!(original.receipt().bytes_hashed, 0);
+            assert_eq!(original.receipt().unwrap().bytes_hashed, 0);
             for request in [(3, 0, 0), (0, 3, 0), (0, 0, 3)] {
                 assert!(
                     meter.admit_codec(request.0, request.1, request.2).is_err(),
@@ -75,7 +75,7 @@ fn prepared_codec_credit_excludes_competing_work_and_survives_cancellation()
                 .is_err()
             );
             drop(held);
-            let receipt = original.receipt();
+            let receipt = original.receipt().unwrap();
             assert_eq!(
                 (
                     receipt.bytes_encoded,
@@ -87,7 +87,7 @@ fn prepared_codec_credit_excludes_competing_work_and_survives_cancellation()
             if !cancel {
                 meter.admit_codec(5, 4, 3)?;
                 meter.record_codec(5, 4, 3)?;
-                let receipt = original.receipt();
+                let receipt = original.receipt().unwrap();
                 assert_eq!(
                     (
                         receipt.bytes_encoded,
@@ -118,7 +118,7 @@ fn replay_probe_reservations_withhold_budget_and_survive_cancellation()
         .map_err(|(error, _)| error)?;
         let meter = original.runtime_meter();
         meter.reserve_examination(3)?;
-        assert_eq!(original.receipt().items_examined, 0);
+        assert_eq!(original.receipt().unwrap().items_examined, 0);
         assert!(meter.examine(2, 0).is_err());
         meter.examine(1, 0)?;
         if cancel {
@@ -126,10 +126,10 @@ fn replay_probe_reservations_withhold_budget_and_survive_cancellation()
         }
         meter.record_reserved_examination(1)?;
         meter.cancel_reserved_examination(2);
-        assert_eq!(original.receipt().items_examined, 2);
+        assert_eq!(original.receipt().unwrap().items_examined, 2);
         if !cancel {
             meter.examine(2, 0)?;
-            assert_eq!(original.receipt().items_examined, 4);
+            assert_eq!(original.receipt().unwrap().items_examined, 4);
         }
     }
     Ok(())

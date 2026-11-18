@@ -17,7 +17,7 @@ mod objects;
 pub(super) use objects::{open_beneath, validate_stdio};
 mod specification;
 
-pub(super) const REQUIRED_CAPABILITY: &str = "windows-psec-1.1";
+pub(super) const REQUIRED_CAPABILITY: &str = "windows-psec-1.0";
 
 pub(super) fn launch_path(path: &Path) -> io::Result<Cow<'_, Path>> {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
@@ -40,6 +40,9 @@ type Version = unsafe extern "system" fn(u32, *mut u8, *mut u32) -> i32;
 struct Api {
     create: Create,
     close: Close,
+    /// The highest PSEC schema minor version the host supports, capped at the
+    /// newest one this adapter encodes.
+    minor: u32,
 }
 impl Api {
     fn get() -> io::Result<&'static Self> {
@@ -59,12 +62,17 @@ impl Api {
                 let version = std::mem::transmute::<unsafe extern "system" fn() -> isize, Version>(
                     GetProcAddress(module, c"IsProcessSecurityEnvironmentVersionSupported".as_ptr().cast())?);
                 let (mut supported, mut minor) = (0, 0);
-                if version(1, &raw mut supported, &raw mut minor) < 0 || supported == 0 || minor < 1 { return None; }
-                Some(Api { create, close })
+                if version(1, &raw mut supported, &raw mut minor) < 0 || supported == 0 { return None; }
+                Some(Api { create, close, minor: minor.min(1) })
             }
         }).as_ref().ok_or_else(|| unavailable(format!(
-            "required-host-capability={REQUIRED_CAPABILITY}: native Process Security Environment 1.1 support (processmodel.dll) is required; update the Windows execution host")))
+            "required-host-capability={REQUIRED_CAPABILITY}: native Process Security Environment 1.0 or later support (processmodel.dll) is required; update the Windows execution host")))
     }
+}
+
+/// Proves the host exposes the native policy API this adapter encodes.
+pub(super) fn capability() -> io::Result<()> {
+    Api::get().map(drop)
 }
 
 pub(crate) struct Policy {
@@ -109,7 +117,7 @@ impl Policy {
         {
             drop(root.bind_controlled(None)?);
         }
-        let specification = specification::encode(grant, access)?;
+        let specification = specification::encode(grant, access, api.minor)?;
         let size = u32::try_from(specification.len())
             .map_err(|_| refused("native PSEC specification exceeds address space"))?;
         let mut environment = std::ptr::null_mut();

@@ -140,8 +140,8 @@ fn comparison_detects_bypassing_the_recheck_projection() {
             )
         })
         .unwrap();
-    assert_eq!(correct.root.receipt().items_examined, 0);
-    assert_eq!(broken.root.receipt().items_examined, 3);
+    assert_eq!(correct.root.receipt().unwrap().items_examined, 0);
+    assert_eq!(broken.root.receipt().unwrap().items_examined, 3);
     assert!(correct.compare(&broken).is_err());
 }
 
@@ -153,8 +153,8 @@ fn every_entrypoint_charges_the_normalized_delta_once() {
                 for kind in 0..6 {
                     let limits = if resource { &[(64, 4096)][..] } else { &[] };
                     let mut fixture = Fixture::new(limits, invocation);
-                    let before = fixture.root.receipt();
-                    let live = fixture.root.live_allocation_bytes();
+                    let before = fixture.root.receipt().unwrap();
+                    let live = fixture.root.live_allocation_bytes().unwrap();
                     let mut delta = crate::performance::work_budget(1, 1);
                     delta.items_examined = 3;
                     delta.allocation_operations = 0;
@@ -171,9 +171,9 @@ fn every_entrypoint_charges_the_normalized_delta_once() {
                         }
                         expected = expected.checked_add(delta).unwrap();
                     }
-                    assert_eq!(fixture.root.receipt(), expected);
+                    assert_eq!(fixture.root.receipt().unwrap(), expected);
                     fixture.claims.clear();
-                    assert_eq!(fixture.root.live_allocation_bytes(), live);
+                    assert_eq!(fixture.root.live_allocation_bytes().unwrap(), live);
                 }
             }
         }

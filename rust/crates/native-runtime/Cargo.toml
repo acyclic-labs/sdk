@@ -12,6 +12,12 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[package.metadata.bazel.test-tools.main]
+node = "@nodejs//:node"
+
+[package.metadata.bazel.test-tools.acyclic_native_runtime_test]
+node = "@nodejs//:node"
+
 [[bin]]
 name = "acyclic-process-host"
 path = "src/bin/acyclic-process-host.rs"
@@ -23,9 +29,11 @@ model-checking = ["dep:loom"]
 test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "tokio/io-util"]
 
 [dependencies]
+acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 loom = { version = "=0.7.3", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-process-identity = { version = "=0.2.0", path = "../process-identity" }
 bytes.workspace = true
 dirs.workspace = true
 blake3.workspace = true
@@ -37,7 +45,6 @@ serde.workspace = true
 serde_json.workspace = true
 # The owned-task API (`spawn`, `spawn_blocking`) is part of every build.
 tokio = { version = "1.48.0", default-features = false, features = ["rt-multi-thread", "sync", "io-util"] }
-tokio-util = { workspace = true, features = ["codec"] }
 futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
 parking_lot.workspace = true
 
@@ -103,7 +110,7 @@ tracing-core = { version = "0.1.36", default-features = false, features = ["std"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
+acyclic-process-resources = { version = "=0.2.0", path = "../process-resources" }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing-subscriber.workspace = true

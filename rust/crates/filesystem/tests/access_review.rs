@@ -675,9 +675,9 @@ proptest! {
         let mut cap = capability();
         cap.expires_at = Some(110);
         for grant in cap.layers.iter_mut().flatten() { grant.resource.generations = Generations::All; }
-        let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([byte; 32]));
-        let revision = |byte| acyclic_fs::kernel::MetadataField::Value(acyclic_fs::ObjectId { storage: None,
-            kind: acyclic_fs::ObjectKind::TreePage, digest: acyclic_fs::Digest::from_bytes(byte),
+        let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([byte; 32]));
+        let revision = |byte| acyclic_fs_format::metadata::MetadataField::Value(acyclic_fs_format::object_reference::ObjectId { storage: None,
+            kind: acyclic_fs_format::object_reference::ObjectKind::TreePage, digest: acyclic_fs_format::identity::Digest::from_bytes(byte),
         });
         let compile = || PathTrie::compile(&policy, &caller, Resource { head: 1, ..resource(&caller.lineage, "", 1) }, Context { now: 100, approvals: 0 }, &cap)
             .map(|view| view.with_policy_revision(generation(1), revision(origin)));
@@ -696,23 +696,23 @@ proptest! {
         prop_assert_eq!(first.matches_policy_revision(generation(if generation_changed { 2 } else { 1 }), revision(next)),
             origin == next && (!(restricted || !history) || !generation_changed));
         let cancel = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(cause, _)| proptest::test_runner::TestCaseError::fail(cause.to_string()))?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         prop_assert_eq!(baseline, acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
         let bytes = first.logical_owned_bytes();
-        let custody = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let custody = work.claim(bytes, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
         let view = AccessView::new_native(first, custody)?;
         let pinned = view.current()?;
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes().unwrap();
         let next = compile()?;
-        view.publish_native(next, work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?)?;
-        prop_assert!(work.live_allocation_bytes() > before);
+        view.publish_native(next, work.claim(bytes, 1, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?)?;
+        prop_assert!(work.live_allocation_bytes().unwrap() > before);
         drop(view);
-        prop_assert!(work.live_allocation_bytes() >= baseline + bytes);
+        prop_assert!(work.live_allocation_bytes().unwrap() >= baseline + bytes);
         prop_assert!(pinned.decide(Action::Read, "file", 100).allowed);
         drop(pinned);
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
       }
     }
 }

@@ -325,7 +325,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         .remove("version");
     assert!(serde_json::from_value::<MergeCleanFile>(clean_document).is_err());
     let text = unbounded!(staging, read(text_path, 16384))?;
-    assert!(crate::text_merge::has_conflict_markers(
+    assert!(acyclic_fs_base::text_merge::has_conflict_markers(
         std::str::from_utf8(&text)?
     ));
     let longest_document = unbounded!(
@@ -381,7 +381,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
                 .await
         )?;
-        let prepared_items = calibration.work().items_examined;
+        let prepared_items = calibration.work().unwrap().items_examined;
         assert!(
             matches!(
                 calibration
@@ -454,11 +454,12 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Binary);
         assert!(
-            calibration.work().output_bytes > before_body.output_bytes,
+            calibration.work().unwrap().output_bytes > before_body.unwrap().output_bytes,
             "the selected body was absent from the original work receipt"
         );
         let without_body = calibration
             .work()
+            .unwrap()
             .output_bytes
             .checked_sub(body_bytes)
             .ok_or("selected body was missing from the actual receipt")?;
@@ -500,7 +501,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
                 .await
         )?;
-        let prepared_components = calibration.work().source_path_components;
+        let prepared_components = calibration.work().unwrap().source_path_components;
         let rendered = calibration.describe_conflict_file(conflict.clone()).await?;
         let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Binary);
@@ -514,7 +515,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 }
             );
         }
-        assert!(calibration.work().source_path_components > prepared_components);
+        assert!(calibration.work().unwrap().source_path_components > prepared_components);
         drop(calibration);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
         let mut bounded = value!(
@@ -562,11 +563,11 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 .ok_or("capacity overflow")?;
         }
         drop(preview);
-        let live = original.live_allocation_bytes();
+        let live = original.live_allocation_bytes().unwrap();
         assert!(live >= capacity, "escaping text backing was not funded");
         drop(rendered);
         assert_eq!(
-            live.checked_sub(original.live_allocation_bytes()),
+            live.checked_sub(original.live_allocation_bytes().unwrap()),
             Some(capacity),
             "dropping the real output must release exactly its original backing"
         );
@@ -759,12 +760,13 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
         #[cfg(not(target_arch = "wasm32"))]
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         let resolution = directory.resolution(&staged, &view.key).await?;
         #[cfg(not(target_arch = "wasm32"))]
         if &view.key == binary_key {
             let output = original
                 .receipt()
+                .unwrap()
                 .output_bytes
                 .checked_sub(before.output_bytes)
                 .ok_or("original output count regressed")?;
@@ -902,7 +904,7 @@ fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn 
     ] {
         let mut result = None;
         let work = acyclic_test_support::measure(|| {
-            result = Some(crate::text_merge::merge_text(
+            result = Some(acyclic_fs_base::text_merge::merge_text(
                 base,
                 ours,
                 theirs,
@@ -950,7 +952,7 @@ fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn 
         ] {
             let mut result = None;
             let work = acyclic_test_support::measure(|| {
-                result = Some(crate::text_merge::merge_text(
+                result = Some(acyclic_fs_base::text_merge::merge_text(
                     base, ours, theirs, "ours", "theirs",
                 ));
             });
@@ -1216,6 +1218,7 @@ async fn merge_directory_staging_credit() -> Result<(), Box<dyn Error>> {
     assert_eq!(calibration.conflict_count(), 0);
     let allowance = calibration
         .work()
+        .unwrap()
         .items_examined
         .checked_add(1)
         .ok_or("item count overflow")?;
@@ -1409,202 +1412,6 @@ async fn merge_directory_opaque_bindings() -> Result<(), Box<dyn Error>> {
                 .await?,
             JoinOutcome::Applied(_)
         ));
-    }
-    Ok(())
-}
-
-struct SelectTheirsDriver;
-
-impl crate::MergeDriver for SelectTheirsDriver {
-    fn fingerprint(&self) -> &[u8] {
-        b"workspace-select-theirs-v1"
-    }
-
-    fn mode(&self) -> crate::MergeDriverMode {
-        crate::MergeDriverMode::Deterministic
-    }
-
-    fn resolve(
-        &self,
-        conflict: &crate::ConflictView,
-    ) -> Result<crate::MergeResolution, crate::DriverError> {
-        assert_eq!(conflict.kind, crate::ConflictKind::Text);
-        assert_eq!(conflict.base, crate::ConflictValue::Text("base".into()));
-        assert_eq!(conflict.ours, crate::ConflictValue::Text("main".into()));
-        assert_eq!(conflict.theirs, crate::ConflictValue::Text("agent".into()));
-        Ok(crate::MergeResolution::Select(crate::ConflictSide::Theirs))
-    }
-}
-
-#[tokio::test]
-async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let main = unbounded!(fs, create_workspace("driver-main"))?;
-    main.write_text("/shared", "base").await?;
-    let agent = fork_workspace(
-        &main,
-        "driver-agent",
-        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
-    )
-    .await?;
-    agent.write_text("/shared", "agent").await?;
-    main.write_text("/shared", "main").await?;
-
-    let plan = unbounded!(agent.join_into(&main), plan())?;
-    let mut registry = crate::MergeDriverRegistry::new();
-    registry.register("theirs", Arc::new(SelectTheirsDriver))?;
-    registry.set_default("theirs")?;
-    let mut cache = crate::MemoryMergeResolutionCache::default();
-    let join_key = IdempotencyKey::new();
-    let outcome = plan
-        .apply_with_drivers(
-            ApplyOptions {
-                if_target: plan.target_head(),
-                idempotency_key: join_key,
-            },
-            &registry,
-            &mut cache,
-            false,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await?;
-    let JoinOutcome::Applied(application) = outcome else {
-        return Err("resolved join did not publish".into());
-    };
-    assert!(
-        main.verify_join_commit(
-            &value!(plan.commit_witness(
-                &application,
-                join_key,
-                &WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            ))?,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-    );
-    assert_eq!(
-        unbounded!(main, read("/shared", 16))?,
-        OwnedBytes::from_static(b"agent")
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let main = unbounded!(fs, create_workspace("text-driver-main"))?;
-    main.write_text("/shared", "base\n").await?;
-    let agent = fork_workspace(
-        &main,
-        "text-driver-agent",
-        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
-    )
-    .await?;
-    agent.write_text("/shared", "agent\n").await?;
-    main.write_text("/shared", "main\n").await?;
-
-    let plan = unbounded!(agent.join_into(&main), plan())?;
-    let JoinOutcome::Conflicted {
-        conflicts,
-        truncated,
-    } = plan
-        .apply(
-            ApplyOptions {
-                if_target: plan.target_head(),
-                idempotency_key: IdempotencyKey::new(),
-            },
-            BTreeMap::new(),
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await?
-    else {
-        return Err("text join did not expose its conflict".into());
-    };
-    let described = plan.describe_conflicts(conflicts, truncated).await?;
-    assert_eq!(described.conflicts.len(), 1);
-    assert_eq!(described.conflicts[0].path.as_deref(), Some("/shared"));
-    assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Text);
-    assert!(matches!(
-        described.conflicts[0].ours,
-        crate::ConflictValue::Text(ref text) if text == "main\n"
-    ));
-    let mut registry = crate::MergeDriverRegistry::new();
-    registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
-    registry.set_default("text")?;
-    let mut cache = crate::MemoryMergeResolutionCache::default();
-    let outcome = plan
-        .apply_with_drivers(
-            ApplyOptions {
-                if_target: plan.target_head(),
-                idempotency_key: IdempotencyKey::new(),
-            },
-            &registry,
-            &mut cache,
-            false,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await?;
-    assert!(matches!(outcome, JoinOutcome::Applied(_)));
-    let merged = String::from_utf8(unbounded!(main, read("/shared", 1024))?.to_vec())?;
-    assert!(merged.contains("main"));
-    assert!(merged.contains("agent"));
-    // UTF-8 validity alone does not make a file text. The same binary gate
-    // applies to every side before a conflict can reach the text driver.
-    for (label, base, ours, theirs) in [
-        ("base", "base\0\n", "main\n", "agent\n"),
-        ("ours", "base\n", "main\0\n", "agent\n"),
-        ("theirs", "base\n", "main\n", "agent\0\n"),
-    ] {
-        main.write_text("/binary", base).await?;
-        let binary_agent = fork_workspace(
-            &main,
-            &format!("binary-driver-{label}"),
-            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
-        )
-        .await?;
-        binary_agent.write_text("/binary", theirs).await?;
-        main.write_text("/binary", ours).await?;
-        let plan = unbounded!(binary_agent.join_into(&main), plan())?;
-        let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = plan
-            .apply(
-                ApplyOptions {
-                    if_target: plan.target_head(),
-                    idempotency_key: IdempotencyKey::new(),
-                },
-                BTreeMap::new(),
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await?
-        else {
-            return Err("binary join did not expose its conflict".into());
-        };
-        let described = plan.describe_conflicts(conflicts, truncated).await?;
-        assert_eq!(described.conflicts.len(), 1);
-        let view = &described.conflicts[0];
-        assert_eq!(view.path.as_deref(), Some("/binary"));
-        assert_eq!(view.kind, crate::ConflictKind::Binary);
-        for (value, expected) in [&view.base, &view.ours, &view.theirs]
-            .into_iter()
-            .zip([base, ours, theirs])
-        {
-            let crate::ConflictValue::Binary(bytes) = value else {
-                return Err("binary conflict became marker input".into());
-            };
-            assert_eq!(bytes, expected.as_bytes());
-        }
-        assert_eq!(
-            crate::MergeDriver::resolve(&crate::DefaultTextMergeDriver, view),
-            Err(crate::DriverError::Unsupported)
-        );
-        assert_eq!(unbounded!(main, head())?.id(), plan.target_head());
-        assert_eq!(unbounded!(binary_agent, head())?.id(), plan.source_head());
     }
     Ok(())
 }
@@ -1965,7 +1772,7 @@ impl MergePreviewFixture {
                     .value,
                 expected.as_ref()
             );
-            assert_eq!(pages.work(), peek_work);
+            assert_eq!(pages.work().unwrap(), peek_work);
             let taken = pages.next_conflict().map_err(|failure| failure.error)?;
             assert_eq!(taken.work, peek_work);
             assert_eq!(
@@ -2064,7 +1871,7 @@ impl MergePreviewFixture {
                             crate::MergeConflict::Binding { .. } => None,
                         });
                 if let Some(file_id) = file_id {
-                    let before = pages.work();
+                    let before = pages.work().unwrap();
                     let path = pages
                         .file_path(file_id, side)
                         .await
@@ -2148,7 +1955,7 @@ impl MergePreviewFixture {
                 .value
                 .is_some()
         );
-        assert_eq!(pages.work(), first_work);
+        assert_eq!(pages.work().unwrap(), first_work);
         let clean = pages
             .next_clean()
             .await
@@ -2297,7 +2104,7 @@ impl MergePreviewFixture {
                 .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
                 .await
                 .map_err(|failure| failure.error)?;
-            let baseline_live = original.live_allocation_bytes();
+            let baseline_live = original.live_allocation_bytes().unwrap();
             let mut page_work = selected.work;
             let mut content = selected.value.ok_or("native body missing")?;
             let mut live = None;
@@ -2310,7 +2117,7 @@ impl MergePreviewFixture {
                 assert_eq!(read.work.items_examined, page_work.items_examined);
                 assert_eq!(read.work.bytes_copied - page_work.bytes_copied, 2);
                 page_work = read.work;
-                let current = original.live_allocation_bytes();
+                let current = original.live_allocation_bytes().unwrap();
                 if let Some(previous) = live {
                     assert_eq!(current, previous, "earlier content pages retained credit");
                 }
@@ -2324,7 +2131,7 @@ impl MergePreviewFixture {
                 .value
                 .ok_or("reselected native body missing")?;
             assert_eq!(
-                original.live_allocation_bytes(),
+                original.live_allocation_bytes().unwrap(),
                 baseline_live,
                 "selection retained the preceding reader's physical page"
             );
@@ -2347,7 +2154,7 @@ impl MergePreviewFixture {
             );
             drop(content);
             assert!(native_pages.next_clean().await.is_err());
-            assert!(original.live_allocation_bytes() < live.unwrap());
+            assert!(original.live_allocation_bytes().unwrap() < live.unwrap());
         }
         let bounded_plan = unbounded!(agent.join_into(&main), plan())?;
         let mut bounded_pages = bounded_plan
@@ -2521,7 +2328,7 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
             content.record().payload,
             FilePayload::Regular { .. }
         ));
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut first_live = None;
         for (offset, expected) in [
             (0, stored.as_slice()),
@@ -2537,7 +2344,7 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
                 .map_err(|failure| failure.error)?;
             assert_eq!(read.value, expected);
             if native && offset == 0 {
-                let live = original.live_allocation_bytes();
+                let live = original.live_allocation_bytes().unwrap();
                 if let Some(first) = first_live {
                     assert_eq!(live, first, "object page retained an earlier range");
                 }
@@ -2552,7 +2359,7 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
             .value
             .ok_or("reselected sparse body missing")?;
         if native {
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
         assert!(matches!(
             content
@@ -2571,322 +2378,12 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
         drop(content);
         if native {
             assert_eq!(
-                original.live_allocation_bytes(),
+                original.live_allocation_bytes().unwrap(),
                 baseline,
                 "failed range retained scratch"
             );
         }
         assert!(preview.next_clean().await.is_err());
-    }
-    Ok(())
-}
-
-/// A workspace join (no Git metadata) where one side replaced the file under
-/// its path: the replacement merges with the identity it replaced, the text
-/// driver sees both texts, and the path keeps its original identity.
-#[tokio::test]
-async fn joins_merge_a_replaced_file_with_the_identity_it_replaced() -> Result<(), Box<dyn Error>> {
-    replaced_file_join(JoinHistory::Merge).await
-}
-
-#[tokio::test]
-async fn rebase_joins_merge_a_replaced_file_with_the_identity_it_replaced()
--> Result<(), Box<dyn Error>> {
-    replaced_file_join(JoinHistory::Rebase).await
-}
-
-#[tokio::test]
-async fn squash_joins_merge_a_replaced_file_with_the_identity_it_replaced()
--> Result<(), Box<dyn Error>> {
-    replaced_file_join(JoinHistory::Squash).await
-}
-
-#[tokio::test]
-async fn cherry_pick_joins_merge_a_replaced_file_with_the_identity_it_replaced()
--> Result<(), Box<dyn Error>> {
-    replaced_file_join(JoinHistory::CherryPick).await
-}
-
-async fn replaced_file_join(history: JoinHistory) -> Result<(), Box<dyn Error>> {
-    let base = "one\ntwo\nthree\n";
-    for (agent_replaces, agent_text, main_text, expected) in [
-        (true, base, "ONE\ntwo\nthree\n", "ONE\ntwo\nthree\n"),
-        (
-            true,
-            "one\ntwo\nTHREE\n",
-            "ONE\ntwo\nthree\n",
-            "ONE\ntwo\nTHREE\n",
-        ),
-        (
-            false,
-            "one\ntwo\nTHREE\n",
-            "ONE\ntwo\nthree\n",
-            "ONE\ntwo\nTHREE\n",
-        ),
-    ] {
-        let fs = Fs::memory();
-        let main = unbounded!(fs, create_workspace("replaced-main"))?;
-        main.write_text("/shared", base).await?;
-        let original = unbounded!(main, stat("/shared"))?.file_id;
-        let agent = fork_workspace(
-            &main,
-            "replaced-agent",
-            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
-        )
-        .await?;
-        let (replacing, replacing_text, editing, editing_text) = if agent_replaces {
-            (&agent, agent_text, &main, main_text)
-        } else {
-            (&main, main_text, &agent, agent_text)
-        };
-        replacing.remove("/shared").await?;
-        replacing.write_text("/shared", replacing_text).await?;
-        assert_ne!(unbounded!(replacing, stat("/shared"))?.file_id, original);
-        editing.write_text("/shared", editing_text).await?;
-
-        let plan = unbounded!(agent.join_into(&main).history(history), plan())?;
-        // Equal content merges without a driver; edits on both sides reach
-        // the text driver as one text conflict at the path.
-        let outcome = match plan
-            .apply(
-                ApplyOptions {
-                    if_target: plan.target_head(),
-                    idempotency_key: IdempotencyKey::new(),
-                },
-                BTreeMap::new(),
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await?
-        {
-            JoinOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } => {
-                let described = plan.describe_conflicts(conflicts, truncated).await?;
-                assert_eq!(described.conflicts.len(), 1);
-                assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Text);
-                assert_eq!(described.conflicts[0].path.as_deref(), Some("/shared"));
-                let mut registry = crate::MergeDriverRegistry::new();
-                registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
-                registry.set_default("text")?;
-                let mut cache = crate::MemoryMergeResolutionCache::default();
-                plan.apply_with_drivers(
-                    ApplyOptions {
-                        if_target: plan.target_head(),
-                        idempotency_key: IdempotencyKey::new(),
-                    },
-                    &registry,
-                    &mut cache,
-                    false,
-                    crate::PublicationPermit::Unrestricted,
-                )
-                .await?
-            }
-            outcome => outcome,
-        };
-        let variant = match &outcome {
-            JoinOutcome::Applied(_) => "applied",
-            JoinOutcome::AlreadyApplied(_) => "already applied",
-            JoinOutcome::NoChanges(_) => "no changes",
-            JoinOutcome::StaleTarget(_) => "stale target",
-            JoinOutcome::Conflicted { .. } => "conflicted",
-            JoinOutcome::Fenced => "fenced",
-            JoinOutcome::IdempotencyConflict => "idempotency conflict",
-        };
-        // Merging an equal replacement into the target's edit leaves the
-        // target as it is.
-        let expected_variant = if agent_text == base {
-            "no changes"
-        } else {
-            "applied"
-        };
-        assert_eq!(
-            variant, expected_variant,
-            "{history:?} agent_replaces={agent_replaces} agent_text={agent_text:?}"
-        );
-        let merged = String::from_utf8(unbounded!(main, read("/shared", 1024))?.to_vec())?;
-        assert_eq!(merged, expected);
-        let record = unbounded!(main, stat("/shared"))?;
-        assert_eq!(record.file_id, original);
-        assert_eq!(record.link_count, 1);
-    }
-    Ok(())
-}
-
-/// A file moved onto the path is not a replacement: the kernel pairs only a
-/// file the deleting side created, so the join must not offer the moved
-/// file's text as the deleted identity's resolution (the kernel would leave
-/// the path bound to the moved file and drop the merged text with the
-/// unlinked identity).
-#[tokio::test]
-async fn joins_keep_a_file_moved_onto_a_deleted_path_conflicted() -> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let main = unbounded!(fs, create_workspace("moved-main"))?;
-    main.write_text("/a", "a one\na two\n").await?;
-    main.write_text("/b", "b one\nb two\n").await?;
-    let agent = fork_workspace(
-        &main,
-        "moved-agent",
-        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
-    )
-    .await?;
-    main.remove("/a").await?;
-    let mut moving = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(moving, rename("/b", "/a", true))?;
-    let TransactionCommit::Committed(_) = commit(&mut moving).await? else {
-        return Err("rename did not commit".into());
-    };
-    main.write_text("/a", "b one\nb TWO\n").await?;
-    agent.write_text("/a", "A ONE\na two\n").await?;
-
-    let plan = unbounded!(agent.join_into(&main), plan())?;
-    let JoinOutcome::Conflicted {
-        conflicts,
-        truncated,
-    } = plan
-        .apply(
-            ApplyOptions {
-                if_target: plan.target_head(),
-                idempotency_key: IdempotencyKey::new(),
-            },
-            BTreeMap::new(),
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await?
-    else {
-        return Err("a delete/modify beside a move must conflict".into());
-    };
-    let described = plan.describe_conflicts(conflicts, truncated).await?;
-    assert!(
-        described
-            .conflicts
-            .iter()
-            .all(|conflict| conflict.kind != crate::ConflictKind::Text),
-        "the moved file must not stand in for the deleted one: {:?}",
-        described
-            .conflicts
-            .iter()
-            .map(|conflict| conflict.kind)
-            .collect::<Vec<_>>()
-    );
-    let mut registry = crate::MergeDriverRegistry::new();
-    registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
-    registry.set_default("text")?;
-    let mut cache = crate::MemoryMergeResolutionCache::default();
-    let outcome = plan
-        .apply_with_drivers(
-            ApplyOptions {
-                if_target: plan.target_head(),
-                idempotency_key: IdempotencyKey::new(),
-            },
-            &registry,
-            &mut cache,
-            false,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await;
-    assert!(
-        !matches!(outcome, Ok(JoinOutcome::Applied(_))),
-        "the agent's edit must not be published away"
-    );
-    assert_eq!(
-        String::from_utf8(unbounded!(main, read("/a", 64))?.to_vec())?,
-        "b one\nb TWO\n"
-    );
-    Ok(())
-}
-
-/// The replacement rule follows directory identity, not full paths: under a
-/// directory both sides renamed, a replaced file still reaches the text
-/// driver as one text conflict and keeps its original identity.
-#[tokio::test]
-async fn joins_merge_a_replaced_file_under_a_renamed_directory() -> Result<(), Box<dyn Error>> {
-    for agent_replaces in [true, false] {
-        let fs = Fs::memory();
-        let main = unbounded!(fs, create_workspace("renamed-main"))?;
-        let mut seeding = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
-        unbounded!(seeding, create_directory("/d"))?;
-        let TransactionCommit::Committed(_) = commit(&mut seeding).await? else {
-            return Err("directory did not commit".into());
-        };
-        main.write_text("/d/a", "one\ntwo\nthree\n").await?;
-        let original = unbounded!(main, stat("/d/a"))?.file_id;
-        let agent = fork_workspace(
-            &main,
-            "renamed-agent",
-            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
-        )
-        .await?;
-        for side in [&main, &agent] {
-            let mut renaming = unbounded!(side, begin_transaction(IdempotencyKey::new()))?;
-            unbounded!(renaming, rename("/d", "/e", true))?;
-            let TransactionCommit::Committed(_) = commit(&mut renaming).await? else {
-                return Err("rename did not commit".into());
-            };
-        }
-        let (replacing, editing) = if agent_replaces {
-            (&agent, &main)
-        } else {
-            (&main, &agent)
-        };
-        replacing.remove("/e/a").await?;
-        replacing.write_text("/e/a", "one\ntwo\nTHREE\n").await?;
-        assert_ne!(unbounded!(replacing, stat("/e/a"))?.file_id, original);
-        editing.write_text("/e/a", "ONE\ntwo\nthree\n").await?;
-
-        let plan = unbounded!(agent.join_into(&main), plan())?;
-        let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = plan
-            .apply(
-                ApplyOptions {
-                    if_target: plan.target_head(),
-                    idempotency_key: IdempotencyKey::new(),
-                },
-                BTreeMap::new(),
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await?
-        else {
-            return Err("overlapping whole-file edits must reach the driver".into());
-        };
-        let described = plan.describe_conflicts(conflicts, truncated).await?;
-        assert_eq!(
-            described.conflicts.len(),
-            1,
-            "agent_replaces={agent_replaces}"
-        );
-        assert_eq!(
-            described.conflicts[0].kind,
-            crate::ConflictKind::Text,
-            "agent_replaces={agent_replaces}"
-        );
-        let mut registry = crate::MergeDriverRegistry::new();
-        registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
-        registry.set_default("text")?;
-        let mut cache = crate::MemoryMergeResolutionCache::default();
-        assert!(matches!(
-            plan.apply_with_drivers(
-                ApplyOptions {
-                    if_target: plan.target_head(),
-                    idempotency_key: IdempotencyKey::new(),
-                },
-                &registry,
-                &mut cache,
-                false,
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await?,
-            JoinOutcome::Applied(_)
-        ));
-        assert_eq!(
-            String::from_utf8(unbounded!(main, read("/e/a", 64))?.to_vec())?,
-            "ONE\ntwo\nTHREE\n"
-        );
-        let record = unbounded!(main, stat("/e/a"))?;
-        assert_eq!(record.file_id, original);
-        assert_eq!(record.link_count, 1);
     }
     Ok(())
 }

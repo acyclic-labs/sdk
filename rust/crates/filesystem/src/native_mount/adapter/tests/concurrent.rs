@@ -102,7 +102,7 @@ fn file_mutation_admission_denies_unfunded_registry_growth()
         source.cancellation(),
     )
     .map_err(|(error, _)| error)?;
-    assert_eq!(work.receipt().allocation_operations, 1);
+    assert_eq!(work.receipt().unwrap().allocation_operations, 1);
     assert_eq!(work.remaining()?.allocation_operations, 0);
     assert!(matches!(
         source.checkout.file_mutation(FileId::new(), &work),

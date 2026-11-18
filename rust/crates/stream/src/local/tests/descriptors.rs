@@ -1,5 +1,6 @@
 use super::*;
-use acyclic_native_runtime::resources::descriptors_naming;
+use acyclic_native_runtime::testing::drive;
+use acyclic_process_resources::resources::descriptors_naming;
 
 fn append(path: &str, tail: u64) -> Result<AppendRequest, Box<dyn std::error::Error>> {
     Ok(AppendRequest {
@@ -29,7 +30,7 @@ async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
         return Ok(());
     }
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-    journal_lifecycle(&schedule, &mut boundaries, async {
+    drive(&schedule, &mut boundaries, |_| {}, async {
         let first = tempfile::tempdir()?;
         let second = tempfile::tempdir()?;
         let journal = first.path().canonicalize()?.join(JOURNAL_FILE);
@@ -55,5 +56,5 @@ async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
         reopened.append(append("agents", 2)?).await?;
         Ok(())
     })
-    .await?
+    .await
 }

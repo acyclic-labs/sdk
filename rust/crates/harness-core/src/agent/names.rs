@@ -5,7 +5,6 @@ use acyclic_stream::{
     CommitCondition, CommitMutation, CommitRequest, HeadProjection, HeadsRequest, StreamPath,
     StreamProvider,
 };
-use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,13 +17,13 @@ struct Binding {
 /// One scoped name index. Bindings survive changes to display titles and
 /// archival; another alias may name the same agent without moving its history.
 pub struct NameIndex<P: ?Sized> {
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 }
 
 impl<P: StreamProvider + ?Sized + 'static> NameIndex<P> {
     /// A caller-owned scope and its original provider.
-    pub fn new(provider: Arc<P>, root: StreamPath) -> Self {
+    pub fn new(provider: acyclic_stream::ProviderOwner<P>, root: StreamPath) -> Self {
         Self { provider, root }
     }
 

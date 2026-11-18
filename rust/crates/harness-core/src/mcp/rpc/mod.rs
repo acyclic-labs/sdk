@@ -139,7 +139,7 @@ pub(super) fn check<T: DeserializeOwned + crate::HeapLayout>(
                 maximum_depth: 256,
             },
             Some(ErrorCode::Invalid),
-            crate::JsonValueSchema::None,
+            crate::JsonValueSchema::NONE,
             &mut |event| {
                 if let crate::JsonCodecCharge::Admission {
                     maximum_owned_bytes,

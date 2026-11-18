@@ -28,8 +28,12 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
                     Err(failure) => assert!(
                         failure
                             .work
+                            .as_deref()
+                            .unwrap()
                             .authority_records_read
-                            .saturating_add(failure.work.authority_records_appended)
+                            .saturating_add(
+                                failure.work.as_deref().unwrap().authority_records_appended
+                            )
                             > 0
                     ),
                 }
@@ -94,8 +98,12 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
                 assert!(
                     failure
                         .work
+                        .as_deref()
+                        .unwrap()
                         .authority_records_read
-                        .saturating_add(failure.work.authority_records_appended)
+                        .saturating_add(
+                            failure.work.as_deref().unwrap().authority_records_appended
+                        )
                         > 0
                 );
                 assert_eq!(checkout.generation_id(), candidate);
@@ -160,8 +168,12 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
                 assert!(
                     failure
                         .work
+                        .as_deref()
+                        .unwrap()
                         .authority_records_read
-                        .saturating_add(failure.work.authority_records_appended)
+                        .saturating_add(
+                            failure.work.as_deref().unwrap().authority_records_appended
+                        )
                         > 0
                 );
                 assert_eq!(live.generation_id(), live_before);
@@ -228,7 +240,7 @@ async fn every_post_put_creation_fault_retries_from_a_complete_authenticated_clo
                     failure.error
                 );
                 assert_eq!(
-                    failure.work.backend_write_operations,
+                    failure.work.as_deref().unwrap().backend_write_operations,
                     u64::try_from(cut).map_err(|_| "post-put cut does not fit work counter")?
                 );
                 control.disable();
@@ -288,7 +300,7 @@ async fn every_pre_object_fault_preserves_creation_and_checkout_retry()
                     "unexpected creation failure: {:#?}",
                     failure.error
                 );
-                assert!(failure.work.backend_write_operations > 0);
+                assert!(failure.work.as_deref().unwrap().backend_write_operations > 0);
             }
         }
     }
@@ -310,7 +322,7 @@ async fn every_pre_object_fault_preserves_creation_and_checkout_retry()
                     "unexpected checkout failure: {:#?}",
                     failure.error
                 );
-                assert!(failure.work.backend_read_operations > 0);
+                assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
             }
         }
     }

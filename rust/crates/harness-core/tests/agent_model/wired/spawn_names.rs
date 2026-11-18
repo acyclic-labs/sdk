@@ -32,19 +32,6 @@ fn spawn_call(name: &str, peers: &[&str]) -> ScriptedTurn {
     )
 }
 
-// Stock templates ask for a retrospective after each settled answer. Keep
-// those responses beside the work script so they cannot consume another
-// agent's next action or a later setup retry.
-fn with_retrospectives(
-    turns: impl IntoIterator<Item = ScriptedTurn>,
-) -> impl Iterator<Item = ScriptedTurn> {
-    turns.into_iter().flat_map(|turn| {
-        let feedback =
-            matches!(&turn, ScriptedTurn::Text(_)).then(|| ScriptedTurn::Text("none".into()));
-        std::iter::once(turn).chain(feedback)
-    })
-}
-
 async fn fixture(
     turns: Vec<ScriptedTurn>,
     setup_failures: usize,
@@ -128,7 +115,7 @@ impl acyclic_harness_core::filesystem::TurnContext for ProjectTasks {
                     Arc::new(send_files::PausedPublisher {
                         inner: authority
                             .journal
-                            .output_content(turn)?
+                            .output_content(turn, None)?
                             .and_then(|content| content.writer)
                             .ok_or_else(|| {
                                 acyclic_harness_core::Error::Invalid(
@@ -410,7 +397,15 @@ async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
     let state = agents.state(&root).await?;
     assert_eq!(state.conversation_tail, 2);
     assert!(!state.closed);
-    assert_eq!(model.request_count(), 3);
+    // Each settlement's retrospective follows its work.
+    let requests = model.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(acyclic_harness_core::test_support::is_retrospective(
+        &requests[2]
+    ));
+    assert!(acyclic_harness_core::test_support::is_retrospective(
+        &requests[4]
+    ));
     Ok(())
 }
 
@@ -436,11 +431,10 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         let pause = interrupted_manifest
             .map(|manifest| Arc::new(send_files::PublicationPause::new(manifest)));
         let (agents, stream, root, model, files) = fixture_with_pause(
-            with_retrospectives([
+            vec![
                 spawn_call("finding-review", &[]),
                 ScriptedTurn::Text("spawned".into()),
-            ])
-            .collect(),
+            ],
             0,
             true,
             pause.clone(),
@@ -562,7 +556,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 ContentAccess::default(),
             )?
             .await?;
-        model.extend(with_retrospectives([
+        model.extend([
             call(
                 "send",
                 json!({"agent":"finding-review", "message":"incomplete selection",
@@ -575,7 +569,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 "files":["large.md", "large.md", "large.md"]}),
             ),
             ScriptedTurn::Text("combined selection refused".into()),
-        ]));
+        ]);
         deliver(&agents, &root, requested("missing-member", &root)).await?;
         deliver(&agents, &root, requested("combined-budget", &root)).await?;
         assert_eq!(
@@ -583,7 +577,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             before
         );
 
-        model.extend(with_retrospectives([
+        model.extend([
             call("send", json!({
                 "agent":"finding-review",
                 "message":format!("One additional candidate is now ready: {PATH}. Please PASS/FAIL it too."),
@@ -591,7 +585,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 "delivery":delivery,
             })),
             ScriptedTurn::Text("sent".into()),
-        ]));
+        ]);
         if let Some(pause) = pause {
             let entered = pause.arm();
             let mut sending = Box::pin(deliver(&agents, &root, requested("send-late-file", &root)));
@@ -708,13 +702,9 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 None,
             )?
             .await?;
-        model.extend(with_retrospectives([ScriptedTurn::Text(
-            "reviewed the original finding".into(),
-        )]));
+        model.extend([ScriptedTurn::Text("reviewed the original finding".into())]);
         if delivery == "follow_up" {
-            model.extend(with_retrospectives([ScriptedTurn::Text(
-                "reviewed the follow-up finding".into(),
-            )]));
+            model.extend([ScriptedTurn::Text("reviewed the follow-up finding".into())]);
         }
         agents.drain(&child).await?;
         assert_eq!(agents.state(&child).await?.phase, Phase::Idle, "{delivery}");
@@ -800,7 +790,6 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
                 json!({"agent": peer.as_str(), "message": "Hello peer"}),
             ),
             ScriptedTurn::Text("sent".into()),
-            ScriptedTurn::Text("no follow-up work".into()),
         ],
         0,
     )
@@ -874,7 +863,6 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
             json!({"agent": root.as_str(), "message": "Hello back", "re": message.id.as_str()}),
         ),
         ScriptedTurn::Text("answered".into()),
-        ScriptedTurn::Text("no follow-up work".into()),
     ]);
     agents.drain(&peer).await?;
     let receiver = agents.state(&peer).await?;
@@ -909,10 +897,7 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
             .any(|request| observes(request, &root))
     );
     let before_reply = model.request_count();
-    model.extend([
-        ScriptedTurn::Text("conversation complete".into()),
-        ScriptedTurn::Text("no follow-up work".into()),
-    ]);
+    model.extend([ScriptedTurn::Text("conversation complete".into())]);
     agents.drain(&root).await?;
     let requests = model.requests();
     assert!(
@@ -1214,7 +1199,7 @@ async fn waits_report_setup_failure_before_and_after_it_settles() -> Result {
 async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants() -> Result {
     let text = || ScriptedTurn::Text("ready".into());
     let (agents, stream, root, model) = fixture(
-        with_retrospectives([
+        vec![
             spawn_call("w", &[]),
             spawn_call("s", &["w"]),
             text(),
@@ -1230,8 +1215,7 @@ async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants(
             text(),
             call("archive", json!({"agent": "w"})),
             text(),
-        ])
-        .collect(),
+        ],
         1,
     )
     .await?;
@@ -1446,11 +1430,10 @@ async fn child_answer_wakes_parent_through_inbox_follow_without_wait() -> Result
 
     for failed in [false, true] {
         let (agents, stream, root, model) = fixture(
-            with_retrospectives([
+            vec![
                 spawn_call("reviewer", &[]),
                 ScriptedTurn::Text("delegated".into()),
-            ])
-            .collect(),
+            ],
             0,
         )
         .await?;
@@ -1467,7 +1450,7 @@ async fn child_answer_wakes_parent_through_inbox_follow_without_wait() -> Result
                 error: "review provider failed".into(),
             }])]
         } else {
-            with_retrospectives([ScriptedTurn::Text("Review complete".into())]).collect()
+            vec![ScriptedTurn::Text("Review complete".into())]
         });
         agents.drain(&child).await?;
         assert_eq!(agents.state(&child).await?.phase, Phase::Idle);
@@ -1490,9 +1473,7 @@ async fn child_answer_wakes_parent_through_inbox_follow_without_wait() -> Result
             "replay duplicated completion"
         );
 
-        model.extend(with_retrospectives([ScriptedTurn::Text(
-            "Observed reviewer completion".into(),
-        )]));
+        model.extend([ScriptedTurn::Text("Observed reviewer completion".into())]);
         agents.drain(&root).await?;
         let entry = answer(&*stream, &child, 0).await?;
         let requests = model.requests();
@@ -1526,11 +1507,10 @@ async fn child_answer_wakes_parent_through_inbox_follow_without_wait() -> Result
 #[tokio::test]
 async fn progress_send_reaches_waiting_parent_and_survives_settlement() -> Result {
     let (agents, stream, root, model) = fixture(
-        with_retrospectives([
+        vec![
             spawn_call("worker", &[]),
             ScriptedTurn::Text("delegated".into()),
-        ])
-        .collect(),
+        ],
         0,
     )
     .await?;
@@ -1549,7 +1529,6 @@ async fn progress_send_reaches_waiting_parent_and_survives_settlement() -> Resul
             json!({"agent": root.as_str(), "message": "Progress: review is in progress"}),
         ),
         ScriptedTurn::Text("work completed".into()),
-        ScriptedTurn::Text("none".into()),
     ]);
     agents.drain(&child).await?;
     // Delivery reaches the parent before the child completion event, even
@@ -1575,9 +1554,9 @@ async fn progress_send_reaches_waiting_parent_and_survives_settlement() -> Resul
             ..
         })
     )));
-    model.extend(with_retrospectives([ScriptedTurn::Text(
+    model.extend([ScriptedTurn::Text(
         "progress and completion observed".into(),
-    )]));
+    )]);
     agents.drain(&root).await?;
     let requests = model.requests();
     let notices: Vec<_> = requests

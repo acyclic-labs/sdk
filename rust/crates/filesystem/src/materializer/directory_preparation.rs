@@ -32,11 +32,13 @@ impl NativeTreeMaterializationBackend {
         let progress = journal
             .preparation_progress
             .as_ref()
-            .expect("validated preparation");
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
         let resuming = progress.pending;
         let parent_identity = progress.parent;
         let expected_root = crate::NativeRootIdentity::from_bytes(
-            journal.root_identity.expect("validated checkout identity"),
+            journal
+                .root_identity
+                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         );
         let actual = work.root_identity(root)?;
         if actual != expected_root {
@@ -75,7 +77,7 @@ impl NativeTreeMaterializationBackend {
             journal
                 .preparation_progress
                 .as_mut()
-                .expect("validated preparation")
+                .ok_or(NativeTreeMaterializationError::InvalidLayout)?
                 .pending = true;
             journal = persist_preparation(store, journal).await?;
         }

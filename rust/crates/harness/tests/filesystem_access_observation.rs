@@ -58,7 +58,8 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
     let reads_before = objects
         .content_reads
         .load(std::sync::atomic::Ordering::SeqCst);
-    let (entered, release) = objects.pause(acyclic_fs::ObjectKind::BlobChunk)?;
+    let (entered, release) =
+        objects.pause(acyclic_fs_format::object_reference::ObjectKind::BlobChunk)?;
     let read = async {
         if range {
             reader
@@ -80,7 +81,8 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
         entered.await?;
         // Stop the return fence after it captured Head, then overtake that
         // observation. The data has already been read and must not be reread.
-        let (at_policy, continue_policy) = objects.pause(acyclic_fs::ObjectKind::Metadata)?;
+        let (at_policy, continue_policy) =
+            objects.pause(acyclic_fs_format::object_reference::ObjectKind::Metadata)?;
         release
             .send(())
             .map_err(|_| "data read abandoned its gate")?;

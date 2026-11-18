@@ -118,7 +118,7 @@ pub struct ActorNamespace(String);
 impl ActorNamespace {
     /// Parse an exact namespace, including the reserved legacy namespace.
     pub fn new(value: String) -> Result<Self, DomainError> {
-        crate::addressing::NamespaceId::new(value.as_bytes())?;
+        crate::addressing::NamespaceId::validate(value.as_bytes())?;
         Ok(Self(value))
     }
     /// Exact namespace text for logging and wire projection.
@@ -180,13 +180,13 @@ impl From<ActorId> for String {
 impl CodeSha256 {
     /// Constructs a digest with the exact predicate used by `crate::validate_deployment`.
     pub fn new(value: impl AsRef<[u8]>) -> Result<Self, DomainError> {
-        let value = value.as_ref();
-        if !valid_code_sha256(value) {
-            return Err(DomainError::InvalidCodeSha256);
-        }
         let value: [u8; 32] = value
+            .as_ref()
             .try_into()
             .map_err(|_| DomainError::InvalidCodeSha256)?;
+        if value == [0; 32] {
+            return Err(DomainError::InvalidCodeSha256);
+        }
         Ok(Self(value))
     }
 
@@ -222,11 +222,6 @@ impl From<PositiveU64> for u64 {
     fn from(value: PositiveU64) -> Self {
         value.get()
     }
-}
-
-/// The shared digest predicate used by the existing Actor validators.
-pub(crate) fn valid_code_sha256(value: &[u8]) -> bool {
-    value.len() == 32 && value.iter().any(|byte| *byte != 0)
 }
 
 impl TryFrom<Vec<u8>> for CodeSha256 {

@@ -66,7 +66,7 @@ fn assistant(part: ModelContentPart) -> ModelMessage {
 /// The settled turn's output exactly as the turn stages it.
 fn settle(adapter: Adapter, provider: &ResolvedModel) -> TurnOutput {
     let events: Vec<ModelEvent> = futures::executor::block_on(
-        stream::events_named(
+        crate::event_driver::events_named(
             adapter,
             chunks(final_step(adapter), 7),
             4096,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::native::{Arc as RecoveryArc, Mutex, RetirementSender, thread::JoinHandle};
+use crate::native_sync::{Arc as RecoveryArc, Mutex, RetirementSender, thread::JoinHandle};
 
 /// Real cleanup custody and driver evidence for one retained native session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,7 +340,7 @@ impl NativeMountRecoveryOwner {
         let closure = original.claim(
             std::mem::size_of::<(
                 RecoveryArc<NativeRecoveryShared>,
-                crate::sync::native::mpsc::Receiver<()>,
+                crate::native_sync::mpsc::Receiver<()>,
                 crate::NativeAllocation,
             )>() as u64,
             1,
@@ -373,7 +373,7 @@ impl NativeMountRecoveryOwner {
             })),
             _custody: destination.1,
         });
-        let (retirement, receiver) = crate::sync::native::retirement_channel();
+        let (retirement, receiver) = crate::native_sync::retirement_channel();
         let worker = (RecoveryArc::clone(&shared), receiver, closure);
         crate::native_host::NativeHostWork::started_io(
             &mut worker.2.work(),
@@ -382,7 +382,7 @@ impl NativeMountRecoveryOwner {
                 ..Default::default()
             },
         )?;
-        let worker = crate::sync::native::thread::Builder::new().spawn(move || {
+        let worker = crate::native_sync::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?;
         Ok(Self {
@@ -879,7 +879,7 @@ pub(super) fn remove_empty_recovery_destination(
 fn retire_recovery(
     (shared, receiver, _closure): (
         RecoveryArc<NativeRecoveryShared>,
-        crate::sync::native::mpsc::Receiver<()>,
+        crate::native_sync::mpsc::Receiver<()>,
         crate::NativeAllocation,
     ),
 ) {

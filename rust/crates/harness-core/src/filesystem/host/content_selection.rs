@@ -86,7 +86,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ..Default::default()
             };
             io.preflight(work)?;
-            let fingerprint = acyclic_fs::Digest::from_bytes(*blake3::hash(&encoded).as_bytes());
+            let fingerprint =
+                acyclic_fs_format::identity::Digest::from_bytes(*blake3::hash(&encoded).as_bytes());
             io.charge(work)?;
             let mut transaction = io.sdk(
                 root.begin_transaction(operation, io, io.cancellation())
@@ -94,7 +95,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             io.sdk(
                 transaction
-                    .observe_policy_fence(authorization.0, io, io.cancellation())
+                    .observe_policy_fence(
+                        authorization.0,
+                        self.access_now()?,
+                        io,
+                        io.cancellation(),
+                    )
                     .await,
             )?;
             // The ordinary publication receipt decides this binding. A conflict or
@@ -112,6 +118,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     evidence,
                     acyclic_fs::PublicationPermit::Unrestricted,
                 )),
+                self.clock_handle(),
             )?
             .await?;
             bounded_io::retain(&binding, Some(io)).await?;

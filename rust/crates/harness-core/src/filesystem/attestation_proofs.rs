@@ -42,7 +42,7 @@ proptest::proptest! {
                     idempotency_key: super::IdempotencyKey::new(identity.clone()).expect("key"),
                 };
                 let cancellation = acyclic_fs::CancellationToken::new();
-                let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancellation)
                     .map_err(|(error, _)| error).expect("work");
                 // Repeat identical sealed requests: exact retry evidence must
                 // be identical for every API family, including native ingress.

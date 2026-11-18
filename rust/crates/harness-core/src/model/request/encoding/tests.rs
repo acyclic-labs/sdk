@@ -449,14 +449,14 @@ fn measure_suffix(
     // Compare against the same canonical codec's complete work, including its
     // admission and ordered-output passes, rather than only its final length.
     let suffix_encoding = {
-        let before = io.receipt().bytes_encoded;
+        let before = io.receipt()?.bytes_encoded;
         let encoded = encode(&continuation.messages(), Some(io))?;
         let _hold = io.guard_bytes(&encoded)?;
-        io.receipt().bytes_encoded - before
+        io.receipt()?.bytes_encoded - before
     };
-    let before = io.receipt();
+    let before = io.receipt()?;
     let prepared = continuation.finish(Limits::default(), Some(io))?;
-    let after = io.receipt();
+    let after = io.receipt()?;
     let suffix = (
         after.bytes_encoded - before.bytes_encoded,
         after.bytes_hashed - before.bytes_hashed,
@@ -474,9 +474,9 @@ fn measure_suffix(
         *blake3::hash(&expected).as_bytes()
     );
     assert!(prepared.encoding[0].end < prepared.bytes().len());
-    let before = io.receipt();
+    let before = io.receipt()?;
     let full = PreparedModelRequest::prepare(prepared.request, Limits::default(), Some(io))?;
-    let full_bytes = io.receipt().bytes_encoded - before.bytes_encoded;
+    let full_bytes = io.receipt()?.bytes_encoded - before.bytes_encoded;
     assert_eq!(expected, full.bytes());
     Ok((suffix, full_bytes))
 }

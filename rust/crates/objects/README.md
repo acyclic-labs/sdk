@@ -8,9 +8,13 @@ Content-addressed, account-scoped immutable blobs.
   `Conflict` after its original conditional result; a caller may resend the
   identical put. Opening a writer revision authority follows the same rule.
 - `get(digest, range, maximum)` reads a half-open logical range; `head`
-  returns kind, length and references.
+  returns kind, length, references and any declared SHA-256 checksum.
 - A manifest lists `(digest, length)` parts plus typed edges; its digest is
   BLAKE3 of the canonical encoding and reads select only intersecting parts.
+  A publisher may declare the SHA-256 of the concatenated logical bytes for
+  external contracts. Objects preserves but does not verify the declaration;
+  consumers that rely on it verify the logical bytes. `ContentHasher` computes
+  BLAKE3 and SHA-256 from the same input stream, independently of frame sizes.
 - References live in the envelope, outside the payload. `retain(root, refs)`
   appends one atomic, idempotent batch; `release(root)` drops the root;
   `collect` marks from every root and sweeps the rest. Delete never breaks a
@@ -21,7 +25,8 @@ Content-addressed, account-scoped immutable blobs.
 One engine (`Store<M: Medium>`) serves memory, local-directory (`local`) and
 S3-compatible (`s3`) media; `grpc` and `http` provide remote clients and the
 gRPC server. Every provider passes `conformance::verify`, including the
-cross-account probes. Persisted formats are v1.
+cross-account probes. The manifest and envelope formats are v2 and v3,
+respectively; older formats are refused.
 
 The real S3 capability group runs with
 `cargo test --locked -p acyclic-objects --lib s3::capability::`.

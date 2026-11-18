@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // Usage: node scripts/wasm-size-report.mjs [--match REGEX] FILE.wasm ...
 // Redirect stdout to retain a deterministic report bound to each input SHA-256.
@@ -148,7 +146,7 @@ export function reportWasm(bytes, patterns = []) {
   };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   try {
     const files = [];
     const patterns = [];

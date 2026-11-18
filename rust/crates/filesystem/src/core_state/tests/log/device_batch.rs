@@ -82,7 +82,7 @@ async fn checkpoint_batches_one_device_drain_after_all_record_writes()
             let record = RecordKey::Context(WorkspaceContextId::from_bytes([byte; 16]));
             assert_eq!(std::fs::read(record.paths(&namespace)?.current)?, b"null");
         }
-        work.receipt().verify(budget)?;
+        work.receipt().unwrap().verify(budget)?;
         observed_drains.push(drains);
     }
     let expected = if cfg!(target_os = "macos") { 1 } else { 16 };
@@ -205,7 +205,7 @@ async fn checkpoint_cut_preserves_wal(
         result.unwrap();
         assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
     }
-    work.receipt().verify(budget).unwrap();
+    work.receipt().unwrap().verify(budget).unwrap();
     schedule.durable_writes()
 }
 

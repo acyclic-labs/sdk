@@ -90,7 +90,7 @@ pub struct CreatedGeneration {
 impl<P: ?Sized, O> Fs<StreamAuthorityStore<P>, O> {
     /// The Stream provider holding this filesystem's authority, so callers can
     /// compose their own records into the same consistency domain.
-    pub fn stream_provider(&self) -> std::sync::Arc<P> {
+    pub fn stream_provider(&self) -> acyclic_stream::ProviderOwner<P> {
         self.inner.authority.provider()
     }
 }
@@ -525,7 +525,7 @@ where
             .initial_generation_root(
                 volume_id,
                 initialization,
-                Some(spec.creation),
+                Some(&spec.creation),
                 accounting,
                 cancellation,
             )

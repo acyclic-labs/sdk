@@ -404,12 +404,14 @@ fn large_paste_is_compact_in_layout_and_expands_in_queued_submission()
 fn composed_prompt_restores_each_item_draft_and_shared_history_from_snapshots()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_harness_tui::{
-        PromptHistory,
+        InputEffect,
         key_event::{KeyCode, KeyEvent, KeyModifiers as M},
     };
     let mut input = PromptInput::new(Editor::new("earlier prompt"));
-    input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1, 38);
-    let history = input.history().entries().to_vec();
+    let submitted = input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1, 38);
+    let [InputEffect::Submit { text, .. }] = submitted.as_slice() else {
+        return Err("prompt was not submitted".into());
+    };
     let mut terminal = Terminal::new(TestBackend::new(40, 12))?;
     let mut viewport = Viewport::default();
     for expected in ["first item draft", "second item draft"] {
@@ -420,8 +422,11 @@ fn composed_prompt_restores_each_item_draft_and_shared_history_from_snapshots()
         assert!(visible(&terminal).contains(expected));
     }
     let mut restored = PromptInput::default();
-    restored.replace_history(PromptHistory::snapshot(history));
-    restored.key(KeyEvent::new(KeyCode::Up, M::NONE), 1001, 38);
+    let request = restored.key(KeyEvent::new(KeyCode::Up, M::NONE), 1001, 38);
+    let [InputEffect::History { request, .. }] = request.as_slice() else {
+        return Err("history request missing".into());
+    };
+    assert!(restored.resolve_history(*request, "", Some(text), true, 1001));
     terminal.draw(|frame| {
         Screen::default().render(frame, &restored, &mut viewport, 0, 1002);
     })?;

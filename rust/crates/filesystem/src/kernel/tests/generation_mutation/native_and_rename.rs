@@ -69,7 +69,7 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let source = [Mutation::File {
         file_id: FileId::from_bytes([2; 16]),
@@ -81,7 +81,7 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
         ..WorkBudget::UNBOUNDED
     })?;
     let mut accounting = KernelAccounting::native(&limited, &cancellation);
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let mutation = apply_generation_mutations_retaining_with_accounting(
         &NoGenerationCalls,
         &fixture.generation,
@@ -106,11 +106,11 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
             WorkError::BudgetExceeded { .. }
         ))
     ));
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
     drop(error);
     drop(input_guard);
     drop(limited);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -132,15 +132,15 @@ async fn original_root_clone_denial_releases_parents_without_copy()
     );
     let held = crate::kernel::Owned::<Vec<u8>>::allocate(4096, &mut standalone)?;
     let baseline = standalone.standalone_parts().unwrap().0.live_bytes();
-    let before = standalone.spent();
+    let before = standalone.spent().unwrap();
     assert!(clone_generation_root_with_accounting(&root, &mut standalone).is_err());
-    assert_eq!(standalone.spent().bytes_copied, 0);
+    assert_eq!(standalone.spent().unwrap().bytes_copied, 0);
     assert_eq!(
         standalone.standalone_parts().unwrap().0.live_bytes(),
         baseline,
         "denied parent copy retained standalone scratch"
     );
-    assert_eq!(standalone.spent(), before);
+    assert_eq!(standalone.spent().unwrap(), before);
     held.retire(&mut standalone)?;
     assert_eq!(standalone.standalone_parts().unwrap().0.live_bytes(), 0);
     let original = crate::NativeMaterializationWork::new(
@@ -151,9 +151,9 @@ async fn original_root_clone_denial_releases_parents_without_copy()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let error = clone_generation_root_with_accounting(&root, &mut accounting)
         .err()
         .ok_or("zero original copy budget cloned parents")?;
@@ -163,11 +163,11 @@ async fn original_root_clone_denial_releases_parents_without_copy()
             WorkError::BudgetExceeded { .. }
         ))
     ));
-    assert_eq!(original.receipt().bytes_copied, 0);
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap().bytes_copied, 0);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(original.receipt().unwrap(), before);
     Ok(())
 }
 
@@ -404,7 +404,11 @@ async fn rename_follows_the_posix_kind_rules() -> Result<(), Box<dyn std::error:
                 );
                 // Only emptiness needs the candidate view built.
                 if expected != "ENOTEMPTY" {
-                    assert_eq!(failure.work.backend_write_operations, 0, "{case}");
+                    assert_eq!(
+                        failure.work().unwrap().backend_write_operations,
+                        0,
+                        "{case}"
+                    );
                 }
             }
             (expected, Ok(_)) => panic!("{case}: succeeded, POSIX gives {expected:?}"),
@@ -478,7 +482,7 @@ async fn rename_over_an_ancestor_is_refused() -> Result<(), Box<dyn std::error::
             "{source:?} -> {destination:?}: {}",
             failure.error
         );
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work().unwrap().backend_write_operations, 0);
     }
     Ok(())
 }

@@ -28,6 +28,9 @@ message BlobInfo {
   // Logical length: the payload for a blob, the sum of parts for a manifest.
   uint64 length = 3;
   repeated Digest references = 4;
+  // Publisher-declared logical SHA-256, present only for a manifest that
+  // supplied one. Objects does not verify this declaration.
+  optional bytes sha256 = 5;
 }
 // A verified acknowledgement. Its length was compared with the stored envelope
 // in the caller's own account under the caller's current grant.
@@ -80,6 +83,9 @@ message Part {
 message Manifest {
   repeated Part parts = 1 [(acyclic.validation.v1.min_items) = 1];
   repeated Digest edges = 2;
+  // Publisher-declared SHA-256 of the concatenated logical bytes. Admission
+  // does not verify the declaration; consumers requiring it verify the body.
+  optional bytes sha256 = 3;
 }
 message PutManifestRequest {
   Manifest manifest = 1;
@@ -136,12 +142,24 @@ message RetainRequest {
   bytes root = 1;
   repeated Digest references = 2 [(acyclic.validation.v1.min_items) = 1];
 }
+// A separately dispatched operation: an older server must refuse it rather
+// than discard a fence and perform an ordinary retain.
+message RetainFencedRequest {
+  bytes root = 1;
+  repeated Digest references = 2 [(acyclic.validation.v1.min_items) = 1];
+  uint64 fence = 3;
+}
 message RetainResponse {
   uint64 references = 1;
 }
 message ReleaseRequest {
   // Nonempty; the root identity is validated by the shared account provider.
   bytes root = 1;
+}
+// A separately dispatched terminal transition, never an ordinary release.
+message ReleaseTerminalRequest {
+  bytes root = 1;
+  uint64 fence = 2;
 }
 message ReleaseResponse {
   bool existed = 1;
@@ -187,6 +205,8 @@ service BlobsService {
   rpc ListBlobs(ListBlobsRequest) returns (ListBlobsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" resource: "objects:/blobs" }; }
   rpc Retain(RetainRequest) returns (RetainResponse) { option (acyclic.validation.v1.auth) = { action: "objects/retain" resource: "objects:/blobs" }; }
   rpc Release(ReleaseRequest) returns (ReleaseResponse) { option (acyclic.validation.v1.auth) = { action: "objects/retain" resource: "objects:/blobs" }; }
+  rpc RetainFenced(RetainFencedRequest) returns (RetainResponse) { option (acyclic.validation.v1.auth) = { action: "objects/retain" resource: "objects:/blobs" }; }
+  rpc ReleaseTerminal(ReleaseTerminalRequest) returns (ReleaseResponse) { option (acyclic.validation.v1.auth) = { action: "objects/retain" resource: "objects:/blobs" }; }
   rpc Collect(CollectRequest) returns (CollectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/collect" resource: "objects:/blobs" }; }
   rpc Usage(UsageRequest) returns (UsageResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" resource: "objects:/blobs" }; }
 }
@@ -215,6 +235,8 @@ enum ErrorCode {
   ERROR_CODE_REVISION_FOREIGN = 14;
   // The call deadline elapsed before its minimum revision applied.
   ERROR_CODE_DEADLINE_ELAPSED = 15;
+  // The retained intent was terminally released at or above this fence.
+  ERROR_CODE_TERMINAL_FENCE = 16;
 }
 // Customer diagnostic identity; operator topology stays in protected evidence.
 message ErrorDetail {

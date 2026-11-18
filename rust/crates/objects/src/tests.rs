@@ -1,5 +1,5 @@
 use crate::{
-    Blobs, ByteRange, Delete, Digest, Medium, MediumError, MemoryMedium, Observation,
+    Blobs, ByteRange, Delete, Digest, Medium, MediumError, MediumKey, MemoryMedium, Observation,
     ObservationSource, Observed, ObservedVersion, Put, RootId, Store, conformance, wire::ErrorCode,
 };
 use acyclic_stream::OwnedBytes;
@@ -7,6 +7,66 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub(crate) mod availability;
+
+#[test]
+fn medium_key_classifies_the_storage_contract() -> Result<(), Box<dyn std::error::Error>> {
+    let digest = Digest::from_bytes([0xab; 32]);
+    let hash = digest.to_hex();
+    let version = [0x12; 16];
+    let valid = [
+        (format!("e/ab/{hash}"), MediumKey::Envelope(digest)),
+        (
+            format!("p/ab/{hash}.{}", hex::encode(version)),
+            MediumKey::Payload { digest, version },
+        ),
+        (format!("t/{hash}"), MediumKey::Terminal(digest)),
+        ("incarnation".into(), MediumKey::Control),
+        ("epoch".into(), MediumKey::Control),
+        ("r/opaque/reference".into(), MediumKey::Control),
+        ("i/opaque/reference".into(), MediumKey::Control),
+        ("f/opaque/reference".into(), MediumKey::Control),
+    ];
+    for (key, expected) in valid {
+        assert_eq!(MediumKey::parse(&key)?, expected, "{key}");
+    }
+    let invalid = [
+        String::new(),
+        "epoch/extra".into(),
+        "r/".into(),
+        "i/".into(),
+        "f/".into(),
+        format!("e/00/{hash}"),
+        format!("e/ab/{}", hash.to_uppercase()),
+        format!("p/ab/{hash}.1234"),
+        format!("p/ab/{hash}.{}", "FF".repeat(16)),
+        format!("t/{}", "ab".repeat(31)),
+        format!("other/{hash}"),
+    ];
+    for key in invalid {
+        assert_eq!(
+            MediumKey::parse(&key).err().map(|error| error.code),
+            Some(ErrorCode::InvalidArgument),
+            "{key}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn listing_rejects_an_envelope_in_the_wrong_shard() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = Store::new(MemoryMedium::default());
+    let account = b"medium-key-test";
+    let digest = Digest::of(b"body").to_hex();
+    let shard = if digest.starts_with("00") { "ff" } else { "00" };
+    let key = format!("{}/e/{shard}/{digest}", Digest::of(account));
+    assert!(store.medium().create(&key, Vec::new().into()).await?);
+    let Err(error) = store.account(account)?.list(None, 10).await else {
+        return Err("malformed envelope key was silently skipped".into());
+    };
+    assert_eq!(error.code, ErrorCode::Corrupt);
+    Ok(())
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod simulation;
@@ -663,19 +723,13 @@ async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
     Ok(())
 }
 
-/// One shared medium that several [`Store`]s, standing for processes, open.
-/// It parks one operation matching `pause` until released, to force one
-/// interleaving. With `forgetful` the delete protocol's conditional writes
-/// ignore the bytes they were given: a deleter's mark is never stored and its
-/// envelope removal matches whatever is there, the negative control for the
-/// delete protocol. Creates of keys containing `ambiguous` are lost with an
-/// unknown outcome. `lost` counts conditional replaces another writer beat.
+/// Shared medium with deterministic parking, ambiguity and deletion faults.
 #[derive(Clone)]
-struct Shared {
+pub(crate) struct Shared {
     inner: std::sync::Arc<dyn Medium>,
     pause: std::sync::Arc<std::sync::Mutex<Option<Pause>>>,
     forgetful: bool,
-    ambiguous: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
+    pub(crate) ambiguous: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
     lost: std::sync::Arc<AtomicUsize>,
 }
 
@@ -717,7 +771,7 @@ impl Shared {
     }
 
     /// Parks the first `operation` on a key containing `fragment`, after it applies.
-    fn park(
+    pub(crate) fn park(
         &self,
         operation: &'static str,
         fragment: impl Into<String>,
@@ -1218,7 +1272,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         use prost::Message as _;
         let encoded = crate::convert::wire_delete(deleted.clone()).encode_to_vec();
         let reply = crate::wire::DeleteBlobResponse::decode(encoded.as_slice())?;
-        let decoded = crate::convert::delete(&reply)?;
+        let decoded = crate::convert::delete(&reply, None)?;
         assert_eq!(decoded.outcome, deleted.outcome);
         assert_eq!(decoded.references, deleted.references);
         for status in [
@@ -1229,7 +1283,12 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
                 status: status as i32,
                 ..reply.clone()
             };
-            assert!(crate::convert::delete(&invalid).is_err());
+            assert_eq!(
+                crate::convert::delete(&invalid, None)
+                    .expect_err("malformed reply")
+                    .code,
+                crate::wire::ErrorCode::Unavailable
+            );
         }
     }
     assert_eq!(
@@ -1277,6 +1336,40 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     Ok(())
 }
 
+/// Each holder owns its own marker on a shared child. Root A releases first,
+/// directly or through the parent it retained, and root B alone keeps the
+/// child; B's release, the last, frees it.
+#[tokio::test]
+async fn a_shared_child_stays_held_until_its_last_holder_releases()
+-> Result<(), Box<dyn std::error::Error>> {
+    for through_parent in [false, true] {
+        let blobs = crate::MemoryObjects::memory();
+        let child = blobs
+            .put(vec![3; 8].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let parent = blobs
+            .put(vec![4; 8].into(), vec![child])
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let (a, b) = (RootId::new(*b"rootA")?, RootId::new(*b"rootB")?);
+        let held = if through_parent { parent } else { child };
+        blobs.retain(&a, vec![held]).await?;
+        blobs.retain(&b, vec![child]).await?;
+        assert!(blobs.release(&a).await?.existed);
+        assert_eq!(blobs.delete(parent).await?, Delete::Deleted);
+        // Negative control: A's release leaves the child protected by B.
+        assert_eq!(blobs.delete(child).await?, Delete::Referenced);
+        assert_eq!(blobs.head(child).await?.length, 8);
+        assert!(blobs.release(&b).await?.existed);
+        assert_eq!(blobs.delete(child).await?, Delete::Deleted);
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn delete_reads_only_its_inbound_index() -> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();
@@ -1413,6 +1506,131 @@ async fn a_release_never_unpins_a_concurrent_equal_retain() -> Result<(), Box<dy
     // Negative control: with one shared key per batch, the release removed the
     // second retain's key and this delete was `Deleted`.
     assert_eq!(release_then_retain().await?, Delete::Referenced);
+    Ok(())
+}
+
+/// Two stores race a terminal release against a retain parked after its
+/// original fence read or after writing its batch, before conditional commit.
+#[tokio::test]
+async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std::error::Error>> {
+    for (fence, operation, key) in [
+        (0_u64, "read", "/t/"),
+        (1, "read", "/t/"),
+        (u64::MAX - 1, "read", "/t/"),
+        (0, "create", "/f/"),
+        (1, "create", "/f/"),
+        (u64::MAX - 1, "create", "/f/"),
+    ] {
+        let medium = Shared::default();
+        let retaining = Store::new(medium.clone()).account(b"terminal-account")?;
+        let releasing = Store::new(medium.clone()).account(b"terminal-account")?;
+        let digest = retaining
+            .put(vec![7; 32].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown put")?
+            .digest;
+        let root = RootId::new(b"accepted-intent".to_vec())?;
+        let (mut reached, resume) = medium.park(operation, key);
+        let pending = retaining.retain_fenced(&root, fence, vec![digest]);
+        tokio::pin!(pending);
+        drive_to_park(pending.as_mut(), &mut reached).await;
+        releasing.release_terminal(&root, fence).await?;
+        resume
+            .send(())
+            .map_err(|()| "retain lost its original cut")?;
+        assert_eq!(
+            pending.await.map_err(|error| error.code),
+            Err(ErrorCode::TerminalFence)
+        );
+        assert_eq!(
+            retaining
+                .retain_fenced(&root, fence, vec![digest])
+                .await
+                .map_err(|error| error.code),
+            Err(ErrorCode::TerminalFence)
+        );
+        if fence > 0 {
+            assert_eq!(
+                retaining
+                    .retain_fenced(&root, fence - 1, vec![digest])
+                    .await
+                    .map_err(|error| error.code),
+                Err(ErrorCode::TerminalFence)
+            );
+        }
+        retaining
+            .retain_fenced(&root, fence + 1, vec![digest])
+            .await?;
+        releasing.release_terminal(&root, fence).await?;
+        releasing.release(&root).await?;
+        assert_eq!(retaining.delete(digest).await?.outcome, Delete::Referenced);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_fence_collection_cleans_an_interrupted_retain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let retaining = Store::new(medium.clone()).account(b"terminal-recovery")?;
+    let releasing = Store::new(medium.clone()).account(b"terminal-recovery")?;
+    let digest = retaining
+        .put(vec![3; 32].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"interrupted-intent".to_vec())?;
+    releasing.release_terminal(&root, 2).await?;
+    {
+        let (mut read, resume_read) = medium.park("read", "/t/");
+        let pending = retaining.retain_fenced(&root, 7, vec![digest]);
+        tokio::pin!(pending);
+        drive_to_park(pending.as_mut(), &mut read).await;
+        releasing.release_terminal(&root, 7).await?;
+        let (mut created, _resume_create) = medium.park("create", "/f/");
+        resume_read
+            .send(())
+            .map_err(|()| "retain lost its fence read")?;
+        drive_to_park(pending.as_mut(), &mut created).await;
+        // Dropping the still-pending operation simulates loss of its owner.
+    }
+    releasing.collect().await?;
+    assert_eq!(releasing.delete(digest).await?.outcome, Delete::Deleted);
+    assert_eq!(
+        retaining
+            .retain_fenced(&root, 7, vec![digest])
+            .await
+            .map_err(|error| error.code),
+        Err(ErrorCode::TerminalFence)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_fence_retry_finishes_interrupted_batch_cleanup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let original = Store::new(medium.clone()).account(b"terminal-cleanup")?;
+    let digest = original
+        .put(vec![6; 32].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"cleanup-intent".to_vec())?;
+    original.retain_fenced(&root, 1, vec![digest]).await?;
+    {
+        let (mut removed, _resume) = medium.park("remove", "/f/");
+        let release = original.release_terminal(&root, 1);
+        tokio::pin!(release);
+        drive_to_park(release.as_mut(), &mut removed).await;
+        // The batch removal took effect, but its owner is lost before reply.
+    }
+    let recovered = Store::new(medium).account(b"terminal-cleanup")?;
+    recovered.release_terminal(&root, 1).await?;
+    assert_eq!(recovered.delete(digest).await?.outcome, Delete::Deleted);
     Ok(())
 }
 
@@ -1927,7 +2145,7 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
             after.is_none_or(|after| next > after)
                 && page.digests.last().is_none_or(|last| *last <= next)
         }));
-        let decoded = crate::convert::page(&crate::convert::wire_page(&page))?;
+        let decoded = crate::convert::page(&crate::convert::wire_page(&page), None)?;
         assert_eq!(decoded.digests, page.digests);
         assert_eq!(decoded.next, page.next);
         listed.extend(page.digests.iter().copied());
@@ -1956,7 +2174,7 @@ fn sparse_remote_pages_require_forward_cursors() -> Result<(), crate::Error> {
                 digests: digests.clone(),
                 next: Some(cursor.into()),
             };
-            assert!(crate::convert::listed(&page, Some(after), 4).is_err());
+            assert!(crate::convert::listed(&page, Some(after), 4, None).is_err());
         }
     }
     for cursor in [None, Some(next)] {
@@ -1964,7 +2182,10 @@ fn sparse_remote_pages_require_forward_cursors() -> Result<(), crate::Error> {
             digests: Vec::new(),
             next: cursor.map(Into::into),
         };
-        assert_eq!(crate::convert::listed(&page, Some(after), 4)?.next, cursor);
+        assert_eq!(
+            crate::convert::listed(&page, Some(after), 4, None)?.next,
+            cursor
+        );
     }
     Ok(())
 }
@@ -1986,6 +2207,7 @@ async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::
             length: 1,
             stored: 1,
             references: Vec::new(),
+            sha256: None,
             version: [1; 16],
             dying: None,
             condemned: 0,
@@ -2005,7 +2227,7 @@ async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::
         let counted = store.medium().take();
         assert!(page.digests.is_empty(), "incomplete puts are not blobs");
         assert!(page.next.is_some(), "an empty page must retain progress");
-        let decoded = crate::convert::page(&crate::convert::wire_page(&page))?;
+        let decoded = crate::convert::page(&crate::convert::wire_page(&page), None)?;
         assert_eq!(decoded.digests, page.digests);
         assert_eq!(decoded.next, page.next);
         assert_eq!(counted.get("list"), Some(&1));
@@ -3154,17 +3376,9 @@ async fn a_recovered_parent_commits_only_with_its_closure_whole_and_indexed()
 /// The durable syncs `work` issues, by operation.
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 async fn syncs<T>(work: impl Future<Output = T>) -> (T, std::collections::BTreeMap<String, usize>) {
-    use acyclic_native_runtime::testing::Schedule;
+    use acyclic_native_runtime::testing::{Schedule, drive};
     let (schedule, mut events) = Schedule::new();
-    let driver = tokio::spawn(async move {
-        while let Some(boundary) = events.recv().await {
-            boundary.release();
-        }
-    });
-    let value = schedule.scope(work).await;
-    schedule.drained().await;
-    driver.abort();
-    let _ = driver.await;
+    let value = drive(&schedule, &mut events, |_| {}, work).await;
     let mut syncs = std::collections::BTreeMap::new();
     for call in schedule.durable_writes() {
         if call.operation.contains("sync") {
@@ -3180,9 +3394,10 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
-    let store = Store::new(Counting::new(
-        crate::LocalMedium::open(root.path(), Default::default(), None).await?,
-    ));
+    let open = crate::LocalMedium::open(root.path(), Default::default(), None);
+    let (opened, opening) = syncs(open).await;
+    assert_eq!(opening.get("file:sync_parent"), Some(&1), "{opening:?}");
+    let store = Store::new(Counting::new(opened?));
     let blobs = store.account(b"account")?;
     blobs.flush(None).await?;
     let digest = |put: Put| {
@@ -3345,6 +3560,21 @@ impl Blobs for Overlap {
     }
     async fn release(&self, root: &RootId) -> Result<crate::Released, crate::Error> {
         self.inner.release(root).await
+    }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<crate::Retained, crate::Error> {
+        self.inner.retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(
+        &self,
+        root: &RootId,
+        fence: u64,
+    ) -> Result<crate::Released, crate::Error> {
+        self.inner.release_terminal(root, fence).await
     }
     async fn collect(&self) -> Result<crate::Collection, crate::Error> {
         self.inner.collect().await

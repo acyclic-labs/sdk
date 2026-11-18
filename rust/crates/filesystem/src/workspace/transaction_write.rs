@@ -382,7 +382,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         let result = self
             .create_dirs_checked(path, &mut accounting, cancellation, &mut check)
             .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            E::from(WorkspaceError::from(error))
+        })
     }
 
     pub(crate) async fn create_dirs(

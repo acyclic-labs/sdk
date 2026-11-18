@@ -482,7 +482,7 @@ impl BlobRangeMachine {
         Ok(BlobRead {
             bytes,
             logical_owned_bytes,
-            work: accounting.spent(),
+            work: accounting.spent()?,
             next_residency: self.successor.map(|(_, hint)| hint),
         })
     }

@@ -39,7 +39,7 @@ async fn reservation_ack_loss_and_query_partition_preserve_actual_reservation()
             .await,
         Err(AuthorityStoreError::RejectedStatic(_))
     ));
-    assert_eq!(read_work.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(read_work.spent().unwrap(), WorkCounters::UNCHARGED);
     schedule.inject_next(
         sites::AUTHORITY_RELEASE,
         SimulationFault::AmbiguousAuthorityAppend,

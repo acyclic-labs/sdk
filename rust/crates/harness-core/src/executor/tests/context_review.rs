@@ -1,11 +1,6 @@
 use super::*;
 use futures::FutureExt as _;
 
-struct IgnoreDivergence;
-impl crate::model::DivergenceSink for IgnoreDivergence {
-    fn diverged(&self, _: crate::model::Divergence) {}
-}
-
 fn original_metadata(events: &[ModelEvent]) -> &Value {
     events
         .iter()
@@ -24,8 +19,8 @@ fn original_metadata(events: &[ModelEvent]) -> &Value {
 async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Result<()> {
     let plugins = crate::plugins::seed().await?;
     for (count, retrospective) in [(2, false), (64, false), (2, true), (64, true)] {
-        let provider = Arc::new(ScriptedModelProvider::new(
-            (0..1 + usize::from(retrospective)).map(|_| {
+        let provider = Arc::new(
+            ScriptedModelProvider::new((0..1 + usize::from(retrospective)).map(|_| {
                 ScriptedTurn::Events(vec![
                     ScriptedEvent::Event(ModelEvent::Content {
                         delta: "done".into(),
@@ -34,8 +29,9 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
                         metadata: json!({"usage":{"prompt_tokens":1024,"completion_tokens":1}}),
                     }),
                 ])
-            }),
-        ));
+            }))
+            .scripting_retrospectives(),
+        );
         let mut stock = StockExecutor::new(
             Model::new("fixture".into(), "selected".into(), "1".into())?,
             provider.clone(),
@@ -152,11 +148,17 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             ))
         }
     }
-    for (replace, change_source, tokenized) in [
-        (false, false, true),
-        (true, false, true),
-        (true, true, true),
-        (true, false, false),
+    let instructions = ModelMessage {
+        role: ModelRole::System,
+        content: ModelContent::Text("Follow the house rules.".into()),
+    };
+    for (replace, change_source, tokenized, staged) in [
+        (false, false, true, false),
+        (true, false, true, false),
+        (true, true, true, false),
+        (true, false, false, false),
+        // A stage prepends the system header the worker's requests carry.
+        (true, false, true, true),
     ] {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -193,7 +195,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
         let recorded = Arc::new(crate::model::RecordedModel::new(
             provider.clone(),
             Arc::new(crate::model::Recording::default()),
-            Arc::new(IgnoreDivergence),
+            Arc::new(crate::model::IgnoreDivergence),
         ));
         let selected = StockExecutor::from_binding(
             Arc::new(crate::model::ResolvedModel::new((
@@ -218,6 +220,19 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
         )
         .with_compaction_policy(crate::context::CompactionPolicy::default())
         .with_automatic_compaction()?;
+        let executor = if staged {
+            executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
+                "instructions",
+                "1",
+                Arc::new(crate::context::Context {
+                    messages: vec![instructions.clone()],
+                    ..Default::default()
+                }),
+                crate::context::ContextPlacement::Prepend,
+            )))?
+        } else {
+            executor
+        };
         let mut execution = StockExecution::ordinary(&executor);
         execution.selected = Some(Arc::clone(&selected));
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
@@ -307,6 +322,25 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
                 assert!(after.messages.iter().any(
                     |message| message.content == ModelContent::Text("New observation.".into())
                 ));
+                // The summary reads the worker's header and every reviewed
+                // message; the compacted base is staged once, not twice.
+                let summary = provider.request(1).unwrap();
+                assert!(summary.summary);
+                assert_eq!(summary.messages.first() == Some(&instructions), staged);
+                assert!(
+                    summary
+                        .messages
+                        .iter()
+                        .any(|message| message.content == initial_prior[0].content)
+                );
+                assert_eq!(
+                    after
+                        .messages
+                        .iter()
+                        .filter(|message| **message == instructions)
+                        .count(),
+                    usize::from(staged)
+                );
             } else if !change_source {
                 assert!(after.messages.starts_with(&during.messages));
             } else {
@@ -672,17 +706,18 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
 }
 
 /// A reviewer's malformed, empty or invalid decision never fails the worker.
-/// It is re-asked once with its reason; a second defect keeps the unreviewed
-/// context until capacity. The first two payloads are the ones DeepSeek
+/// Every defect is re-asked with its reason at a response boundary, until a
+/// valid reply resumes ordinary review. The first two payloads are ones DeepSeek
 /// returned in GC-274: a raw newline inside a JSON string, and no text.
 #[tokio::test]
-async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()> {
+async fn defective_context_decisions_remain_retryable_until_a_valid_reply() -> Result<()> {
     let raw_newline =
         "{\"version\":1,\"summary\":\"line one\nline two\",\"review_at_input_tokens\":500}";
     for decision in [
         raw_newline.to_owned(),
         String::new(),
         "not JSON".to_owned(),
+        json!({"version":1,"review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":"x","review_at_input_tokens":500,"quoted_field_name":true})
             .to_string(),
         json!({"version":"quoted_value","summary":"x","review_at_input_tokens":500}).to_string(),
@@ -709,6 +744,8 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
                 reply(&decision),
                 response(),
                 reply(&decision),
+                response(),
+                reply(r#"{"version":1,"summary":null,"review_at_input_tokens":1000}"#),
                 response(),
             ])
             .with_context_capacity(crate::context::ModelContextCapacity {
@@ -746,7 +783,7 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
             },
         ];
         let worker = async {
-            for step in 0..3 {
+            for step in 0..4 {
                 let events = execution.model_step(journal, &input, step, &prior).await?;
                 let (_, records) = execution
                     .model_records(journal, input.operation_id, step, ModelPurpose::Response)
@@ -768,18 +805,18 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
                         original_metadata(&events),
                     )
                     .await?;
-                if step < 2 {
+                if step < 3 {
                     execution.review.completed.notified().await;
                     assert_eq!(provider.request_count(), requests + 1);
                 } else {
                     assert_eq!(
                         provider.request_count(),
                         requests,
-                        "after the re-ask, review waits for capacity"
+                        "the valid decision sets the next review boundary"
                     );
                 }
             }
-            for step in 0..3 {
+            for step in 0..4 {
                 let (_, rejected) = execution
                     .step_records(journal, input.operation_id, step, false, None, |event| {
                         matches!(
@@ -810,12 +847,16 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
             };
             assert!(!rejected(&ask));
             assert!(rejected(&reask), "the re-ask carries its rejection");
+            assert!(
+                rejected(&provider.request(5).unwrap()),
+                "a second rejection is retryable too"
+            );
             Ok(ExecutionProgress::Ready(()))
         };
         execution
             .with_context_review(journal, &input, worker)
             .await?;
-        assert_eq!(provider.request_count(), 5);
+        assert_eq!(provider.request_count(), 7);
     }
     Ok(())
 }

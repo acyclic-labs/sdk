@@ -257,7 +257,7 @@ where
         if resolutions.is_empty()
             && candidate.resolutions.values().any(|resolution| {
                 matches!(resolution, MergeResolution::Text(text)
-                    if crate::text_merge::has_conflict_markers(text))
+                    if acyclic_fs_base::text_merge::has_conflict_markers(text))
             })
         {
             return Err(WorkspaceMultiRootPublisherError::Conflicted {

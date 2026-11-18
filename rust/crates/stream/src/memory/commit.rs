@@ -270,39 +270,56 @@ impl MemoryStream {
         let mut keys = original.map_or_else(KeyTree::default, |path| path.keys.clone());
         let tail = original.map_or(0, |path| path.tail);
         let target = crate::request::fact_path(fact);
-        let (mut index, extends) = lineage.base(target, tail);
-        let mut changed = false;
-        if let Some(History::Batch { records, .. }) =
+        let sealed = if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
             && before.is_none_or(|before| records.start < before)
         {
-            index = index.insert(
+            Some(records)
+        } else {
+            None
+        };
+        let ranges = if let Some(records) = sealed {
+            let (index, extends) = lineage.base(target, tail, &mut HistoryIndexWork(self))?;
+            let index = index.insert(
                 &records.start.to_be_bytes(),
                 Arc::clone(records),
                 &mut HistoryIndexWork(self),
             )?;
-            changed = true;
-        }
-        let ranges = match before {
-            // A fork's index is cut after insertion, so the sealed batch keeps
-            // the fork's exclusive bound; it never extends the source lineage.
-            Some(before) if changed => lineage.publish(
-                target,
-                before,
-                false,
-                true,
-                index.prefix(before.to_be_bytes()),
-                &mut HistoryIndexWork(self),
-            )?,
-            Some(before) => lineage.cap(before),
-            None => lineage.publish(
+            match before {
+                // A fork's index is cut after insertion, so the sealed batch keeps
+                // the fork's exclusive bound; it never extends the source lineage.
+                Some(before) => {
+                    let index = index.prefix(before.to_be_bytes(), &mut HistoryIndexWork(self))?;
+                    lineage.publish(
+                        target,
+                        before,
+                        false,
+                        true,
+                        index,
+                        &mut HistoryIndexWork(self),
+                    )?
+                }
+                None => lineage.publish(
+                    target,
+                    tail,
+                    extends,
+                    true,
+                    index,
+                    &mut HistoryIndexWork(self),
+                )?,
+            }
+        } else if let Some(before) = before {
+            lineage.cap(before)
+        } else {
+            let (index, extends) = lineage.base(target, tail, &mut HistoryIndexWork(self))?;
+            lineage.publish(
                 target,
                 tail,
                 extends,
-                changed,
+                false,
                 index,
                 &mut HistoryIndexWork(self),
-            )?,
+            )?
         };
         if let Some(before) = before {
             keys = keys.cap(before);

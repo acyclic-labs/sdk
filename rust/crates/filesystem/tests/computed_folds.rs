@@ -1,18 +1,21 @@
 //! Checkpoint-plus-tail reads use real immutable Objects and original credit.
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::{
-    CancellationToken, MemoryObjectBackend, NativeMaterializationWork, WorkBudget,
-    demand::{
-        DemandError, Fold, FoldCheckpoint, FoldCheckpointObject, FoldCursor, FoldObjectError,
-    },
-    kernel::{KernelAccounting, Retained},
-};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
+};
+use {
+    acyclic_fs::{
+        CancellationToken, MemoryObjectBackend, NativeMaterializationWork,
+        demand::{
+            DemandError, Fold, FoldCheckpoint, FoldCheckpointObject, FoldCursor, FoldObjectError,
+        },
+        kernel::{KernelAccounting, Retained},
+    },
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -38,7 +41,7 @@ impl Fold for Sum {
         state.value = state
             .value
             .checked_add(*record)
-            .ok_or(acyclic_fs::WorkError::Overflow)?;
+            .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
         Ok(())
     }
 }
@@ -163,7 +166,7 @@ impl Fold for CountedSum {
         );
         *state = state
             .checked_add(value)
-            .ok_or(acyclic_fs::WorkError::Overflow)?;
+            .ok_or(acyclic_fs_work::performance::WorkError::Overflow)?;
         self.0.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -371,9 +374,10 @@ mod equivalence {
     fn retain(
         checkpoint: &FoldCheckpoint<Vec<u8>>,
         ctx: &mut KernelAccounting<'_>,
-    ) -> Retained<FoldCheckpoint<Vec<u8>>> {
-        ctx.decode_json(&serde_json::to_vec(checkpoint).unwrap())
-            .unwrap()
+    ) -> std::result::Result<Retained<FoldCheckpoint<Vec<u8>>>, proptest::test_runner::TestCaseError>
+    {
+        let bytes = serde_json::to_vec(checkpoint)?;
+        Ok(ctx.decode_json(&bytes)?)
     }
     proptest! {
         #[test]
@@ -384,7 +388,7 @@ mod equivalence {
             let mut checkpoint = seed();
             for cut in 0..=records.len() {
                 let start = checkpoint.sequence as usize;
-                let mut fold = FoldCursor::resume(Append, retain(&checkpoint, &mut ctx), chunk).unwrap();
+                let mut fold = FoldCursor::resume(Append, retain(&checkpoint, &mut ctx)?, chunk).unwrap();
                 for (index, record) in records.iter().enumerate().take(cut).skip(start) {
                     fold = fold.advance(index as u64, record, &mut ctx).unwrap();
                 }
@@ -392,7 +396,7 @@ mod equivalence {
                 if cut > start {
                     // Planted off-by-one tail start: no missing record may be
                     // accepted, even when its value equals adjacent records.
-                    let bad = FoldCursor::resume(Append, retain(&checkpoint, &mut ctx), chunk).unwrap();
+                    let bad = FoldCursor::resume(Append, retain(&checkpoint, &mut ctx)?, chunk).unwrap();
                     prop_assert!(bad.advance(start as u64 + 1, &records[start], &mut ctx).is_err());
                 }
                 if fold.checkpoint_due() { checkpoint = fold.checkpoint().clone(); }

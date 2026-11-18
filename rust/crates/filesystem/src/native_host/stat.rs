@@ -25,6 +25,10 @@ pub struct HostStat {
     created: Option<cap_std::time::SystemTime>,
     #[cfg(unix)]
     handle: Option<[u8; 32]>,
+    /// A fixture world's content identity, so a same-length rewrite changes
+    /// the source version even when its fixture timestamps do not.
+    #[cfg(feature = "test-support")]
+    content: Option<[u8; 32]>,
 }
 #[cfg(unix)]
 impl std::fmt::Debug for HostStat {
@@ -73,7 +77,9 @@ impl HostStat {
             crate::demand::SourceNodeKind::CharacterDevice
                 | crate::demand::SourceNodeKind::BlockDevice
         ) {
-            return Some(split_device(self.raw.st_rdev as u64));
+            return Some(acyclic_fs_native_contract::device::split_device(
+                self.raw.st_rdev as u64,
+            ));
         }
         None
     }
@@ -168,6 +174,8 @@ impl HostStat {
             raw,
             created,
             handle: None,
+            #[cfg(feature = "test-support")]
+            content: None,
         })
     }
     #[cfg(target_os = "linux")]
@@ -197,6 +205,8 @@ impl HostStat {
             raw,
             created,
             handle: None,
+            #[cfg(feature = "test-support")]
+            content: None,
         }
     }
     /// A digest of the object's kernel file handle, which names its inode
@@ -212,6 +222,17 @@ impl HostStat {
     pub(super) const fn with_handle(mut self, handle: Option<[u8; 32]>) -> Self {
         self.handle = handle;
         self
+    }
+    /// Attaches a fixture world's content identity.
+    #[cfg(feature = "test-support")]
+    pub(crate) const fn with_content(mut self, content: [u8; 32]) -> Self {
+        self.content = Some(content);
+        self
+    }
+    /// The fixture world's content identity, when one was attached.
+    #[cfg(feature = "test-support")]
+    pub(crate) const fn content(&self) -> Option<[u8; 32]> {
+        self.content
     }
     #[cfg(windows)]
     pub(super) fn from_stat_information(
@@ -229,6 +250,8 @@ impl HostStat {
         Ok(Self {
             raw: *raw,
             volume_serial_number,
+            #[cfg(feature = "test-support")]
+            content: None,
         })
     }
 }

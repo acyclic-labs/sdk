@@ -147,13 +147,17 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
     let mut initial = private
         .begin_transaction(
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
         .value;
     initial
-        .create_dir_all("/policy", acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .create_dir_all(
+            "/policy",
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     initial
         .write_text("/policy/attention.md", "ORIGINAL_TRUSTED_POLICY")
@@ -162,12 +166,12 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         .commit::<acyclic_fs::WorkspaceError, _, _>(
             None,
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )
@@ -736,6 +740,37 @@ async fn an_archive_between_saved_decisions_and_their_wakes_keeps_the_answers() 
 }
 
 #[tokio::test]
+async fn an_archived_parent_reuses_saved_decisions_and_repairs_their_wakes() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+    let turns = bound.turns();
+    let (parent_before, delivered, _child_tails, request_id) =
+        decided_without_wakes(&bound, &parent, &children).await?;
+    assert_eq!(reviewer.request_count(), 2);
+    let selected = turns
+        .select_approval_page(&parent_before, delivered[0], delivered[1] + 1)
+        .await?;
+    let mut archived = parent_before;
+    archived.closed = true;
+    let replayed = turns.review_approval_page(&archived, &selected).await?;
+    assert!(replayed.summary.is_none());
+    assert_eq!(
+        replayed.outs.len(),
+        2,
+        "the archived parent dropped its saved answers"
+    );
+    for out in &replayed.outs {
+        assert!(matches!(
+            out,
+            Out::Send {
+                record: InboxRecord::Approval(Approval { id }),
+                ..
+            } if id == &request_id
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_review() -> TestResult
 {
     use crate::{
@@ -824,9 +859,7 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
             ScriptedTurn::Text(r#"{"verdict":"allow","reason":null}"#.into()),
             ScriptedTurn::Text(r#"{"verdict":"deny","reason":null}"#.into()),
             ScriptedTurn::Text("allowed action settled".into()),
-            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("denied action settled".into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .reading_content(),
     );
@@ -1028,7 +1061,6 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
                 }),
             ]),
             ScriptedTurn::Text("refused action settled".into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .reading_content(),
     );
@@ -1091,9 +1123,25 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
             TestResult::Ok(())
         }
     };
+    // The parent completes first, so it refuses without a model. The archived
+    // case then closes it while the child's ask is in flight, exercising the
+    // closing cascade over a child that is already waiting for the answer.
+    message("finish", "finish", parent.clone()).await?;
+    bound.agents().drain(&parent).await?;
+    assert!(
+        matches!(
+            bound.agents().state(&parent).await?.phase,
+            Phase::Done { .. }
+        ),
+        "the parent did not complete"
+    );
+    message("work", "write the result file", child.path.clone()).await?;
+    bound.agents().drain(&child.path).await?;
+    let paused = bound.agents().state(&child.path).await?;
+    let Phase::WaitingApproval { id, .. } = &paused.phase else {
+        return Err(format!("the child did not ask its parent: {:?}", paused.phase).into());
+    };
     if archived {
-        // Only the parent's inbox closes; its child stays open until the
-        // parent's own closing step archives it, so the child can still ask.
         let id = IntentId::try_from("close")?;
         let crate::agent::Submitted::Committed(_) = crate::agent::submit(
             &*turns.stream,
@@ -1103,36 +1151,13 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
         else {
             return Err("the parent's archive did not commit".into());
         };
-    } else {
-        message("finish", "finish", parent.clone()).await?;
-        bound.agents().drain(&parent).await?;
-        assert!(
-            matches!(
-                bound.agents().state(&parent).await?.phase,
-                Phase::Done { .. }
-            ),
-            "the parent did not complete"
-        );
     }
-    message("work", "write the result file", child.path.clone()).await?;
-    bound.agents().drain(&child.path).await?;
-    let paused = bound.agents().state(&child.path).await?;
-    let Phase::WaitingApproval { id, .. } = &paused.phase else {
-        return Err("the child did not ask its parent".into());
-    };
     let asked = model.request_count();
     bound.agents().drain(&parent).await?;
     assert_eq!(
         model.request_count(),
         asked,
         "an ended parent dispatched a review"
-    );
-    assert!(
-        turns
-            .decided_approval(&paused, id, &format!("parent:{}", parent.id()))
-            .await?
-            .is_some(),
-        "the ended parent left its child's ask unanswered"
     );
     bound.agents().drain(&child.path).await?;
     let settled = bound.agents().state(&child.path).await?;
@@ -1147,6 +1172,13 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
         // turn ends by that archive, never by an unanswered wait.
         assert!(settled.closed);
     } else {
+        assert!(
+            turns
+                .decided_approval(&paused, id, &format!("parent:{}", parent.id()))
+                .await?
+                .is_some(),
+            "the ended parent left its child's ask unanswered"
+        );
         // Refusal is a tool failure: the waiting call fails as denied and the
         // model continues the same turn to its settled answer.
         assert!(matches!(settled.phase, Phase::Idle));

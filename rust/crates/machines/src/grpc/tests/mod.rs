@@ -78,7 +78,7 @@ operation_service! {
             return Err(Status::unimplemented("inspect_checkpoint"));
         };
         let original = {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone().ok_or_else(|| Status::unimplemented("inspect_checkpoint"))?;
             script.calls.push("inspect_checkpoint");
             original
@@ -96,7 +96,7 @@ operation_service! {
             return Err(Status::unimplemented("list_machines"));
         };
         let original = {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone().ok_or_else(|| Status::unimplemented("list_machines"))?;
             script.calls.push("list_machines");
             original
@@ -115,7 +115,7 @@ operation_service! {
             return Err(Status::unimplemented("read_results"));
         };
         let original = {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone().ok_or_else(|| Status::unimplemented("read_results"))?;
             script.calls.push("read_results");
             original
@@ -145,7 +145,7 @@ operation_service! {
             return Err(Status::unimplemented("create"));
         };
         if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             script.selected_volumes.push(request.selected_volume_ref);
             script.selected_secrets.push(request.secrets);
             script.calls.push(
@@ -157,7 +157,7 @@ operation_service! {
     async fn inspect_machine(&self, request: Request<wire::InspectMachineRequest>)
         -> Result<Response<wire::MachineState>, Status> {
         let original = if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone();
             if original.is_some() {
                 script.calls.push("inspect_machine");
@@ -180,7 +180,7 @@ operation_service! {
             return Err(Status::invalid_argument("machine was substituted"));
         }
         let contract = if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             script.calls.push("inspect_machine");
             script.current_contract.clone().or_else(|| admission.contract.clone())
         } else { admission.contract.clone() };
@@ -204,7 +204,7 @@ operation_service! {
             return Err(Status::unimplemented("attach_volume"));
         };
         if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             script.selected_volumes.push(request.selected_volume_ref);
             script.calls.push("attach_volume");
         }
@@ -214,7 +214,7 @@ operation_service! {
         &self,
         request: Request<wire::MachineMutationRequest>,
     ) -> Result<Response<wire::MutationAdmission>, Status> {
-        let WatchReply::Script(_) = &self.watch else {
+        let WatchReply::Script(script) = &self.watch else {
             return Err(Status::unimplemented("suspend"));
         };
         let request = request.into_inner();
@@ -233,6 +233,17 @@ operation_service! {
         };
         if request.machine != admission.machine {
             return Err(Status::invalid_argument("machine was substituted"));
+        }
+        let original = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?.results.clone();
+        if let Some(original) = original {
+            let machine = decode_machine(admission.machine.as_ref())
+                .map_err(|error| Status::internal(error.to_string()))?;
+            original.suspend(machine, self.expected_key).await
+                .map_err(|error| Status::failed_precondition(error.to_string()))?;
+            let mut admission = admission.clone();
+            admission.operation = Some(encode_operation(original.recover_operation(self.expected_key).await
+                .map_err(|error| Status::internal(error.to_string()))?));
+            return Ok(Response::new(admission));
         }
         Ok(Response::new(admission.clone()))
     }
@@ -304,7 +315,7 @@ operation_service! {
         if let WatchReply::Script(script) = &self.watch {
             script
                 .lock()
-                .expect("observation script")
+                .map_err(|_| Status::internal("observation script lock poisoned"))?
                 .calls
                 .push("cancel");
         }
@@ -317,7 +328,7 @@ operation_service! {
     ) -> Result<Response<wire::OperationState>, Status> {
         self.require_operation(&request.into_inner())?;
         let original = if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             if let Some(reply) = script.inspections.pop_front() {
                 return reply.map(Response::new)
                     .map_err(|code| Status::new(code, "inspection interrupted"));
@@ -394,7 +405,7 @@ operation_service! {
         {
             return Err(Status::invalid_argument("event cursor or identity was substituted"));
         }
-        let events = events.lock().expect("original events").take()
+        let events = events.lock().map_err(|_| Status::internal("original events lock poisoned"))?.take()
             .ok_or_else(|| Status::failed_precondition("original events already taken"))?;
         Ok(Response::new(Box::pin(events.map(|event| {
             event.map(wire::MachineEvent::from).map_err(|_| Status::unavailable("original event producer lost"))
@@ -412,7 +423,7 @@ operation_service! {
         self.require_operation(&request.into_inner())?;
         let reply = match &self.watch {
             WatchReply::Script(script) => {
-                let mut script = script.lock().expect("observation script");
+                let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
                 script.calls.push("watch");
                 script.started.notify_one();
                 script
@@ -433,7 +444,7 @@ operation_service! {
             }
             WatchReply::Script(_) | WatchReply::Events { .. } => Err(Status::internal("unexpected observation script")),
             WatchReply::Gated(value, release) => {
-                let release = release.lock().expect("watch release").take()
+                let release = release.lock().map_err(|_| Status::internal("watch release lock poisoned"))?.take()
                     .ok_or_else(|| Status::internal("watch release already consumed"))?;
                 Ok(Response::new(Box::pin(stream::once(async move {
                 release.await.map_err(|_| Status::unavailable("watch producer ended"))?;
@@ -446,6 +457,18 @@ operation_service! {
 }
 
 impl OperationService {
+    fn new(key: IdempotencyKey, operation: OperationId, machine: MachineId) -> Self {
+        Self {
+            guest: None,
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        }
+    }
+
     fn require_operation(&self, request: &wire::OperationRequest) -> Result<(), Status> {
         if request
             .operation
@@ -466,9 +489,9 @@ fn scripted_operation_service(
     std::sync::Arc<std::sync::Mutex<ObservationScript>>,
     MachineId,
 ) {
-    let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041").expect("key");
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042").expect("operation");
-    let machine = MachineId::parse("00000000-0000-0000-0000-000000000043").expect("machine");
+    let key = IdempotencyKey(uuid::Uuid::from_u128(0x41));
+    let operation = OperationId(uuid::Uuid::from_u128(0x42));
+    let machine = MachineId(uuid::Uuid::from_u128(0x43));
     let script = std::sync::Arc::new(std::sync::Mutex::new(ObservationScript {
         results: None,
         watches: watches.into(),
@@ -481,13 +504,8 @@ fn scripted_operation_service(
     }));
     (
         OperationService {
-            guest: None,
-            expected_key: key,
-            expected_operation: operation,
-            recovered: recovered_suspend(operation, operation, machine),
-            inspected: operation_state(operation, wire::OperationStatus::Pending),
-            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
             watch: WatchReply::Script(script.clone()),
+            ..OperationService::new(key, operation, machine)
         },
         script,
         machine,
@@ -504,6 +522,34 @@ async fn serve_operation_service(
     ),
     Box<dyn std::error::Error + Send + Sync>,
 > {
+    serve_operation_service_with(service, |request: Request<()>| {
+        let values: Vec<_> = request.metadata().get_all("authorization").iter().collect();
+        if values.len() != 1
+            || values
+                .first()
+                .is_none_or(|value| *value != "Bearer opaque.account+/=")
+        {
+            return Err(Status::unauthenticated("missing or substituted bearer"));
+        }
+        Ok(request)
+    })
+    .await
+}
+
+async fn serve_operation_service_with<I>(
+    service: OperationService,
+    authorization: I,
+) -> Result<
+    (
+        GrpcProvider,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    ),
+    Box<dyn std::error::Error + Send + Sync>,
+>
+where
+    I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
+{
     // Contract fixtures keep real HTTP/2 framing and generated RPCs, while
     // Tokio owns every wakeup. A paused clock cannot outrun kernel socket I/O.
     let (incoming, connections) = tokio::sync::mpsc::channel(1);
@@ -512,18 +558,7 @@ async fn serve_operation_service(
         Server::builder()
             .add_service(MachinesServiceServer::with_interceptor(
                 service,
-                |request: Request<()>| {
-                    let values: Vec<_> =
-                        request.metadata().get_all("authorization").iter().collect();
-                    if values.len() != 1
-                        || values
-                            .first()
-                            .is_none_or(|value| *value != "Bearer opaque.account+/=")
-                    {
-                        return Err(Status::unauthenticated("missing or substituted bearer"));
-                    }
-                    Ok(request)
-                },
+                authorization,
             ))
             .serve_with_incoming_shutdown(ReceiverStream::new(connections), async {
                 let _ = shutdown_rx.await;
@@ -552,9 +587,7 @@ async fn serve_operation_service(
 
 fn operation_state(operation: OperationId, status: wire::OperationStatus) -> wire::OperationState {
     wire::OperationState {
-        operation: Some(wire::OperationId {
-            value: operation.as_bytes().to_vec(),
-        }),
+        operation: Some(encode_operation(operation)),
         status: status as i32,
         outcome: None,
     }
@@ -592,14 +625,10 @@ fn recovered_suspend(
     machine: MachineId,
 ) -> wire::RecoveredAdmission {
     wire::RecoveredAdmission {
-        operation: Some(wire::OperationId {
-            value: outer.as_bytes().to_vec(),
-        }),
+        operation: Some(encode_operation(outer)),
         result: Some(wire::recovered_admission::Result::Suspend(
             wire::MutationAdmission {
-                operation: Some(wire::OperationId {
-                    value: nested.as_bytes().to_vec(),
-                }),
+                operation: Some(encode_operation(nested)),
                 machine: Some(encode_machine(machine)),
                 checkpoint: None,
             },

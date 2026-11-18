@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
 export function checkReleaseVersion(version){
  if(!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.test(version||''))throw new Error('A committed semver release version is required');
  return version;
@@ -26,4 +25,4 @@ checkNpmVersions(version,JSON.parse(fs.readFileSync('release/npm-packages.json',
 execFileSync(process.execPath,['scripts/publish-cargo-crates.mjs','check',sha,version],{stdio:'inherit'});
 fs.appendFileSync(output,`sha=${sha}\nversion=${version}\nrun=${process.env.GITHUB_RUN_ID}\nattempt=${process.env.GITHUB_RUN_ATTEMPT}\n`);
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))releaseSource();
+if(import.meta.main)releaseSource();

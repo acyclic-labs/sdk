@@ -1,5 +1,6 @@
 //! Scalar wire metadata joins the parser shared by native and hosted bindings.
-use acyclic_fs::{WorkspaceMetadata, binding_contract::*, kernel::MetadataField};
+use acyclic_fs::{WorkspaceMetadata, binding_contract::*};
+use acyclic_fs_format::metadata::MetadataField;
 use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use prost::Message;
 

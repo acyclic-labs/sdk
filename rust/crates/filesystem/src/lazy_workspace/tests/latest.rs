@@ -142,11 +142,11 @@ async fn latest_read_uses_original_native_work_and_rejects_wrong_kinds() {
         if kind == SourceNodeKind::RegularFile {
             let bytes = result.unwrap().bytes;
             assert_eq!(bytes.as_slice(), b"native");
-            assert_eq!(work.receipt().source_bytes_read, 6);
+            assert_eq!(work.receipt().unwrap().source_bytes_read, 6);
             assert!(bytes.retained_capacity().is_some());
         } else {
             assert!(matches!(result, Err(LazyWorkspaceError::NotRegularFile)));
-            assert_eq!(work.receipt().source_bytes_read, 0);
+            assert_eq!(work.receipt().unwrap().source_bytes_read, 0);
         }
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
         assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);

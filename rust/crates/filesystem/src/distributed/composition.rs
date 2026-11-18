@@ -13,7 +13,8 @@ pub use append::{FilesystemAppendPreparation, PreparedFilesystemAppend};
 mod result;
 pub use result::{FilesystemCommitResult, PreparedFilesystemCommit};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 #[path = "composition_custody_tests.rs"]
 mod custody_tests;
 

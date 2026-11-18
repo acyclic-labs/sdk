@@ -53,7 +53,7 @@
 //! child; it never refuses wrongly in the unsafe direction.
 use crate::blob::{
     DecodeAllocation, Envelope, corrupt, decode_batch_admitted, decode_incarnation, encode_batch,
-    invalid,
+    invalid, reserve_admitted,
 };
 use crate::identity::fresh as version;
 use crate::{
@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 mod read;
+mod terminal;
 
 const PAGE: usize = 1000;
 
@@ -106,6 +107,7 @@ mod format_recovery_tests {
             length: 7,
             stored: 7,
             references: Vec::new(),
+            sha256: None,
             version: [1; 16],
             dying: None,
             condemned: 0,
@@ -441,6 +443,8 @@ impl<M: Medium> Store<M> {
 }
 
 /// One account's blobs over a shared medium.
+/// Range reads use constant call-stack space at any manifest depth. Storage
+/// for pending selected parts is admitted by the medium before allocation.
 /// `P` owns or borrows that medium; the default retains its shared owner.
 pub struct Account<M, P = Arc<M>> {
     medium: P,
@@ -613,13 +617,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Ac
 
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
-        format!(
-            "{}p/{}/{}.{}",
-            self.state.prefix,
-            digest.hex_prefix(),
-            digest.to_hex(),
-            hex::encode(version)
-        )
+        self.sharded_key('p', digest, format_args!(".{}", hex::encode(version)))
     }
 
     /// This account's revisions, opening them on first use.
@@ -756,16 +754,18 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
         // A root batch is acknowledged only once its closure and index keys
         // are durable, so one missing any of them was never acknowledged.
-        let mut pages = self.pages(format!("{}r/", self.state.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, _) in page {
-                if self.batch_survived(&key, &blobs).await? {
-                    continue;
+        for kind in ["r", "f"] {
+            let mut pages = self.pages(format!("{}{kind}/", self.state.prefix));
+            while let Some(page) = pages.next().await? {
+                for (key, _) in page {
+                    if !self.batch_survived(&key, &blobs).await? {
+                        self.medium.remove(&key).await.map_err(medium)?;
+                        repaired.push(key);
+                    }
                 }
-                self.medium.remove(&key).await.map_err(medium)?;
-                repaired.push(key);
             }
         }
+        self.fenced_rooted().await?;
         Ok(repaired)
     }
 
@@ -784,11 +784,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Err(error) if error.code == ErrorCode::Corrupt => return Ok(false),
             Err(error) => return Err(error),
         };
-        let (root, name) = key
-            .strip_prefix(&format!("{}r/", self.state.prefix))
+        let (kind, rest) = key
+            .strip_prefix(&self.state.prefix)
             .and_then(|rest| rest.split_once('/'))
+            .filter(|(kind, _)| matches!(*kind, "r" | "f"))
             .ok_or_else(corrupt)?;
-        let tag = format!("r{root}.{name}");
+        let (root, name) = rest.split_once('/').ok_or_else(corrupt)?;
+        let tag = format!("{kind}{root}.{name}");
         for member in &members {
             if !blobs.contains_key(member)
                 || self
@@ -847,12 +849,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     pub(crate) fn envelope_key(&self, digest: &Digest) -> String {
-        format!(
-            "{}e/{}/{}",
-            self.state.prefix,
-            digest.hex_prefix(),
-            digest.to_hex()
-        )
+        self.sharded_key('e', digest, "")
+    }
+
+    fn sharded_key(&self, kind: char, digest: &Digest, suffix: impl std::fmt::Display) -> String {
+        let hex = digest.to_hex();
+        format!("{}{kind}/{}/{hex}{suffix}", self.state.prefix, &hex[..2])
     }
 
     fn root_prefix(&self, root: &RootId) -> String {
@@ -951,6 +953,32 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .map_err(Commit::Unflushed)
     }
 
+    /// Admit and publish one batch, retaining unknown outcomes for recovery.
+    async fn commit_retention(
+        &self,
+        references: &[Digest],
+        tag: &str,
+        key: &str,
+        batch: Vec<u8>,
+        extra_writes: u64,
+    ) -> Result<(), Error> {
+        let first = references.first().ok_or_else(invalid)?;
+        let held = (std::mem::size_of::<String>() + self.index_key(first, tag).len()) as u64
+            * references.len() as u64;
+        self.medium.allocate(held).map_err(medium)?;
+        self.medium
+            .reserve_writes(2 * references.len() as u64 + 2 + extra_writes)
+            .map_err(medium)?;
+        match self.commit_batch(references, tag, key, batch).await {
+            Ok(()) => Ok(()),
+            Err(Commit::Unknown(error) | Commit::Unflushed(error)) => Err(error),
+            Err(Commit::Failed(error)) => {
+                self.unreference(references, tag).await?;
+                Err(error)
+            }
+        }
+    }
+
     /// Removes `tag`'s index keys, once its holder is gone.
     async fn unreference(&self, children: &[Digest], tag: &str) -> Result<(), Error> {
         for child in children {
@@ -963,21 +991,22 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn digest_from_key(&self, key: &str) -> Result<Digest, Error> {
-        key.rsplit('/')
-            .next()
-            .and_then(|name| name.split('.').next())
-            .ok_or_else(corrupt)
-            .and_then(|hex| Digest::from_hex(hex).map_err(|_| corrupt()))
+        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
+        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+            crate::MediumKey::Envelope(digest) | crate::MediumKey::Payload { digest, .. } => {
+                Ok(digest)
+            }
+            _ => Err(corrupt()),
+        }
     }
 
     /// The digest and version a payload key names.
     fn payload_of(&self, key: &str) -> Result<(Digest, [u8; 16]), Error> {
-        let version = key
-            .rsplit_once('.')
-            .and_then(|(_, version)| hex::decode(version).ok())
-            .and_then(|version| version.try_into().ok())
-            .ok_or_else(corrupt)?;
-        Ok((self.digest_from_key(key)?, version))
+        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
+        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+            crate::MediumKey::Payload { digest, version } => Ok((digest, version)),
+            _ => Err(corrupt()),
+        }
     }
 
     fn epoch_key(&self) -> String {
@@ -1456,6 +1485,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         if existing.kind != wanted.kind
             || existing.length != wanted.length
             || existing.stored != wanted.stored
+            || existing.sha256 != wanted.sha256
         {
             return Err(corrupt());
         }
@@ -1495,7 +1525,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     async fn manifest(&self, digest: &Digest, envelope: &Envelope) -> Result<Manifest, Error> {
-        Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)
+        let manifest =
+            Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)?;
+        if manifest.sha256 != envelope.sha256 {
+            return Err(corrupt());
+        }
+        Ok(manifest)
     }
 
     /// Every reference held by a retained root. Unsupported formats retain
@@ -1521,6 +1556,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 .map_err(suspended)?;
             references.extend(batch);
         }
+        references.extend(self.fenced_rooted().await.map_err(suspended)?);
         Ok(references)
     }
 
@@ -1549,6 +1585,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             kind: envelope.kind,
             length: envelope.length,
             references: envelope.references,
+            sha256: envelope.sha256,
             revision: None,
         }
     }
@@ -1595,28 +1632,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 // equal batch never removes them.
                 let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
                 let tag = Self::batch_tag(root, &name);
-                // The index-key vector is charged before any key is written, so a
-                // refused charge leaves nothing to clean up. Every key has one
-                // length: a fixed-width prefix and this tag.
-                let first = references.first().ok_or_else(invalid)?;
-                let key = self.index_key(first, &tag).len();
-                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
-                self.medium.allocate(held).map_err(medium)?;
-                // Every write is withheld before the first key: n keys, then either
-                // their n removals or the batch and the one flush. A
-                // refused budget leaves nothing behind, and removing the keys of a
-                // retain that failed is never refused.
-                let n = references.len() as u64;
-                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
                 let key = format!("{}{name}", self.root_prefix(root));
-                match self.commit_batch(&references, &tag, &key, batch).await {
-                    Ok(()) => {}
-                    Err(Commit::Unknown(error) | Commit::Unflushed(error)) => return Err(error),
-                    Err(Commit::Failed(error)) => {
-                        self.unreference(&references, &tag).await?;
-                        return Err(error);
-                    }
-                }
+                self.commit_retention(&references, &tag, &key, batch, 0)
+                    .await?;
                 Ok(Retained {
                     references: references.len() as u64,
                     revision: Some(issued.commit()),
@@ -1659,6 +1677,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                         length,
                         stored: length,
                         references,
+                        sha256: None,
                         // Assigned by `publish`.
                         version: [0; 16],
                         dying: None,
@@ -1701,6 +1720,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                         length,
                         stored,
                         references: canonical(manifest.references()),
+                        sha256: manifest.sha256,
                         // Assigned by `publish`.
                         version: [0; 16],
                         dying: None,
@@ -1886,6 +1906,19 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         self.retain_inner(root, references).await
+    }
+
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        Account::retain_fenced(self, root, fence, references).await
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        Account::release_terminal(self, root, fence).await
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
@@ -2225,6 +2258,7 @@ mod written_tests {
             length: 4,
             stored: 4,
             references: Vec::new(),
+            sha256: None,
             version: [1; 16],
             dying: None,
             condemned: 0,

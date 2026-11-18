@@ -218,7 +218,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
         for (path, before, after, media_type, projection, text) in &cases {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -373,7 +373,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                             crate::executor::PreparationIo::from_native_work(&work)?
                         } else {
                             crate::executor::PreparationIo::from_budget(
-                                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                                acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
                                 &cancellation,
                             )?
                         };
@@ -419,7 +419,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                 }
             }
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
             );
         }
@@ -606,7 +606,7 @@ async fn dropped_window_next_releases_content_charges() -> Result<()> {
             ToolContext::new(Arc::new(task), invocation.operation_id, &invocation.call_id)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -615,7 +615,7 @@ async fn dropped_window_next_releases_content_charges() -> Result<()> {
             crate::executor::PreparationIo::from_native_work(&work)?
         } else {
             crate::executor::PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                acyclic_fs_work::performance::work_budget(100_000, 16_000_000),
                 &cancellation,
             )?
         };

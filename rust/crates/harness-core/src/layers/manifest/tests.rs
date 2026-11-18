@@ -1,6 +1,8 @@
 use super::*;
-use acyclic_fs::{OperationReceipt, WorkBudget, WorkCounters};
-use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamPath};
+use acyclic_fs_work::performance::{OperationReceipt, WorkBudget, WorkCounters};
+use acyclic_stream::{
+    AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamCategory, StreamPath,
+};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -123,7 +125,7 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
                     candidate: &candidate,
                     permissions: &policy,
                     now: 0,
-                    operation: acyclic_fs::OperationId::from_bytes([scenario; 16]),
+                    operation: acyclic_fs_format::identity::OperationId::from_bytes([scenario; 16]),
                     permit: PublicationPermit::Unrestricted,
                 },
                 &mut commit,
@@ -237,7 +239,7 @@ async fn retained_imports_share_the_original_preparation_capacity()
         .await?
         .value;
     let manifest = Manifest::new([&generation; 6]);
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 16_000_000);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000);
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let tree = manifest.tree(&io, u64::MAX);
     let first = tree.read("first.ts").await?.ok_or("missing first import")?;
@@ -249,7 +251,10 @@ async fn retained_imports_share_the_original_preparation_capacity()
         + second
             .retained_capacity()
             .ok_or("unknown second capacity")? as u64;
-    assert_eq!(io.owned_bytes()?, retained);
+    assert_eq!(
+        io.remaining()?.peak_allocation_bytes,
+        budget.peak_allocation_bytes - retained
+    );
     let exceeds_live = budget.peak_allocation_bytes - retained + 1;
     assert!(io.retain_owned(exceeds_live).is_err());
 
@@ -276,7 +281,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
 
     let cancellation = acyclic_fs::CancellationToken::new();
     let native = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -397,7 +402,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
                     config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
                     access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 None,
@@ -434,7 +439,7 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
             .await?;
         let committed = checkout
             .commit(
-                acyclic_fs::OperationId::new(),
+                acyclic_fs_format::identity::OperationId::new(),
                 None,
                 None,
                 None,
@@ -442,10 +447,12 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED,
-                    })
+                    Ok::<_, acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(
+                        OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    )
                 },
             )
             .await?
@@ -511,7 +518,7 @@ async fn native_manifest_conditions_keep_original_commit_custody()
     use crate::filesystem::PreparationIo;
     let cancellation = acyclic_fs::CancellationToken::new();
     let native = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000),
         &cancellation,
     )
     .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -567,7 +574,7 @@ async fn native_manifest_conditions_keep_original_commit_custody()
         let original = commit.request().clone();
         let retained = native.live_allocation_bytes();
         let other = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 16_000_000),
             &cancellation,
         )
         .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
@@ -967,8 +974,11 @@ async fn source_groups_keep_original_layer_pins_and_the_callers_root_cut()
                 acyclic_fs::FilesystemCommitOutcome::Rejected(_)
             ));
             assert_eq!(
-                stream.tail(destination).await,
-                Err(acyclic_stream::StreamError::NotFound)
+                stream
+                    .tail(destination)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
         } else {
             assert!(matches!(

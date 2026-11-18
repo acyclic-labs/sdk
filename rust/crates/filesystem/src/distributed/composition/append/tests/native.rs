@@ -22,7 +22,7 @@ async fn contributed_native_backing_survives_preparation_and_refuses_foreign_gro
             &cancellation,
         )
         .map_err(|(error, _)| error)?;
-        let baseline = root.live_allocation_bytes();
+        let baseline = root.live_allocation_bytes().unwrap();
         let (original, stop) = root.invocation_view()?;
         let members = crate::distributed::append::group_tests::requests(authority, count)?;
         let mut publication = caller(b"original-native-append")?;
@@ -33,7 +33,7 @@ async fn contributed_native_backing_survives_preparation_and_refuses_foreign_gro
         else {
             return Err("original native contribution was refused".into());
         };
-        assert_eq!(work.spent().backend_write_operations, 0);
+        assert_eq!(work.spent().unwrap().backend_write_operations, 0);
         let allocation = publication
             .allocation
             .as_ref()
@@ -83,7 +83,7 @@ async fn contributed_native_backing_survives_preparation_and_refuses_foreign_gro
         assert_eq!(publication.contributions.len(), 1);
         assert_eq!(publication.allocation.as_ref().unwrap().bytes(), retained);
         assert!(foreign_work.request_allocation.as_ref().unwrap().bytes() > 0);
-        assert_eq!(foreign_work.spent().backend_write_operations, 0);
+        assert_eq!(foreign_work.spent().unwrap().backend_write_operations, 0);
         drop(foreign_work);
         drop(foreign);
 
@@ -107,7 +107,7 @@ async fn contributed_native_backing_survives_preparation_and_refuses_foreign_gro
         drop(provider);
         drop(original);
         drop(stop);
-        assert_eq!(root.live_allocation_bytes(), baseline);
+        assert_eq!(root.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

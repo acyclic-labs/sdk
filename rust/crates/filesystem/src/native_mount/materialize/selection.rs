@@ -19,31 +19,35 @@ pub(super) fn generation_namespace_from_selection(
 #[cfg(any(test, fuzzing, feature = "test-support"))]
 #[doc(hidden)]
 pub fn verify_native_staging_selection(input: &str) {
+    let result = verify_native_staging_selection_inner(input);
+    assert!(result.is_ok(), "staging selection failed: {result:?}");
+}
+
+#[cfg(any(test, fuzzing, feature = "test-support"))]
+fn verify_native_staging_selection_inner(input: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config = crate::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
     let cancellation = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(
         crate::performance::work_budget(1_000_000, 1_000_000),
         &cancellation,
     )
-    .map_err(|failure| failure.0)
-    .unwrap();
-    let mut receipt = GenerationReceipt::from_work(&work).unwrap();
+    .map_err(|failure| failure.0)?;
+    let mut receipt = GenerationReceipt::from_work(&work)?;
     let selected = generation_namespace_from_selection(input, config, &mut receipt);
     let legacy = super::api::generation_namespace_from_host(Path::new(input), config, &mut receipt);
     if input.is_empty() {
         assert!(legacy.is_err());
-        let (root, custody) = selected.unwrap();
+        let (root, custody) = selected?;
         assert!(root.is_root());
         assert_eq!(custody.bytes(), 0);
     } else {
         assert_eq!(selected.is_ok(), legacy.is_ok());
         if let Ok((selected, _custody)) = selected {
-            assert_eq!(selected, legacy.unwrap().0);
+            assert_eq!(selected, legacy?.0);
             assert!(!selected.is_root());
             // Use the production encoder. PathBuf::push reparses each name:
             // on Windows, a later `a:` would replace the preceding directory.
-            let spelling =
-                materialize_host_path(None, selected.components(), &mut receipt).unwrap();
+            let spelling = materialize_host_path(None, selected.components(), &mut receipt)?;
             #[cfg(unix)]
             let spelling = host_path(&spelling.0);
             #[cfg(windows)]
@@ -52,14 +56,16 @@ pub fn verify_native_staging_selection(input: &str) {
                 std::ffi::OsString::from_wide(&spelling.0)
             };
             let (round_trip, _custody) = generation_namespace_from_selection(
-                spelling.to_str().unwrap(),
+                spelling
+                    .to_str()
+                    .ok_or("materialized selection is not UTF-8")?,
                 config,
                 &mut receipt,
-            )
-            .unwrap();
+            )?;
             assert_eq!(selected, round_trip);
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -61,7 +61,7 @@ fn hidden_raw_values_are_bounded_before_decode() {
             document.as_bytes(),
             bounds,
             Some(crate::wire::ErrorCode::Storage),
-            Some(JsonValueSchema::Root),
+            Some(JsonValueSchema::ROOT),
             &mut |event| {
                 admitted |= matches!(event, JsonCodecCharge::Admission { .. });
                 if let JsonCodecCharge::Inspect { items } = event {
@@ -91,7 +91,7 @@ fn hidden_raw_values_are_bounded_before_decode() {
                 ..limits
             },
             Some(crate::wire::ErrorCode::Storage),
-            Some(JsonValueSchema::Root),
+            Some(JsonValueSchema::ROOT),
             &mut |_| Ok(())
         )
         .unwrap(),

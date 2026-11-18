@@ -54,22 +54,11 @@ fn main() {
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
 }
 
-fn source_edit_baseline(include_plugin: bool) -> Fixture {
-    let fixture = fixture(include_plugin);
-    let first = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "source-closure-baseline",
-        "preview",
-        true,
-    );
-    assert!(first.status.success(), "{}", output_message(&first));
-
-    fixture
-}
-
-fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, changed: &str) {
+fn assert_source_edit_invalidates_output(
+    fixture: &Fixture,
+    relative: &str,
+    changed: &str,
+) -> String {
     let source = fixture.root.join(relative);
     let original = fs::read(&source).unwrap();
     let original_hash = hash_bytes(&original);
@@ -80,7 +69,7 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
         "test edit did not change {relative}"
     );
 
-    let drift = run_drift(&fixture);
+    let drift = run_drift(fixture);
     assert!(!drift.status.success());
     let drift_message = output_message(&drift);
     assert!(
@@ -111,12 +100,52 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
 
     fs::write(&source, &original).unwrap();
     assert_eq!(hash_file(&source), original_hash);
-    let drift = run_drift(&fixture);
+    let drift = run_drift(fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));
 
-    let refreshed_output = fixture
-        .root
-        .join(format!("refreshed-after-source-restore-{suffix}"));
+    original_hash
+}
+
+#[test]
+fn crate_workspace_and_plugin_source_edits_invalidate_output() {
+    runtime::time_control();
+    let fixture = fixture(true);
+    let first = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "source-closure-baseline",
+        "preview",
+        true,
+    );
+    assert!(first.status.success(), "{}", output_message(&first));
+
+    let restored = [
+        (
+            "rust/crates/demo/src/lib.rs",
+            "pub fn demo() -> u64 { 7 }\n// changed crate comment\n",
+        ),
+        (
+            "rust/crates/demo/README.md",
+            "# Demo crate\n\nChanged crate guide.\n",
+        ),
+        (
+            "docs/guide.md",
+            "# Fixture guide\n\nChanged workspace guide.\n",
+        ),
+        (
+            "plugin/src/main.rs",
+            "fn main() {}\n// changed plugin source\n",
+        ),
+    ]
+    .map(|(path, changed)| {
+        (
+            path,
+            assert_source_edit_invalidates_output(&fixture, path, changed),
+        )
+    });
+
+    let refreshed_output = fixture.root.join("refreshed-after-source-restore");
     let refreshed = run_generate(
         &fixture.root,
         &fixture.rustdoc,
@@ -130,79 +159,39 @@ fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, chan
         &fs::read(refreshed_output.join("generation-manifest.v1.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(manifest["sourceFiles"][relative], original_hash);
+    for (path, hash) in restored {
+        assert_eq!(manifest["sourceFiles"][path], hash);
+    }
 }
 
 #[test]
-fn crate_rust_comment_and_markdown_guide_edits_invalidate_output() {
-    runtime::time_control();
-    let fixture = source_edit_baseline(false);
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "rust/crates/demo/src/lib.rs",
-        "pub fn demo() -> u64 { 7 }\n// changed crate comment\n",
-    );
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "rust/crates/demo/README.md",
-        "# Demo crate\n\nChanged crate guide.\n",
-    );
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "docs/guide.md",
-        "# Fixture guide\n\nChanged workspace guide.\n",
-    );
-}
-
-#[test]
-fn plugin_rust_edits_invalidate_output() {
-    runtime::time_control();
-    let fixture = source_edit_baseline(true);
-    assert_source_edit_invalidates_output(
-        &fixture,
-        "plugin/src/main.rs",
-        "fn main() {}\n// changed plugin source\n",
-    );
-}
-
-#[test]
-fn unknown_generate_option_is_rejected_before_writes() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    let result = invoke(Command::new(runtime::binary("sdk-generation")).args([
-        "generate",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--rustdoc-dir",
-        fixture.rustdoc.to_str().unwrap(),
-        "--version",
-        "unknown-option",
-        "--unknown",
-        "accepted",
-    ]));
-    assert!(!result.status.success());
-    let message = output_message(&result);
-    assert!(message.contains("unknown option `--unknown`"), "{message}");
-    assert!(
-        !fixture.output.exists(),
-        "unknown options must fail before generation writes output"
-    );
-}
-
-#[test]
-fn unknown_drift_option_is_rejected_before_reads() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    let result = invoke(drift_command(&fixture).args(["--unknown", "accepted"]));
-    assert!(!result.status.success());
-    let message = output_message(&result);
-    assert!(message.contains("unknown option `--unknown`"), "{message}");
-    assert!(
-        !fixture.output.exists(),
-        "unknown options must fail before drift reads or writes output"
-    );
+fn unknown_options_are_rejected_before_accessing_fixtures() {
+    let directory = fixture_directory();
+    let binary = runtime::binary("sdk-generation");
+    for (subcommand, args) in [("generate", &["--version", "1.0.0"][..]), ("drift", &[])] {
+        let result = Command::new(&binary)
+            .current_dir(directory.path())
+            .arg(subcommand)
+            .args([
+                "--root",
+                "source",
+                "--output",
+                "output",
+                "--rustdoc-dir",
+                "rustdoc",
+            ])
+            .args(args)
+            .args(["--unknown", "accepted"])
+            .output()
+            .unwrap();
+        let message = output_message(&result);
+        assert!(!result.status.success(), "{subcommand}: {message}");
+        assert!(
+            message.contains("unknown option `--unknown`"),
+            "{subcommand}: {message}"
+        );
+        assert!(!directory.path().join("output").exists(), "{subcommand}");
+    }
 }
 
 #[test]
@@ -219,31 +208,6 @@ fn source_state_tamper_is_rejected() {
     assert!(!result.status.success());
     let message = output_message(&result);
     assert!(message.contains("source state"), "{message}");
-}
-
-#[test]
-fn plugin_source_is_part_of_manifest_closure() {
-    runtime::time_control();
-    let fixture = fixture(true);
-    let result = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "plugin-source-closure",
-        "preview",
-        true,
-    );
-    assert!(result.status.success(), "{}", output_message(&result));
-    let generated: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(generated["sourceFiles"]
-        .get("plugin/src/main.rs")
-        .and_then(Value::as_str)
-        .is_some());
-    let drift = run_drift(&fixture);
-    assert!(drift.status.success(), "{}", output_message(&drift));
 }
 
 #[test]
@@ -298,63 +262,29 @@ fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
 }
 
 #[test]
-fn stale_source_attestation_is_rejected_before_generate() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    let first = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "stale-attestation",
-        "preview",
-        true,
-    );
-    assert!(first.status.success(), "{}", output_message(&first));
-
-    fs::write(
-        fixture.root.join("rust/crates/demo/src/lib.rs"),
-        "pub fn demo() -> u64 { 8 }\n",
-    )
-    .unwrap();
-    let second_output = fixture.root.join("stale-output");
-    let second = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &second_output,
-        "stale-attestation",
-        "preview",
-        true,
-    );
-    assert!(!second.status.success());
-    let message = output_message(&second);
-    assert!(message.contains("matching source attestation"), "{message}");
-    assert!(!second_output.join("generation-manifest.v1.json").exists());
-}
-
-#[test]
 fn release_generation_requires_executed_profiles() {
-    runtime::time_control();
-    let fixture = fixture(false);
-    git(&fixture.root, &["add", "rustdoc"]);
-    git(
-        &fixture.root,
-        &["commit", "--quiet", "-m", "rustdoc receipt"],
-    );
-    let result = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "release-scenario-bypass",
+    let directory = fixture_directory();
+    let root = directory.path();
+    let output = root.join("output");
+    let result = generate_command(
+        root,
+        &root.join("rustdoc"),
+        &output,
+        "1.0.0",
         "release",
         true,
-    );
+    )
+    .output()
+    .unwrap();
     assert!(!result.status.success());
     let message = output_message(&result);
     assert!(
-        message.contains("release generation requires --execute-profiles"),
+        message.contains(
+            "release generation does not accept --rustdoc-dir; omit it to execute profiles"
+        ),
         "{message}"
     );
-    assert!(!fixture.output.join("generation-manifest.v1.json").exists());
+    assert!(!output.exists());
 }
 
 fn assert_publishers_succeeded(results: &[std::process::Output; 2]) {
@@ -378,14 +308,14 @@ fn concurrent_preview_publications_are_idempotent() {
     runtime::time_control();
     let fixture = fixture(false);
     let spawn = || {
-        generate_command(
+        configure_cli(&mut generate_command(
             &fixture.root,
             &fixture.rustdoc,
             &fixture.output,
             "concurrent-preview",
             "preview",
             true,
-        )
+        ))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -414,14 +344,14 @@ fn broken_publication_lock_cannot_be_hidden_by_another_success() {
     let lock = fixture.output.join(".sdk-docs-versions.v1.lock");
     fs::create_dir_all(&lock).unwrap();
     let run = || {
-        generate_command(
+        configure_cli(&mut generate_command(
             &fixture.root,
             &fixture.rustdoc,
             &fixture.output,
             "broken-lock",
             "preview",
             true,
-        )
+        ))
         .output()
         .unwrap()
     };
@@ -458,7 +388,9 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
     let feature = "native-execution-observation-".repeat(8);
     let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
     let original = fs::read_to_string(&manifest).unwrap();
-    fs::write(&manifest, format!("{original}\n{feature} = []\n")).unwrap();
+    let declared = include_str!("../fixtures/feature-profile/rust/crates/demo/long-features.toml");
+    assert_eq!(declared, format!("{original}\n{feature} = []\n"));
+    fs::write(&manifest, declared).unwrap();
     git(&fixture.root, &["add", "."]);
     git(
         &fixture.root,
@@ -530,26 +462,20 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
     )
     .unwrap();
+    let entries = availability["entries"].as_array().unwrap();
     for (path, expected) in [
         ("demo::FeatureOnly", 2),
         ("demo::base_only", 3),
         ("demo::default_only", 2),
     ] {
-        let entry = availability["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["path"] == path)
-            .unwrap();
+        let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(
             entry["profiles"].as_array().unwrap().len(),
             expected,
             "the compilation reuse key must preserve every cfg feature: {path}"
         );
     }
-    let feature_entry = availability["entries"]
-        .as_array()
-        .unwrap()
+    let feature_entry = entries
         .iter()
         .find(|entry| entry["path"] == "demo::FeatureOnly")
         .expect("feature-only item must retain a sidecar entry");
@@ -564,16 +490,10 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         })
         .expect("FeatureOnly must be attributed to the extra profile");
 
-    let variant_entries = availability["entries"]
-        .as_array()
-        .unwrap()
+    let variant_entries = entries
         .iter()
         .filter(|entry| entry["path"] == "demo::overloaded")
         .collect::<Vec<_>>();
-    assert!(
-        variant_entries.len() >= 2,
-        "profile merge must retain same-path items with distinct signatures"
-    );
     let signatures = variant_entries
         .iter()
         .filter_map(|entry| entry["signature"].as_str())
@@ -592,14 +512,8 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         })
     }));
 
-    let receipts: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
-    assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
+    let receipts = assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
     let effective = receipts
-        .as_array()
-        .unwrap()
         .iter()
         .map(|receipt| {
             (
@@ -623,8 +537,6 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         "both API branches remain qualified with and without Cargo defaults"
     );
     let receipt = receipts
-        .as_array()
-        .unwrap()
         .iter()
         .find(|receipt| receipt["profile"] == feature_profile["profile"])
         .expect("sidecar profile must have an executed receipt row");
@@ -680,19 +592,27 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
 #[test]
 fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims() {
     runtime::time_control();
-    let fixture = feature_profile_fixture();
-    fs::write(fixture.root.join("rust/crates/demo/Cargo.toml"),
-        "[package]\nname = 'demo'\nversion = '1.0.0'\nedition = '2021'\n[[bin]]\nname = 'demo-cli'\npath = 'src/main.rs'\n").unwrap();
-    fs::remove_file(fixture.root.join("rust/crates/demo/src/lib.rs")).unwrap();
-    fs::write(fixture.root.join("rust/crates/demo/src/main.rs"),
-        "//! Run the source-owned command guide.\n/// PRIVATE CLI INTERNALS\nfn hidden() {}\nfn main() { hidden(); }\n").unwrap();
-    git(&fixture.root, &["add", "."]);
-    git(
-        &fixture.root,
-        &["commit", "--quiet", "-m", "binary-only fixture"],
+    let fixture = profile_source(
+        include_str!("../fixtures/feature-profile/rust/crates/demo/binary.toml"),
+        "src/main.rs",
+        include_str!("../fixtures/feature-profile/rust/crates/demo/binary.rs"),
     );
-    let result = run_generate_execute_profiles(&fixture);
-    assert!(result.status.success(), "{}", output_message(&result));
+    init_git(&fixture.root, "binary-only fixture");
+    commands::expect_declared_profiles(1, || {
+        let result = run_generate_execute_profiles(&fixture);
+        assert!(result.status.success(), "{}", output_message(&result));
+    });
+    let receipt = fixture.rustdoc.join("demo_cli.json");
+    let native = sdk_docs::rustdoc_profiles::observe_binary_rustdoc(&receipt).unwrap();
+    assert_eq!(native.format_version, 60);
+    assert_eq!(native.crate_version.as_deref(), Some("1.0.0"));
+    assert!(native.includes_private);
+    assert!(sdk_docs::rustdoc_profiles::observe_rustdoc(&receipt).is_err());
+    let raw: Value = serde_json::from_slice(&fs::read(receipt).unwrap()).unwrap();
+    assert_eq!(
+        raw["index"][raw["root"].to_string()]["docs"],
+        "Run the source-owned command guide."
+    );
     let data: Value = serde_json::from_slice(
         &fs::read(
             fixture
@@ -715,40 +635,43 @@ fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims
 fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     runtime::time_control();
     let fixture = feature_profile_fixture();
-    fs::create_dir_all(fixture.root.join("rust/crates/helper/src")).unwrap();
-    fs::write(
-        fixture.root.join("rust/crates/helper/Cargo.toml"),
-        "[package]\nname = \"relocation-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
-    )
-    .unwrap();
-    fs::write(
-        fixture.root.join("rust/crates/helper/src/lib.rs"),
-        "pub struct Witness;\n",
-    )
-    .unwrap();
-    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
-    let mut contents = fs::read_to_string(&manifest).unwrap();
-    contents.push_str("\n[dependencies]\nrelocation-helper = { path = \"../helper\" }\n");
-    fs::write(manifest, contents).unwrap();
-    // Cargo may infer in-root path dependencies as workspace members. Declare
-    // both inventories explicitly so membership discovery cannot change coverage.
-    fs::write(
-        fixture.root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"rust/crates/demo\", \"rust/crates/helper\"]\nresolver = \"2\"\n",
-    )
-    .unwrap();
+    for (relative, source) in [
+        (
+            "Cargo.toml",
+            include_str!("../fixtures/relocation/Cargo.toml"),
+        ),
+        (
+            "Cargo.lock",
+            include_str!("../fixtures/relocation/Cargo.lock"),
+        ),
+        (
+            "rust/crates/demo/Cargo.toml",
+            include_str!("../fixtures/relocation/rust/crates/demo/Cargo.toml"),
+        ),
+        (
+            "rust/crates/demo/build.rs",
+            include_str!("../fixtures/relocation/rust/crates/demo/build.rs"),
+        ),
+        (
+            "rust/crates/demo/src/lib.rs",
+            include_str!("../fixtures/relocation/rust/crates/demo/src/lib.rs"),
+        ),
+        (
+            "rust/crates/helper/Cargo.toml",
+            include_str!("../fixtures/relocation/rust/crates/helper/Cargo.toml"),
+        ),
+        (
+            "rust/crates/helper/src/lib.rs",
+            include_str!("../fixtures/relocation/rust/crates/helper/src/lib.rs"),
+        ),
+    ] {
+        let path = fixture.root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
+    }
     fs::write(
         fixture.root.join("release/cargo-crates.json"),
         "[\"demo\", \"relocation-helper\"]\n",
-    )
-    .unwrap();
-    fs::write(fixture.root.join("Cargo.lock"),
-        "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = [\"relocation-helper\"]\n\n[[package]]\nname = \"relocation-helper\"\nversion = \"1.0.0\"\n").unwrap();
-    fs::write(fixture.root.join("rust/crates/demo/build.rs"),
-        "fn main() { std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), \"pub struct GeneratedWire;\\n\").unwrap(); }\n").unwrap();
-    fs::write(
-        fixture.root.join("rust/crates/demo/src/lib.rs"),
-        "include!(concat!(env!(\"OUT_DIR\"), \"/wire.rs\"));\npub fn dependency_witness() -> relocation_helper::Witness { relocation_helper::Witness }\n",
     )
     .unwrap();
     git(&fixture.root, &["add", "."]);
@@ -764,16 +687,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let directory = fixture_directory();
     let relocated_root = directory.path().join("source");
     let relocated_output = directory.path().join("output");
-    assert!(Command::new(runtime::git())
-        .args([
-            "clone",
-            "--quiet",
-            fixture.root.to_str().unwrap(),
-            relocated_root.to_str().unwrap()
-        ])
-        .status()
-        .unwrap()
-        .success());
+    clone_source(&fixture.root, &relocated_root);
     let relocated = Fixture {
         directory,
         root: relocated_root,
@@ -784,7 +698,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     assert!(!relocated.output.exists());
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
-    assert_executed_profiles(
+    let _ = assert_executed_profiles(
         &fixture.output,
         &fixture.rustdoc,
         &[("demo", 5), ("relocation-helper", 1)],

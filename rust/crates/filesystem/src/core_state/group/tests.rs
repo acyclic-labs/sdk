@@ -27,7 +27,7 @@ fn admission_precedes_append_and_prepaid_barrier_survives_cancellation() {
         // first frame byte. One credit is intentionally insufficient.
         budget.durability_operations = if cancel_after_append { 2 } else { 1 };
         let work = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
-        let original_ledger_bytes = work.live_allocation_bytes();
+        let original_ledger_bytes = work.live_allocation_bytes().unwrap();
         let store = owner.materialization(work.clone());
         let namespace = store.namespace().unwrap();
         let result = namespace.with_log(|log| {
@@ -56,7 +56,7 @@ fn admission_precedes_append_and_prepaid_barrier_survives_cancellation() {
                 "the admitted barrier must settle after caller cancellation: {result:?}"
             );
             assert_eq!(
-                work.receipt().durability_operations,
+                work.receipt().unwrap().durability_operations,
                 1,
                 "the actual shared barrier must stay on its original ledger"
             );
@@ -66,12 +66,12 @@ fn admission_precedes_append_and_prepaid_barrier_survives_cancellation() {
                 "unfunded acknowledgement must fail before appending"
             );
             assert_eq!(std::fs::read(&wal).unwrap(), before);
-            assert_eq!(work.receipt().durability_operations, 0);
+            assert_eq!(work.receipt().unwrap().durability_operations, 0);
         }
-        work.receipt().verify(budget).unwrap();
+        work.receipt().unwrap().verify(budget).unwrap();
         drop((namespace, store, owner));
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             original_ledger_bytes,
             "the shared file and resident allocations must retire with their owner"
         );

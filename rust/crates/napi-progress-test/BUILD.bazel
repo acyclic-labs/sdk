@@ -31,11 +31,12 @@ cargo_build_script(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV,
     deps = [
-        "@crates//napi-build-2.6.0",
+        "@sdk_crates//napi-build-2.6.0",
     ],
 )
 
@@ -54,16 +55,17 @@ rust_shared_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         ":build_script",
     ] + [
-        "@crates//futures-0.3.34",
-        "@crates//napi-3.15.0",
+        "//rust/vendor/napi-3.15.0:napi",
+        "@sdk_crates//futures-0.3.34",
     ],
     proc_macro_deps = [
-        "@crates//napi-derive-3.6.13",
+        "@sdk_crates//napi-derive-3.6.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -74,6 +76,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

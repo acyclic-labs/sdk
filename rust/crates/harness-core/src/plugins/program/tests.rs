@@ -81,18 +81,14 @@ impl Tree for EntryHashCut<'_> {
         &'a self,
         path: &'a str,
     ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
-        if path.ends_with("/main.ps1") {
-            self.before.store(
-                self.tree
-                    .io
-                    .original_native_work()
-                    .unwrap()
-                    .receipt()
-                    .bytes_hashed,
-                std::sync::atomic::Ordering::SeqCst,
-            );
-        }
-        self.tree.read(path)
+        Box::pin(async move {
+            if path.ends_with("/main.ps1") {
+                let receipt = self.tree.io.receipt()?;
+                self.before
+                    .store(receipt.bytes_hashed, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.tree.read(path).await
+        })
     }
 }
 
@@ -106,9 +102,9 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
     let cancel = acyclic_fs::CancellationToken::new();
     let make_work = |bytes, cancel: &acyclic_fs::CancellationToken| {
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: bytes,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             cancel,
         )
@@ -129,7 +125,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         &cancel,
     )?;
     let tight_io = crate::filesystem::PreparationIo::from_native_work(&tight)?;
-    let baseline = tight.live_allocation_bytes();
+    let baseline = tight.live_allocation_bytes()?;
     let error = load_program(
         &Metered {
             files: &files,
@@ -143,7 +139,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 }
@@ -152,7 +148,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         }
     ));
     drop(error);
-    assert_eq!(tight.live_allocation_bytes(), baseline);
+    assert_eq!(tight.live_allocation_bytes()?, baseline);
     let receiver = make_work(16 * 1024 * 1024, &cancel)?;
     let receiver_io = crate::filesystem::PreparationIo::from_native_work(&receiver)?;
     let entry_hash_cut = std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -174,15 +170,15 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         "the original native entry was not read"
     );
     assert!(
-        receiver.receipt().bytes_hashed - before_entry
+        receiver.receipt()?.bytes_hashed - before_entry
             >= files.files["tools/count/main.ps1"].len() as u64,
         "entry hashing escaped the receiving operation"
     );
     let limited = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: 16 * 1024 * 1024,
             bytes_hashed: before_entry,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancel,
     )
@@ -210,7 +206,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "bytes_hashed",
                     ..
                 }
@@ -221,9 +217,9 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
     assert_eq!(first.definition, second.definition);
     let retained = second.custody.as_ref().unwrap().bytes();
     assert!(retained >= 65536);
-    let before_drop = receiver.live_allocation_bytes();
+    let before_drop = receiver.live_allocation_bytes()?;
     drop(second);
-    assert!(before_drop - receiver.live_allocation_bytes() >= retained);
+    assert!(before_drop - receiver.live_allocation_bytes()? >= retained);
     let stopped = acyclic_fs::CancellationToken::new();
     let stopped_work = make_work(16 * 1024 * 1024, &stopped)?;
     let stopped_io = crate::filesystem::PreparationIo::from_native_work(&stopped_work)?;
@@ -327,9 +323,9 @@ async fn hook_manifests_pin_source_selectors_and_refuse_invalid_or_cross_kind_so
             "{replacement}"
         );
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: 16 * 1024 * 1024,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &acyclic_fs::CancellationToken::new(),
         )
@@ -373,9 +369,9 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     let files = Files::program("tools/count");
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: 16 * 1024 * 1024,
-            ..acyclic_fs::WorkBudget::UNBOUNDED
+            ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
         },
         &cancel,
     )
@@ -442,25 +438,25 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         assert_eq!(canonical.invocation.operation_id, call.operation_id);
         assert_eq!(canonical.invocation.call_id, call.call_id);
     }
-    let before_drop = work.live_allocation_bytes();
+    let before_drop = work.live_allocation_bytes()?;
     let retained_tool = Arc::clone(&tool);
     drop(tool);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         before_drop,
         "a retained program binding still owns its original storage"
     );
     drop(retained_tool);
     assert!(
-        before_drop - work.live_allocation_bytes() >= retained,
+        before_drop - work.live_allocation_bytes()? >= retained,
         "dropping the last bound tool retires all transferred program ownership"
     );
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let program = load_program(&tree, "tools/count").await?;
     let occupied = work.claim(
         work.remaining()?.peak_allocation_bytes,
         1,
-        acyclic_fs::WorkCounters::UNCHARGED,
+        acyclic_fs_work::performance::WorkCounters::UNCHARGED,
     )?;
     let error = program
         .bind(Arc::clone(&shell))
@@ -470,7 +466,7 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 }
@@ -480,7 +476,7 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     ));
     drop(error);
     drop(occupied);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     let program = load_program(&tree, "tools/count").await?;
     cancel.cancel();
     let error = program
@@ -489,7 +485,7 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         .expect("binding retains the loader's original cancellation");
     assert_eq!(error.code(), crate::wire::ErrorCode::Cancelled);
     drop(error);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -507,7 +503,7 @@ async fn hook_bindings_retain_source_and_executable_credit_through_canonical_adm
         let manifest = files.files.get_mut("hooks/count/program.ts").unwrap();
         *manifest = manifest.replace("{kind: 'lifecycle', event: 'Stop'}", source);
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            acyclic_fs_work::performance::work_budget(1_000_000, 1_000_000),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -518,12 +514,12 @@ async fn hook_bindings_retain_source_and_executable_credit_through_canonical_adm
         };
         let program = load_program(&tree, "hooks/count").await?;
         let retained = program.custody.as_ref().unwrap().bytes();
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes()?;
         assert!(matches!(
             program.bind_hook(wrong.clone()),
             Err(Error::Invalid(_))
         ));
-        assert!(before - work.live_allocation_bytes() >= retained);
+        assert!(before - work.live_allocation_bytes()? >= retained);
 
         let program = load_program(&tree, "hooks/count").await?;
         let retained = program.custody.as_ref().unwrap().bytes();
@@ -564,14 +560,14 @@ async fn hook_bindings_retain_source_and_executable_credit_through_canonical_adm
         );
         let binding = Arc::clone(hook.binding());
         let selector_credit = hook.selector._custody.as_ref().unwrap().bytes();
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes()?;
         drop(hook);
-        assert_eq!(work.live_allocation_bytes(), before - selector_credit);
+        assert_eq!(work.live_allocation_bytes()?, before - selector_credit);
         let retained_call = binding.executor.canonical(&call, Some(&work))?.unwrap();
         assert_eq!(retained_call.invocation.name, "shell");
         drop(retained_call);
         drop(binding);
-        assert!(before - work.live_allocation_bytes() >= retained);
+        assert!(before - work.live_allocation_bytes()? >= retained);
     }
     Ok(())
 }

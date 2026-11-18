@@ -12,6 +12,9 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["typescript"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }

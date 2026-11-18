@@ -167,7 +167,8 @@ fn flush<T>(
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(all(target_os = "macos"))]
 mod tests {
     use super::*;
 
@@ -200,8 +201,9 @@ mod tests {
                 });
                 assert_eq!(calls, allowed.min(interrupted + 1));
                 assert_eq!(result.is_ok(), allowed > interrupted);
-                assert_eq!(work.receipt().durability_operations, calls);
-                work.receipt().verify(budget).unwrap();
+                let receipt = work.receipt().unwrap();
+                assert_eq!(receipt.durability_operations, calls);
+                receipt.verify(budget).unwrap();
             }
         }
     }
@@ -218,7 +220,7 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(calls, 1);
-        assert_eq!(work.receipt().durability_operations, 1);
+        assert_eq!(work.receipt().unwrap().durability_operations, 1);
     }
 
     #[test]

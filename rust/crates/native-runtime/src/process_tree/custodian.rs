@@ -536,7 +536,7 @@ fn identity(process: HANDLE) -> io::Result<String> {
     let borrowed = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(process.cast()) };
     Ok(format!(
         "{pid}-{}",
-        crate::process_identity::process_started(&borrowed)?
+        acyclic_process_identity::process_identity::process_started(&borrowed)?
     ))
 }
 

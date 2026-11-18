@@ -23,6 +23,26 @@ pub struct AttributeListing {
     pub work: WorkCounters,
 }
 
+impl AttributeListing {
+    /// Exact storage this listing retains: its entry backing plus every owned
+    /// name. Retiring a listing must release all of it.
+    pub(crate) fn retained_bytes(&self) -> Result<u64, crate::WorkError> {
+        self.entries.iter().try_fold(
+            crate::foundation::usize_to_u64(
+                self.entries
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<AttributeEntry>())
+                    .ok_or(crate::WorkError::Overflow)?,
+            ),
+            |bytes, entry| {
+                bytes
+                    .checked_add(crate::foundation::usize_to_u64(entry.name.retained_bytes()))
+                    .ok_or(crate::WorkError::Overflow)
+            },
+        )
+    }
+}
+
 /// Lists one bounded attribute page through the shared persistent-tree cursor.
 pub async fn list_attributes<S: AsyncObjectStore>(
     store: &S,

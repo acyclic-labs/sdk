@@ -46,13 +46,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 cancellation,
             )
             .await;
-            let (allocations, spent, budget, _) = accounting
-                .standalone_parts()
-                .ok_or(crate::WorkError::Overflow)?;
-            let value =
-                merge_workspace_backend(materialized, spent, allocations.live_bytes())?.value;
-            spent.verify(budget)?;
-            Ok(value)
+            merge_workspace_backend(materialized, &mut accounting)
         }
         .await;
         crate::facade::measured(result, &accounting)
@@ -89,12 +83,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             )
             .await
             .map_err(|failure| failure.map_error(WorkspaceError::engine));
-            let (allocations, spent, budget, _) = accounting
-                .standalone_parts()
-                .ok_or(crate::WorkError::Overflow)?;
-            let value = merge_workspace_backend(restored, spent, allocations.live_bytes())?.value;
-            spent.verify(budget)?;
-            Ok(value)
+            merge_workspace_backend(restored, &mut accounting)
         }
         .await;
         crate::facade::measured(result, &accounting)

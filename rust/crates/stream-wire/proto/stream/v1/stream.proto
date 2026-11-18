@@ -1,0 +1,616 @@
+// Canonical provider-independent hierarchical Stream v1 contract.
+syntax = "proto3";
+package acyclic.stream.v1;
+
+import "validation/v1/options.proto";
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v1;streamv1";
+
+// Canonical bounds shared by Rust and generated TypeScript clients.
+enum StreamLimit {
+  STREAM_LIMIT_UNSPECIFIED = 0;
+  STREAM_LIMIT_MAX_RECORD_BYTES = 65536;
+  STREAM_LIMIT_MAX_ITEMS = 1024;
+  STREAM_LIMIT_MAX_COMMAND_BYTES = 1056768;
+  STREAM_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
+  STREAM_LIMIT_MAX_PATH_BYTES = 65535;
+}
+
+// One committed publication of an authority (account/storage scope) in one
+// physical incarnation. An index is ordered only within its scope and
+// incarnation; a stream offset is never a revision.
+message Revision {
+  bytes scope = 1;
+  // Exactly 16 bytes: the big-endian incarnation, never reused across a reset.
+  bytes incarnation = 2;
+  uint64 index = 3;
+}
+
+// Waits until a provider has applied every revision of `at_least`; the reply
+// is its applied Revision. An injected provider port serves it as the
+// "wait_applied" operation, so a hosted session proves its minimum.
+message WaitAppliedRequest {
+  repeated Revision at_least = 1;
+}
+
+message Record {
+  uint64 sequence = 1;
+  bytes value = 2;
+  bytes commit_id = 3;
+  uint64 committed_at_micros = 4;
+  repeated bytes keys = 5;
+  repeated Attribute attributes = 6;
+  // Stream that appended the record. Empty means the path being read or
+  // followed; a record inherited through a fork names its source segment.
+  string origin = 7;
+}
+
+// Indexed headers are part of the immutable, size-bounded record.
+message Attribute {
+  string name = 1;
+  bytes value = 2;
+}
+
+message AppendRecord {
+  bytes value = 1;
+  repeated bytes keys = 2;
+  repeated Attribute attributes = 3;
+}
+
+// A provider-authored change list, identified by acyclic.record = changes/v2. Its
+// value is the compact changes/v2 encoding of this shape, which stores each key once.
+// Follow projects entries through the effective predicate before delivery.
+// Context contains only shared publication identity, never paths or content.
+message ChangeRecord {
+  bytes context = 1;
+  repeated ChangeEntry entries = 2;
+}
+
+message ChangeEntry {
+  bytes key = 1;
+  string operation = 2;
+  bytes metadata = 3;
+}
+
+message AppendRequest {
+  string path = 1;
+  repeated AppendRecord records = 2;
+  optional uint64 if_tail = 3;
+  bytes idempotency_key = 4;
+}
+
+message AppendReceipt {
+  uint64 start = 1;
+  uint64 end = 2;
+  uint64 tail = 3;
+  bytes commit_id = 4;
+  // The committed revision; replay returns the original index.
+  Revision revision = 5;
+}
+
+message TailConflict {
+  uint64 actual_tail = 1;
+}
+
+message AppendResponse {
+  oneof outcome {
+    AppendReceipt committed = 1;
+    TailConflict conflict = 2;
+  }
+}
+
+message HeadRequest {
+  string path = 1;
+}
+
+// All observations, including absence, belong to one authority snapshot.
+enum HeadProjection {
+  HEAD_PROJECTION_HISTORY = 0;
+  // Read accepted/durable offsets without fetching a record or fork descriptor.
+  HEAD_PROJECTION_WATERMARKS = 1;
+  // Read the accepted offset without consulting durability metadata.
+  HEAD_PROJECTION_TAIL = 2;
+}
+
+message HeadsRequest {
+  // Exact retained namespace cut, independent of the replica-applied floor.
+  Revision at = 8;
+  repeated string paths = 1;
+  ChildrenPageRequest children = 2;
+  uint32 limit = 3;
+  repeated Revision at_least = 4;
+  HeadProjection projection = 5;
+  // Confirm this irreversible prefix at the captured view; distinct from crash durability.
+  optional uint64 durable_through = 6;
+  // Original retained publications, independently of current heads or ancestry.
+  // Counts against limit. Every selected destination requires read authorization.
+  repeated RetainedRecord retained = 7;
+}
+
+message RetainedRecord {
+  bytes commit_id = 1;
+  string path = 2;
+  uint64 sequence = 3;
+}
+
+message RetainedRecordObservation {
+  // Missing is not proof that a command never executed. Denial refuses the view.
+  Record record = 1;
+  // Echoed even for an absent record, binding the observation to its selection.
+  string path = 2;
+}
+
+message HeadObservation {
+  // Absent means this path did not exist at the snapshot, never authorization denial.
+  PathHead head = 1;
+}
+
+message HeadsResponse {
+  // Replica progress; snapshot remains the selected immutable namespace cut.
+  Revision applied = 6;
+  Revision snapshot = 1;
+  // In exact request order, including explicit absent observations.
+  repeated HeadObservation heads = 2;
+  ChildrenPageResponse children = 3;
+  HeadProjection projection = 4;
+  repeated RetainedRecordObservation retained = 5;
+}
+
+message ForkOrigin {
+  string source = 1;
+  uint64 forked_at = 2;
+  bytes commit_id = 3;
+}
+
+message PathHead {
+  // Last relevant authority revision; interpreted in HeadsResponse.snapshot.
+  uint64 changed_at = 6;
+  uint64 tail = 1;
+  Record last = 2;
+  uint64 durable = 3;
+  ForkOrigin origin = 4;
+  // Explicit proof requested by HeadsRequest, bounded by this accepted tail.
+  optional uint64 retained_through = 5;
+}
+
+message TailRequest {
+  string path = 1;
+  // Observe accepted visibility without waiting for persistence. False retains
+  // the provider's ordinary tail behavior.
+  bool accepted = 2;
+  // Request an explicit irreversible-prefix barrier through this sequence.
+  optional uint64 durable_through = 3;
+  // Minimum cut, one entry per authority. A replica that has not applied this
+  // authority's entry parks until it does; a foreign entry refuses.
+  repeated Revision at_least = 4;
+}
+message TailResponse {
+  uint64 tail = 1;
+  // Present for an accepted observation: confirmed durable prefix at the same
+  // cut, bounded by tail. Absent means the peer does not support that observation.
+  optional uint64 durable = 3;
+  reserved 2;
+  reserved "trim_point";
+  // The applied revision this observation was served at.
+  Revision applied = 4;
+}
+
+message ForkRequest {
+  // Canonical segment-relative prefixes excluded from the captured namespace.
+  repeated string exclude = 5;
+  string source = 1;
+  string destination = 2;
+  optional uint64 at_tail = 3;
+  bytes idempotency_key = 4;
+}
+
+message ForkReceipt {
+  string source = 1;
+  string destination = 2;
+  uint64 forked_at = 3;
+  uint64 tail = 4;
+  bytes commit_id = 5;
+  // The committed revision. Absent only inside a CommitReceipt, which carries it.
+  Revision revision = 6;
+}
+
+message ReadRequest {
+  string path = 1;
+  uint64 from = 2;
+  uint32 limit = 3;
+  // Minimum cut, as in TailRequest.
+  repeated Revision at_least = 4;
+  // Indexed selector, with a pinned exclusive search bound. limit counts
+  // matches; without this clause it counts consecutive positions.
+  ReadKeySeek key = 5;
+}
+
+// Exact key: matches in [from, before), in order. Key range (end present):
+// index entries (k, sequence) with key <= k < end, sequence < before and
+// (k, sequence) >= (key, from), ascending; a record appears once per key it
+// carries in the range. Ranges are ascending only.
+message ReadKeySeek {
+  bytes key = 1;
+  uint64 before = 2;
+  // Exclusive last key of a range; absent selects key alone.
+  optional bytes end = 3;
+  ReadOrder order = 4;
+}
+
+enum ReadOrder {
+  READ_ORDER_ASCENDING = 0;
+  // Exact keys only: descending sequences, the latest match first.
+  READ_ORDER_LATEST_FIRST = 1;
+}
+
+enum WhenAbsent {
+  WHEN_ABSENT_NOT_FOUND = 0;
+  WHEN_ABSENT_WAIT = 1;
+}
+
+message FollowRequest {
+  string path = 1;
+  uint64 from = 2;
+  SessionFilter filter = 3;
+  bool progress = 4;
+  // Minimum cut, kept as the floor across every reconnect.
+  repeated Revision at_least = 5;
+  // Initial absence only. A missing history anchor never waits.
+  WhenAbsent when_absent = 6;
+  bool bootstrap_head = 7;
+  optional uint64 until = 8;
+}
+
+// Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
+message KeyRange {
+  bytes start = 1;
+  bytes end = 2;
+}
+message AttributeMatch {
+  string name = 1;
+  repeated bytes any_of = 2;
+}
+// Flat conjunction keeps every authority ceiling intact across provider hops.
+// all_keys applies to opaque records; typed changes project individual entries.
+message SessionFilterClause {
+  repeated KeyRange keys = 1;
+  repeated AttributeMatch attributes = 2;
+  bool all_keys = 3;
+  // An indirect-record index candidate, separate from caller range capacity.
+  // Owning providers must authorize concrete facts after expansion.
+  optional bytes projection_key = 4;
+}
+message SessionFilter {
+  repeated KeyRange keys = 1;
+  repeated AttributeMatch attributes = 2;
+  repeated SessionFilterClause all_of = 3;
+}
+
+// Encoding of one read frame's data.
+enum Codec {
+  // A read frame must explicitly select an encoding; unspecified and unknown codecs are invalid.
+  CODEC_UNSPECIFIED = 0;
+  // data is the encoded RecordBatch itself.
+  CODEC_NONE = 2;
+  // data is one or more complete Zstandard frames.
+  CODEC_ZSTD = 1;
+}
+
+// One Stream's consecutive records in ascending sequence order.
+message RecordBatch {
+  repeated Record records = 1;
+}
+
+// One Read or Follow frame. data decodes under codec to exactly decoded_length
+// bytes of an encoded RecordBatch whose records continue the previous frame's.
+// A client rejects decoded_length above STREAM_LIMIT_MAX_COMMAND_BYTES before it
+// allocates or decompresses, rejects any other decoded length, and rejects an
+// unknown codec. A server chooses the codec independently for every frame.
+message ReadResponse {
+  reserved 1;
+  reserved "record";
+  Codec codec = 2;
+  bytes data = 3;
+  uint64 decoded_length = 4;
+  reserved 5;
+  reserved "delivery_token";
+  // Present on the first frame: the applied revision the read was served at.
+  Revision applied = 6;
+}
+
+message Child {
+  string path = 1;
+  optional Record tail_record = 2;
+  optional ForkOrigin origin = 3;
+  // Selected relative stream: absent means missing, zero means present empty.
+  optional uint64 tail = 4;
+}
+message ChildrenPageRequest {
+  // Indexed skip after `after`, or from the beginning when it is absent.
+  uint64 offset = 6;
+  optional string tail_stream = 5;
+  optional string parent = 1;
+  optional string after = 2;
+  optional bytes hierarchy_version = 3;
+  uint32 limit = 4;
+}
+
+message ChildrenPageResponse {
+  bytes hierarchy_version = 1;
+  repeated Child children = 2;
+  optional string next_after = 3;
+  // Raw namespace rows consumed before authorization projection.
+  uint32 scanned = 4;
+}
+
+message TailCondition {
+  string path = 1;
+  uint64 expected = 2;
+}
+
+message AbsentCondition {
+  string path = 1;
+}
+
+message PresentCondition {
+  string path = 1;
+}
+
+message CommitCondition {
+  oneof condition {
+    TailCondition tail = 1;
+    AbsentCondition absent = 2;
+    HeadCondition head = 3;
+    PresentCondition present = 4;
+  }
+}
+
+message HeadCondition {
+  string path = 1;
+  uint64 expected = 2;
+  bytes commit_id = 3;
+}
+
+message AppendMutation {
+  string path = 1;
+  repeated AppendRecord records = 2;
+}
+
+// Forks the whole source subtree at the pre-commit cut, sharing its nodes.
+// at_tail selects the root stream prefix; descendant heads are inherited whole.
+// Appends records to the destination root at the same linearization point.
+message ForkMutation {
+  // Canonical segment-relative prefixes excluded from the captured namespace.
+  repeated string exclude = 5;
+  string source = 1;
+  string destination = 2;
+  uint64 at_tail = 3;
+  repeated AppendRecord records = 4;
+}
+
+message CommitMutation {
+  reserved 3, 4, 5;
+  reserved "trim", "delete", "soft_append";
+  oneof mutation {
+    AppendMutation append = 1;
+    ForkMutation fork = 2;
+  }
+}
+
+// One all-or-none group of mutations guarded by its own conditions, which are
+// evaluated on the pre-commit state. A hard effect whose conditions fail
+// refuses the whole commit; a soft one is skipped and reported by its index.
+// A hard effect without mutations is a guard over the whole commit; a soft
+// effect needs mutations.
+message CommitEffect {
+  repeated CommitCondition conditions = 1;
+  repeated CommitMutation mutations = 2;
+  bool soft = 3;
+}
+
+message CommitRequest {
+  reserved 1, 2;
+  reserved "conditions", "mutations";
+  // In request order, with at least one mutation between them; every
+  // mutation path is unique in the commit.
+  repeated CommitEffect effects = 6;
+  bytes idempotency_key = 3;
+  optional uint64 deadline_unix_millis = 4;
+  // Select the original accepted envelope in this acknowledgement. This is a
+  // response projection, excluded from the canonical command/retry digest.
+  bool include_envelope = 5;
+}
+
+message CommittedAppend {
+  string path = 1;
+  uint64 start = 2;
+  uint64 end = 3;
+  uint64 tail = 4;
+  repeated Record records = 5;
+}
+
+message CommittedFork {
+  // Canonical segment-relative prefixes excluded from the captured namespace.
+  repeated string exclude = 6;
+  string source = 1;
+  string destination = 2;
+  uint64 forked_at = 3;
+  uint64 tail = 4;
+  repeated Record records = 5;
+}
+
+message CommittedMutation {
+  reserved 3, 4;
+  reserved "trim", "delete";
+  oneof mutation {
+    CommittedAppend append = 1;
+    CommittedFork fork = 2;
+  }
+}
+
+message CommittedEnvelope {
+  bytes commit_id = 1;
+  repeated CommittedMutation mutations = 2;
+  uint64 committed_at_micros = 3;
+}
+
+message TailCommitConflict {
+  string path = 1;
+  uint64 expected = 2;
+  optional uint64 actual = 3;
+}
+
+message ExistsCommitConflict {
+  string path = 1;
+}
+message MissingCommitConflict {
+  string path = 1;
+}
+message CommitConflict {
+  reserved 3;
+  reserved "retired";
+  oneof conflict {
+    TailCommitConflict tail = 1;
+    ExistsCommitConflict exists = 2;
+    HeadCommitConflict head = 4;
+    MissingCommitConflict missing = 5;
+  }
+}
+
+message HeadCommitConflict {
+  string path = 1;
+  bytes expected = 2;
+  bytes actual = 3;
+}
+
+message CommitConflicts {
+  repeated CommitConflict conflicts = 1;
+}
+
+message CommitResponse {
+  oneof outcome {
+    CommitReceipt committed = 1;
+    CommitConflicts conflict = 2;
+  }
+  // Present only for a successful request selecting the accepted envelope.
+  CommittedEnvelope envelope = 3;
+}
+
+message AppendRange {
+  string path = 1;
+  uint64 start = 2;
+  uint64 tail = 3;
+}
+
+message CommitReceipt {
+  bytes commit_id = 1;
+  uint64 committed_at_micros = 2;
+  repeated AppendRange appends = 3;
+  repeated ForkReceipt forks = 4;
+  Revision revision = 5;
+  reserved 6;
+  reserved "skipped";
+  // Indices of the soft effects the commit skipped, ascending.
+  repeated uint32 skipped_effects = 7;
+}
+
+message ReadCommitRequest {
+  bytes commit_id = 1;
+}
+
+message InspectIdempotencyRequest {
+  bytes idempotency_key = 1;
+}
+
+message IdempotencyObservation {
+  bytes idempotency_key = 1;
+  bytes request_digest = 2;
+  reserved 5, 6;
+  reserved "trim", "delete";
+  oneof outcome {
+    AppendResponse append = 3;
+    ForkReceipt fork = 4;
+    CommittedEnvelope commit = 7;
+  }
+  // The authority's revision of this retained publication, when it issues revisions.
+  Revision revision = 8;
+}
+
+message InspectIdempotencyResponse {
+  optional IdempotencyObservation observation = 1;
+}
+
+// Hosted account token creation request.  This uses the same canonical path
+// and operation vocabulary as the Stream client, while the hosted adapter
+// owns its JSON spelling at the Rust/WASM boundary.
+message TokenGrant {
+  string path = 1;
+  optional bool subtree = 2;
+  repeated string operations = 3;
+}
+
+message CreateTokenRequest {
+  string expires_in = 1;
+  repeated TokenGrant allow = 2;
+}
+
+service StreamService {
+  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/inspect-idempotency"
+      extractor: "streams.idempotency-resources"
+    };
+  }
+  rpc Append(AppendRequest) returns (AppendResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/append"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc Head(HeadRequest) returns (PathHead) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc Heads(HeadsRequest) returns (HeadsResponse) {
+    option (acyclic.validation.v1.auth) = {extractor: "streams.coherent-view"};
+  }
+  rpc Tail(TailRequest) returns (TailResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/tail"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc Fork(ForkRequest) returns (ForkReceipt) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/fork"
+      resource: "streams:/{source}"
+    };
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/create"
+      resource: "streams:/{destination}"
+    };
+  }
+  rpc Read(ReadRequest) returns (stream ReadResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/list"
+      extractor: "streams.list-visible-children"
+    };
+  }
+  rpc Commit(CommitRequest) returns (CommitResponse) {
+    option (acyclic.validation.v1.auth) = {extractor: "streams.transaction"};
+  }
+  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read-commit"
+      extractor: "streams.commit-resources"
+    };
+  }
+}

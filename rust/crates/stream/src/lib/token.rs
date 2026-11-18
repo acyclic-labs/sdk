@@ -1,13 +1,15 @@
 //! Token grants select declared method admission, never a second action list.
-use crate::StreamMethod;
 use acyclic_auth::{
     action::{Action, StreamsAction},
     method::Resources,
 };
+use acyclic_stream_wire::authorization::StreamMethod;
+use acyclic_stream_wire::rpc::StreamRpc;
 
 // These narrow grants select an actual operation of a request-dependent method.
 // A registry change removing that operation fails constant evaluation.
 const CREATE: &[Action] = &[selected(StreamMethod::Fork, StreamsAction::Create)];
+const FORK: &[Action] = &[selected(StreamMethod::Fork, StreamsAction::Fork)];
 const COMMIT: &[Action] = &[selected(StreamMethod::Commit, StreamsAction::Commit)];
 
 const fn selected(method: StreamMethod, wanted: StreamsAction) -> Action {
@@ -84,14 +86,14 @@ macro_rules! operations {
 operations! {
     /// Paged child discovery.
     List => "list", StreamMethod::ChildrenPage.authorization().admitted, &[];
-    /// Bounded Session Follow together with tail observation.
-    Read => "read", StreamMethod::Read.authorization().admitted, StreamMethod::Tail.authorization().admitted;
+    /// Record reads and tail observation, without live Follow authority.
+    Read => "read", StreamRpc::Read.authorization().admitted, StreamMethod::Tail.authorization().admitted;
     /// Live Session Follow together with tail observation.
     Follow => "follow", StreamMethod::Follow.authorization().admitted, StreamMethod::Tail.authorization().admitted;
     /// Record publication.
     Append => "append", StreamMethod::Append.authorization().admitted, &[];
-    /// Source and destination admission of a stream fork.
-    Fork => "fork", StreamMethod::Fork.authorization().admitted, &[];
+    /// Fork selection, without implicitly granting destination creation.
+    Fork => "fork", FORK, &[];
     /// Destination creation, without authority to fork another source.
     Create => "create", CREATE, &[];
     /// The transaction gate, excluding its request-dependent mutations.

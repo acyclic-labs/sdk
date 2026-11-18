@@ -58,7 +58,7 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
         )?;
         independent.value.resize(17, 9);
         let baseline = if native {
-            original.live_allocation_bytes()
+            original.live_allocation_bytes().unwrap()
         } else {
             ordering
                 .accounting()
@@ -81,10 +81,13 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
             result?
         };
         assert_eq!(ordered.value, resident_targets);
-        assert_eq!(ordering.spent().bytes_copied, size_of::<ObjectId>() as u64);
-        assert_eq!(ordering.spent().backend_read_operations, 0);
+        assert_eq!(
+            ordering.spent().unwrap().bytes_copied,
+            size_of::<ObjectId>() as u64
+        );
+        assert_eq!(ordering.spent().unwrap().backend_read_operations, 0);
         let retained = if native {
-            original.live_allocation_bytes()
+            original.live_allocation_bytes().unwrap()
         } else {
             ordering
                 .accounting()
@@ -99,7 +102,7 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
         );
         drop(ordered);
         let retired = if native {
-            original.live_allocation_bytes()
+            original.live_allocation_bytes().unwrap()
         } else {
             ordering
                 .accounting()
@@ -138,8 +141,8 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
         } else {
             "bytes_copied"
         }));
-        assert_eq!(denied.spent().backend_read_operations, 0);
-        assert_eq!(denied.spent().backend_write_operations, 0);
+        assert_eq!(denied.spent().unwrap().backend_read_operations, 0);
+        assert_eq!(denied.spent().unwrap().backend_write_operations, 0);
         for target in resident_targets {
             assert!(matches!(store.lookup(target), Lookup::Resident { .. }));
         }
@@ -185,6 +188,8 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
     let hold = store
         .flush_before_publish(
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &[root_id, table_id, metadata_id, tree_id],
                 proven_at: 0,

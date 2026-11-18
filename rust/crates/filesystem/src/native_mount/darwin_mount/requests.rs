@@ -38,7 +38,11 @@ impl CallbackTarget {
         }
     }
 
-    pub(super) fn record_failure(&self, cause: NativeMountError, work: WorkCounters) -> i32 {
+    pub(super) fn record_failure(
+        &self,
+        cause: NativeMountError,
+        work: Result<WorkCounters, crate::WorkObservationError>,
+    ) -> i32 {
         match self {
             Self::View(context) => context.record_failure(cause, work),
             Self::Shared(views) => views.record_failure(cause, work),
@@ -154,13 +158,20 @@ pub(super) fn ffi_pair<T: From<i32>>(
     .unwrap_or_else(|error| T::from(-error))
 }
 impl DarwinMountContext {
-    pub(super) fn record_failure(&self, cause: NativeMountError, work: WorkCounters) -> i32 {
+    pub(super) fn record_failure(
+        &self,
+        cause: NativeMountError,
+        work: Result<WorkCounters, crate::WorkObservationError>,
+    ) -> i32 {
         let status = callback_errno(&cause);
-        if fatal(&cause) {
+        if fatal(&cause) || work.is_err() {
             let mut state = self
                 .handler_failure
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            if let Err(error) = work {
+                state.observation_error = Some(error);
+            }
             if state.first_fatal.is_none() {
                 state.first_fatal = Some((Some(cause), work));
             }
@@ -177,7 +188,7 @@ impl DarwinMountContext {
             let work = self
                 .source_original_work
                 .as_ref()
-                .map_or(WorkCounters::UNCHARGED, |work| work.state.lock().work);
+                .map_or(Ok(WorkCounters::UNCHARGED), |work| work.receipt());
             self.record_failure(cause, work)
         })?;
         {
@@ -204,10 +215,19 @@ impl DarwinMountContext {
         let work = match active {
             Some(work) => work,
             None => Work::new(self.handler_budget, &self.handler_cancellation)
-                .map_err(|(cause, work)| self.record_failure(cause.into(), *work))?,
+                .map_err(|(cause, work)| self.record_failure(cause.into(), Ok(*work)))?,
         };
         let result = crate::native_mount::run_native_mount_handler_on_meter(&work, operation);
-        let completed = work.receipt();
+        let completed = match work.receipt() {
+            Ok(completed) => completed,
+            Err(observation) => {
+                let cause = match result {
+                    Ok(_) => observation.into(),
+                    Err(cause) => cause,
+                };
+                return Err(self.record_failure(cause, Err(observation)));
+            }
+        };
         if future_request
             && let Err(overflow) = self
                 .handler_failure
@@ -216,14 +236,18 @@ impl DarwinMountContext {
                 .completed_future_request_work
                 .try_add_assign(&completed)
         {
+            self.handler_failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .observation_error = Some(overflow.into());
             match &result {
-                Ok(_) => return Err(self.record_failure(overflow.into(), completed)),
+                Ok(_) => return Err(self.record_failure(overflow.into(), Err(overflow.into()))),
                 Err(cause) if !fatal(cause) => {
-                    self.record_failure(overflow.into(), completed);
+                    self.record_failure(overflow.into(), Err(overflow.into()));
                 }
                 Err(_) => {}
             }
         }
-        result.map_err(|cause| self.record_failure(cause, completed))
+        result.map_err(|cause| self.record_failure(cause, Ok(completed)))
     }
 }

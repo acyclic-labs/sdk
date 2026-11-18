@@ -128,7 +128,7 @@ fn exact_identity_copy_and_hash_allowances_succeed_one_byte_less_has_no_effect()
             for _ in 0..depth {
                 work = work.native_volume_work(limit).unwrap();
             }
-            let before = root.receipt();
+            let before = root.receipt().unwrap();
             let result = WorkspaceId::derive([1; 16], &name, &&work, &cancellation);
             assert_eq!(result.is_err(), denied);
             let expected = before
@@ -138,7 +138,7 @@ fn exact_identity_copy_and_hash_allowances_succeed_one_byte_less_has_no_effect()
                     ..crate::WorkCounters::UNCHARGED
                 })
                 .unwrap();
-            assert_eq!(root.receipt(), expected);
+            assert_eq!(root.receipt().unwrap(), expected);
         }
     }
 }

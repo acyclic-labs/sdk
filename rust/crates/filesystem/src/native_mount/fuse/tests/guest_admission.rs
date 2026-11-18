@@ -126,9 +126,9 @@ fn captured(opcode: u32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 fn revoked_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error::Error>> {
     let (owner, guard, work) = enrollment(true)?;
     guard.0.store(false, Ordering::Release);
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     assert!(GuestSessionAdmission::admit(owner, None).is_err());
-    let after = work.receipt();
+    let after = work.receipt().unwrap();
     assert_eq!(
         after.backend_read_operations,
         before.backend_read_operations
@@ -154,7 +154,7 @@ fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
         .get_mut(24..28)
         .ok_or("kernel uid")?
         .copy_from_slice(&1_u32.to_ne_bytes());
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let refusal = |bytes: Option<&[u8]>| {
         let bytes = bytes.ok_or(libc::EPROTO)?;
         let errno = i32::from_ne_bytes(
@@ -182,7 +182,7 @@ fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
         .copy_from_slice(&length.to_ne_bytes());
     admission.packet(&metadata, &mut response, refusal)?;
     assert_eq!(
-        work.receipt(),
+        work.receipt().unwrap(),
         before,
         "refused guest claims must not enter a source callback"
     );
@@ -197,11 +197,11 @@ fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
             .is_err()
     );
     assert_eq!(
-        work.receipt().backend_read_operations,
+        work.receipt().unwrap().backend_read_operations,
         before.backend_read_operations
     );
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         before.backend_write_operations
     );
     assert!(admission.take_callback_failure().is_some());
@@ -211,14 +211,14 @@ fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
 #[test]
 fn unguarded_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error::Error>> {
     let (owner, _, work) = enrollment(false)?;
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     assert!(GuestSessionAdmission::admit(owner, None).is_err());
     assert_eq!(
-        work.receipt().backend_read_operations,
+        work.receipt().unwrap().backend_read_operations,
         before.backend_read_operations
     );
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         before.backend_write_operations
     );
     Ok(())
@@ -245,7 +245,7 @@ fn nonroot_enrollment_negotiates_without_granting_root_filesystem_access()
     // Explicit negative perturbation: the real lookup was issued by uid/gid
     // 1000. Re-tag it as root, which this enrollment deliberately excludes.
     lookup.get_mut(24..32).ok_or("kernel credentials")?.fill(0);
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     admission.packet(&lookup, &mut response, |bytes| {
         let bytes = bytes.ok_or(libc::EPROTO)?;
         assert_eq!(
@@ -255,7 +255,7 @@ fn nonroot_enrollment_negotiates_without_granting_root_filesystem_access()
         Ok(())
     })?;
     assert_eq!(
-        work.receipt(),
+        work.receipt().unwrap(),
         before,
         "root must not enter a source callback"
     );
@@ -286,7 +286,7 @@ fn kernel_negotiation_still_checks_the_original_revocable_guard()
     let (owner, guard, work) = enrollment(true)?;
     let admission = GuestSessionAdmission::admit(owner, None)?;
     guard.0.store(false, Ordering::Release);
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let mut response = vec![0; admission.packet_capacity()];
     assert!(
         admission
@@ -294,11 +294,11 @@ fn kernel_negotiation_still_checks_the_original_revocable_guard()
             .is_err()
     );
     assert_eq!(
-        work.receipt().backend_read_operations,
+        work.receipt().unwrap().backend_read_operations,
         before.backend_read_operations
     );
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         before.backend_write_operations
     );
     assert!(admission.take_callback_failure().is_some());
@@ -346,7 +346,7 @@ fn original_guest_cancellation_refuses_captured_reads_and_writes_before_io()
     let admission = GuestSessionAdmission::admit(owner, Some(mapping))?;
     let mut response = vec![0; admission.packet_capacity()];
     admission.packet(&captured(26)?, &mut response, |_| Ok(()))?;
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     work.cancellation().cancel();
     for opcode in [15, 16] {
         assert!(
@@ -356,11 +356,11 @@ fn original_guest_cancellation_refuses_captured_reads_and_writes_before_io()
         );
     }
     assert_eq!(
-        work.receipt().backend_read_operations,
+        work.receipt().unwrap().backend_read_operations,
         before.backend_read_operations
     );
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         before.backend_write_operations
     );
     drop(admission);

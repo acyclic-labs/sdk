@@ -1,5 +1,5 @@
 //! Exercise the shared full-frame codec, independently of either log's policy.
-use acyclic_native_runtime::LogFrame;
+use acyclic_log_frame::LogFrame;
 
 const DOMAIN: &[u8] = b"codec-frame-test-v1\0";
 

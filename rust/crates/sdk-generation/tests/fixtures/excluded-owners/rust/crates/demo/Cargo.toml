@@ -1,0 +1,16 @@
+[package]
+name = "demo"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["base"]
+base = []
+extra = []
+
+[dependencies]
+demo-macros = { path = "../../vendor/macros" }
+demo-helper = { path = "../../vendor/helper" }

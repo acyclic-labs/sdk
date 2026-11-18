@@ -320,7 +320,7 @@ async fn unpolled_streams_do_not_block_appends() {
                 .unwrap(),
             AppendOutcome::Committed(_)
         ));
-        assert_eq!(follow.next().await, Some(Ok(())));
+        assert!(matches!(follow.next().await, Some(Ok(()))));
     }
 }
 
@@ -371,7 +371,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
         drop(held);
         assert_eq!(provider.state.try_write().is_ok(), !keep, "keep={keep}");
         if let Some(mut follow) = kept {
-            assert_eq!(follow.next().await, Some(Ok(())));
+            assert!(matches!(follow.next().await, Some(Ok(()))));
             drop(follow);
             assert!(provider.state.try_write().is_ok());
         }

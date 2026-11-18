@@ -1,5 +1,6 @@
 use crate::reader::backing::BackingPool;
-use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire};
+use acyclic_stream::{StreamError, StreamPath, StreamWatermarks};
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use std::{
     collections::{BTreeMap, VecDeque},

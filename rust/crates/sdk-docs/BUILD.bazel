@@ -41,15 +41,15 @@ rust_library(
     deps = [
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/sdk-docs/file-identity:sdk_file_identity",
-        "@crates//cargo_metadata-0.23.1",
-        "@crates//public-api-0.52.2",
-        "@crates//ring-0.17.14",
-        "@crates//rustdoc_types_0_60_0-0.60.0",
-        "@crates//schemars-1.2.3",
-        "@crates//semver-1.0.28",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
-        "@crates//tempfile-3.27.0",
+        "@sdk_crates//cargo_metadata-0.23.1",
+        "@sdk_crates//public-api-0.52.2",
+        "@sdk_crates//ring-0.17.14",
+        "@sdk_crates//rustdoc-types-0.60.0",
+        "@sdk_crates//schemars-1.2.3",
+        "@sdk_crates//semver-1.0.28",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//tempfile-3.27.0",
     ],
     visibility = ["//visibility:public"],
 )
@@ -73,13 +73,14 @@ rust_test(
     lint_config = ":lints",
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
-        "@crates//hex-0.4.3",
-        "@crates//proptest-1.12.0",
-        "@crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//hex-0.4.3",
+        "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//sha2-0.11.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:typescript/packages/actors/test/grpc-conformance.mjs",
         "//:typescript/packages/stream/test/http-provider-conformance.mjs",
+        "//:workspace-metadata.json",
         "//plugin:src/main.rs",
         "//rust/crates/actors:examples/actors-typescript-consumer.rs",
         "//rust/crates/actors:examples/transport-conformance.rs",
@@ -100,6 +101,7 @@ rust_test(
         "//rust/crates/stream:examples/provider-conformance.rs",
         "//rust/crates/stream:examples/stream-typescript-consumer.rs",
         "src/lib.rs",
+        "//:workspace-manifests",
     ],
     tags = ["manual"],
 )
@@ -107,8 +109,26 @@ rust_test(
 isolated_test(
     name = "sdk_docs_test",
     binary = ":sdk_docs_test_cases",
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-docs",
+    exclude = ["::full_cloud::"],
+    workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
+)
+
+isolated_test(
+    name = "sdk_docs_test_full-cloud",
+    binary = ":sdk_docs_test_cases",
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
+    id = "sdk-docs",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    workers = 1,
+    limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
+    tags = ["manual"],
 )
 
 filegroup(
@@ -118,20 +138,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/concrete_versions.rs",
-        "src/concrete_versions/tests.rs",
-        "src/projection.rs",
-        "src/public_api/decode.rs",
-        "src/publication.rs",
-        "src/relative_spans.rs",
-        "src/tests.rs",
-        "src/tests/identity.rs",
-        "src/tests/projection.rs",
-        "src/tests/publication.rs",
-        "src/tests/rustdoc_adapter.rs",
-        "src/tests/scratch.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

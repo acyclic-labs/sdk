@@ -6,23 +6,23 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createNativeProducer } from "./build-native-family.mjs";
-import { nativeFamily } from "./native-family.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 
 test("both native admission baselines equal the actual Rust generator and refuse a missing producer", () => {
-  const binary = process.env.SDK_PROTO_CODEGEN;
+  const bazel = process.env.ACYCLIC_BAZEL;
   const empty = mkdtempSync(join(tmpdir(), "sdk-protocol-producer-"));
   try {
     for (const family of ["actors", "stream"]) {
       const producer = createNativeProducer(nativeFamily(family));
       producer.assertCurrentNativeFamily();
-      process.env.SDK_PROTO_CODEGEN = join(empty, "missing");
+      process.env.ACYCLIC_BAZEL = join(empty, "missing");
       try {
         assert.throws(() => producer.assertCurrentNativeFamily(), error =>
           error.code === "PROTO_CODEGEN_FAILED" && error.cause?.code === "ENOENT"
           && error.message.includes("step native-family failed; recovery:"));
       } finally {
-        if (binary === undefined) delete process.env.SDK_PROTO_CODEGEN;
-        else process.env.SDK_PROTO_CODEGEN = binary;
+        if (bazel === undefined) delete process.env.ACYCLIC_BAZEL;
+        else process.env.ACYCLIC_BAZEL = bazel;
       }
     }
   } finally {

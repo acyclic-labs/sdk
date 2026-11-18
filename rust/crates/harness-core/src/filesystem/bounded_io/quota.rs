@@ -22,8 +22,9 @@ impl<T> Charged<T> {
         }
     }
 
-    /// The value of a read on a function-local, unbounded ledger that dies at
-    /// return. Only the two unmeasured private read entry points call this.
+    /// The value without its charge. Only the three private read entry points
+    /// of the host reader call this: two read on a function-local ledger that
+    /// dies at return, and one re-retains the bytes on the caller's ledger.
     pub(in crate::filesystem) fn into_unmeasured(self) -> T {
         self.value
     }
@@ -175,7 +176,7 @@ impl Drop for DecodeReservation<'_> {
                     // A poisoned ledger cannot admit further work; the next call returns the fault.
                     work.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .1 = Err(acyclic_fs::WorkError::Overflow);
+                        .1 = Err(acyclic_fs_work::performance::WorkError::Overflow);
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]

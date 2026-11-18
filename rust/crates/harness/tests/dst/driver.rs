@@ -34,8 +34,8 @@ impl Driver {
         Self::from_scope(Schedule::seeded_unrecorded(seed), cut, false).refuse_processes()
     }
 
-    pub fn without_entropy(seed: u64) -> Self {
-        Self::from_scope(Schedule::without_entropy(seed), None, true).refuse_processes()
+    pub fn without_entropy(seed: u64, cut: Option<(usize, DurableFault)>) -> Self {
+        Self::from_scope(Schedule::without_entropy(seed), cut, true).refuse_processes()
     }
 
     fn from_scope(
@@ -122,6 +122,17 @@ impl Driver {
                         schedule.polls().iter().rev().take(20).collect::<Vec<_>>(),
                         schedule.trace().iter().rev().take(10).collect::<Vec<_>>()
                     ),
+                    () = schedule.stalled() => {
+                        if schedule.is_stalled() {
+                            panic!(
+                                "stalled: every native worker is parked and no simulated task is runnable; last boundary: {:?}; pending native work: {}; parked native workers: {}; polls: {:?}; trace: {:?}",
+                                self.last_boundary, schedule.pending_native_work(),
+                                schedule.parked_native_work(),
+                                schedule.polls().iter().rev().take(20).collect::<Vec<_>>(),
+                                schedule.trace().iter().rev().take(10).collect::<Vec<_>>()
+                            );
+                        }
+                    },
                 }
             };
             loop {
@@ -134,6 +145,16 @@ impl Driver {
                     },
                     () = schedule.drained() => break,
                     () = &mut deadline => panic!("accepted work exceeded the simulated deadline"),
+                    () = schedule.stalled() => {
+                        if schedule.is_stalled() {
+                            panic!(
+                                "stalled: accepted work left a native worker parked and no simulated task runnable; pending native work: {}; parked native workers: {}; polls: {:?}; trace: {:?}",
+                                schedule.pending_native_work(), schedule.parked_native_work(),
+                                schedule.polls().iter().rev().take(20).collect::<Vec<_>>(),
+                                schedule.trace().iter().rev().take(10).collect::<Vec<_>>()
+                            );
+                        }
+                    },
                 }
             }
             let spawned = schedule.trace();
@@ -150,7 +171,7 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
     let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        let directory = tempfile::tempdir().map_err(storage)?;
+        let directory = temporary_directory().map_err(storage)?;
         let path = directory.path().join("journal");
         let write = |path: std::path::PathBuf| -> EntryFuture<'static, std::io::Result<()>> {
             entry(async move {
@@ -239,5 +260,30 @@ fn a_replay_without_a_scripted_process_refuses_the_os() {
             panic!("process refusal crashed the scope");
         };
         assert_eq!(failure.error.to_string(), UNSIMULATED_PROCESS);
+    });
+}
+
+#[test]
+#[should_panic(expected = "stalled: every native worker is parked")]
+fn a_world_waiting_on_a_channel_nobody_sends_to_names_its_stuck_await() {
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).unwrap();
+    runtime.block_on(async {
+        tokio::time::pause();
+        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        let mut driver = Driver::new(71, None);
+        let outcome = driver
+            .run(entry(async move {
+                // Keep the sender alive but never send: the blocking worker
+                // parks on the receiver, so the paused clock cannot advance.
+                let _sender = sender;
+                let worker = acyclic_native_runtime::testing::spawn_blocking(move || {
+                    acyclic_native_runtime::testing::blocking_on(async move {
+                        receiver.await.ok();
+                    });
+                });
+                worker.await.ok();
+            }))
+            .await;
+        drop(outcome);
     });
 }

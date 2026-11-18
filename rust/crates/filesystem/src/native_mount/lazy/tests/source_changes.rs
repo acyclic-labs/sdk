@@ -55,7 +55,7 @@ fn cleanup_retry_observes_the_retired_source_watch_failure()
     std::fs::write(reported, b"changed")?;
     observed.recv()?;
     assert!(view.physically_retired()?);
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let retired = view.cancel_cleanup_with_join(
         Some(&wait),
         crate::native_mount::retirement::SourceRetirementWait::Caller,
@@ -66,7 +66,7 @@ fn cleanup_retry_observes_the_retired_source_watch_failure()
         "cleanup retry erased the retired watch's callback failure"
     );
     assert_eq!(
-        original.receipt(),
+        original.receipt().unwrap(),
         before,
         "retry repeated physical cleanup"
     );
@@ -178,7 +178,7 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     let peer_stop = CancellationToken::new();
     let peer_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &peer_stop)
         .map_err(|(error, _)| error)?;
-    let peer_baseline = peer_work.live_allocation_bytes();
+    let peer_baseline = peer_work.live_allocation_bytes().unwrap();
     let peers = (0..1_024)
         .map(|_| view.read_directory_with_meter(&MountPath::root(), None, 1, &peer_work))
         .collect::<Result<Vec<_>, _>>()?;
@@ -189,12 +189,12 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
         Err(MountSourceError::Stale)
     ));
     drop(other);
-    let visited = work.receipt().source_entries_visited;
+    let visited = work.receipt().unwrap().source_entries_visited;
     let resumed =
         view.read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work)?;
     assert_eq!(resumed.entries().len(), 1);
     assert_eq!(
-        work.receipt().source_entries_visited,
+        work.receipt().unwrap().source_entries_visited,
         visited,
         "continuation replayed its source prefix"
     );
@@ -205,7 +205,7 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     peer_stop.cancel();
     drop(peers);
     assert_eq!(
-        peer_work.live_allocation_bytes(),
+        peer_work.live_allocation_bytes().unwrap(),
         peer_baseline,
         "abandoned consumers must release their original credit"
     );

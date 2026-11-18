@@ -19,10 +19,19 @@ pub trait FsWork: Sync + ProviderTask {
     #[doc(hidden)]
     fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a>;
     #[doc(hidden)]
-    fn finish<T, E>(
+    fn finish<T, E: From<FsError>>(
         &self,
         result: Result<T, E>,
         accounting: &KernelAccounting<'_>,
+    ) -> Self::Output<T, E> {
+        self.finish_with(result, accounting, E::from)
+    }
+    #[doc(hidden)]
+    fn finish_with<T, E>(
+        &self,
+        result: Result<T, E>,
+        accounting: &KernelAccounting<'_>,
+        observation_error: impl FnOnce(FsError) -> E,
     ) -> Self::Output<T, E>;
 }
 
@@ -39,12 +48,15 @@ impl FsWork for WorkBudget {
     fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a> {
         KernelAccounting::standalone(*self, cancellation)
     }
-    fn finish<T, E>(
+    fn finish_with<T, E>(
         &self,
         result: Result<T, E>,
         accounting: &KernelAccounting<'_>,
+        observation_error: impl FnOnce(FsError) -> E,
     ) -> Self::Output<T, E> {
-        measured(result, accounting)
+        crate::performance::finish_measured(result, accounting.spent(), |error| {
+            observation_error(error.into())
+        })
     }
 }
 
@@ -74,7 +86,12 @@ impl FsWork for &NativeMaterializationWork {
     fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a> {
         KernelAccounting::native(self, cancellation)
     }
-    fn finish<T, E>(&self, result: Result<T, E>, _: &KernelAccounting<'_>) -> Self::Output<T, E> {
+    fn finish_with<T, E>(
+        &self,
+        result: Result<T, E>,
+        _: &KernelAccounting<'_>,
+        _: impl FnOnce(FsError) -> E,
+    ) -> Self::Output<T, E> {
         result
     }
 }
@@ -158,14 +175,13 @@ pub(super) fn merge_simultaneous_work(
 }
 
 #[inline]
-pub(crate) fn measured<T, E>(
+pub(crate) fn measured<T, E: From<FsError>>(
     result: Result<T, E>,
     accounting: &KernelAccounting<'_>,
 ) -> MeasuredResult<OperationReceipt<T>, E> {
-    let work = accounting.spent();
-    result
-        .map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
+    crate::performance::finish_measured(result, accounting.spent(), |error| {
+        E::from(FsError::from(error))
+    })
 }
 
 pub(crate) fn finish_authority_work(
@@ -175,6 +191,6 @@ pub(crate) fn finish_authority_work(
     if authority.original.is_some() {
         return Ok(());
     }
-    authority.spent().verify(authority.budget)?;
+    authority.spent()?.verify(authority.budget)?;
     Ok(())
 }

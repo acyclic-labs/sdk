@@ -4,7 +4,7 @@ use super::*;
 #[wasm_bindgen]
 pub struct BrowserCheckout {
     pub(in crate::bindings) engine: Checkout<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
-    pub(in crate::bindings) acquisition_work: acyclic_fs::WorkCounters,
+    pub(in crate::bindings) acquisition_work: acyclic_fs_work::performance::WorkCounters,
 }
 
 #[wasm_bindgen]
@@ -18,7 +18,10 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .discard(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .discard(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(js_error)?;
         mutation_value(receipt.work)

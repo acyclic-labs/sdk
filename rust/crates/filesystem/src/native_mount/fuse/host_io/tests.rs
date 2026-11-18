@@ -170,7 +170,7 @@ fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_i
             let mut frame = [0; 16];
             frame[..4].copy_from_slice(&16_u32.to_ne_bytes());
             frame[8..].copy_from_slice(&2_u64.to_ne_bytes());
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes().unwrap();
             let (events, observed) = channel();
             let publisher_io = Arc::clone(&io);
             let publisher_work = work.clone();
@@ -190,12 +190,12 @@ fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_i
             );
             if pending {
                 assert!(
-                    work.live_allocation_bytes() >= baseline + frame.len() as u64,
+                    work.live_allocation_bytes().unwrap() >= baseline + frame.len() as u64,
                     "original payload credit must remain live before the physical write"
                 );
             } else {
                 assert_eq!(
-                    work.live_allocation_bytes(),
+                    work.live_allocation_bytes().unwrap(),
                     baseline,
                     "negative control must expose the early allocation release"
                 );
@@ -227,7 +227,7 @@ fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_i
                     assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ENODEV));
                 } else {
                     result?;
-                    assert_eq!(work.live_allocation_bytes(), baseline);
+                    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
                 }
             } else {
                 // Drain the receipt the deliberately broken client skipped.

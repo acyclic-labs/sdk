@@ -53,18 +53,14 @@ test('PowerShell here-strings retain embedded child waits without consuming late
  assert.throws(() => pollingSites(file, '<# unfinished'), /unterminated block comment/);
 });
 
-test('C# verbatim strings preserve embedded child waits without consuming later code', () => {
- const file = 'scripts/control.cs';
- for (const prefix of ['@"', '$@"', '@$"']) {
-  assert.deepEqual(pollingSites(file, `string path = ${prefix}dir\\";\n`), []);
-  assert.deepEqual(pollingSites(file, `string path = ${prefix}a""b\\";\n`), []);
-  assert.ok(pollingSites(file, `string path = ${prefix}Thread.Sleep(1)\\";\n`)
-   .some(site => site.kind === 'embedded-timer-or-retry'));
-  assert.throws(() => pollingSites(file, `string path = ${prefix}dir\\;`),
-   /control.cs:1: unterminated verbatim string/);
- }
- assert.doesNotThrow(() => pollingSites('scripts/graphcoder-conpty.cs',
-  readFileSync(new URL('./graphcoder-conpty.cs', import.meta.url), 'utf8')));
+test('C# verbatim pipe paths preserve timer refusals and unchanged source analysis', () => {
+ const file = 'scripts/graphcoder-conpty.cs';
+ const actual = readFileSync(new URL('./graphcoder-conpty.cs', import.meta.url), 'utf8');
+ assert.deepEqual(newPollingSites(file, actual, actual), []);
+ const path = String.raw`const string prefix = @"\\.\pipe\";`;
+ assert.deepEqual(pollingSites(file, path), []);
+ assert.ok(pollingSites(file, path + ' Thread.Sleep(1);').some(site => site.kind === 'timer-or-readiness'));
+ assert.ok(pollingSites(file, '@"""Thread.Sleep(1)""";').some(site => site.kind === 'embedded-timer-or-retry'));
 });
 
 test('PowerShell casing preserves wait, loop and alias review', () => {

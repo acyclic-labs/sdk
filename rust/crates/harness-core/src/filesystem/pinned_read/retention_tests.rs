@@ -12,7 +12,7 @@ struct Fixture {
     workspace: Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
     file: FileRef,
     grant: ContentGrant,
-    pin: acyclic_fs::AuthorityId,
+    pin: acyclic_fs_format::identity::AuthorityId,
 }
 
 impl Fixture {
@@ -60,7 +60,7 @@ impl Fixture {
                 .checkout(
                     acyclic_fs::model::GenerationSelector::Head,
                     acyclic_fs::model::CheckoutMode::tracking_transaction(),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
                 .await?
@@ -78,14 +78,14 @@ impl Fixture {
                         file_id: None,
                         path,
                         bytes: bytes::Bytes::copy_from_slice(bytes).into(),
-                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                        metadata: acyclic_fs_format::metadata::FileMetadata::default(),
                     },
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
                 .await?;
             let generation = checkout
-                .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+                .checkpoint(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancel)
                 .await?
                 .value;
             host.generation_ref_id(generation, None)?
@@ -144,7 +144,7 @@ impl Fixture {
                 .head(
                     self.pin,
                     &mut acyclic_fs::AuthorityWork::new(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                         &cancellation
                     )
                 )
@@ -165,7 +165,7 @@ impl Fixture {
                     payload_bytes: 4096,
                 },
                 &mut acyclic_fs::AuthorityWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 ),
             )
@@ -255,6 +255,7 @@ async fn private_checkpoints_cannot_claim_a_publication_range_or_head_grant() ->
             &serde_json::to_vec(&capability)?,
             None,
             &io,
+            access::access_now()?,
         )
         .await;
         match generations {

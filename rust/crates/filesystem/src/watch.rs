@@ -1902,21 +1902,19 @@ impl NativeWatch {
             && !(cfg!(target_os = "linux") && options.recursive)
         {
             let root = Self::ordinary_root(root.as_ref(), &mut work)
-                .map_err(|error| OperationFailure::new(error, work.receipt()))?;
+                .map_err(|error| OperationFailure::observed(error, work.receipt()))?;
             let native = crate::NativeMaterializationWork::from_demand(work)
                 .map_err(|(error, spent)| OperationFailure::new(error.into(), *spent))?;
             let result = Self::open_with_profile_with_native_work(&root, profile, options, &native);
-            let spent = native.receipt();
-            return result
-                .map(|value| OperationReceipt { value, work: spent })
-                .map_err(|error| OperationFailure::new(error, spent));
+            return crate::performance::finish_measured(result, native.receipt(), |error| {
+                NativeWatchError::NativeWork(error.into())
+            });
         }
         let result =
             Self::open_with_profile_engine(root.as_ref(), profile, options, &mut work, None);
-        let spent = work.receipt();
-        result
-            .map(|value| OperationReceipt { value, work: spent })
-            .map_err(|error| OperationFailure::new(error, spent))
+        crate::performance::finish_measured(result, work.receipt(), |error| {
+            NativeWatchError::NativeWork(error.into())
+        })
     }
 
     /// Opens the same held-root watcher on the invocation's original ledger.
@@ -2703,7 +2701,8 @@ impl NativeWatch {
 
     /// Negative control: key registrations as requested and match reported
     /// paths exactly.
-    #[cfg(all(test, windows))]
+    #[cfg(test)]
+    #[cfg(all(windows))]
     pub(crate) fn windows_match_exactly(&self) {
         if let Ok(mut state) = self.shared.state.lock()
             && let Some(registered) = &mut state.registered
@@ -2713,7 +2712,8 @@ impl NativeWatch {
     }
 
     /// Directories a non-recursive Windows watch currently observes.
-    #[cfg(all(test, windows))]
+    #[cfg(test)]
+    #[cfg(all(windows))]
     pub(crate) fn windows_registered(&self) -> usize {
         self.shared
             .state
@@ -3964,17 +3964,18 @@ impl NativeWatch {
         let mut work = crate::NativeMaterializationWork::clone(&original);
         let result = self.poll_with_work(maximum_changes, &mut work, Some(&original), |_| Ok(()));
         let spent = original.receipt();
-        result
-            .and_then(|(mut value, allocation)| {
-                let allocation = allocation.ok_or(NativeWatchError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ))?;
-                if let WatchBatch::Changes { original, .. } = &mut value {
-                    original.storage = Some(allocation);
-                }
-                Ok(OperationReceipt { value, work: spent })
-            })
-            .map_err(|error| OperationFailure::new(error, spent))
+        let result = result.and_then(|(mut value, allocation)| {
+            let allocation = allocation.ok_or(NativeWatchError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
+            if let WatchBatch::Changes { original, .. } = &mut value {
+                original.storage = Some(allocation);
+            }
+            Ok(value)
+        });
+        crate::performance::finish_measured(result, spent, |error| {
+            NativeWatchError::NativeWork(error.into())
+        })
     }
 
     /// Runs the consumer's guarded publication before committing watch progress.
@@ -5282,7 +5283,7 @@ mod demand_admission_tests {
             Ok(work.work.items_examined)
         };
         let handles = || {
-            acyclic_native_runtime::resources::sample_process_resources()
+            acyclic_process_resources::resources::sample_process_resources()
                 .map(|resources| resources.descriptors)
         };
         let flat = |before: u64, after: u64| after.saturating_sub(before) < HANDLE_SLACK;

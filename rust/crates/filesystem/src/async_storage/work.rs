@@ -1,12 +1,12 @@
 use super::*;
 use crate::{
-    AuthorityStoreError, FsError, FsResult, ObjectStoreError, OperationFailure, OperationReceipt,
-    WorkError,
+    AuthorityStoreError, FsError, FsResult, ObjectStoreError, OperationReceipt, WorkError,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{CommitOutcome, CommitRequest, NativeStreamResult, StreamProviderExt as _};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 mod commit_tests;
 
 mod frame;
@@ -26,7 +26,8 @@ pub(crate) fn authority_parts<T>(owned: crate::kernel::Owned<T>) -> (T, Authorit
     (owned.value, allocation)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 mod custody_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +42,9 @@ mod custody_tests {
     impl Drop for ObserveRetirement<'_> {
         fn drop(&mut self) {
             self.observed.store(
-                self.original.live_allocation_bytes() >= self.minimum,
+                self.original
+                    .live_allocation_bytes()
+                    .is_ok_and(|live| live >= self.minimum),
                 Ordering::SeqCst,
             );
         }
@@ -57,7 +60,7 @@ mod custody_tests {
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes()?;
             let observed = AtomicBool::new(false);
             let mut work = AuthorityWork::native(&original, &cancellation);
             let mut values = work.vec_owned(4)?;
@@ -98,9 +101,9 @@ mod custody_tests {
                 observed.load(Ordering::SeqCst),
                 "vector funding retired before its contents on exit {exit}"
             );
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes()?, baseline);
             original
-                .receipt()
+                .receipt()?
                 .verify(crate::performance::BOUNDARY_BUDGET)?;
         }
         Ok(())
@@ -209,7 +212,7 @@ impl<'a> AuthorityWork<'a> {
     }
 
     /// Returns actual completed work.
-    pub fn spent(&self) -> WorkCounters {
+    pub fn spent(&self) -> Result<WorkCounters, crate::WorkObservationError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
             return original.receipt();
@@ -223,16 +226,11 @@ impl<'a> AuthorityWork<'a> {
     }
 
     /// Attaches actual work to a completed operation.
-    pub fn receipt<T, E>(
+    pub fn receipt<T, E: From<crate::WorkObservationError>>(
         &self,
         result: Result<T, E>,
     ) -> crate::MeasuredResult<OperationReceipt<T>, E> {
-        result
-            .map(|value| OperationReceipt {
-                value,
-                work: self.spent(),
-            })
-            .map_err(|error| OperationFailure::new(error, self.spent()))
+        crate::performance::finish_measured(result, self.spent(), Into::into)
     }
 
     /// Admits a read against the original ledger, including its live backing.
@@ -335,21 +333,19 @@ impl<'a> AuthorityWork<'a> {
 
     /// Records the completed provider prefix and returns its value.
     /// Suspended custody refuses the merge; active completion records even after cancellation.
-    pub fn accept<T, E: From<WorkError> + From<AuthorityStoreError>>(
+    pub fn accept<
+        T,
+        E: From<WorkError> + From<AuthorityStoreError> + From<crate::WorkObservationError>,
+    >(
         &mut self,
         result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
     ) -> Result<T, E> {
-        let delta = match &result {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
+        let (result, delta) = self.accounting().split_receipt(result)?;
         self.record_completed(delta).map_err(|error| match error {
             AuthorityStoreError::Work(error) => E::from(error),
             error => E::from(error),
         })?;
         result
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
     }
 }
 

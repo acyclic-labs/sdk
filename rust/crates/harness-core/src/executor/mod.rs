@@ -25,6 +25,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Runs `future` as one named cost-ledger operation on native targets. Browser
+/// builds have no native runtime, so they await the original future.
+pub(crate) async fn cost_operation<F: std::future::Future>(
+    name: &'static str,
+    future: F,
+) -> F::Output {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        acyclic_native_runtime::cost::operation(name, future).await
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = name;
+        future.await
+    }
+}
+
 mod native_stock;
 use native_stock::*;
 pub(crate) use native_stock::{
@@ -287,7 +304,7 @@ impl ModelPurpose {
         execution: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<OperationId> {
-        let charge = acyclic_fs::WorkCounters {
+        let charge = acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: if matches!(self, Self::Summary | Self::SummaryPart(_)) {
                 b"harness:summary-attempt:v1".len() as u64
                     + 16
@@ -558,8 +575,8 @@ pub enum ToolFailureKind {
     Removed,
     /// The arguments violated the tool's pinned input schema; recorded without a start.
     InvalidInput,
-    /// The executing process ended before the outcome was recorded, and the
-    /// executor cannot reconcile it. The effect may have run, partly or fully.
+    /// The invocation ended before its outcome was recorded, and reconciliation
+    /// cannot recover it. The effect may have run or may still complete.
     /// Like every settled failure, it is the call's result and the turn goes on.
     Interrupted,
 }

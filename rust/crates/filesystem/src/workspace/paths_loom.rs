@@ -35,6 +35,6 @@ fn concurrent_path_copies_share_one_allowance() {
         let worker = loom::thread::spawn(move || copy(&work));
         let copied = copy(&root) + worker.join().unwrap();
         assert_eq!(copied, 4, "concurrent path copies overspent shared credit");
-        assert_eq!(root.receipt().bytes_copied, copied);
+        assert_eq!(root.receipt().map(|work| work.bytes_copied), Ok(copied));
     });
 }

@@ -12,6 +12,10 @@ arena run tasks.json --test "npm test"
 arena board --badge badge.svg
 ```
 
+Maintainers can refresh the checked-in Node backoff binding from the SDK root
+on Linux x86-64 with `node scripts/generate-arena-backoff.mjs`. Arena's npm
+build uses the checked-in binding.
+
 ## What happens in a race
 
 1. N forks of the working tree: `acyclic fork -n N` overlay mounts if acyclic is set up, otherwise git worktrees.

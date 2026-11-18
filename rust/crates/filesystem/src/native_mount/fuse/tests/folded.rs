@@ -271,13 +271,13 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
     let work = fuse_fixture_work();
     let first = source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
     assert_eq!(first.entries.len(), 256);
-    assert!(work.receipt().bytes_encoded >= 1024 * 9);
+    assert!(work.receipt().unwrap().bytes_encoded >= 1024 * 9);
     // Admission and disclosure both authenticate current policy. Measure both
     // fences; cached namespace validation must add no encoding work.
     let probe = fuse_fixture_work();
     let view = source.access_snapshot_with_meter(&probe)?;
     source.disclose_result(&view, Ok(()), &probe)?;
-    let policy_bytes = probe.receipt().bytes_encoded;
+    let policy_bytes = probe.receipt().unwrap().bytes_encoded;
     let budget = crate::WorkBudget {
         bytes_encoded: policy_bytes,
         ..crate::WorkBudget::UNBOUNDED
@@ -291,7 +291,7 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
     )?;
     assert_eq!(next.entries.len(), 256);
     assert!(first.entries.last().ok_or("first page missing")?.name < next.entries[0].name);
-    assert_eq!(cached.receipt().bytes_encoded, policy_bytes);
+    assert_eq!(cached.receipt().unwrap().bytes_encoded, policy_bytes);
     // An edit changes the tree identity: the old validation must not transfer.
     source.create_directory(&name("New"), FileMetadata::default(), &work)?;
     let stale = cache_work(budget, &crate::CancellationToken::new());
@@ -301,9 +301,9 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
             .is_err(),
         "the same bound must reject an actual namespace-validation scan"
     );
-    let before = work.receipt().bytes_encoded;
+    let before = work.receipt().unwrap().bytes_encoded;
     source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
-    assert!(work.receipt().bytes_encoded >= before + 1024 * 9);
+    assert!(work.receipt().unwrap().bytes_encoded >= before + 1024 * 9);
     Ok(())
 }
 

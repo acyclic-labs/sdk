@@ -32,7 +32,8 @@ where
 {
     /// Publishes all pending authored effects with one fenced generation.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         super::command_tests::record("sync");
         with_session_work_async(
             &self.session,
@@ -49,7 +50,8 @@ where
 
     /// Advances an already-clean live checkout to the workspace head.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         super::command_tests::record("advance");
         let advanced = self.source.advance_to_head_async().await;
         // Even a failed advance may have moved part of the view.
@@ -161,7 +163,8 @@ where
     }
 
     pub(crate) fn detach(&self) -> Result<(), MountLifecycleError> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         super::command_tests::record("detach");
         let mut owner = match self.session.lock() {
             Ok(owner) => owner,
@@ -174,7 +177,8 @@ where
     }
 
     async fn detach_async(&self, prepare_cleanup: bool) -> Result<(), MountLifecycleError> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         super::command_tests::record("detach");
         let source = self.source.clone();
         let session = self.session.clone();

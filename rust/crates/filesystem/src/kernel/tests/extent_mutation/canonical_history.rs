@@ -35,7 +35,7 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
         output.is_empty(),
         "work refusal must precede the first output change"
     );
-    assert_eq!(denied.spent().items_examined, 0);
+    assert_eq!(denied.spent().unwrap().items_examined, 0);
     memory_index_retains_full_identity_and_atomic_refusal().await?;
 
     // The original logical end is an input invariant, not the routing upper
@@ -77,7 +77,7 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
                 rejected.error,
                 ExtentMutationError::ChildBoundsMismatch
             ));
-            assert_eq!(rejected.work.page_writes, 0);
+            assert_eq!(rejected.work().unwrap().page_writes, 0);
         }
         let grown = apply_batch(
             &store,
@@ -149,8 +149,8 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
                 rejected.error,
                 ExtentMutationError::ChildBoundsMismatch
             ));
-            assert_eq!(rejected.work.page_writes, 0);
-            assert_eq!(rejected.work.page_reads, 1);
+            assert_eq!(rejected.work().unwrap().page_writes, 0);
+            assert_eq!(rejected.work().unwrap().page_reads, 1);
         }
     }
     // Omitting only the original first-key requirement accepts that same
@@ -338,16 +338,19 @@ async fn memory_index_retains_full_identity_and_atomic_refusal()
         };
         let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         store.put(id, body.clone(), &mut work).await?;
-        assert_eq!(work.spent().bytes_copied, 0);
+        assert_eq!(work.spent().unwrap().bytes_copied, 0);
         // At most two radix nodes and the original standalone ledger owner.
-        assert!(work.spent().allocation_operations <= 3);
-        assert_eq!(work.spent().object_bytes_written, body.len() as u64);
-        assert!(work.spent().items_examined <= (24 * ObjectId::ENCODED_LEN + 4) as u64);
+        assert!(work.spent().unwrap().allocation_operations <= 3);
+        assert_eq!(
+            work.spent().unwrap().object_bytes_written,
+            body.len() as u64
+        );
+        assert!(work.spent().unwrap().items_examined <= (24 * ObjectId::ENCODED_LEN + 4) as u64);
         if matches!(count, 0 | 63 | 255 | 256) {
             let mut read = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             assert_eq!(store.read(plain, 8, &mut read).await?.bytes, body);
-            assert!(read.spent().items_examined <= (8 * ObjectId::ENCODED_LEN + 1) as u64);
-            assert_eq!(read.spent().allocation_operations, 0);
+            assert!(read.spent().unwrap().items_examined <= (8 * ObjectId::ENCODED_LEN + 1) as u64);
+            assert_eq!(read.spent().unwrap().allocation_operations, 0);
         }
     }
 
@@ -384,7 +387,7 @@ async fn memory_index_retains_full_identity_and_atomic_refusal()
         let native_cancel = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &native_cancel)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let native = MemoryObjectStore::default();
         native
             .put(
@@ -393,10 +396,10 @@ async fn memory_index_retains_full_identity_and_atomic_refusal()
                 &mut crate::AuthorityWork::native(&original, &native_cancel),
             )
             .await?;
-        assert!(original.live_allocation_bytes() > baseline);
+        assert!(original.live_allocation_bytes().unwrap() > baseline);
         native_cancel.cancel();
         drop(native);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

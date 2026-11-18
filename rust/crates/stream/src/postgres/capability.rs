@@ -541,7 +541,10 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
     // Negative control: reconstructing from only the applied cursor parks.
     assert!(replica.journal.changed(cursor).now_or_never().is_none());
     replica.journal.head = observed_head;
-    assert_eq!(replica.journal.changed(cursor).now_or_never(), Some(Ok(())));
+    assert!(matches!(
+        replica.journal.changed(cursor).now_or_never(),
+        Some(Ok(()))
+    ));
     replica.refresh(PAGE).await?;
     assert_eq!(
         replica

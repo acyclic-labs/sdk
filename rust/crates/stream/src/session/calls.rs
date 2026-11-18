@@ -158,7 +158,7 @@ pub struct CallInputCredit {
 /// `Unavailable` retaining the receive error when the producer disappeared
 /// without a terminal.
 pub struct CallInput {
-    data: tokio::sync::mpsc::Receiver<crate::body::BodyChunk<CallInputCredit>>,
+    data: tokio::sync::mpsc::Receiver<acyclic_stream_body::BodyChunk<CallInputCredit>>,
     terminal: Option<oneshot::Receiver<Result<wire::SessionInputEnd, StreamError>>>,
     end: Option<wire::SessionInputEnd>,
     failed: bool,
@@ -180,7 +180,7 @@ impl CallInput {
     /// Consume one original input fragment without returning its capacity.
     pub async fn next_chunk(
         &mut self,
-    ) -> Result<Option<crate::body::BodyChunk<CallInputCredit>>, StreamError> {
+    ) -> Result<Option<acyclic_stream_body::BodyChunk<CallInputCredit>>, StreamError> {
         future::poll_fn(|cx| self.poll_chunk(cx)).await
     }
 
@@ -192,7 +192,8 @@ impl CallInput {
     pub fn poll_chunk(
         &mut self,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<Option<crate::body::BodyChunk<CallInputCredit>>, StreamError>> {
+    ) -> std::task::Poll<Result<Option<acyclic_stream_body::BodyChunk<CallInputCredit>>, StreamError>>
+    {
         use std::{future::Future as _, pin::Pin, task::Poll};
         if self.failed {
             return Poll::Ready(Ok(None));
@@ -228,7 +229,7 @@ impl CallInput {
 }
 
 pub(super) struct InputProducer {
-    sender: Option<tokio::sync::mpsc::Sender<crate::body::BodyChunk<CallInputCredit>>>,
+    sender: Option<tokio::sync::mpsc::Sender<acyclic_stream_body::BodyChunk<CallInputCredit>>>,
     terminal: Option<oneshot::Sender<Result<wire::SessionInputEnd, StreamError>>>,
     pub credit: wire::SessionWindow,
     pub next: u64,
@@ -282,7 +283,7 @@ impl InputProducer {
         let Some(Item::ActorCall(bytes)) = input.item else {
             return Err(StreamError::InvalidArgument);
         };
-        let chunk = crate::body::BodyChunk::new(bytes, credit);
+        let chunk = acyclic_stream_body::BodyChunk::new(bytes, credit);
         self.sender
             .as_ref()
             .ok_or(StreamError::InvalidArgument)?

@@ -4,6 +4,24 @@ use crate::kernel::{
     encode_attribute_page, lookup_attribute_async_with_accounting,
 };
 
+/// The largest page a named-attribute listing returns. A requested page size
+/// is clamped to this bound, so no caller can ask for an unbounded listing.
+pub(crate) const ATTRIBUTE_PAGE_ENTRIES: u32 = 256;
+
+/// A named-attribute page size that can never exceed the page bound.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AttributePageSize(u32);
+
+impl AttributePageSize {
+    pub(crate) fn new(requested: u32) -> Self {
+        Self(requested.clamp(1, ATTRIBUTE_PAGE_ENTRIES))
+    }
+
+    pub(crate) const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 /// Exact creation/replacement precondition for one named attribute write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NamedAttributeWriteMode {
@@ -107,7 +125,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     after: Option<&AttributeName>,
-    maximum_entries: u32,
+    maximum_entries: AttributePageSize,
     through_class: Option<crate::kernel::AttributeClass>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -118,7 +136,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 entries: Vec::new(),
                 has_more: false,
                 next_residency: None,
-                work: accounting.spent(),
+                work: accounting.spent()?,
             },
             accounting.claim_owned(0, 0)?,
         )),
@@ -127,7 +145,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 &volume.fs.inner.objects,
                 root,
                 after,
-                maximum_entries,
+                maximum_entries.get(),
                 through_class,
                 DecodeLimits::for_volume(volume.config),
                 accounting,
@@ -404,7 +422,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .list_named_attributes_with_accounting(
                 file,
                 after,
-                maximum_entries,
+                AttributePageSize::new(maximum_entries),
                 None,
                 &mut accounting,
                 cancellation,
@@ -417,7 +435,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         file: F,
         after: Option<&AttributeName>,
-        maximum_entries: u32,
+        maximum_entries: AttributePageSize,
         through_class: Option<crate::kernel::AttributeClass>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -543,7 +561,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         let result = self
             .list_named_attributes_with_accounting(
                 after,
-                maximum_entries,
+                AttributePageSize::new(maximum_entries),
                 None,
                 &mut accounting,
                 cancellation,
@@ -555,7 +573,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
     pub(crate) async fn list_named_attributes_with_accounting(
         &self,
         after: Option<&AttributeName>,
-        maximum_entries: u32,
+        maximum_entries: AttributePageSize,
         through_class: Option<crate::kernel::AttributeClass>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,

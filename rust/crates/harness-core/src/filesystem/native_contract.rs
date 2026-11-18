@@ -1,7 +1,7 @@
 //! Portable approval and result data for optional native host execution.
 
 use crate::{OperationId, Result, conversation::VolumeRef, resources::GenerationRef};
-use acyclic_fs::WorkBudget;
+use acyclic_fs_work::performance::WorkBudget;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -141,7 +141,7 @@ impl NativeViewManifest {
         }
         for (index, mapping) in self.volumes.iter().enumerate() {
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters {
+                io.charge(acyclic_fs_work::performance::WorkCounters {
                     items_examined: 1,
                     ..Default::default()
                 })?;
@@ -165,7 +165,7 @@ impl NativeViewManifest {
             }
             for prior in self.volumes.iter().take(index) {
                 if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters {
+                    io.charge(acyclic_fs_work::performance::WorkCounters {
                         items_examined: 1,
                         ..Default::default()
                     })?;
@@ -181,7 +181,7 @@ impl NativeViewManifest {
         }
         for mapping in &self.volumes {
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters {
+                io.charge(acyclic_fs_work::performance::WorkCounters {
                     items_examined: 1,
                     ..Default::default()
                 })?;
@@ -255,7 +255,7 @@ pub struct NativeProcessRequest {
 #[cfg(not(target_arch = "wasm32"))]
 impl super::PreparationRecord for NativeProcessRequest {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::NativeProcessRequest
+        crate::executor::json::JsonValueSchema::NATIVE_PROCESS_REQUEST
     }
 }
 
@@ -308,7 +308,7 @@ impl NativeProcessRequest {
         let guard;
         let encoded = io.encode(&value, io.remaining()?.bytes_encoded, true)?;
         guard = io.guard_bytes(&encoded)?;
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_hashed: encoded.len() as u64,
             ..Default::default()
         })?;
@@ -450,7 +450,7 @@ mod native_result_decode_tests {
             .claim(
                 bytes.capacity() as u64,
                 0,
-                acyclic_fs::WorkCounters::UNCHARGED,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
             )
             .unwrap();
         let (decoded, custody) =

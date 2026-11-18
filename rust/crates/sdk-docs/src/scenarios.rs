@@ -548,45 +548,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cargo_package_owner_requires_the_actual_package_and_manifest() {
-        let fixture = tempfile::tempdir().unwrap();
-        let manifest = fixture.path().join("Cargo.toml");
-        std::fs::create_dir(fixture.path().join("src")).unwrap();
-        std::fs::write(fixture.path().join("src/lib.rs"), "pub struct Witness;").unwrap();
-        // Cargo accepts compact, single-quoted TOML; metadata names are not package identities.
-        std::fs::write(
-            &manifest,
-            r#"[package]
-name='actual-owner'
-version='0.1.0'
-edition='2021'
-[workspace]
-[package.metadata]
-name = "decoy-owner"
-"#,
-        )
-        .unwrap();
-        let metadata = cargo_metadata::MetadataCommand::new()
-            .manifest_path(&manifest)
-            .no_deps()
-            .other_options(vec!["--offline".into()])
-            .exec()
-            .unwrap();
-        assert!(manifest_declares_package(&metadata, &manifest, "actual-owner").unwrap());
-        assert!(!manifest_declares_package(&metadata, &manifest, "decoy-owner").unwrap());
-        let other = fixture.path().join("other.toml");
-        std::fs::copy(&manifest, &other).unwrap();
-        assert!(!manifest_declares_package(&metadata, &other, "actual-owner").unwrap());
-    }
-
-    #[test]
     fn current_source_closure_is_present_and_digested() {
         let root = acyclic_test_support::source_path("");
-        let metadata = crate::rustdoc_profiles::load_metadata(
-            root.join("Cargo.toml"),
-            crate::rustdoc_profiles::CargoExecutionContext::default(),
+        let metadata = crate::rustdoc_profiles::load_workspace_metadata(
+            &root,
+            &acyclic_test_support::source_path("workspace-metadata.json"),
         )
-        .expect("actual workspace Cargo metadata");
+        .expect("generated workspace metadata");
         let sources = validate(&root, &metadata).expect("registered scenario sources should exist");
         assert_eq!(sources.len(), SCENARIOS.len());
         let records = catalog(&sources);

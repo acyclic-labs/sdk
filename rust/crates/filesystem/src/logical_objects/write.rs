@@ -132,7 +132,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         })?;
         let request = retention(self.epoch.current(), scope, work)?;
         invocation::Provider::retain(&*self.provider, request, work).await?;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(target_arch = "wasm32")))]
         self.epoch.hooks.retained().await;
         work.check()
     }

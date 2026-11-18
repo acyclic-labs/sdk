@@ -128,11 +128,11 @@ async fn large_retained_catalogs_chunk_and_replay_without_losing_source_keys() -
     // Fresh source-cache lookups select every physical chunk by its original
     // digest; a sibling in that chunk is warmed by the same bounded read.
     let reopened = NativeSkills::new(stream, volume.clone(), None, vec![])?;
-    let before = work.receipt().authority_records_read;
+    let before = work.receipt()?.authority_records_read;
     for key in first_in_chunk {
         assert!(reopened.records.read(key, &work).await?.is_some());
     }
-    assert_eq!(work.receipt().authority_records_read - before, tail);
+    assert_eq!(work.receipt()?.authority_records_read - before, tail);
     for skill in [&skills[0], skills.last().unwrap()] {
         assert!(
             reopened
@@ -299,7 +299,7 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         }
         retry.publish(&sources.records, &cancellation).await?;
         assert_eq!(stream.tail(journal.clone()).await.map_err(storage)?, 1);
-        let before = work.receipt().authority_records_read;
+        let before = work.receipt()?.authority_records_read;
         let read = |skill: &SkillMetadata| {
             sources.records.read(
                 hex::encode(skill.source.generation.as_resource().key()),
@@ -309,14 +309,14 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         let (first, second) = tokio::join!(read(&skills[0]), read(&skills[1]));
         let (first, second) = (first?.unwrap(), second?.unwrap());
         assert_eq!(
-            work.receipt().authority_records_read - before,
+            work.receipt()?.authority_records_read - before,
             1,
             "concurrent sibling loads share the real native indexed read"
         );
-        let cold = work.receipt();
+        let cold = work.receipt()?;
         assert!(Arc::ptr_eq(&first, &read(&skills[0]).await?.unwrap()));
         assert!(Arc::ptr_eq(&second, &read(&skills[1]).await?.unwrap()));
-        assert_eq!(work.receipt(), cold, "warm reads admit no native work");
+        assert_eq!(work.receipt()?, cold, "warm reads admit no native work");
         (skills, bytes)
     };
     // A new filesystem and empty source cache recover without native receipts.

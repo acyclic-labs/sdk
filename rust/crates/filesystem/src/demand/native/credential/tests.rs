@@ -17,7 +17,7 @@ fn protected_body_retains_original_allocation_through_transport_owners() -> Test
             &stop,
         )
         .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         // The supported Bytes::from_owner allocation has one reference count
         // and the retained owner. Admit it and the payload before allocating.
         let (layout, _) =
@@ -45,9 +45,9 @@ fn protected_body_retains_original_allocation_through_transport_owners() -> Test
             assert_eq!(control, previous, "control cannot grow with the payload");
         }
         control_bytes = Some(control);
-        let live = original.live_allocation_bytes();
+        let live = original.live_allocation_bytes().unwrap();
         assert_eq!(live, baseline + length as u64 + control);
-        let receipt = original.receipt();
+        let receipt = original.receipt().unwrap();
         let mut retained = None;
         let mut slice = None;
         let sharing = acyclic_test_support::measure(|| {
@@ -55,7 +55,7 @@ fn protected_body_retains_original_allocation_through_transport_owners() -> Test
             slice = Some(body.slice(1..length - 1));
         });
         assert_eq!((sharing.count_total, sharing.bytes_total), (0, 0));
-        assert_eq!(original.receipt(), receipt);
+        assert_eq!(original.receipt().unwrap(), receipt);
         // A real full-copy negative control must be visible to the cost oracle.
         let copy = acyclic_test_support::measure(|| {
             std::hint::black_box(body.to_vec());
@@ -65,16 +65,16 @@ fn protected_body_retains_original_allocation_through_transport_owners() -> Test
 
         stop.cancel();
         drop(body);
-        assert_eq!(original.live_allocation_bytes(), live);
+        assert_eq!(original.live_allocation_bytes().unwrap(), live);
         drop(retained);
-        assert_eq!(original.live_allocation_bytes(), live);
+        assert_eq!(original.live_allocation_bytes().unwrap(), live);
         let slice = slice.ok_or("protected transport slice missing")?;
         assert_eq!(slice.as_ptr(), pointer.wrapping_add(1));
         assert_eq!(slice.len(), length - 2);
         assert!(slice.iter().all(|byte| *byte == 7));
         drop(slice);
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             baseline,
             "final transport owner must retire its original capacity synchronously"
         );
@@ -119,12 +119,12 @@ async fn retained_token_custody_follows_exact_snapshot_and_request_retirement() 
         &stop,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     assert!(matches!(
         snapshot(&original, "invalid\r\ntoken"),
         Err(CredentialError::Invalid)
     ));
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let refresh_attempts = attempts.clone();
@@ -149,16 +149,20 @@ async fn retained_token_custody_follows_exact_snapshot_and_request_retirement() 
     let provider = CredentialProvider::from(cache.clone());
     let old = provider.resolve().await?;
     let retained_old = old.clone();
-    let first_bytes = original.live_allocation_bytes();
+    let first_bytes = original.live_allocation_bytes().unwrap();
     assert!(first_bytes > baseline);
-    let receipt = original.receipt();
+    let receipt = original.receipt().unwrap();
     for _ in 0..1024 {
         let warm = provider.resolve().await?;
         assert_eq!(warm.as_str().as_ptr(), old.as_str().as_ptr());
         warm.check().await?;
     }
     assert_eq!(attempts.load(Ordering::Relaxed), 1);
-    assert_eq!(original.receipt(), receipt, "warm leases add no token work");
+    assert_eq!(
+        original.receipt().unwrap(),
+        receipt,
+        "warm leases add no token work"
+    );
 
     assert!(old.reject().await?);
     assert!(matches!(
@@ -168,9 +172,9 @@ async fn retained_token_custody_follows_exact_snapshot_and_request_retirement() 
             cause: Some(acyclic_auth::DenialCause::NotCovered),
         })
     ));
-    assert_eq!(original.live_allocation_bytes(), first_bytes);
+    assert_eq!(original.live_allocation_bytes().unwrap(), first_bytes);
     let current = provider.resolve().await?;
-    let both_bytes = original.live_allocation_bytes();
+    let both_bytes = original.live_allocation_bytes().unwrap();
     assert!(both_bytes > first_bytes);
     assert!(old.check().await.is_err());
     assert!(
@@ -179,23 +183,23 @@ async fn retained_token_custody_follows_exact_snapshot_and_request_retirement() 
     );
     current.check().await?;
     assert!(snapshot(&original, "invalid\r\nreplacement").is_err());
-    assert_eq!(original.live_allocation_bytes(), both_bytes);
+    assert_eq!(original.live_allocation_bytes().unwrap(), both_bytes);
 
     cache.invalidate()?;
     stop.cancel();
     drop((cache, provider));
-    assert_eq!(original.live_allocation_bytes(), both_bytes);
+    assert_eq!(original.live_allocation_bytes().unwrap(), both_bytes);
     drop(old);
-    assert_eq!(original.live_allocation_bytes(), both_bytes);
+    assert_eq!(original.live_allocation_bytes().unwrap(), both_bytes);
     drop(retained_old);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         baseline + both_bytes - first_bytes,
         "only the final exact original lease retires its claim"
     );
     assert!(current.check().await.is_err());
     drop(current);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -499,11 +503,11 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     let follower = follower?;
     assert_eq!(reads.load(Ordering::Relaxed), 1, "one cold source read");
     assert_eq!(first.binding(), follower.binding());
-    let before_check = original.receipt();
+    let before_check = original.receipt().unwrap();
     first.check().await?;
-    let before_warm = original.receipt();
+    let before_warm = original.receipt().unwrap();
     let warm = source.resolve().await?;
-    let after_warm = original.receipt();
+    let after_warm = original.receipt().unwrap();
     assert_eq!(warm.binding(), first.binding());
     assert_eq!(after_warm.source_bytes_read, before_warm.source_bytes_read);
     assert_eq!(

@@ -543,16 +543,6 @@ fn interrupted_and_partial_writers_preserve_progress_and_exact_bytes() {
             assert_eq!(stopped.writes, 1);
         }
     }
-    // The actual former primitive retries Interrupted. This control exposes
-    // the incorrect success with a finite producer, without a hang or timeout.
-    let mut former = Writer {
-        writes: 0,
-        fail_at: Some((1, io::ErrorKind::Interrupted)),
-        chunk: usize::MAX,
-        bytes: Vec::new(),
-    };
-    former.write_all(b"original bytes").unwrap();
-    assert_eq!(former.writes, 2);
 }
 
 fn declarations(family: Family, names: &[&'static str]) -> Fields {
@@ -736,7 +726,7 @@ proptest! {
         for (_, name) in schema {
             prop_assert_eq!(&actual[name], &json!({"field": name, "nested": nested}));
         }
-        let mut sorted = keys.clone();
+        let mut sorted = keys;
         sorted.sort();
         sorted.dedup();
         let order: Vec<_> = sorted.iter().map(|key| text.find(&format!("\"k_{key}\"")).unwrap()).collect();

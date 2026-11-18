@@ -10,9 +10,9 @@
 //! invalidation for every view runs on one thread.
 
 use super::*;
-use crate::native_mount::shared::ready::ReadyViews;
 use crate::native_mount::shared::view_table::ViewLease;
 use crate::native_mount::shared::views::{NamedView, NamedViews};
+use acyclic_fs_base::ready::{ReadyLinkError, ReadyViews};
 use std::sync::Condvar;
 use std::sync::atomic::AtomicBool;
 
@@ -47,6 +47,19 @@ struct PendingInvalidations {
     stopping: bool,
 }
 
+impl PendingInvalidations {
+    fn check<T>(&mut self, result: Result<T, ReadyLinkError>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::error!(%error, "stopping shared invalidation");
+                self.stopping = true;
+                None
+            }
+        }
+    }
+}
+
 enum PendingInvalidation {
     View,
     RetiredName(Vec<u8>),
@@ -66,7 +79,11 @@ impl SharedWake {
         }
         if let Some(views) = self.views.upgrade() {
             let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
-            if !pending.stopping && pending.ready.schedule(self.serial) {
+            if pending.stopping {
+                return;
+            }
+            let scheduled = pending.ready.schedule(self.serial);
+            if pending.check(scheduled) != Some(false) {
                 drop(pending);
                 views.invalidation.notify_one();
             }
@@ -77,10 +94,12 @@ impl SharedWake {
         self.queued.store(true, Ordering::Release);
         let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
         if pending.stopping {
-            pending.ready.remove(self.serial);
+            let removed = pending.ready.remove(self.serial);
+            pending.check(removed);
         } else if let Some(work) = pending.ready.get_mut(self.serial) {
             *work = PendingInvalidation::RetiredName(name);
-            pending.ready.schedule(self.serial);
+            let scheduled = pending.ready.schedule(self.serial);
+            pending.check(scheduled);
             drop(pending);
             views.invalidation.notify_one();
         }
@@ -96,7 +115,9 @@ impl Drop for SharedWake {
                 pending.ready.get_mut(self.serial),
                 Some(PendingInvalidation::View)
             ) {
-                pending.ready.remove(self.serial);
+                let removed = pending.ready.remove(self.serial);
+                pending.check(removed);
+                views.invalidation.notify_one();
             }
         }
     }
@@ -122,25 +143,31 @@ impl SharedViewEntry {
     }
 
     /// Retires the view; returns whether this call retired it.
-    pub(super) fn retire(&mut self) -> bool {
+    pub(super) fn retire(&mut self) -> Result<bool, NativeMountError> {
         // Close admission, then stop queued and blocked requests before
         // waiting for every request already admitted.
         let core = &self.core;
-        let Some((name, _)) = self.view.retire_after(|| core.stop()) else {
-            return false;
+        let Some((name, _)) = self
+            .view
+            .retire_after(|| core.stop())
+            .map_err(|error| NativeMountError::Driver(error.into()))?
+        else {
+            return Ok(false);
         };
         if let Some(wake) = core.shared_wake.get() {
             // Retire admission before queueing the name. The existing notifier
             // owns the physical write; a request/cleanup caller never does.
             wake.retire(&self.views, name);
         }
-        true
+        Ok(true)
     }
 }
 
 impl Drop for SharedViewEntry {
     fn drop(&mut self) {
-        self.retire();
+        if let Err(error) = self.retire() {
+            tracing::error!(%error, "shared view retirement failed during drop");
+        }
     }
 }
 
@@ -190,7 +217,8 @@ impl SharedViews {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .ready
-                .insert(serial, PendingInvalidation::View);
+                .insert(serial, PendingInvalidation::View)
+                .map_err(|error| NativeMountError::Io(std::io::Error::other(error)))?;
             core.shared_wake
                 .set(Arc::new(SharedWake {
                     views: Arc::downgrade(self),
@@ -256,12 +284,20 @@ pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &CacheNotifi
                 if pending.stopping {
                     return;
                 }
-                if let Some((serial, _)) = pending.ready.pop() {
+                let next = pending
+                    .ready
+                    .pop()
+                    .map(|work| work.map(|(serial, _)| serial));
+                let Some(next) = pending.check(next) else {
+                    return;
+                };
+                if let Some(serial) = next {
                     if matches!(
                         pending.ready.get_mut(serial),
                         Some(PendingInvalidation::RetiredName(_))
                     ) {
-                        break pending.ready.remove(serial).map(|work| (serial, work));
+                        let removed = pending.ready.remove(serial);
+                        break pending.check(removed).flatten().map(|work| (serial, work));
                     }
                     break Some((serial, PendingInvalidation::View));
                 }

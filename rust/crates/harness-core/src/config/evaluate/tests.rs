@@ -35,9 +35,9 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
     let cancel = acyclic_fs::CancellationToken::new();
     let make_work = |bytes| {
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: bytes,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &cancel,
         )
@@ -45,7 +45,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
     };
     let tight = make_work(acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 4096)?;
     let io = crate::filesystem::PreparationIo::from_native_work(&tight)?;
-    let baseline = tight.live_allocation_bytes();
+    let baseline = tight.live_allocation_bytes()?;
     let error = match evaluate_cached(
         "settings.ts",
         source,
@@ -63,7 +63,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         error,
         Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded {
+                acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 }
@@ -71,7 +71,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
             ..
         }
     ));
-    assert_eq!(tight.live_allocation_bytes(), baseline);
+    assert_eq!(tight.live_allocation_bytes()?, baseline);
     let roomy = make_work(16 * 1024 * 1024)?;
     let io = crate::filesystem::PreparationIo::from_native_work(&roomy)?;
     let admitted = evaluate_cached(
@@ -84,14 +84,14 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
     )
     .await?;
     assert_eq!(admitted.value["model"].as_str().unwrap().len(), 65544);
-    let before_decode = roomy.live_allocation_bytes();
+    let before_decode = roomy.live_allocation_bytes()?;
     let typed = admitted.value.decode::<crate::config::AgentConfig>()?;
     assert_eq!(typed.model.len(), 65544);
-    assert!(roomy.live_allocation_bytes() >= before_decode + 65544);
+    assert!(roomy.live_allocation_bytes()? >= before_decode + 65544);
     drop(typed);
-    assert_eq!(roomy.live_allocation_bytes(), before_decode);
+    assert_eq!(roomy.live_allocation_bytes()?, before_decode);
     drop(admitted);
-    let retained = roomy.live_allocation_bytes();
+    let retained = roomy.live_allocation_bytes()?;
     assert!(
         retained >= 65536,
         "the cached result retains its original owner"
@@ -110,10 +110,10 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         .decode::<crate::config::AgentConfig>()
         .expect_err("an owned decoded copy must use the receiving allowance");
     assert!(matches!(error, Error::NativeWork { .. }));
-    assert_eq!(tight.live_allocation_bytes(), baseline);
+    assert_eq!(tight.live_allocation_bytes()?, baseline);
     let stopped = acyclic_fs::CancellationToken::new();
     let stopped_work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024),
         &stopped,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -132,7 +132,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
     assert_eq!(cancelled.code(), crate::wire::ErrorCode::Cancelled);
     *cache.lock().unwrap() = None;
     assert_eq!(
-        roomy.live_allocation_bytes(),
+        roomy.live_allocation_bytes()?,
         retained,
         "the returned view still owns the original cached storage"
     );
@@ -153,9 +153,9 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         Err(Error::NativeWork { .. })
     ));
     drop(inherited);
-    assert_eq!(tight.live_allocation_bytes(), baseline);
+    assert_eq!(tight.live_allocation_bytes()?, baseline);
     assert!(
-        roomy.live_allocation_bytes() < retained,
+        roomy.live_allocation_bytes()? < retained,
         "eviction retires cached ownership"
     );
     Ok(())
@@ -164,10 +164,10 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
 #[tokio::test]
 async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let tree = Metered(&io);
     let cache = Mutex::new(None);
@@ -188,12 +188,12 @@ async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
             .await??;
     *cache.lock().unwrap() = None;
     assert_eq!(value["text"].as_str().unwrap().len(), 65536);
-    assert!(work.live_allocation_bytes() >= baseline + 65536);
+    assert!(work.live_allocation_bytes()? >= baseline + 65536);
     assert!(
         work.claim(
             budget.peak_allocation_bytes - baseline - 65536 + 1,
             1,
-            acyclic_fs::WorkCounters::UNCHARGED
+            acyclic_fs_work::performance::WorkCounters::UNCHARGED
         )
         .is_err()
     );
@@ -205,7 +205,7 @@ async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
             ..
         })
     ));
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -213,7 +213,7 @@ async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
 async fn invalid_native_result_retains_its_cached_decision() -> Result<()> {
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 16 * 1024 * 1024),
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -359,9 +359,9 @@ async fn native_result_reparenting_preserves_original_owners_on_refusal() -> Res
     let cancel = acyclic_fs::CancellationToken::new();
     let make_work = || {
         acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: 16 * 1024 * 1024,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &cancel,
         )
@@ -370,8 +370,8 @@ async fn native_result_reparenting_preserves_original_owners_on_refusal() -> Res
     let first = make_work()?;
     let second = make_work()?;
     let baseline = (
-        first.live_allocation_bytes(),
-        second.live_allocation_bytes(),
+        first.live_allocation_bytes()?,
+        second.live_allocation_bytes()?,
     );
     let first_io = crate::filesystem::PreparationIo::from_native_work(&first)?;
     let second_io = crate::filesystem::PreparationIo::from_native_work(&second)?;
@@ -399,8 +399,8 @@ async fn native_result_reparenting_preserves_original_owners_on_refusal() -> Res
     let mut first_record = first_value.value.record::<String>()?;
     let mut second_record = second_value.value.record::<String>()?;
     let retained = (
-        first.live_allocation_bytes(),
-        second.live_allocation_bytes(),
+        first.live_allocation_bytes()?,
+        second.live_allocation_bytes()?,
     );
     let second_bytes = second_record.custody.as_ref().unwrap().bytes();
     let refusal = crate::javascript_allocator::transfer(
@@ -423,8 +423,8 @@ async fn native_result_reparenting_preserves_original_owners_on_refusal() -> Res
     );
     assert_eq!(
         (
-            first.live_allocation_bytes(),
-            second.live_allocation_bytes()
+            first.live_allocation_bytes()?,
+            second.live_allocation_bytes()?
         ),
         retained
     );
@@ -447,12 +447,12 @@ async fn native_result_reparenting_preserves_original_owners_on_refusal() -> Res
             ..
         }
     ));
-    assert_eq!(second.live_allocation_bytes(), baseline.1 + second_bytes);
+    assert_eq!(second.live_allocation_bytes()?, baseline.1 + second_bytes);
     drop(body);
-    assert_eq!(second.live_allocation_bytes(), baseline.1 + second_bytes);
+    assert_eq!(second.live_allocation_bytes()?, baseline.1 + second_bytes);
     drop(refusal);
-    assert_eq!(second.live_allocation_bytes(), baseline.1);
+    assert_eq!(second.live_allocation_bytes()?, baseline.1);
     drop(first_record);
-    assert_eq!(first.live_allocation_bytes(), baseline.0);
+    assert_eq!(first.live_allocation_bytes()?, baseline.0);
     Ok(())
 }

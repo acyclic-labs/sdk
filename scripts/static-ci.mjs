@@ -1,11 +1,16 @@
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import {pinnedActions} from './static-policy.mjs';
+import {trackedFiles} from './policy-core.mjs';
 import {checkJavaScript, requireSyntaxRuntime} from './javascript-syntax.mjs';
+import {checkIncremental} from './check-incremental.mjs';
 
 requireSyntaxRuntime();
 
-const all=execFileSync('git',['ls-files','-z','--','.',':!managed-agents'],{ maxBuffer: Infinity,encoding:'utf8'}).split('\0').filter(file=>file && fs.existsSync(file));
+const incremental=checkIncremental();
+if(incremental.length)throw new Error(incremental.join('\n'));
+
+const all=trackedFiles(process.cwd(), ['.', ':!managed-agents']).filter(file=>fs.existsSync(file));
 const git=(...args)=>execFileSync('git',args,{ maxBuffer: Infinity,encoding:'utf8'}).trim();
 if(git('rev-parse','--is-shallow-repository')==='true')throw new Error('Release whitespace checks require complete history and release tags');
 // Exclude HEAD so a retry after publication still checks the same release range.

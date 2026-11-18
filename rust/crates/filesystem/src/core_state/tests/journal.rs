@@ -155,7 +155,7 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
         };
         let cxl = crate::CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(budget, &cxl).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let record =
             MaterializationJournalStore::load(&store.materialization(work.clone()), operation)
                 .await
@@ -164,14 +164,20 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
         let allocation = record.custody.as_ref().unwrap();
         assert!(allocation.bytes() > 0);
         assert!(allocation.work().shares_ledger(&work));
-        assert_eq!(work.live_allocation_bytes(), baseline + allocation.bytes());
-        assert_eq!(work.receipt().source_bytes_read, budget.source_bytes_read);
-        work.receipt().verify(budget).unwrap();
+        assert_eq!(
+            work.live_allocation_bytes().unwrap(),
+            baseline + allocation.bytes()
+        );
+        assert_eq!(
+            work.receipt().unwrap().source_bytes_read,
+            budget.source_bytes_read
+        );
+        work.receipt().unwrap().verify(budget).unwrap();
         cxl.cancel();
-        let prefix = work.receipt();
+        let prefix = work.receipt().unwrap();
         drop(record);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        assert_eq!(work.receipt(), prefix);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
+        assert_eq!(work.receipt().unwrap(), prefix);
     }
 }
 
@@ -217,11 +223,11 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
         .write(true)
         .open(&effect)
         .unwrap();
-    let written = work.receipt().object_bytes_written;
-    let durability = work.receipt().durability_operations;
+    let written = work.receipt().unwrap().object_bytes_written;
+    let durability = work.receipt().unwrap().durability_operations;
     let completion = measured.prepare_action(original).await.unwrap();
     assert_eq!(
-        work.receipt().object_bytes_written,
+        work.receipt().unwrap().object_bytes_written,
         written,
         "preparing an atomic replacement must not copy the durable prior image"
     );
@@ -235,7 +241,10 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
     cxl.cancel();
     let prefix = work.journal_work().unwrap();
     let completed = completion.await.unwrap();
-    assert_eq!(work.receipt().durability_operations - durability, 2);
+    assert_eq!(
+        work.receipt().unwrap().durability_operations - durability,
+        2
+    );
     assert_eq!(completed.revision, 2);
     assert_eq!(completed.root_identity, root_identity);
     assert_eq!(completed.work, prefix);
@@ -248,7 +257,7 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
             .work()
             .shares_ledger(&work)
     );
-    work.receipt().verify(budget).unwrap();
+    work.receipt().unwrap().verify(budget).unwrap();
     drop((completed, measured, store));
     let reopened = LocalCoreStateStore::new(&state);
     let recovered = MaterializationJournalStore::load(&reopened, operation)
@@ -345,7 +354,7 @@ fn checkpoint_records_coalesce_tokens_on_ordinary_and_native_paths() {
             let mut expected = Vec::new();
             RecordValue::write_bare(value.as_ref(), &mut expected).unwrap();
             assert!(expected.len() < 8192);
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             let mut writer = CountWrites::default();
             RecordValue::write_checkpoint(value.as_ref(), &mut writer, native.then_some(&work))
                 .unwrap();
@@ -356,10 +365,13 @@ fn checkpoint_records_coalesce_tokens_on_ordinary_and_native_paths() {
             );
             if native {
                 assert_eq!(
-                    work.receipt().bytes_encoded - before.bytes_encoded,
+                    work.receipt().unwrap().bytes_encoded - before.bytes_encoded,
                     expected.len() as u64
                 );
-                assert!(work.receipt().bytes_copied - before.bytes_copied >= expected.len() as u64);
+                assert!(
+                    work.receipt().unwrap().bytes_copied - before.bytes_copied
+                        >= expected.len() as u64
+                );
             }
         }
     }
@@ -424,9 +436,9 @@ fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
             )
             .unwrap();
         log.commit(&namespace, change).unwrap();
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         log.checkpoint(&namespace).unwrap();
-        let after = work.receipt();
+        let after = work.receipt().unwrap();
         assert_eq!(
             std::fs::read(children_paths(&namespace, id).current).unwrap(),
             expected
@@ -440,6 +452,7 @@ fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
             .0;
         assert_eq!(serde_json::to_vec(&loaded).unwrap(), expected);
         work.receipt()
+            .unwrap()
             .verify(super::native::finite_budget())
             .unwrap();
         (
@@ -522,7 +535,7 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .unwrap()
                 .absorb(&mut custody)
                 .unwrap();
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             assert!(store.matches(&journal).await.unwrap());
             journal.preimages.push(crate::MaterializationPreimage {
                 image,
@@ -536,7 +549,7 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                     .unwrap();
             assert!(stored);
             journal = updated;
-            let after = work.receipt();
+            let after = work.receipt().unwrap();
             let delta = (
                 after.source_bytes_read - before.source_bytes_read,
                 after.object_bytes_written - before.object_bytes_written,
@@ -580,7 +593,7 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .await
                 .unwrap();
         assert!(stored);
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         assert!(
             !MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
                 .await
@@ -588,7 +601,7 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .0
         );
         assert_eq!(
-            work.receipt().object_bytes_written,
+            work.receipt().unwrap().object_bytes_written,
             before.object_bytes_written
         );
         store.remove_materialization_async(operation).await.unwrap();

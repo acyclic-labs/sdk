@@ -89,7 +89,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     while low < high {
         let middle = low + (high - low).div_ceil(2);
         let path = StreamPath::new("x".repeat(middle))?;
-        let wire = crate::wire::AppendRequest {
+        let wire = acyclic_stream_wire::wire::AppendRequest {
             path: path.to_string(),
             records: records
                 .iter()
@@ -113,7 +113,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     };
     assert!(validate_append_size(&request).is_ok());
     let next = StreamPath::new("x".repeat(low + 1))?;
-    let next_wire = crate::wire::AppendRequest {
+    let next_wire = acyclic_stream_wire::wire::AppendRequest {
         path: next.to_string(),
         records: request
             .records
@@ -420,7 +420,10 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
     };
     let committed = provider.append(request.clone()).await?;
     assert_eq!(
-        provider.append(request.clone()).await,
+        provider
+            .append(request.clone())
+            .await
+            .map_err(|error| error.category()),
         Ok(committed.clone())
     );
     let observation = provider
@@ -435,8 +438,9 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
                 records: vec![(Bytes::from_static(b"two")).into()],
                 ..request
             })
-            .await,
-        Err(StreamError::IdempotencyMismatch)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::IdempotencyMismatch)
     );
     Ok(())
 }

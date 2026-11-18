@@ -110,12 +110,9 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         let error = provider.counted(&request, 0).await.unwrap_err();
         assert_eq!(error.code(), code);
         assert!(error.to_string().contains(&status.to_string()));
-        // A refusal or a non-context 400 carries its bounded body excerpt, as on
-        // dispatch; an authorization failure never does.
-        assert_eq!(
-            error.to_string().contains("fixture-secret"),
-            code != acyclic_harness_core::wire::ErrorCode::Unauthorized
-        );
+        // Every refusal keeps only its status: a body may echo the request's
+        // credentials, so no excerpt of it enters the error.
+        assert!(!error.to_string().contains("fixture-secret"), "{error}");
     }
     for body in [
         b"{\"input_tokens\":-1}".as_slice(),
@@ -184,7 +181,7 @@ proptest::proptest! {
                 Box::pin(async move {
                     let body: acyclic_stream::BoxProviderStream<'static, Result<Bytes>> = if attempt < self.failures {
                         let failure = if self.definitive { invalid("malformed count") } else {
-                            crate::transport_failure(false, if self.timeout {
+                            acyclic_harness_provider_response::transport_failure(false, if self.timeout {
                                 acyclic_harness_core::ModelTransportFailure::Timeout
                             } else { acyclic_harness_core::ModelTransportFailure::Interrupted }, "count body failed")
                         };
@@ -497,7 +494,7 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
                 let (request, _) = request(&provider).unwrap();
                 let cancel = acyclic_fs::CancellationToken::new();
                 let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::work_budget(1_000_000, 4_000_000),
+                    acyclic_fs_work::performance::work_budget(1_000_000, 4_000_000),
                     &cancel,
                 )
                 .unwrap();

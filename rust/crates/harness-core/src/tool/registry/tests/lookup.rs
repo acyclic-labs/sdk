@@ -22,7 +22,7 @@ proptest! {
         name in "[a-z]{1,32}", revision in "[a-z]{1,32}",
         form in 0u8..3, missing in any::<bool>(), allowance in 0u64..128,
     ) {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        use {acyclic_fs::{CancellationToken, NativeMaterializationWork}, acyclic_fs_work::performance::{WorkBudget}};
         let mut registry = ToolRegistry::default();
         let mut tool = checked(prototype())?;
         tool.definition.name.clone_from(&name);
@@ -52,7 +52,7 @@ proptest! {
         if scanned > allowance {
             prop_assert!(matches!(actual, Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded {
+                    acyclic_fs_work::performance::WorkError::BudgetExceeded {
                         counter: "items_examined", ..
                     }), ..
             })), "unfunded query scan must refuse");
@@ -128,7 +128,7 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
             for _ in 0..2 {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .map_err(|(cause, _)| cause)?;

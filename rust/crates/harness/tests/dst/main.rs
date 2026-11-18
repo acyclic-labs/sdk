@@ -14,18 +14,25 @@ use acyclic_native_runtime::testing::DurableWrite;
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
+mod accounting;
 mod clocks;
 mod compaction;
+mod configuration;
 mod containment;
 mod coverage;
+mod determinism;
 mod digest;
 mod driver;
 mod family;
 mod flushes;
 mod grants;
 mod oracle;
+mod protective;
+mod publication;
+mod records;
 mod recovery;
 mod redelivery;
+mod refusal;
 mod settlement;
 mod swarm;
 
@@ -38,6 +45,16 @@ fn entry<'a, T>(future: impl Future<Output = T> + 'a) -> EntryFuture<'a, T> {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+/// A DST world's files live in memory-backed storage, so a simulated world
+/// never waits on the host's persistent disk journal.
+fn temporary_directory() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(target_os = "linux")]
+    if Path::new("/dev/shm").is_dir() {
+        return tempfile::tempdir_in("/dev/shm");
+    }
+    tempfile::tempdir()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -291,7 +308,7 @@ fn replay_with_directory_times(
     entry(async move {
         // Negative control erases entropy without changing polling or time.
         let mut driver = if erase_source {
-            driver::Driver::without_entropy(seed)
+            driver::Driver::without_entropy(seed, None)
         } else {
             driver::Driver::new(seed, None)
         };
@@ -310,7 +327,7 @@ fn replay_with_directory_times(
                 input.times
             }
         });
-        let directory = tempfile::tempdir().map_err(storage)?;
+        let directory = temporary_directory().map_err(storage)?;
         let result = driver.run(scenario(directory.path())).await;
         let driver::Outcome::Completed(result) = result else {
             panic!("uncut replay crashed");

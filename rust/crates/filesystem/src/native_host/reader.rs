@@ -27,11 +27,13 @@ impl HostStatReader {
         &mut self,
         work: &mut W,
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
-        #[cfg(all(test, windows))]
+        #[cfg(test)]
+        #[cfg(all(windows))]
         if super::stat_probe::old() {
             return self.next(work);
         }
-        #[cfg(all(test, any(target_os = "linux", windows)))]
+        #[cfg(test)]
+        #[cfg(all(any(target_os = "linux", windows)))]
         if super::stat_probe::restore_walk() {
             return self.next(work);
         }
@@ -151,9 +153,9 @@ impl HostStatReader {
             Foundation::{ERROR_NO_MORE_FILES, HANDLE},
             Storage::FileSystem::{FileIdExtdDirectoryInfo, GetFileInformationByHandleEx},
         };
-        // SAFETY: the held directory and aligned owned buffer outlive this synchronous query.
         #[cfg(test)]
         super::stat_probe::event("GetFileInformationByHandleEx");
+        // SAFETY: the held directory and aligned owned buffer outlive this synchronous query.
         let result = unsafe {
             GetFileInformationByHandleEx(
                 HANDLE(self.directory.as_raw_handle()),

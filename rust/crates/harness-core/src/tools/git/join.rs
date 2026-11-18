@@ -146,7 +146,7 @@ where
                         }
                     };
                     needs_resolution |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
-                        if acyclic_fs::text_merge::has_conflict_markers(text));
+                        if acyclic_fs_base::text_merge::has_conflict_markers(text));
                     if needs_resolution {
                         unresolved.push(conflict.path.clone().unwrap_or_else(|| "/".into()));
                     }
@@ -396,7 +396,7 @@ where
 /// merge checks its resolution against.
 fn conflict_paths(
     typed: &acyclic_fs::MergePlan,
-) -> crate::Result<BTreeMap<String, Option<acyclic_fs::FileId>>> {
+) -> crate::Result<BTreeMap<String, Option<acyclic_fs_format::identity::FileId>>> {
     typed
         .conflicts
         .iter()

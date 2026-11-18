@@ -1259,3 +1259,184 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
     }
     Ok(())
 }
+
+struct CancelledReview {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl TurnDriver for CancelledReview {
+    fn review<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        _: u64,
+        _: CancellationToken,
+    ) -> crate::agent::ReviewFuture<'a> {
+        Box::pin(async move {
+            match self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => Err(Error::Turn(Box::new(crate::Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled,
+                )))),
+                1 => Ok(crate::agent::ReviewStep::Selected(
+                    crate::agent::ApprovalSelection {
+                        source: agent.path.clone(),
+                        range: 1..2,
+                        policy: None,
+                    },
+                )),
+                _ => Ok(crate::agent::ReviewStep::Reviewed(
+                    crate::agent::OpenTriage {
+                        summary: None,
+                        outs: Vec::new(),
+                    },
+                )),
+            }
+        })
+    }
+
+    fn step<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: u64,
+        _: Option<Queued>,
+        _: CancellationToken,
+    ) -> TurnFuture<'a> {
+        Box::pin(async { Err(Error::Record("unexpected worker step")) })
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_review_keeps_its_page_for_the_next_step()
+-> Result<(), Box<dyn std::error::Error>> {
+    let id = AgentId::from_bytes([77; 16]);
+    let path = AgentPath::root(&id);
+    let adopted = ForkAdopted {
+        agent: id,
+        parent: None,
+        profile: None,
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    };
+    let mut state = AgentState::adopted(path.clone(), &adopted)?;
+    state.approval_control = Some(crate::agent::ApprovalControl {
+        range: 1..2,
+        selected: None,
+    });
+    let driver = CancelledReview {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let first = crate::agent::step(
+        &driver,
+        &path,
+        Some(state),
+        (2, 0),
+        Wake::Alarm,
+        CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(
+        first
+            .state
+            .approval_control
+            .as_ref()
+            .map(|control| control.range.clone()),
+        Some(1..2),
+        "a cancelled review dropped its pending child asks"
+    );
+    let second = crate::agent::step(
+        &driver,
+        &path,
+        Some(first.state),
+        (2, 0),
+        Wake::Alarm,
+        CancellationToken::new(),
+    )
+    .await?;
+    assert!(
+        second
+            .state
+            .approval_control
+            .as_ref()
+            .is_some_and(|control| control.selected.is_some()),
+        "the next step did not resume the retained page"
+    );
+    let third = crate::agent::step(
+        &driver,
+        &path,
+        Some(second.state),
+        (2, 0),
+        Wake::Alarm,
+        CancellationToken::new(),
+    )
+    .await?;
+    assert!(
+        third.state.approval_control.is_none(),
+        "the retained page did not finish"
+    );
+    Ok(())
+}
+
+struct StalledReview;
+
+impl TurnDriver for StalledReview {
+    fn review<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: u64,
+        _: CancellationToken,
+    ) -> crate::agent::ReviewFuture<'a> {
+        Box::pin(std::future::pending())
+    }
+
+    fn step<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: u64,
+        _: Option<Queued>,
+        _: CancellationToken,
+    ) -> TurnFuture<'a> {
+        Box::pin(async { Err(Error::Record("unexpected worker step")) })
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_review_stops_a_driver_that_ignores_its_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let id = AgentId::from_bytes([78; 16]);
+    let path = AgentPath::root(&id);
+    let adopted = ForkAdopted {
+        agent: id,
+        parent: None,
+        profile: None,
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    };
+    let mut state = AgentState::adopted(path.clone(), &adopted)?;
+    state.approval_control = Some(crate::agent::ApprovalControl {
+        range: 1..2,
+        selected: None,
+    });
+    let stop = CancellationToken::new();
+    stop.cancel();
+    let stepped = crate::agent::step(
+        &StalledReview,
+        &path,
+        Some(state),
+        (2, 0),
+        Wake::Alarm,
+        stop,
+    )
+    .await?;
+    assert!(
+        stepped.state.approval_control.is_some(),
+        "a cancelled review dropped its pending child asks"
+    );
+    Ok(())
+}

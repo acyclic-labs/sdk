@@ -48,7 +48,7 @@ const claims = {
       ] },
   ],
   "settings-admission-producer": [
-    "rust/crates/harness/src/local/agent_settings.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/agent_settings.rs", "acyclic-harness-local",
     "local::agent_settings::tests::imported_settings_keep_the_original_directory_read_refusal",
     "settings admission lost its original read producer", ["--features", "test-support"],
     { nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
@@ -271,9 +271,9 @@ const claims = {
   ],
   "terminal-drain-stop": [
     "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
-    "terminal_drain_cancellation_does_not_require_slave_closure",
+    "terminal_frames::terminal_drain_cancellation_does_not_require_slave_closure",
     "a retained PTY slave must not keep a cancelled drainer waiting", [],
-    { target: ["--test", "terminal_frames"] },
+    { target: ["--test", "main"] },
   ],
   "native-usage-counters": [
     "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
@@ -281,12 +281,12 @@ const claims = {
     "Test failed:", ["--features", "test-support"],
   ],
   "native-event-cut": [
-    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/host_process/children.rs", "acyclic-harness-local",
     "local::host_process::children::tests::an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof",
     "exited native terminal without LF was discarded", nativeHarness,
   ],
   "native-event-retention": [
-    "rust/crates/harness/src/local/host_process.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/host_process.rs", "acyclic-harness-local",
     "local::host_owner::tests::native_event_log_keeps_late_usage_and_resume_after_recovery",
     "native event publication lost records after the old cutoff", nativeHarness,
   ],
@@ -301,7 +301,7 @@ const claims = {
     "append inherited prior invocation work", ["--features", "test-support"],
   ],
   "task-binding-selection": [
-    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/workspace/bindings.rs", "acyclic-harness-local",
     "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
     "lost original producer did not finish its observer", bindingFeatures,
     { nextest: bindingNextest, mutations: [
@@ -312,26 +312,26 @@ const claims = {
     ] },
   ],
   "task-binding-observer": [
-    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/workspace/bindings.rs", "acyclic-harness-local",
     "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
     "registered binding observer lost its successful preparation", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_observer_result.patch", label: "result-loss", diagnostic: "registered binding observer lost its successful preparation" },
     ] },
   ],
   "task-binding-checkout": [
-    "rust/crates/harness/src/local/workspace/task_views.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/workspace/task_views.rs", "acyclic-harness-local",
     "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
     "binding preparation retains the unrelated checkout owner", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_checkout_owner.patch", label: "checkout-owner", diagnostic: "binding preparation retains the unrelated checkout owner" },
     ] },
   ],
   "task-binding-physical": [
-    "rust/crates/harness/src/local/workspace/projection.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/workspace/projection.rs", "acyclic-harness-local",
     "local::workspace::task_views::tests::native_guard_retains_the_original_binding_until_physical_retirement",
     "physical native guard lost the original binding owner", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_physical_owner.patch", label: "physical-owner", diagnostic: "physical native guard lost the original binding owner" },
     ] },
   ],
@@ -1168,7 +1168,7 @@ const claims = {
     ] },
   ],
   "settlement-retired-source": [
-    "rust/crates/harness/src/local/observer.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/observer.rs", "acyclic-harness-local",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "settlement retained a retired status source", nativeHarness,
     { mutations: [
@@ -1199,7 +1199,7 @@ const claims = {
     { target: ["--test", "main"] },
   ],
   "public-settlement-source": [
-    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/agent_conversation.rs", "acyclic-harness-local",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "settlement admitted an unrelated progress producer or performed I/O before refusal", nativeHarness,
     { mutations: [
@@ -1208,7 +1208,7 @@ const claims = {
     ] },
   ],
   "public-settlement-retirement": [
-    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/agent_conversation.rs", "acyclic-harness-local",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "public settlement retained its lost model producer", nativeHarness,
   ],
@@ -1242,27 +1242,27 @@ const claims = {
     "scratch retirement accepted retained credit", [],
   ],
   "settlement-terminal": [
-    "rust/crates/harness/src/local/tests/agents.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/tests/agents.rs", "acyclic-harness-local",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "settlement bypassed the original runtime terminal event",
     nativeHarness,
   ],
   "native-eof-refusal": [
-    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/host_process/children.rs", "acyclic-harness-local",
     "local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply",
     "original process must retire before reply drain",
     ["--no-default-features"],
     { patch: "../../crates/harness/fuzz-native-journal/mutations/native_eof_refusal_retirement.patch" },
   ],
   "native-child-branch-scope": [
-    "rust/crates/harness/src/local/host_workspace.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/host_workspace.rs", "acyclic-harness-local",
     "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
     "parent-scoped child reference",
     ["--no-default-features"],
     { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
   ],
   "native-child-merge-custody": [
-    "rust/crates/harness/src/local/host_owner.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/host_owner.rs", "acyclic-harness-local",
     "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
     "canonical child merge bypassed running-session custody",
     ["--no-default-features"],
@@ -1301,7 +1301,7 @@ const claims = {
     "reconnect served trust before its original observed tail", ["--no-default-features"],
   ],
   "scalar-charge-cost": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs",
     "performance::tests::native::borrowed::item_only_kernel_charge_preserves_exact_errors_receipts_and_cost",
     "scalar charge performed unrelated counter arithmetic", ["--no-default-features", ],
   ],
@@ -1312,12 +1312,12 @@ const claims = {
     { target: ["--test", "main"], loom: true },
   ],
   "work-arithmetic": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs-work",
     "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals",
     "full-width work sum disagreed with wider arithmetic", [],
   ],
   "work-mixed": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs-work",
     "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals",
     "full-width work sum disagreed with wider arithmetic", [],
   ],
@@ -1327,7 +1327,7 @@ const claims = {
     "ready record scheduling allocated physical heap storage", ["--no-default-features"],
   ],
   "budget-errors": [
-    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "rust/crates/filesystem-work/src/performance.rs", "acyclic-fs",
     "performance::tests::native::borrowed::borrowed_verification_preserves_exact_errors_and_priority",
     "budget refusal lost the exact counter or priority", [],
   ],
@@ -1342,15 +1342,15 @@ const claims = {
     "kernel charge allocated physical heap storage", [],
   ],
   "controlled-cleanup": [
-    "rust/crates/harness/src/local/workspace/volumes.rs", "acyclic-harness", cleanupTests[0],
+    "rust/crates/harness-local/src/local/workspace/volumes.rs", "acyclic-harness-local", cleanupTests[0],
     "physical cleanup escaped its original task scope", nativeHarness,
     { patch: "unscoped-claims.patch", positive: cleanupTests },
   ],
   "conversation-observation": [
-    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "rust/crates/harness-local/src/local/agent_conversation.rs", "acyclic-harness-local",
     "local::tests::agents::parent_and_child_context_and_writes_retain_their_own_volumes",
     "default observation repeated its settlement query", ["--all-features"],
-    { oracle: "rust/crates/harness/src/local/tests/agents.rs", negativeLabel: "duplicate-settlement",
+    { oracle: "rust/crates/harness-local/src/local/tests/agents.rs", negativeLabel: "duplicate-settlement",
       nextest: ["--profile", "ci", "--no-fail-fast", "--failure-output", "immediate-final", "--run-ignored", "all", "--retries", "0", "--no-tests=fail"] },
   ],
   "projection-cost": [

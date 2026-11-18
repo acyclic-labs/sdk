@@ -35,7 +35,42 @@ pub(super) fn secret() -> io::Result<Secret> {
 }
 
 pub(super) fn endpoint(address: &str, tree: usize, secret: &Secret) -> String {
-    format!("{address}/{tree}/{:032x}", u128::from_be_bytes(*secret))
+    let digits = tree
+        .checked_ilog10()
+        .map_or(1, |digits| match usize::try_from(digits) {
+            Ok(digits) => digits + 1,
+            Err(_) => unreachable!("a decimal digit count fits usize"),
+        });
+    let mut endpoint = String::with_capacity(address.len() + 1 + digits + 1 + 32);
+    endpoint.push_str(address);
+    endpoint.push('/');
+    let mut decimal = [0_u8; 20];
+    let mut at = decimal.len();
+    let mut remaining = tree;
+    loop {
+        at -= 1;
+        decimal[at] = match u8::try_from(remaining % 10) {
+            Ok(digit) => b'0' + digit,
+            Err(_) => unreachable!("a decimal digit is below ten"),
+        };
+        remaining /= 10;
+        if remaining == 0 {
+            break;
+        }
+    }
+    for digit in &decimal[at..] {
+        endpoint.push(char::from(*digit));
+    }
+    endpoint.push('/');
+    for byte in secret {
+        for nibble in [byte >> 4, byte & 0x0f] {
+            match char::from_digit(u32::from(nibble), 16) {
+                Some(character) => endpoint.push(character),
+                None => unreachable!("a hexadecimal digit is below sixteen"),
+            }
+        }
+    }
+    endpoint
 }
 
 /// Compares secrets in time independent of where they first differ.

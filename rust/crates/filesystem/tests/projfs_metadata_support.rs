@@ -1,14 +1,17 @@
-use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
 };
-use acyclic_fs::{
-    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountPath,
-    SharedCheckout, WorkBudget,
-};
+use acyclic_fs_format::metadata::FileMetadata;
 use bytes::Bytes;
 use std::sync::Arc;
+use {
+    acyclic_fs::{
+        CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, SharedCheckout,
+    },
+    acyclic_fs_native_contract::MountPath,
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 pub type MemorySource =
     CheckoutMountSource<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
@@ -92,8 +95,8 @@ pub fn mount_source(
     let destination = root.path().join("projection");
     std::fs::create_dir(&destination)?;
     let session = acyclic_fs::mount_native(
-        acyclic_fs::NativeMountRequest {
-            mount_id: acyclic_fs::MountId::new(),
+        acyclic_fs_native_contract::NativeMountRequest {
+            mount_id: acyclic_fs_format::identity::MountId::new(),
             volume_id: source.volume_id()?,
             destination: destination.clone(),
             writable: true,

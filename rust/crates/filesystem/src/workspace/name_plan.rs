@@ -23,7 +23,8 @@ pub(super) fn inspect(
                         .admit(crate::WorkCounters::UNCHARGED)
                         .map_err(native)?;
                     cancellation.check()?;
-                    #[cfg(all(test, loom))]
+                    #[cfg(test)]
+                    #[cfg(all(loom))]
                     if super::name_model::omit_plan_charge() {
                         return state.admit(delta).map_err(native).map_err(Into::into);
                     }

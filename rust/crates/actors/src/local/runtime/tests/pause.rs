@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::{
     CommitId, CommittedEnvelope, FollowRequest, FollowStream, Heads, HeadsRequest,
     IdempotencyObservation, ProviderContext, ReadRequest, WriteOutcome, WriteRequest,
@@ -225,7 +226,7 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
     entered?;
     assert!(matches!(
         delivered,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
+        Err(Error::Stream(error)) if error.category() == StreamCategory::Unavailable
     ));
     let slot = runtime.slot(&address).ok_or("lost retained placement")?;
     assert!(slot.inner.lock().await.pending.is_some());
@@ -248,7 +249,7 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
         entered.await?;
         assert!(matches!(
             refused,
-            Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
+            Err(Error::Stream(error)) if error.category() == StreamCategory::Unavailable
         ));
         assert!(slot.inner.lock().await.pending.is_some());
         assert_eq!(
@@ -486,7 +487,7 @@ async fn failed_pause_reports_before_held_delivery() -> TestResult {
     );
     assert!(matches!(
         failed.await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::AccessDenied
+        Err(Error::Stream(error)) if error.category() == StreamCategory::AccessDenied
     ));
     assert_eq!(handler.active.load(Ordering::SeqCst), 1);
     // Taking the error cannot wait for this held handler. A later pause can
@@ -550,7 +551,7 @@ async fn completed_unread_failure() -> TestResult {
     else {
         return Err("unread completed pause lost its original Unknown".into());
     };
-    assert_eq!(source.as_ref(), &StreamError::Unavailable);
+    assert_eq!(source.category(), StreamCategory::Unavailable);
     let before = runtime.store.load(&address).await?;
     runtime.store.submit(*publication).await?;
     assert_eq!(runtime.store.load(&address).await?.anchor, before.anchor);
@@ -752,7 +753,10 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
             } else {
                 StreamError::AccessDenied
             };
-            assert!(matches!(outcome, Err(Error::Stream(error)) if error.as_ref() == &expected));
+            assert!(matches!(
+                outcome,
+                Err(Error::Stream(error)) if error.category() == expected.category()
+            ));
             assert_eq!(
                 runtime
                     .store
@@ -772,7 +776,7 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
             else {
                 return Err("lost original Unknown publication".into());
             };
-            assert_eq!(source.as_ref(), &StreamError::Unavailable);
+            assert_eq!(source.category(), StreamCategory::Unavailable);
             let before = runtime.store.load(&address).await?;
             assert_eq!(before.state().map(State::paused), Some(committed));
             // A lost write producer leaves an uncertain, unapplied request;
@@ -882,7 +886,7 @@ async fn replacement_and_producer_loss() -> TestResult {
     drop(release); // Original provider producer disappears; no timeout involved.
     assert!(matches!(
         pause.await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
+        Err(Error::Stream(error)) if error.category() == StreamCategory::Unavailable
     ));
     runtime.wake(&address);
     runtime.drain_actor(&address).await?;

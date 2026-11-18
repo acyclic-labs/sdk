@@ -1,6 +1,13 @@
 use super::*;
 use std::sync::Arc;
 
+fn finish_publication<T>(
+    result: Result<T, NativeWorkspacePublicationError>,
+    work: &NativeMaterializationWork,
+) -> crate::MeasuredResult<crate::OperationReceipt<T>, NativeWorkspacePublicationError> {
+    crate::performance::finish_measured(result, work.receipt(), Into::into)
+}
+
 // Keep construction scratch for each publication phase out of the caller's
 // active poll frame. The same operation retains custody of the boxed future.
 pub(super) async fn publication_step<T, E, F>(
@@ -50,9 +57,9 @@ pub async fn prepare_native_generation_transition<
     state: &crate::LocalCoreStateStore,
     publication: NativeWorkspacePublication<'_>,
     work: NativeMaterializationWork,
-) -> Result<
+) -> crate::MeasuredResult<
     crate::OperationReceipt<MaterializationJournal>,
-    (NativeWorkspacePublicationError, crate::WorkCounters),
+    NativeWorkspacePublicationError,
 > {
     let result = async {
         let mut guard = || std::future::ready(Ok::<_, NativeWorkspacePublicationError>(()));
@@ -70,12 +77,7 @@ pub async fn prepare_native_generation_transition<
         }
     }
     .await;
-    result
-        .map(|value| crate::OperationReceipt {
-            value,
-            work: work.receipt(),
-        })
-        .map_err(|cause| (cause, work.receipt()))
+    finish_publication(result, &work)
 }
 
 /// Reads and validates original progress without checkout effects.
@@ -83,9 +85,9 @@ pub async fn load_native_materialization_journal(
     state: &crate::LocalCoreStateStore,
     operation: OperationId,
     work: NativeMaterializationWork,
-) -> Result<
+) -> crate::MeasuredResult<
     crate::OperationReceipt<Option<MaterializationJournal>>,
-    (NativeWorkspacePublicationError, crate::WorkCounters),
+    NativeWorkspacePublicationError,
 > {
     let result = async {
         let journal = state.materialization(work.clone()).load(operation).await?;
@@ -98,12 +100,7 @@ pub async fn load_native_materialization_journal(
         Ok(journal)
     }
     .await;
-    result
-        .map(|value| crate::OperationReceipt {
-            value,
-            work: work.receipt(),
-        })
-        .map_err(|cause| (cause, work.receipt()))
+    finish_publication(result, &work)
 }
 
 /// Publishes with authorization before every effect.
@@ -114,9 +111,9 @@ pub async fn publish_native_generation_transition<A, O, F, Fut>(
     publication: NativeWorkspacePublication<'_>,
     work: NativeMaterializationWork,
     mut before_effect: F,
-) -> Result<
+) -> crate::MeasuredResult<
     crate::OperationReceipt<MaterializationJournal>,
-    (NativeWorkspacePublicationError, crate::WorkCounters),
+    NativeWorkspacePublicationError,
 >
 where
     A: crate::AsyncAuthorityStore,
@@ -139,12 +136,7 @@ where
             .await
     }
     .await;
-    result
-        .map(|value| crate::OperationReceipt {
-            value,
-            work: work.receipt(),
-        })
-        .map_err(|cause| (cause, work.receipt()))
+    finish_publication(result, &work)
 }
 
 async fn prepare_generation<A, O, F, Fut>(
@@ -447,4 +439,9 @@ pub enum NativeWorkspacePublicationError {
     /// Stage completion was not acknowledged.
     #[error(transparent)]
     NativeStageUncertain(#[from] NativeStageUncertainty<NativeWorkspacePublicationError>),
+}
+impl From<crate::WorkObservationError> for NativeWorkspacePublicationError {
+    fn from(error: crate::WorkObservationError) -> Self {
+        NativeTreeMaterializationError::from(error).into()
+    }
 }

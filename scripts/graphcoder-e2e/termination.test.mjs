@@ -202,7 +202,7 @@ const probe = process.env.E2E_REPORT_TEST_BINARY;
 const selector = "obs::report_port::tests::inherited_report_port_joins_the_selected_real_process";
 
 function launch(scope, owned, mode) {
-  assert.ok(probe && isAbsolute(probe), "report-control step=admit failed; recovery command: cargo test --locked -p acyclic-native-runtime --lib --no-run; set E2E_REPORT_TEST_BINARY to its emitted executable");
+  assert.ok(probe && isAbsolute(probe), "report-control step=admit failed; recovery command: bazel build //rust/crates/native-runtime:acyclic_native_runtime_test_cases; set E2E_REPORT_TEST_BINARY to that file under `bazel info bazel-bin`");
   const start = owned ? scope.startOwned.bind(scope) : scope.start.bind(scope);
   return start(probe, ["--exact", selector, "--nocapture"], {
     scopeReport: true, env: { ...process.env, ACYCLIC_REPORT_PORT_CHILD: mode },

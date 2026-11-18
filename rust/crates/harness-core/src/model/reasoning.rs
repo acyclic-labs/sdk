@@ -149,6 +149,6 @@ impl crate::filesystem::UploadRecord for super::ModelEvent {
         }
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ModelEvent
+        crate::executor::json::JsonValueSchema::MODEL_EVENT
     }
 }

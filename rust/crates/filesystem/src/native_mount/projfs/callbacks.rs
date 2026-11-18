@@ -61,7 +61,10 @@ pub(super) struct PostOperationFailures {
     pub(super) pending_captures: HashMap<MountPath, PendingCapture>,
     pub(super) next_capture_serial: u64,
     pub(super) unreplayable: Option<String>,
-    pub(super) callback_failure: Option<(NativeMountError, crate::WorkCounters)>,
+    pub(super) callback_failure: Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )>,
 }
 
 #[derive(Clone)]

@@ -37,7 +37,7 @@ async fn check_selection(native: bool) -> Result<()> {
         )?
         .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
@@ -68,7 +68,7 @@ async fn check_selection(native: bool) -> Result<()> {
                 io: None,
             },
         )?;
-        let before = io.receipt();
+        let before = io.receipt()?;
         let owned = io.owned_bytes()?;
         let start = std::time::Instant::now();
         let result = reopened
@@ -88,7 +88,7 @@ async fn check_selection(native: bool) -> Result<()> {
             .await?
             .ok_or_else(|| invalid(Some(&io)))?;
         let hold = io.guard_owned(io.owned_since(owned)?)?;
-        let reads = io.receipt().authority_records_read - before.authority_records_read;
+        let reads = io.receipt()?.authority_records_read - before.authority_records_read;
         eprintln!(
             "fresh call native={native} calls={} reads={reads} elapsed_us={}",
             step + 1,
@@ -109,7 +109,7 @@ async fn check_selection(native: bool) -> Result<()> {
     }
     // The old public replay entry point is the negative control, independently
     // validated by ExecutionReplay rather than trusting the indexed selection.
-    let before = io.receipt();
+    let before = io.receipt()?;
     let owned = io.owned_bytes()?;
     let (_, records, hold) = crate::executor::replay_execution(
         &journal,
@@ -122,7 +122,7 @@ async fn check_selection(native: bool) -> Result<()> {
     let finite_hold = (!native)
         .then(|| io.guard_owned(io.owned_since(owned)?))
         .transpose()?;
-    assert!(io.receipt().authority_records_read - before.authority_records_read >= 1_001);
+    assert!(io.receipt()?.authority_records_read - before.authority_records_read >= 1_001);
     assert_eq!(records.len(), 2);
     drop(records);
     drop(hold);
@@ -185,7 +185,7 @@ async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree(
             crate::filesystem::execution_journal::test_support::journal().await?;
         let operation = OperationId::new();
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
@@ -472,7 +472,7 @@ async fn refused_selections_release_partial_output_on_both_ledgers() -> Result<(
             .append(operation, "refusal", &refusal(0), None)?
             .await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();

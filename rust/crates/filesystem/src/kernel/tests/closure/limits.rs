@@ -13,7 +13,7 @@ async fn typed_root_is_enforced_before_work() -> Result<(), Box<dyn std::error::
     .err()
     .ok_or("metadata object was admitted as a generation")?;
     assert!(matches!(wrong_kind.error, ClosureError::WrongObjectKind));
-    assert_eq!(*wrong_kind.work, WorkCounters::default());
+    assert_eq!(*wrong_kind.work().unwrap(), WorkCounters::default());
 
     Ok(())
 }
@@ -50,7 +50,7 @@ async fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
         missing.error,
         ClosureError::Storage(ObjectStoreError::Missing)
     ));
-    assert!(missing.work.object_probes > 0);
+    assert!(missing.work().unwrap().object_probes > 0);
 
     let outside_store = MemoryObjectStore::default();
     let four_bytes = blob_with_bytes(&outside_store, b"data").await?;
@@ -122,7 +122,7 @@ async fn pre_cancelled_closure_does_no_work() -> Result<(), Box<dyn std::error::
         failure.error,
         ClosureError::Storage(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -184,6 +184,6 @@ async fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn
         failure.error,
         ClosureError::Storage(ObjectStoreError::Missing)
     ));
-    assert!(failure.work.object_probes >= 3);
+    assert!(failure.work.as_deref().unwrap().object_probes >= 3);
     Ok(())
 }

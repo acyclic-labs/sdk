@@ -1,7 +1,8 @@
 //! Live output uses the public observer, alongside actual agent records.
 use super::{Failure, Fixture, Report, failure, observation_failure};
 use acyclic_harness_client::{AgentClient, AgentClientError, AgentEvent, WireSessionError};
-use acyclic_stream::{StreamProvider, session::Client, wire, wire_codec};
+use acyclic_stream::{StreamProvider, session::Client, wire_codec};
+use acyclic_stream_wire::wire;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 

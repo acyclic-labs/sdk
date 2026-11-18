@@ -20,7 +20,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
         MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ToolResultContent
+        crate::executor::json::JsonValueSchema::TOOL_RESULT_CONTENT
     }
 }
 impl crate::filesystem::UploadRecord for ToolResultContent {
@@ -31,7 +31,7 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
         self.retained_payload_bytes()
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ToolResultContent
+        crate::executor::json::JsonValueSchema::TOOL_RESULT_CONTENT
     }
 }
 
@@ -68,7 +68,7 @@ pub(crate) fn vec_with_capacity<T>(capacity: usize, io: Option<&PreparationIo>) 
 
 pub(crate) fn charge_items(io: Option<&PreparationIo>, items: u64) -> Result<()> {
     if let Some(io) = io {
-        let charge = acyclic_fs::WorkCounters {
+        let charge = acyclic_fs_work::performance::WorkCounters {
             items_examined: items,
             ..Default::default()
         };
@@ -117,7 +117,7 @@ fn inspect_value(
                 maximum_items: Some(maximum_items),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
-            crate::executor::json::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::NONE,
             &mut |next| observer.codec_charge(next),
         )?;
     }
@@ -171,7 +171,7 @@ pub(super) fn result_bound(
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     #[cfg(not(target_arch = "wasm32"))]
     let _span = tracing::debug_span!("acyclic.harness.request.hash", bytes = bytes.len()).entered();
-    let charge = acyclic_fs::WorkCounters {
+    let charge = acyclic_fs_work::performance::WorkCounters {
         bytes_hashed: bytes.len() as u64,
         ..Default::default()
     };

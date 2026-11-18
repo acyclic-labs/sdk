@@ -37,7 +37,7 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
     let work = original.native_volume_work(budget)?;
     let resource = work.resource.as_ref().ok_or("original volume allowance")?;
     let remaining = resource.remaining()?.peak_allocation_bytes;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(83);
     let mut capture = Box::pin(schedule.scope(capture_subtrees_with_native_work(
         &mut checkout,
@@ -60,13 +60,13 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
             }
         }
     };
-    assert!(work.live_allocation_bytes() > baseline);
+    assert!(work.live_allocation_bytes().unwrap() > baseline);
     assert!(resource.remaining()?.peak_allocation_bytes < remaining);
     cancellation.cancel();
     schedule.cancel();
     // The accepted scan owns its inputs. Caller destruction must not wait for it.
     drop(capture);
-    assert!(work.live_allocation_bytes() > baseline);
+    assert!(work.live_allocation_bytes().unwrap() > baseline);
     assert!(!checkout.has_pending_mutations());
     submitted.release();
     loop {
@@ -76,7 +76,7 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
             event = events.recv() => event.ok_or("native completion event lost")?.release(),
         }
     }
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     assert_eq!(resource.remaining()?.peak_allocation_bytes, remaining);
     assert!(!checkout.has_pending_mutations());
     Ok(())
@@ -432,7 +432,7 @@ mod unchanged_properties {
                         .unwrap();
                     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
                     options.materialized_view = Some(baseline);
-                    let before_capture = work.receipt();
+                    let before_capture = work.receipt().unwrap();
                     let receipt = capture_subtrees_with_native_work(
                         &mut checkout,
                         &[root],

@@ -251,7 +251,7 @@ async fn operation_locators_cover_first_records_and_atomic_fork_replay() -> Test
                 .await?,
             WorkspaceForkOutcome::RetentionConflict
         );
-        original.receipt().verify(BUDGET)?;
+        original.receipt().unwrap().verify(BUDGET)?;
     }
     Ok(())
 }
@@ -305,7 +305,7 @@ async fn conflicting_atomic_fork_never_publishes_its_other_authority_or_locator(
                 store.head(occupied, &mut work).await?.sequence,
                 Sequence::new(1)
             );
-            original.receipt().verify(BUDGET)?;
+            original.receipt().unwrap().verify(BUDGET)?;
         }
     }
     Ok(())
@@ -395,8 +395,11 @@ async fn durable_operation_lookup_is_constant_work_for_long_histories() -> TestR
             .ok_or("durable operation was not found")?;
         assert_eq!(found.operation_id, proposed(operation).operation_id);
         let (records, backend_reads) = if operation == 1 { (1, 4) } else { (2, 5) };
-        assert_eq!(lookup.spent().authority_records_read, records);
-        assert_eq!(lookup.spent().backend_read_operations, backend_reads);
+        assert_eq!(lookup.spent().unwrap().authority_records_read, records);
+        assert_eq!(
+            lookup.spent().unwrap().backend_read_operations,
+            backend_reads
+        );
     }
     Ok(())
 }
@@ -484,7 +487,7 @@ async fn a_missing_lease_cannot_cache_a_rejected_append_attempt() -> TestResult 
                 .await?,
             FsAppendOutcome::Committed(_)
         ));
-        original.receipt().verify(BUDGET)?;
+        original.receipt().unwrap().verify(BUDGET)?;
     }
     Ok(())
 }
@@ -593,7 +596,7 @@ async fn a_closed_lease_attempt_does_not_poison_a_new_lease_for_the_same_operati
                 .await?
                 .is_none()
         );
-        original.receipt().verify(BUDGET)?;
+        original.receipt().unwrap().verify(BUDGET)?;
     }
     Ok(())
 }
@@ -650,7 +653,7 @@ async fn fork_lease_rejection_and_closed_lease_replay_preserve_atomic_publicatio
                 .await?,
             WorkspaceForkOutcome::Committed
         );
-        original.receipt().verify(BUDGET)?;
+        original.receipt().unwrap().verify(BUDGET)?;
     }
     Ok(())
 }
@@ -742,7 +745,7 @@ async fn separately_created_matching_records_are_not_an_atomic_fork() -> TestRes
                 .await?,
             WorkspaceForkOutcome::CreationRejected
         );
-        original.receipt().verify(BUDGET)?;
+        original.receipt().unwrap().verify(BUDGET)?;
     }
     Ok(())
 }

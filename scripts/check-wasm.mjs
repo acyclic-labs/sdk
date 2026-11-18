@@ -1,14 +1,13 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 // Check every WASM library on its real target. Published packages come from
 // the build table itself, so a package cannot be built without being checked.
 // The browser features below are compiled only by consumers; each is checked
 // on its own so one crate's features cannot mask a missing cfg in another.
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { runCommand } from "./run-command.mjs";
-import { wasmPackages, wasmSelection } from "./build-wasm.mjs";
+import { wasmPackages, wasmSelection } from "./wasm-packages.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";
 const target = "wasm32-unknown-unknown";
 

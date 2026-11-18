@@ -10,6 +10,10 @@ publish = false
 description = "Internal black-box conformance suites for Acyclic service providers"
 readme = "README.md"
 
+# The GraphCoder backend suite runs the plugin's acyclic binary, given as CARGO_BIN_EXE_acyclic.
+[package.metadata.bazel.test-tools.graphcoder_backends]
+acyclic = "//plugin:acyclic"
+
 [features]
 local-hotpath = []
 local-hotpath-proofs = ["local-hotpath", "acyclic-stream/test-support"]
@@ -26,6 +30,9 @@ s3-fixture = ["local-runner", "dep:async-trait", "dep:axum", "dep:s3s"]
 graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:acyclic-plugin", "acyclic-native-runtime/test-support"]
 
 [dependencies]
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-agent-host-conformance = { path = "agent-host" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
@@ -40,6 +47,7 @@ acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["conf
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["conformance"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["conformance"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 async-trait = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 acyclic-plugin = { path = "../../../plugin", optional = true }

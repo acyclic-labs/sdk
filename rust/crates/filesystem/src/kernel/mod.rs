@@ -129,6 +129,7 @@ pub(crate) use rebase::{
 pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
 pub(crate) use search::binary_search_with_accounting;
 
+pub(crate) use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
 pub use attribute::{
     AttributeClass, AttributeEntry, AttributeError, AttributeName, AttributePage,
     attribute_page_id, decode_attribute_page, encode_attribute_page,
@@ -219,9 +220,7 @@ pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError,
     MergeGenerationOutcome, MergeGenerationRequest, MergeGenerationResult, merge_generation_async,
 };
-pub use metadata::{
-    FileMetadata, MetadataField, decode_file_metadata, encode_file_metadata, file_metadata_id,
-};
+pub use metadata::{decode_file_metadata, encode_file_metadata, file_metadata_id};
 pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{NamespacePath, NamespacePathError};
 pub use path_access::{

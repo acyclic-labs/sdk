@@ -1,6 +1,7 @@
+import { wasmSource, wasmSourceSync } from "@acyclic-labs/core/wasm";
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { decodeHttpResponse as decodeHttpResponseWasm, decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
@@ -12,20 +13,19 @@ import {
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
 import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitEffect, ProviderCommitRequest, Revision } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
-import type { HttpRoute } from "./http-contract.js";
+import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
+
+/** Decode a Rust-validated response using its route-specific result type. */
+export function decodeHttpResponseFor<Route extends HttpRoute>(route: Route, responseJson: string, followed?: string): HttpResponseFor<Route>;
+export function decodeHttpResponseFor(route: string, responseJson: string, followed?: string): unknown {
+  return decodeHttpResponseWasm(route, responseJson, followed);
+}
 
 let wasmReady: Promise<void> | undefined;
 export async function ensureStreamWasm(): Promise<void> {
   wasmReady ??= (async () => {
     const wasmUrl = new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url);
-    if (wasmUrl.protocol === "file:") {
-      const { readFile } = await import("node:fs/promises");
-      const instance = await initStreamWasm({ module_or_path: Uint8Array.from(await readFile(wasmUrl)) });
-      verifyExports(instance);
-    } else {
-      const instance = await initStreamWasm({ module_or_path: wasmUrl });
-      verifyExports(instance);
-    }
+    verifyExports(await initStreamWasm({ module_or_path: await wasmSource(wasmUrl) }));
   })();
   try { await wasmReady; }
   catch (error) { wasmReady = undefined; throw error; }
@@ -36,15 +36,10 @@ if (initializeStreamWasmSync()) wasmReady = Promise.resolve();
 else await ensureStreamWasm();
 
 function initializeStreamWasmSync(): boolean {
-  const runtime = globalThis as typeof globalThis & {
-    process?: { getBuiltinModule?: (name: string) => unknown };
-  };
-  const getBuiltinModule = runtime.process?.getBuiltinModule;
-  if (getBuiltinModule === undefined) return false;
-  const filesystem = getBuiltinModule("node:fs") as { readFileSync?: (path: URL) => Uint8Array } | undefined;
-  if (filesystem?.readFileSync === undefined) return false;
   const wasmUrl = new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url);
-  const instance = initStreamWasmSync({ module: filesystem.readFileSync(wasmUrl) });
+  const source = wasmSourceSync(wasmUrl);
+  if (source === undefined) return false;
+  const instance = initStreamWasmSync({ module: source });
   verifyExports(instance);
   return true;
 }

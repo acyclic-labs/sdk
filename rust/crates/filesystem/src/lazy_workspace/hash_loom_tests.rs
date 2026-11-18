@@ -27,7 +27,7 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
                 view
             }
         };
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         if reentrant {
             let mut accounting = KernelAccounting::native(&work, &cancellation);
             work.state(|_| {
@@ -72,7 +72,7 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
                 "invocation cancellation reached the original"
             );
         }
-        let receipt = original.receipt();
+        let receipt = original.receipt().unwrap();
         let hashed = receipt.bytes_hashed - before.bytes_hashed;
         let encoded = if shadow {
             br#""Empty""#.as_slice()
@@ -98,9 +98,10 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
             before.bytes_copied + u64::from(other_result.is_ok())
         );
         assert_eq!(receipt.allocation_operations, before.allocation_operations);
-        assert!(original.live_allocation_bytes() <= before.peak_allocation_bytes);
+        assert!(original.live_allocation_bytes().unwrap() <= before.peak_allocation_bytes);
         assert!(
-            original.live_allocation_bytes() >= NativeMaterializationWork::accounting_state_bytes()
+            original.live_allocation_bytes().unwrap()
+                >= NativeMaterializationWork::accounting_state_bytes()
         );
         assert_eq!(receipt.peak_allocation_bytes, before.peak_allocation_bytes);
         let state = original.state.lock();

@@ -2,14 +2,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::simulation::sites;
-use acyclic_fs::{
-    CancellationToken, FilesystemNativeSources, FilesystemSourceProvider, FilesystemWireLimits,
-    FilesystemWireService, Fs, IdempotencyKey, ReconcileOutcome, SourceError, SourceOptions,
-    SourceState, WorkBudget,
-};
 use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use acyclic_native_runtime::testing::Schedule;
 use std::{collections::BTreeMap, sync::Arc};
+use {
+    acyclic_fs::{
+        CancellationToken, FilesystemNativeSources, FilesystemSourceProvider, FilesystemWireLimits,
+        FilesystemWireService, Fs, IdempotencyKey, ReconcileOutcome, SourceError, SourceOptions,
+        SourceState,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[tokio::test]
 async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_workspace()

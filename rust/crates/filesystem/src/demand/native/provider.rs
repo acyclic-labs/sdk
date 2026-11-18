@@ -51,11 +51,15 @@ impl DemandSource for NativeDemandSource {
                 })?;
                 provider.check(&source, context)?;
                 provider.observe_parent(path, context)?;
-                let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
+                let mut node = provider.metadata(path, context)?.as_ref().map(|metadata| {
+                    Self::node(fixture_path_key(path, metadata).as_deref(), metadata)
+                });
                 if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
                     && provider.admit_to_watches(path, context)?
                 {
-                    node = provider.metadata(path, context)?.as_ref().map(Self::node);
+                    node = provider.metadata(path, context)?.as_ref().map(|metadata| {
+                        Self::node(fixture_path_key(path, metadata).as_deref(), metadata)
+                    });
                 }
                 provider.check(&source, context)?;
                 Ok(node)
@@ -158,7 +162,7 @@ impl DemandSource for NativeDemandSource {
                 if before.file_type() != crate::demand::SourceNodeKind::SymbolicLink {
                     return Err(DemandError::InvalidRequest);
                 }
-                if version(&before) != expected {
+                if version(fixture_path_key(path, &before).as_deref(), &before) != expected {
                     return Err(DemandError::StaleVersion);
                 }
                 let (relative, allocation) = provider.relative(path, context)?;
@@ -166,7 +170,12 @@ impl DemandSource for NativeDemandSource {
                 drop(relative);
                 context.release(allocation)?;
                 let bytes = answer?;
-                if provider.metadata(path, context)?.as_ref().map(version) != Some(expected) {
+                if provider
+                    .metadata(path, context)?
+                    .as_ref()
+                    .map(|metadata| version(fixture_path_key(path, metadata).as_deref(), metadata))
+                    != Some(expected)
+                {
                     return Err(DemandError::StaleVersion);
                 }
                 provider.check(&source, context)?;
@@ -185,7 +194,10 @@ pub(crate) fn finish_context<T>(
     match context {
         CallbackWork::Original(_) => result,
         CallbackWork::Ordinary(mut context) => {
-            merge_source_work(context.receipt(), accounting)?;
+            let receipt =
+                crate::performance::finish_measured(result, context.receipt(), DemandError::from);
+            let (result, completed) = accounting.split_receipt(receipt)?;
+            merge_source_work(completed, accounting)?;
             result
         }
     }

@@ -424,7 +424,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 });
             view
         };
-        let limits = crate::text_merge::ByteMergeLimits { max_bytes: None };
+        let limits = acyclic_fs_base::text_merge::ByteMergeLimits { max_bytes: None };
         for (index, (record, body)) in records.into_iter().zip(&mut bodies).enumerate() {
             let Some(record) = record else {
                 texts[index] = Some("");
@@ -446,7 +446,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 return scalar_conflict_view(reference(), accounting).map(Some);
             };
             let bytes = body.insert(bytes);
-            texts[index] = crate::text_merge::text_from_bytes(&bytes.bytes, limits).ok();
+            texts[index] = acyclic_fs_base::text_merge::text_from_bytes(&bytes.bytes, limits).ok();
             if contents == ConflictContents::Files && texts[index].is_none() {
                 return scalar_conflict_view(reference(), accounting).map(Some);
             }

@@ -1,0 +1,7 @@
+[package]
+name = 'demo'
+version = '1.0.0'
+edition = '2021'
+[[bin]]
+name = 'demo-cli'
+path = 'src/main.rs'

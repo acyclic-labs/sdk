@@ -37,7 +37,7 @@ fn suspended_state(operation: OperationId) -> wire::OperationState {
     let mut state = operation_state(operation, wire::OperationStatus::Succeeded);
     state.outcome = Some(wire::MutationOutcome {
         result: Some(wire::mutation_outcome::Result::Suspended(encode_machine(
-            MachineId::parse("00000000-0000-0000-0000-000000000043").expect("machine"),
+            MachineId(uuid::Uuid::from_u128(0x43)),
         ))),
     });
     state
@@ -56,9 +56,7 @@ async fn lifecycle_and_recovery_require_the_original_terminal_receipt()
         let key = service.expected_key;
         let operation = service.expected_operation;
         let admission = wire::MutationAdmission {
-            operation: Some(wire::OperationId {
-                value: operation.as_bytes().to_vec(),
-            }),
+            operation: Some(encode_operation(operation)),
             machine: Some(encode_machine(machine)),
             checkpoint: Some(encode_checkpoint(checkpoint)),
         };
@@ -83,9 +81,7 @@ async fn lifecycle_and_recovery_require_the_original_terminal_receipt()
             ),
             3 => (
                 Admission::SetSuspensionPolicy(wire::PolicyAdmission {
-                    operation: Some(wire::OperationId {
-                        value: operation.as_bytes().to_vec(),
-                    }),
+                    operation: Some(encode_operation(operation)),
                     machine: Some(encode_machine(machine)),
                     policy: Some(encode_suspension(policy)?),
                 }),
@@ -184,48 +180,62 @@ fn credential_failure_preserves_admitted_recovery_keys() {
         .build()
         .unwrap();
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(16))
-        .run(&(0..2usize, any::<u32>()), |(fail_at, seed)| {
-            runtime.block_on(async {
-                let (mut service, script, machine) =
-                    scripted_operation_service(vec![WatchReply::Items(vec![])], vec![]);
-                let key = IdempotencyKey::parse(&format!("{seed:08x}-0000-0000-0000-000000000041"))
-                    .unwrap();
-                service.expected_key = key;
-                let (provider, shutdown, server) = serve_operation_service(service).await.unwrap();
-                let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                let next = calls.clone();
-                let provider =
-                    provider.with_credential_provider(CredentialProvider::new(move || {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        std::future::ready(if index == fail_at {
-                            Err(acyclic_auth::credential::CredentialError::Invalid)
+        .run(
+            &(0..2usize, any::<u32>(), any::<bool>()),
+            |(fail_at, seed, unavailable)| {
+                runtime.block_on(async {
+                    let (mut service, script, machine) =
+                        scripted_operation_service(vec![WatchReply::Items(vec![])], vec![]);
+                    let key =
+                        IdempotencyKey::parse(&format!("{seed:08x}-0000-0000-0000-000000000041"))
+                            .unwrap();
+                    service.expected_key = key;
+                    let (provider, shutdown, server) =
+                        serve_operation_service(service).await.unwrap();
+                    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                    let next = calls.clone();
+                    let provider =
+                        provider.with_credential_provider(CredentialProvider::new(move || {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            std::future::ready(if index == fail_at {
+                                Err(if unavailable {
+                                    acyclic_auth::credential::CredentialError::Provider(
+                                        std::io::Error::other(
+                                            "original credential source unavailable",
+                                        )
+                                        .into(),
+                                    )
+                                } else {
+                                    acyclic_auth::credential::CredentialError::Invalid
+                                })
+                            } else {
+                                Ok("opaque.account+/=".into())
+                            })
+                        }));
+                    let outcome = provider.suspend(machine, key).await;
+                    let _ = shutdown.send(());
+                    server.await.unwrap().unwrap();
+                    if fail_at == 0 {
+                        let error = outcome.unwrap_err();
+                        let classified = if unavailable {
+                            matches!(error.classification(), ProviderError::Unavailable)
                         } else {
-                            Ok("opaque.account+/=".into())
-                        })
-                    }));
-                let outcome = provider.suspend(machine, key).await;
-                let _ = shutdown.send(());
-                server.await.unwrap().unwrap();
-                if fail_at == 0 {
-                    prop_assert!(matches!(outcome, Err(ProviderError::Rejected(_))));
-                } else {
-                    prop_assert_eq!(outcome, Err(ProviderError::Indeterminate(key)));
-                }
-                prop_assert_eq!(
-                    calls.load(std::sync::atomic::Ordering::Relaxed),
-                    fail_at + 1
-                );
-                prop_assert_eq!(script.lock().unwrap().calls.clone(), Vec::<&str>::new());
-                // Rejected discards the key; the same post-admission assertion rejects it.
-                if fail_at > 0 {
-                    prop_assert_ne!(
-                        Err::<(), _>(ProviderError::Rejected("renewal failed".into())),
-                        Err(ProviderError::Indeterminate(key))
+                            matches!(error.classification(), ProviderError::Rejected(_))
+                        };
+                        prop_assert!(classified);
+                        prop_assert!(std::error::Error::source(&error).is_some());
+                    } else {
+                        prop_assert_eq!(outcome, Err(ProviderError::Indeterminate(key)));
+                    }
+                    prop_assert_eq!(
+                        calls.load(std::sync::atomic::Ordering::Relaxed),
+                        fail_at + 1
                     );
-                }
-                Ok(())
-            })
-        })
+                    prop_assert_eq!(script.lock().unwrap().calls.clone(), Vec::<&str>::new());
+                    Ok(())
+                })
+            },
+        )
         .unwrap();
 }
 
@@ -339,15 +349,7 @@ async fn servers_without_live_fork_report_unsupported()
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041")?;
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
-    let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
-        inspected: operation_state(operation, wire::OperationStatus::Pending),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
-        watch: WatchReply::Items(Vec::new()),
-    };
+    let service = OperationService::new(key, operation, machine);
     let (machines, shutdown, server) = serve_operation_service(service).await?;
     assert!(matches!(
         machines

@@ -23,9 +23,16 @@ pub struct PublicationScope<'a> {
     /// published parent's proof in this epoch or under its retained root, every
     /// object it reaches that the parent's closure did not list.
     pub objects: &'a [ObjectId],
+    /// The root whose closure contains every member of `objects`, when the
+    /// record has one. A store may retain the scope by holding this root
+    /// alone; without one, it holds every listed object.
+    pub root: Option<ObjectId>,
     /// Independently authenticated roots made reachable by the same record.
     /// Separate slices preserve each proof's original allocation and custody.
     pub related_objects: &'a [ObjectId],
+    /// The root whose closure contains every member of `related_objects`, as
+    /// `root` is for `objects`.
+    pub related_root: Option<ObjectId>,
     /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.
     pub proven_at: u64,
 }
@@ -43,7 +50,10 @@ impl PublicationScope<'_> {
 
     /// Whether this publication introduces no immutable objects.
     pub fn is_empty(&self) -> bool {
-        self.objects.is_empty() && self.related_objects.is_empty()
+        self.root.is_none()
+            && self.related_root.is_none()
+            && self.objects.is_empty()
+            && self.related_objects.is_empty()
     }
 }
 

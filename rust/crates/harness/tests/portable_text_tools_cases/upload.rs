@@ -2,8 +2,8 @@
 
 use super::*;
 
-const CONTENT_WORK_BUDGET: acyclic_fs::WorkBudget =
-    acyclic_fs::performance::work_budget(100_000, 16_000_000);
+const CONTENT_WORK_BUDGET: acyclic_fs_work::performance::WorkBudget =
+    acyclic_fs_work::performance::work_budget(100_000, 16_000_000);
 
 #[tokio::test]
 async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost_ack() -> Result<()>

@@ -97,7 +97,8 @@ impl Pool {
                 let opening = ready.1.opening_subscription.take();
                 // Recovery through the home endpoint must serve later Opens
                 // without rediscovery. A moved-node endpoint cannot bind home.
-                let home_endpoint = std::sync::Arc::ptr_eq(&ready.1.channel, &self.home_channel);
+                let home_endpoint =
+                    super::transport::Shared::ptr_eq(&ready.1.channel, &self.home_channel);
                 // Discovery can race recovery of the previous home. Reuse its
                 // installed link if both handshakes found the same live node.
                 let reused = self.links.contains_key(&ready.0);

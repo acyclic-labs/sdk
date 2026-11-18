@@ -29,7 +29,7 @@ pub async fn publish_generation<P: PublicationOwner>(
     )
     .await
     .map(|output| output.receipt)
-    .map_err(|failure| OperationFailure::new(publication_error(failure.error), *failure.work))
+    .map_err(|failure| failure.map_error(publication_error))
 }
 
 #[allow(
@@ -70,7 +70,7 @@ where
                 .map(|receipt| Some(receipt.work))
                 .map_err(|failure| PublicationStepFailure {
                     cause: failure.error,
-                    work: Some(*failure.work),
+                    work: failure.work.map(|work| Some(*work)),
                 })
         }
     };
@@ -87,7 +87,7 @@ where
             .map(|receipt| (receipt.value, Some(receipt.work)))
             .map_err(|failure| PublicationStepFailure {
                 cause: E::from(crate::FsError::Authority(failure.error)),
-                work: Some(*failure.work),
+                work: failure.work.map(|work| Some(*work)),
             })
     };
     let mut roots = |root: &crate::kernel::GenerationRoot,
@@ -98,7 +98,7 @@ where
                 .map(|receipt| (receipt.value, Some(receipt.work)))
                 .map_err(|failure| PublicationStepFailure {
                     cause: failure.error,
-                    work: Some(*failure.work),
+                    work: failure.work.map(|work| Some(*work)),
                 });
             let bytes = accept_step(accounting, result)?;
             retain(accounting, bytes).map_err(E::from)?;
@@ -124,7 +124,10 @@ where
         },
     )
     .await;
-    result.map_err(|error| OperationFailure::new(error, accounting.spent()))
+    result.map_err(|error| match accounting.spent() {
+        Ok(work) => OperationFailure::new(error, work),
+        Err(observation) => OperationFailure::without_receipt(error, observation),
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -225,7 +228,7 @@ where
                 .await
                 .map_err(|error| PublicationStepFailure {
                     cause: error.into_error(|error| E::from(native_authority_error(error))),
-                    work: None,
+                    work: Ok(None),
                 })?;
             Ok((outcome, None))
         }
@@ -236,7 +239,10 @@ where
             future
                 .await
                 .map(|()| None)
-                .map_err(|cause| PublicationStepFailure { cause, work: None })
+                .map_err(|cause| PublicationStepFailure {
+                    cause,
+                    work: Ok(None),
+                })
         }
     };
     let mut roots = |root: &crate::kernel::GenerationRoot,

@@ -214,7 +214,7 @@ async fn preallocation_budget_rejections_report_only_completed_work()
             maximum: 0,
         })
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     let sparse = apply(
         &store,
@@ -248,15 +248,15 @@ async fn preallocation_budget_rejections_report_only_completed_work()
                 counter: "items_examined",
                 observed,
                 maximum,
-            }) if observed == failure.work.items_examined + ObjectId::ENCODED_LEN as u64
+            }) if observed == failure.work().unwrap().items_examined + ObjectId::ENCODED_LEN as u64
                 && maximum == scan_budget.items_examined
         ),
         "original failure: {:?}; completed work: {:?}",
         failure.error,
-        failure.work
+        failure.work().unwrap()
     );
-    assert_eq!(failure.work.items_examined, 5);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work().unwrap().items_examined, 5);
+    assert_eq!(failure.work().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -281,7 +281,7 @@ async fn inline_preallocation_handles_keep_size_and_growth()
         failure.error,
         RegularMutationError::KeepSizeBeyondEofUnsupported
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     let grown = apply(
         &store,

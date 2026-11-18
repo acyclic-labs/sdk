@@ -63,6 +63,8 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     let settings = json!({"original": bytes});
     let input = serde_json::to_vec(&settings).map_err(|error| error.to_string())?;
     let script = format!("echo {}", blake3::hash(bytes));
+    let typescript = b"import defaults from 'sys/plugin.json'; export default () => ({decision: 'allow', defaults});";
+    let missing = b"import missing from 'sys/missing.json'; export default () => missing;";
     let valid = BTreeMap::from([(MANIFEST, manifest.to_vec()), (INPUT, input)]);
     let mut identities = Vec::new();
     for (files, expected_reads, admitted) in [
@@ -100,6 +102,24 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 .chain([(TYPESCRIPT, Vec::new())])
                 .collect(),
             5,
+            false,
+        ),
+        (
+            valid
+                .clone()
+                .into_iter()
+                .chain([(TYPESCRIPT, typescript.to_vec())])
+                .collect(),
+            21,
+            true,
+        ),
+        (
+            valid
+                .clone()
+                .into_iter()
+                .chain([(TYPESCRIPT, missing.to_vec())])
+                .collect(),
+            6,
             false,
         ),
         (
@@ -175,7 +195,9 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     .into_iter()
                     .find(|(path, _)| observed.files.contains_key(path))
                 {
-                    let hook = &rules[0]["hooks"][0]["run"];
+                    let hook = rules
+                        .pointer("/0/hooks/0/run")
+                        .ok_or("admitted plugin lost its original hook")?;
                     if hook["instance"] != "original:plugins.ts#p:hooks/before-tool"
                         || hook[if form == SHELL { "sh" } else { "ps1" }] != script
                         || hook["config"]
@@ -184,6 +206,24 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                             != Some(settings.clone())
                     {
                         return Err("plugin decision changed its original hook or settings".into());
+                    }
+                } else if let Some(source) = observed.files.get(TYPESCRIPT) {
+                    let imported = observed
+                        .files
+                        .get(INPUT)
+                        .ok_or("admitted TypeScript lost its original dependency")?;
+                    let sources = json!([
+                        [
+                            TYPESCRIPT,
+                            std::str::from_utf8(source).map_err(|error| error.to_string())?
+                        ],
+                        [
+                            INPUT,
+                            std::str::from_utf8(imported).map_err(|error| error.to_string())?
+                        ],
+                    ]);
+                    if rules.pointer("/0/hooks/0/run/ts") != Some(&sources) {
+                        return Err("TypeScript hook discarded its original source closure".into());
                     }
                 } else if rules != json!([]) {
                     return Err("absent plugin hooks created a rule".into());

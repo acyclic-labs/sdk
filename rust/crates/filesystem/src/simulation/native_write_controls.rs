@@ -60,7 +60,7 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
     let (_, store) = simulation.stores();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original meter");
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let read = (store
         .read(
             object.object_id(),
@@ -71,14 +71,14 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
         .expect("actual partial SDK copy");
     assert_eq!(read.bytes.as_ref(), b"bod");
     let alias = read.bytes.clone();
-    let held = work.live_allocation_bytes();
+    let held = work.live_allocation_bytes().unwrap();
     drop(read);
-    assert_eq!(work.live_allocation_bytes(), held);
+    assert_eq!(work.live_allocation_bytes().unwrap(), held);
     drop(alias);
-    assert!(work.live_allocation_bytes() + 3 <= held);
+    assert!(work.live_allocation_bytes().unwrap() + 3 <= held);
     drop(store);
     drop(simulation);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 }
 
 #[tokio::test]
@@ -90,7 +90,7 @@ async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody
     let (_, store) = simulation.stores();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original meter");
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let requests = [ObjectReadRequest {
         object_id: object.object_id(),
         maximum_bytes: 4,
@@ -106,18 +106,18 @@ async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody
     assert_eq!(batch.0.len(), 2);
     assert_eq!(batch.0[0].bytes[0], b'b' ^ 0x80);
     assert_eq!(batch.0[1].bytes.as_ref(), b"body");
-    assert_eq!(work.receipt().object_probes, 2);
+    assert_eq!(work.receipt().unwrap().object_probes, 2);
     drop(batch);
     drop(store);
     drop(simulation);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 }
 
 #[tokio::test]
 async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let mut custody = work
         .claim(4, 1, crate::WorkCounters::UNCHARGED)
         .expect("payload capacity");
@@ -133,8 +133,8 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
     )
     .expect("intrinsic byte owner");
     let alias = object.bytes().clone();
-    let payload_live = work.live_allocation_bytes();
-    let hashed = work.receipt().bytes_hashed;
+    let payload_live = work.live_allocation_bytes().unwrap();
+    let hashed = work.receipt().unwrap().bytes_hashed;
     let (schedule, _events) = Schedule::new();
     let simulation = crate::Simulation::new(&schedule);
     schedule.inject_next(sites::OBJECT_PUT, SimulationFault::DelayObjectVisibility);
@@ -146,13 +146,13 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
         )
         .await)
         .expect("delayed admission");
-    assert_eq!(work.receipt().bytes_hashed, hashed);
-    assert_eq!(work.receipt().backend_write_operations, 0);
+    assert_eq!(work.receipt().unwrap().bytes_hashed, hashed);
+    assert_eq!(work.receipt().unwrap().backend_write_operations, 0);
     assert_eq!(
         simulation.state.lock().expect("state").pending_object_bytes,
         4
     );
-    assert!(work.live_allocation_bytes() >= payload_live);
+    assert!(work.live_allocation_bytes().unwrap() >= payload_live);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let before = work.receipt();
@@ -169,9 +169,9 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
     );
     drop(store);
     drop(simulation);
-    assert_eq!(work.live_allocation_bytes(), payload_live);
+    assert_eq!(work.live_allocation_bytes().unwrap(), payload_live);
     drop(alias);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 }
 
 #[tokio::test]
@@ -193,8 +193,8 @@ async fn native_scheduled_rejection_does_not_hash_or_write_payload() {
             .await,
         Err(ObjectStoreError::Simulation("scheduled rejection"))
     ));
-    assert_eq!(work.receipt().bytes_hashed, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
+    assert_eq!(work.receipt().unwrap().bytes_hashed, 0);
+    assert_eq!(work.receipt().unwrap().backend_write_operations, 0);
     assert!(
         simulation
             .state
@@ -253,6 +253,8 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
         (store
             .flush_before_publish(
                 crate::async_storage::PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[object.object_id()],
                     proven_at: 0,

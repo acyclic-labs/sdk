@@ -65,18 +65,13 @@ proptest! {
 }
 
 #[test]
-fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::error::Error>> {
-    let legacy = ActorReference::from_legacy_fields(b"account", None, "existing.Actor_1")?;
-    assert_eq!(
-        legacy,
-        ActorReference::new(b"account", b"__default", b"existing.Actor_1")?
-    );
-    assert!(ActorReference::from_legacy_fields(b"account", Some(""), "id").is_err());
+fn actor_reference_framing_and_reserved_namespace() -> Result<(), Box<dyn std::error::Error>> {
+    let reference = ActorReference::new(b"account", b"__default", b"existing.Actor_1")?;
     assert_eq!(
         NamespaceId::for_deployment(b"__default"),
         Err(IdentityError::ReservedNamespace)
     );
-    let bytes = legacy.encode();
+    let bytes = reference.encode();
     for length in 0..bytes.len() {
         assert!(ActorReference::decode(bytes.get(..length).ok_or("prefix")?).is_err());
     }
@@ -175,7 +170,6 @@ struct ActorVector {
     namespace_hex: String,
     id_hex: String,
     encoded_hex: String,
-    legacy: bool,
 }
 #[derive(Deserialize)]
 struct InvalidActorVector {
@@ -265,12 +259,6 @@ fn shared_golden_pairs_and_hostnames() -> Result<(), Box<dyn std::error::Error>>
         assert_eq!(value.encode(), bytes);
         assert_eq!(ActorReference::decode(&bytes)?, value);
         assert!(ResourceIdentity::decode(&bytes).is_err());
-        if row.legacy {
-            assert_eq!(
-                ActorReference::from_legacy_fields(&account, None, std::str::from_utf8(&id)?)?,
-                value
-            );
-        }
     }
     for row in vectors.invalid_actors {
         assert_eq!(

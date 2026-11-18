@@ -152,7 +152,8 @@ impl HostRoot {
         &self,
         work: &mut W,
     ) -> Result<crate::NativeRootIncarnation, DemandError> {
-        #[cfg(all(test, target_os = "linux"))]
+        #[cfg(test)]
+        #[cfg(all(target_os = "linux"))]
         if stat_probe::duplicate() {
             directory_identity(&self.directory(), work)?;
         }
@@ -311,7 +312,8 @@ impl HostRoot {
         path: &NativePath,
         work: &mut W,
     ) -> Result<HostStat, DemandError> {
-        #[cfg(all(test, windows))]
+        #[cfg(test)]
+        #[cfg(all(windows))]
         if stat_probe::old() {
             return self.stat_source(path, work);
         }
@@ -354,11 +356,13 @@ impl HostRoot {
         file: &File,
         work: &mut W,
     ) -> Result<HostStat, W::Error> {
-        #[cfg(all(test, any(target_os = "linux", windows)))]
+        #[cfg(test)]
+        #[cfg(all(any(target_os = "linux", windows)))]
         if stat_probe::duplicate() {
             self.stat_file(file, work)?;
         }
-        #[cfg(all(test, windows))]
+        #[cfg(test)]
+        #[cfg(all(windows))]
         if stat_probe::old() {
             return self.stat_file(file, work);
         }

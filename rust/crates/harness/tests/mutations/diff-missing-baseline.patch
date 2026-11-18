@@ -1,13 +1,13 @@
-diff --git a/rust/crates/harness/src/local/files.rs b/rust/crates/harness/src/local/files.rs
+diff --git a/rust/crates/harness-local/src/local/files.rs b/rust/crates/harness-local/src/local/files.rs
 index e74e4569e29..edd15cf1385 100644
---- a/rust/crates/harness/src/local/files.rs
-+++ b/rust/crates/harness/src/local/files.rs
+--- a/rust/crates/harness-local/src/local/files.rs
++++ b/rust/crates/harness-local/src/local/files.rs
 @@ -235,6 +235,12 @@ impl LocalHarness {
              .unwrap_or_else(|| workspace.view())
              .workspace();
          let cancellation = acyclic_fs::CancellationToken::new();
 +        let current = selected
-+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
++            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancellation)
 +            .await
 +            .map_err(storage)?
 +            .value
@@ -24,7 +24,7 @@ index e74e4569e29..edd15cf1385 100644
 -            })?
 -            .id();
 -        let current = selected
--            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+-            .head(acyclic_fs_work::performance::WorkBudget::UNBOUNDED, &cancellation)
 -            .await
 -            .map_err(storage)?
 -            .value

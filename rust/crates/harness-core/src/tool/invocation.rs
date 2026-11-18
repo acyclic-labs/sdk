@@ -94,7 +94,7 @@ impl ToolInvocation {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "tool call hash length overflow",
                 })?;
-            work.charge(acyclic_fs::WorkCounters {
+            work.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: hashed,
                 items_examined: 4,
                 ..Default::default()

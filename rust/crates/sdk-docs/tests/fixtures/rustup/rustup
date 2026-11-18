@@ -1,6 +1,6 @@
 #!/bin/sh
 case "$1" in
-  target) cat "$RUSTUP_HOME/targets" ;;
+  target) while IFS= read -r line; do printf '%s\n' "$line"; done < "$RUSTUP_HOME/targets" ;;
   which) printf '%s/bin/cargo\n' "$RUSTUP_HOME" ;;
   *) exit 1 ;;
 esac

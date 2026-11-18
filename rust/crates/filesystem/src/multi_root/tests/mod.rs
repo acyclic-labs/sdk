@@ -508,6 +508,9 @@ async fn context_authorizer_rejects_forged_root_bindings() -> Result<(), Box<dyn
     Ok(())
 }
 
+#[path = "../../../tests/support/transaction.rs"]
+mod fixtures;
+
 mod abort;
 mod conflicts;
 mod publication;

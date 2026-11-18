@@ -1,11 +1,14 @@
 //! Authenticated blob client for the Protobuf-JSON HTTP gateway.
+use crate::error::unavailable;
 use crate::{
     Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
-    RootId, Usage, convert, json, wire,
+    RootId, Usage,
+    binary::{BinaryObjects, Reply, Transport},
+    json, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::OwnedBytes;
-use prost::Message;
+use bytes::Bytes;
 use reqwest::{
     Client, Response, Url,
     header::{AUTHORIZATION, HeaderValue},
@@ -103,10 +106,6 @@ fn put_batch_request() -> Option<(usize, usize, usize)> {
 fn request_member((_, step, reference): (usize, usize, usize), len: usize, refs: usize) -> usize {
     step.saturating_add((len.div_ceil(3).saturating_mul(4)).saturating_sub(4))
         .saturating_add(refs.saturating_sub(1).saturating_mul(reference))
-}
-
-fn unavailable() -> Error {
-    wire::ErrorCode::Unavailable.into()
 }
 
 /// Authenticated native HTTP client for the Objects v1 blob gateway.
@@ -210,15 +209,11 @@ impl HttpObjects {
     }
 
     /// Posts one route's input and decodes its canonical output.
-    async fn call<I: Message, O: Message + Default>(
-        &self,
-        route: &str,
-        input: &I,
-    ) -> Result<O, Error> {
+    async fn call(&self, route: &str, input: Bytes) -> Result<Bytes, Error> {
         crate::operation::run(self.context.as_ref(), async {
-            let (_, input_name, output_name) = crate::HTTP_ROUTES
-                .iter()
-                .find(|(path, _, _)| *path == route)
+            let (input_name, output_name) = crate::ObjectsMethod::from_http_route(route)
+                .filter(|method| !method.is_streaming_http())
+                .map(crate::ObjectsMethod::http_message_types)
                 .ok_or_else(unavailable)?;
             let url = self
                 .endpoint
@@ -230,7 +225,7 @@ impl HttpObjects {
                 .post(url)
                 .header(AUTHORIZATION, authorization)
                 .header("content-type", "application/json")
-                .body(json::encode(input_name, input)?);
+                .body(json::encode_binary(input_name, &input, None)?);
             if let Some(context) = &self.context {
                 context.check()?;
             }
@@ -256,15 +251,15 @@ impl HttpObjects {
             if let Some(context) = &self.context {
                 context.check()?;
             }
-            let decoded =
-                json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
+            let decoded = json::decode_binary(output_name, &bytes, self.maximum)
+                .map_err(|_| unavailable())?;
             if let Some(lease) = &lease {
                 lease
                     .check()
                     .await
                     .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             }
-            Ok(decoded)
+            Ok(decoded.into())
         })
         .await
     }
@@ -302,23 +297,23 @@ impl HttpObjects {
         {
             return error;
         }
-        match status {
-            400 => wire::ErrorCode::InvalidArgument,
-            401 | 403 => wire::ErrorCode::AccessDenied,
-            404 => wire::ErrorCode::NotFound,
-            409 => wire::ErrorCode::Conflict,
-            413 | 429 => wire::ErrorCode::QuotaExceeded,
-            416 => wire::ErrorCode::RangeNotSatisfiable,
-            501 => wire::ErrorCode::Unsupported,
-            _ => wire::ErrorCode::Unavailable,
-        }
-        .into()
+        Error::from_http_status(status)
     }
 }
 
 #[cfg(test)]
 #[path = "http_context_tests.rs"]
 mod context_tests;
+
+impl Transport for &HttpObjects {
+    async fn invoke(&self, route: &str, input: Bytes) -> Result<Reply, Error> {
+        Ok((self.call(route, input).await?, None))
+    }
+
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        self.observe_availability(digest).await
+    }
+}
 
 #[acyclic_contract_derive::implementation_methods(RPC_METHODS)]
 #[async_trait::async_trait]
@@ -328,28 +323,18 @@ impl Blobs for HttpObjects {
     }
 
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
-        if let Some(context) = &self.context {
-            context.check()?;
-        }
-        self.put_sealed(crate::Sealed::new(body), references).await
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).put(body, references),
+        )
+        .await
     }
 
     async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let digest = Digest::sealed(&body);
-            let body = body.into_bytes();
-            let reply: wire::PutResponse = self
-                .call(
-                    "blobs/put",
-                    &wire::PutBlobRequest {
-                        digest: Some(digest.into()),
-                        body: bytes::Bytes::from_owner(body.clone()),
-                        references: convert::wire_digests(&references),
-                    },
-                )
-                .await?;
-            convert::verified_put(&reply, digest, body.len() as u64)
-        })
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).put_sealed(body, references),
+        )
         .await
     }
 
@@ -393,10 +378,7 @@ impl Blobs for HttpObjects {
             let members = chunk.len();
             results.extend(
                 crate::operation::admit(self.context.as_ref(), async {
-                    let (request, expected) = convert::put_blobs(chunk);
-                    let reply: wire::PutBlobsResponse =
-                        self.call("blobs/put-batch", &request).await?;
-                    convert::verified_puts(reply, &expected, None)
+                    Ok(BinaryObjects::new(self).put_batch_sealed(chunk).await)
                 })
                 .await
                 .unwrap_or_else(|error| vec![Err(error); members]),
@@ -406,19 +388,10 @@ impl Blobs for HttpObjects {
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let digest = Digest::of(&manifest.encode()?);
-            let length = manifest.length()?;
-            let reply: wire::PutResponse = self
-                .call(
-                    "blobs/put-manifest",
-                    &wire::PutManifestRequest {
-                        manifest: Some(convert::manifest(&manifest)),
-                    },
-                )
-                .await?;
-            convert::verified_put(&reply, digest, length)
-        })
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).put_manifest(manifest),
+        )
         .await
     }
 
@@ -428,122 +401,79 @@ impl Blobs for HttpObjects {
         range: ByteRange,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::GetBlobResponse = self
-                .call(
-                    "blobs/get",
-                    &wire::GetBlobRequest {
-                        digest: Some(digest.into()),
-                        range: Some(convert::range(range)),
-                        maximum_bytes,
-                    },
-                )
-                .await?;
-            convert::object(reply, digest, range, maximum_bytes)
-        })
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).get(digest, range, maximum_bytes),
+        )
         .await
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::BlobInfo = self
-                .call(
-                    "blobs/head",
-                    &wire::HeadBlobRequest {
-                        digest: Some(digest.into()),
-                    },
-                )
-                .await?;
-            convert::headed(&reply, digest)
-        })
-        .await
+        crate::operation::admit(self.context.as_ref(), BinaryObjects::new(self).head(digest)).await
     }
 
     async fn delete(&self, digest: Digest) -> Result<crate::Deletion, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::DeleteBlobResponse = self
-                .call(
-                    "blobs/delete",
-                    &wire::DeleteBlobRequest {
-                        digest: Some(digest.into()),
-                    },
-                )
-                .await?;
-            convert::delete(&reply)
-        })
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).delete(digest),
+        )
         .await
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::ListBlobsResponse = self
-                .call(
-                    "blobs/list",
-                    &wire::ListBlobsRequest {
-                        after: after.map(Into::into),
-                        limit,
-                    },
-                )
-                .await?;
-            convert::listed(&reply, after, limit)
-        })
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).list(after, limit),
+        )
         .await
     }
 
-    /// The server acknowledges a put only once it is durable.
-    async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {
-        crate::operation::admit(self.context.as_ref(), async { Ok(()) }).await
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
+        crate::operation::admit(self.context.as_ref(), BinaryObjects::new(self).flush(only)).await
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::RetainResponse = self
-                .call(
-                    "blobs/retain",
-                    &wire::RetainRequest {
-                        root: root.as_bytes().to_vec(),
-                        references: convert::wire_digests(&references),
-                    },
-                )
-                .await?;
-            Ok(convert::retained(&reply))
-        })
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).retain(root, references),
+        )
         .await
     }
 
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::ReleaseResponse = self
-                .call(
-                    "blobs/release",
-                    &wire::ReleaseRequest {
-                        root: root.as_bytes().to_vec(),
-                    },
-                )
-                .await?;
-            Ok(crate::Released {
-                existed: reply.existed,
-                revision: None,
-            })
-        })
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).release(root),
+        )
+        .await
+    }
+
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).retain_fenced(root, fence, references),
+        )
+        .await
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<crate::Released, Error> {
+        crate::operation::admit(
+            self.context.as_ref(),
+            BinaryObjects::new(self).release_terminal(root, fence),
+        )
         .await
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::CollectResponse =
-                self.call("blobs/collect", &wire::CollectRequest {}).await?;
-            Ok(convert::collection(&reply))
-        })
-        .await
+        crate::operation::admit(self.context.as_ref(), BinaryObjects::new(self).collect()).await
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
-        crate::operation::admit(self.context.as_ref(), async {
-            let reply: wire::UsageResponse =
-                self.call("blobs/usage", &wire::UsageRequest {}).await?;
-            Ok(convert::usage(&reply))
-        })
-        .await
+        crate::operation::admit(self.context.as_ref(), BinaryObjects::new(self).usage()).await
     }
 }

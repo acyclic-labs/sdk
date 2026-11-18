@@ -25,7 +25,7 @@ pub(crate) fn request_scratch(
     let held = crate::tool::edit::allocation(work, bytes)?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters {
+        work.charge(acyclic_fs_work::performance::WorkCounters {
             allocation_operations: 8,
             bytes_copied: copies as u64,
             items_examined: endpoint.as_str().len() as u64,

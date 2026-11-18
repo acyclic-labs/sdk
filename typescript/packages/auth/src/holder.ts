@@ -29,7 +29,7 @@ function joined(values: readonly Uint8Array[]): Uint8Array {
 export class TrustSnapshot extends RustTrustSnapshot {
   constructor(state: TrustState) {
     super(state.environment, joined(state.environmentKeys), state.account,
-      joined(state.issuerKeys), state.minimumKeyEpoch, [...state.revokedKeyIds], joined(state.revokedBlockIds), state.environmentKeysValidUntil, state.notBeforeUnixSeconds);
+      joined(state.issuerKeys), [state.minimumKeyEpoch, state.environmentKeysValidUntil, state.notBeforeUnixSeconds], [...state.revokedKeyIds], joined(state.revokedBlockIds));
   }
 }
 

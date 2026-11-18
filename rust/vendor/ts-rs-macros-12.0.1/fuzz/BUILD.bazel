@@ -40,15 +40,15 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
-        "@crates//libfuzzer-sys-0.4.13",
-        "@crates//proc-macro2-1.0.107",
-        "@crates//quote-1.0.47",
-        "@crates//serde_derive_internals-0.30.0",
-        "@crates//syn_2_0_119-2.0.119",
-        "@crates//syn_3_0_9-3.0.9",
-        "@crates//termcolor-1.4.1",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//proc-macro2-1.0.107",
+        "@sdk_crates//quote-1.0.47",
+        "@sdk_crates//serde_derive_internals-0.30.0",
+        "@sdk_crates//syn_2_0_119-2.0.119",
+        "@sdk_crates//syn_3_0_9-3.0.9",
+        "@sdk_crates//termcolor-1.4.1",
     ],
-    aliases = {"@crates//syn_3_0_9-3.0.9":"syn_serde"},
+    aliases = {"@sdk_crates//syn_3_0_9-3.0.9":"syn_serde"},
     visibility = ["//visibility:public"],
 )
 
@@ -69,15 +69,15 @@ rust_binary(
     deps = [
         ":ts_rs_attribute_fuzz",
     ] + [
-        "@crates//libfuzzer-sys-0.4.13",
-        "@crates//proc-macro2-1.0.107",
-        "@crates//quote-1.0.47",
-        "@crates//serde_derive_internals-0.30.0",
-        "@crates//syn_2_0_119-2.0.119",
-        "@crates//syn_3_0_9-3.0.9",
-        "@crates//termcolor-1.4.1",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//proc-macro2-1.0.107",
+        "@sdk_crates//quote-1.0.47",
+        "@sdk_crates//serde_derive_internals-0.30.0",
+        "@sdk_crates//syn_2_0_119-2.0.119",
+        "@sdk_crates//syn_3_0_9-3.0.9",
+        "@sdk_crates//termcolor-1.4.1",
     ],
-    aliases = {"@crates//syn_3_0_9-3.0.9":"syn_serde"},
+    aliases = {"@sdk_crates//syn_3_0_9-3.0.9":"syn_serde"},
     visibility = ["//visibility:public"],
 )
 
@@ -86,3 +86,6 @@ filegroup(
     srcs = glob(["**/*.rs"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])

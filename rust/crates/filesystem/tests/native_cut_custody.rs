@@ -1,13 +1,17 @@
 //! Composite continuations keep their decoded backing on its original meter.
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::{
-    CancellationToken, Fs, LazyDirectoryCursor, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore,
-    NativeMaterializationWork, OperationId, VolumeConfig, VolumeInitialization, WorkBudget,
-    demand::{Empty, Routed, native::NativeDemandSource},
-    kernel::{KernelAccounting, LogicalName, NameEncoding},
-};
 use std::{borrow::Cow, sync::Arc};
+use {
+    acyclic_fs::{
+        CancellationToken, Fs, LazyDirectoryCursor, LazyWorkspace, Lifecycle,
+        MemoryLazyWorkspaceStore, NativeMaterializationWork, VolumeConfig, VolumeInitialization,
+        demand::{Empty, Routed, native::NativeDemandSource},
+        kernel::{KernelAccounting, LogicalName, NameEncoding},
+    },
+    acyclic_fs_format::identity::OperationId,
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[tokio::test]
 async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()
@@ -63,20 +67,20 @@ async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()
         .map_err(|(error, _)| error)?;
     let receiver = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(error, _)| error)?;
-    let original_baseline = original.live_allocation_bytes();
-    let receiver_baseline = receiver.live_allocation_bytes();
+    let original_baseline = original.live_allocation_bytes().unwrap();
+    let receiver_baseline = receiver.live_allocation_bytes().unwrap();
     let decoded = LazyDirectoryCursor::decode(&encoded, config.profile, config.limits, &original)?;
     drop(encoded);
     drop(backing);
     let clone = decoded.clone(&mut accounting(&receiver))?;
     decoded.retire(&mut accounting(&original))?;
     assert!(
-        original.live_allocation_bytes() > original_baseline,
+        original.live_allocation_bytes().unwrap() > original_baseline,
         "the clone still holds decoded source cuts funded by the original meter"
     );
     clone.retire(&mut accounting(&receiver))?;
-    assert_eq!(original.live_allocation_bytes(), original_baseline);
-    assert_eq!(receiver.live_allocation_bytes(), receiver_baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), original_baseline);
+    assert_eq!(receiver.live_allocation_bytes().unwrap(), receiver_baseline);
     Ok(())
 }
 

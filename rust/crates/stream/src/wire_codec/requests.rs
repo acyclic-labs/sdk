@@ -445,13 +445,17 @@ fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) fn accepted_response_limit(
-    input: &crate::wire::CommitRequest,
+    input: &acyclic_stream_wire::wire::CommitRequest,
 ) -> Result<usize, crate::StreamError> {
     let mut maximum = 2 * crate::MAX_COMMAND_BYTES + 64;
     for mutation in input.effects.iter().flat_map(|effect| &effect.mutations) {
         let records = match mutation.mutation.as_ref() {
-            Some(crate::wire::commit_mutation::Mutation::Append(append)) => append.records.len(),
-            Some(crate::wire::commit_mutation::Mutation::Fork(fork)) => fork.records.len(),
+            Some(acyclic_stream_wire::wire::commit_mutation::Mutation::Append(append)) => {
+                append.records.len()
+            }
+            Some(acyclic_stream_wire::wire::commit_mutation::Mutation::Fork(fork)) => {
+                fork.records.len()
+            }
             None => return Err(crate::StreamError::InvalidArgument),
         };
         maximum = records
@@ -558,7 +562,7 @@ mod tests {
                     if_tail: tail,
                     idempotency_key: key,
                 };
-                let expected = crate::wire::AppendRequest {
+                let expected = acyclic_stream_wire::wire::AppendRequest {
                     path: request.path.to_string(),
                     records: request
                         .records

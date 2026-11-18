@@ -38,7 +38,7 @@ trait Storage: ProviderPlatform {
     fn load(&self, digest: Digest) -> BoxProviderFuture<'_, Result<Node, Error>>;
     fn save(&self, digest: Digest, bytes: Vec<u8>) -> BoxProviderFuture<'_, Result<(), Error>>;
 }
-struct Provider<P: ?Sized>(Arc<P>);
+struct Provider<P: ?Sized>(acyclic_stream::ProviderOwner<P>);
 
 fn path(digest: Digest) -> Result<StreamPath, Error> {
     StreamPath::new(format!(
@@ -177,7 +177,10 @@ impl Children {
         self.count = 0;
     }
     /// Bind immutable node IO after decoding a checkpoint.
-    pub(crate) fn bind<P: StreamProvider + ?Sized>(&mut self, provider: Arc<P>) {
+    pub(crate) fn bind<P: StreamProvider + ?Sized>(
+        &mut self,
+        provider: acyclic_stream::ProviderOwner<P>,
+    ) {
         self.storage = Some(Arc::new(Provider(provider)));
     }
     /// Flush nodes created before storage was bound, as during adoption.

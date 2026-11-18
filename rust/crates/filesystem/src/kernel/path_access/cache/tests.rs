@@ -131,7 +131,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
             // Keep a physical buffer larger than the earlier batch high-water
             // mark alive, so that history cannot hide a duplicate cache charge.
             let mut independent_peak = Retained::<Vec<u8>>::allocate(
-                usize::try_from(work.spent().peak_allocation_bytes)?,
+                usize::try_from(work.spent().unwrap().peak_allocation_bytes)?,
                 &mut work.accounting(),
             )?;
             let peak_bytes = independent_peak.value.capacity() as u64;
@@ -139,7 +139,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 .value
                 .resize(usize::try_from(peak_bytes)?, 0x5a);
             let baseline = baseline + peak_bytes;
-            let before = work.spent().backend_read_operations;
+            let before = work.spent().unwrap().backend_read_operations;
             // Distinct decode bounds miss the decoded cache while sharing the
             // operation cache's original encoded object.
             for maximum_page_items in [1, 2] {
@@ -172,7 +172,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 assert_eq!(work.allocations.scratch_bytes(), 0);
             }
             assert_eq!(
-                work.spent().backend_read_operations - before,
+                work.spent().unwrap().backend_read_operations - before,
                 expected_page_reads
             );
             if capacity == 3 {
@@ -180,7 +180,7 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 // retire. A live independent buffer makes this exact admission
                 // the operation's peak, without frame-size headroom.
                 let mut boundary = Retained::<Vec<u8>>::allocate(
-                    usize::try_from(work.spent().peak_allocation_bytes)?,
+                    usize::try_from(work.spent().unwrap().peak_allocation_bytes)?,
                     &mut work.accounting(),
                 )?;
                 boundary.value.resize(boundary.value.capacity(), 0x6b);
@@ -247,9 +247,9 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
                 baseline - peak_bytes - independent_bytes
             );
             if observed {
-                assert_eq!(work.spent().peak_allocation_bytes, measured_peak);
+                assert_eq!(work.spent().unwrap().peak_allocation_bytes, measured_peak);
             } else {
-                measured_peak = work.spent().peak_allocation_bytes;
+                measured_peak = work.spent().unwrap().peak_allocation_bytes;
             }
         }
     }
@@ -368,10 +368,10 @@ fn compare<const CHARGE_REHASH: bool, const EXTRA_UNCHARGED_PROBE: bool>(
             .unwrap();
         let observed = take_slot_accesses();
         prop_assert_eq!(inserted, expected.0);
-        prop_assert_eq!(work.spent().items_examined, expected.1);
+        prop_assert_eq!(work.spent().unwrap().items_examined, expected.1);
         prop_assert_eq!(
             observed,
-            work.spent().items_examined,
+            work.spent().unwrap().items_examined,
             "slot visits must match charged items"
         );
         prop_assert_eq!(observed, expected.1);
@@ -386,7 +386,7 @@ fn compare<const CHARGE_REHASH: bool, const EXTRA_UNCHARGED_PROBE: bool>(
             );
             let observed = take_slot_accesses();
             prop_assert_eq!(observed, visits);
-            prop_assert_eq!(read.spent().items_examined, observed);
+            prop_assert_eq!(read.spent().unwrap().items_examined, observed);
         }
     }
     Ok(())
@@ -471,7 +471,7 @@ fn one_required_probe_is_sufficient_at_the_exact_item_limit() {
                 .admit(id(1), &OwnedBytes::from_static(b"one"), 0, &mut exact)
                 .unwrap()
         );
-        assert_eq!(exact.spent().items_examined, 1);
+        assert_eq!(exact.spent().unwrap().items_examined, 1);
         let mut verify = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         assert!(cache.probe(id(1), &mut verify).unwrap().is_some());
     }

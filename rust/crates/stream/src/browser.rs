@@ -32,7 +32,7 @@ const INCARNATION: &str = "incarnation";
 const METADATA_WORDS: usize = 10;
 
 /// Caller-selected durable recovery and canonical state capacities; omission is unbounded.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BrowserStreamLimits {
     /// Maximum retained successful journal commands.
     pub commands: Option<u64>,
@@ -40,24 +40,6 @@ pub struct BrowserStreamLimits {
     pub journal_bytes: Option<u64>,
     /// Canonical Rust state capacity; must match on every opener.
     pub memory: MemoryLimits,
-}
-
-impl Default for BrowserStreamLimits {
-    fn default() -> Self {
-        Self {
-            commands: None,
-            journal_bytes: None,
-            memory: MemoryLimits::default(),
-        }
-    }
-}
-
-struct BrowserClock;
-impl UnixMillisClock for BrowserClock {
-    fn now_unix_millis(&self) -> u64 {
-        // Invalid/unavailable clocks fail deadline admission closed.
-        js_sys::Date::now().to_string().parse().unwrap_or(u64::MAX)
-    }
 }
 
 struct Cache {
@@ -341,7 +323,8 @@ fn staged(
     clock: Arc<ReplicaClock>,
     durable: &crate::AppliedRevisions,
 ) -> MemoryStream {
-    let mut provider = MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock);
+    let mut provider =
+        MemoryStream::new_with_commit_clock(limits, Arc::new(SystemUnixMillisClock), clock);
     provider.revisions = Arc::new(durable.staging());
     provider
 }

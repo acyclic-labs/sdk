@@ -30,6 +30,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -37,17 +38,17 @@ rust_library(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/stream:acyclic_stream",
-        "@crates//arrayvec-0.7.8",
-        "@crates//arrow-array-60.1.0",
-        "@crates//arrow-ipc-60.1.0",
-        "@crates//arrow-schema-60.1.0",
-        "@crates//base64_0_23_1-0.23.1",
-        "@crates//blake3-1.8.7",
-        "@crates//oxrdf-0.3.5",
-        "@crates//oxttl-0.2.5",
-        "@crates//parquet-60.1.0",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
+        "@sdk_crates//arrayvec-0.7.8",
+        "@sdk_crates//arrow-array-60.1.0",
+        "@sdk_crates//arrow-ipc-60.1.0",
+        "@sdk_crates//arrow-schema-60.1.0",
+        "@sdk_crates//base64_0_23_1-0.23.1",
+        "@sdk_crates//blake3-1.8.7",
+        "@sdk_crates//oxrdf-0.3.5",
+        "@sdk_crates//oxttl-0.2.5",
+        "@sdk_crates//parquet-60.1.0",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
     ],
     visibility = ["//visibility:public"],
 )
@@ -64,6 +65,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -71,11 +73,11 @@ rust_test(
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
-        "@crates//bytes-1.12.1",
-        "@crates//futures-0.3.34",
-        "@crates//proptest-1.12.0",
-        "@crates//tempfile-3.27.0",
-        "@crates//tokio-1.54.1",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//tempfile-3.27.0",
+        "@sdk_crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -85,8 +87,21 @@ isolated_test(
     name = "acyclic_harness_metrics_test",
     binary = ":acyclic_harness_metrics_test_cases",
     id = "acyclic-harness-metrics",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_harness_metrics_test_full-cloud",
+    binary = ":acyclic_harness_metrics_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-harness-metrics",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(
@@ -95,6 +110,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

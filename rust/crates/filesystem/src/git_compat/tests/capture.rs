@@ -587,7 +587,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
             .parents(&original, &cancellation)
             .await
             .expect("native captured ancestry");
-        original.receipt().backend_read_operations
+        original.receipt().unwrap().backend_read_operations
     };
     let wrong_operation = first
         .authenticated_proof(
@@ -602,7 +602,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
         wrong_operation.error,
         GitCaptureAuthenticationError::Capture(GitCaptureError::Conflict)
     ));
-    assert_eq!(wrong_operation.work.backend_read_operations, 0);
+    assert_eq!(wrong_operation.work().unwrap().backend_read_operations, 0);
     let check =
         |result: Option<GitCaptureProof>, spent: crate::WorkCounters, expected_reads: u64| {
             spent
@@ -640,7 +640,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
                 .authenticated_proof(operation_id, &graph, &original, &cancellation)
                 .await
                 .expect("native proof");
-            check(result, original.receipt(), expected_native_reads);
+            check(result, original.receipt().unwrap(), expected_native_reads);
         }
     }
     for (cancelled, reads, encoded) in [
@@ -668,7 +668,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
                     WorkspaceError::Cancelled(_)
                 ))
             ));
-            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+            assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
         } else {
             let expected = if reads == 0 {
                 "backend_read_operations"
@@ -680,7 +680,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
                 | GitCaptureAuthenticationError::Lineage(crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(crate::WorkError::BudgetExceeded { counter, .. })))
                 if counter == expected));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     }
 }
 

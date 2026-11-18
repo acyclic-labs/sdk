@@ -275,9 +275,9 @@ fn native_funded_transaction_drop_releases_once_before_child_exec() {
     let namespace = store.namespace().unwrap();
     let mut control = ForkControl::start().expect("child reached pre_exec");
     let live_conflict = is_ownership_conflict(&LocalCoreStateStore::open_owned(directory.path()));
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     drop(namespace);
-    let after = work.receipt();
+    let after = work.receipt().unwrap();
     let released_error = LocalCoreStateStore::open_owned(directory.path()).err();
     let status = control.finish().expect("release, join and reap child");
     assert!(status.success(), "true status: {status}");
@@ -313,12 +313,12 @@ fn explicit_native_release_does_not_unlock_a_reacquired_file_description_on_drop
             .open(&paths.lock)
             .unwrap(),
     );
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     lock.unlock().unwrap();
-    let after_unlock = work.receipt();
+    let after_unlock = work.receipt().unwrap();
     same_description.try_lock(FileLockMode::Exclusive).unwrap();
     drop(lock);
-    let after_drop = work.receipt();
+    let after_drop = work.receipt().unwrap();
     let exclusion = probe.try_lock(FileLockMode::Exclusive);
     same_description.unlock().unwrap();
     assert!(

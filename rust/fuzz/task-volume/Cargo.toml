@@ -15,6 +15,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 acyclic-harness = { path = "../../crates/harness", default-features = false }
 acyclic-stream = { path = "../../crates/stream", default-features = false }
+acyclic-stream-wire = { path = "../../crates/stream-wire" }
 prost = "0.14.4"
 serde_json = "1.0"
 

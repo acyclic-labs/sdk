@@ -4,35 +4,46 @@ use acyclic_objects::{Blobs, Digest, MemoryObjects, json, wire};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
-/// Accepts a JavaScript byte limit as a number: wasm-bindgen would silently wrap a `usize` argument above 2^32, so reject non-integers and saturate.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the value is a non-negative integer and `as` saturates at usize::MAX"
-)]
+/// Accepts a JavaScript byte limit and saturates at the wasm32 address bound.
 fn byte_limit(value: f64) -> Result<usize, JsValue> {
-    if value.is_nan() || value < 0.0 || value.fract() != 0.0 {
-        return Err(error(wire::ErrorCode::InvalidArgument.into()));
+    if value == 0.0 {
+        return Ok(0);
     }
-    Ok(value as usize)
+    if value > f64::from(u32::MAX) && value.fract() == 0.0 {
+        return Ok(usize::MAX);
+    }
+    acyclic_stream::wasm_unsigned_integer(value)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| error(&wire::ErrorCode::InvalidArgument.into()))
 }
 
 #[wasm_bindgen]
 pub fn encode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::encode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(error)
+    json::encode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(|cause| error(&cause))
 }
 #[wasm_bindgen]
 pub fn decode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::decode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(error)
+    json::decode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(|cause| error(&cause))
 }
 #[wasm_bindgen]
 pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue> {
-    let (_, input, response) = acyclic_objects::HTTP_ROUTES
-        .iter()
-        .chain(acyclic_objects::HTTP_STREAM_ROUTES)
-        .find(|(name, _, _)| *name == route)
-        .ok_or_else(|| error(wire::ErrorCode::InvalidArgument.into()))?;
-    Ok(if output { *response } else { *input }.to_owned())
+    let (input, response) = acyclic_objects::ObjectsMethod::from_http_route(route)
+        .map(acyclic_objects::ObjectsMethod::http_message_types)
+        .ok_or_else(|| error(&wire::ErrorCode::InvalidArgument.into()))?;
+    Ok(if output { response } else { input }.to_owned())
+}
+
+/// Classifies an HTTP failure without a recognized error detail.
+#[wasm_bindgen]
+#[must_use]
+pub fn objects_v1_http_error_code(status: u16) -> i32 {
+    acyclic_objects::Error::from_http_status(status).code as i32
+}
+/// Classifies a gRPC failure without a recognized error detail.
+#[wasm_bindgen]
+#[must_use]
+pub fn objects_v1_grpc_error_code(status: i32) -> i32 {
+    acyclic_objects::Error::from_grpc_status_code(status).code as i32
 }
 
 /// The BLAKE3-256 digest naming `bytes` as a plain blob.
@@ -44,7 +55,8 @@ pub fn objects_v1_digest(bytes: &[u8]) -> Vec<u8> {
 /// Checks one route's binary reply against its binary request, as the Rust clients do.
 #[wasm_bindgen]
 pub fn verify_objects_v1(route: &str, input: Vec<u8>, output: Vec<u8>) -> Result<(), JsValue> {
-    acyclic_objects::route::verify(route, input.into(), output.into()).map_err(error)
+    acyclic_objects::route::verify(route, input.into(), output.into())
+        .map_err(|cause| error(&cause))
 }
 
 /// One in-memory account served through the canonical route dispatch.
@@ -81,7 +93,11 @@ impl ObjectsV1Memory {
         route: String,
         bytes: &js_sys::Uint8Array,
     ) -> Result<js_sys::Uint8Array, JsValue> {
-        let reply = self.open(route, bytes)?.body().await.map_err(error)?;
+        let reply = self
+            .open(route, bytes)?
+            .body()
+            .await
+            .map_err(|cause| error(&cause))?;
         Ok(js_sys::Uint8Array::from(reply.as_slice()))
     }
 }

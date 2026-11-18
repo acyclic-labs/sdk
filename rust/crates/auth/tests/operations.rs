@@ -97,7 +97,7 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         "rust/crates/objects/proto",
         "rust/crates/machines/proto",
         "rust/crates/inference/proto",
-        "rust/crates/stream/proto",
+        "rust/crates/stream-wire/proto",
         "compatibility/proto",
     ] {
         command.arg(format!("--proto_path={}", root.join(directory).display()));

@@ -158,7 +158,7 @@ async fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
         .err()
         .ok_or("corrupt delayed object unexpectedly published")?;
     assert!(matches!(failure.error, ObjectStoreError::DigestMismatch));
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
 
     let (schedule, _events) = Schedule::new();
 

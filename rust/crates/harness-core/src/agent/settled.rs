@@ -4,7 +4,7 @@
 
 use super::{AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, inbox_tail};
 use futures::TryStreamExt as _;
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 /// An original checkpoint's phase, readiness and answer against its accepted
 /// inbox cut, including a delivery whose next checkpoint is not committed yet.
@@ -38,7 +38,7 @@ pub struct Settlement {
 /// [`Error::NoSuchAgent`] when `agent` was never created; stream failures and
 /// malformed records as themselves.
 pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<Settlement, Error> {
@@ -46,7 +46,7 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
 }
 
 pub(crate) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<(super::AgentState, Settlement), Error> {
@@ -55,7 +55,7 @@ pub(crate) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
 }
 
 async fn observe<P: crate::store::JournalProvider + ?Sized + 'static>(
-    provider: &Arc<P>,
+    provider: &acyclic_stream::ProviderOwner<P>,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<(super::checkpoint::Head, Settlement), Error> {

@@ -8,15 +8,19 @@ thread_local! {
     static ITEMS: Cell<Option<(bool, [u64; 2])>> = const { Cell::new(None) };
 }
 
-pub(in crate::filesystem) fn sample_items(finished: bool, io: Option<&PreparationIo>) {
+pub(in crate::filesystem) fn sample_items(
+    finished: bool,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
     let Some(io) = io else {
         ITEMS.set(None);
-        return;
+        return Ok(());
     };
     let native = io.original_native_work().is_some();
     let (_, mut items) = ITEMS.get().unwrap_or((native, [0; 2]));
-    items[usize::from(finished)] = io.receipt().items_examined;
+    items[usize::from(finished)] = io.receipt()?.items_examined;
     ITEMS.set(Some((native, items)));
+    Ok(())
 }
 
 pub(in crate::filesystem) fn reopen() -> bool {
@@ -544,11 +548,11 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
         ))?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 64 * 1024 * 1024),
             &cancellation,
         )
         .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         assert_eq!(
             baseline,
             acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
@@ -565,21 +569,22 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
         drop(generation);
         drop(opened);
         drop(host);
-        let funded = |bytes: &acyclic_stream::OwnedBytes| {
-            work.live_allocation_bytes()
+        let funded = |bytes: &acyclic_stream::OwnedBytes| -> Result<bool> {
+            Ok(work
+                .live_allocation_bytes()?
                 .checked_sub(baseline)
-                .is_some_and(|live| live >= bytes.retained_capacity().unwrap() as u64 && live != 0)
+                .is_some_and(|live| live >= bytes.retained_capacity().unwrap() as u64 && live != 0))
         };
-        assert!(funded(&bytes), "returned bytes lost their original ledger");
+        assert!(funded(&bytes)?, "returned bytes lost their original ledger");
         let unfunded: acyclic_stream::OwnedBytes = bytes.as_ref().to_vec().into();
         drop(bytes);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             baseline,
             "returned custody leaked"
         );
         assert!(
-            !funded(&unfunded),
+            !funded(&unfunded)?,
             "an unfunded copy must fail the same predicate"
         );
     }
@@ -607,10 +612,10 @@ fn a_retained_read_is_charged_once_for_exactly_its_bytes() -> Result<()> {
             None,
         ))?;
         let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(1_000_000, 64 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )?;
-        let before = io.owned_bytes()?;
+        let before = io.remaining()?.peak_allocation_bytes;
         let bytes = with_reopen(reopen, || {
             runtime.block_on(async {
                 host.read_retained_file(&generation, &file, 4096, Some(&io))?
@@ -622,9 +627,9 @@ fn a_retained_read_is_charged_once_for_exactly_its_bytes() -> Result<()> {
             .retained_capacity()
             .ok_or_else(|| Error::Invalid("read bytes expose no capacity".into()))?
             as u64;
-        let held = io.owned_since(before)?;
+        let held = before - io.remaining()?.peak_allocation_bytes;
         drop(bytes);
-        let leftover = io.owned_since(before)?;
+        let leftover = before - io.remaining()?.peak_allocation_bytes;
         Ok((capacity, held - leftover, leftover))
     };
     let once = |small: (u64, u64, u64), large: (u64, u64, u64)| {

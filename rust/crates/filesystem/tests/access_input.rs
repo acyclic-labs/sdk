@@ -182,7 +182,7 @@ fn check_publications(
         };
         if let Some(generation) = update.data_generation {
             candidate = candidate.with_data_generation(acyclic_fs::GenerationId::new(
-                acyclic_fs::Digest::from_bytes(generation),
+                acyclic_fs_format::identity::Digest::from_bytes(generation),
             ));
         }
         let previous = published.current()?;

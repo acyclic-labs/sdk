@@ -138,12 +138,12 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
     );
     assert!(packet.is_retired());
     retired(root.path(), &fence)?;
-    let completed = work.receipt();
+    let completed = work.receipt().unwrap();
     assert!(!packet.retire(
         Some(&wait),
         crate::native_mount::retirement::SourceRetirementWait::Caller
     )?);
-    assert_eq!(work.receipt(), completed);
+    assert_eq!(work.receipt().unwrap(), completed);
     Ok(())
 }
 
@@ -168,9 +168,9 @@ fn detached_session_retirement_completes_fence_after_waiter_cancellation()
         assert!(session.stop_with_context(&stop)?);
         assert!(session.cleanup_state().cleanup_complete());
         retired(root.path(), &fence)?;
-        let completed = work.receipt();
+        let completed = work.receipt().unwrap();
         assert!(!session.stop_with_context(&stop)?);
-        assert_eq!(work.receipt(), completed);
+        assert_eq!(work.receipt().unwrap(), completed);
     }
     Ok(())
 }
@@ -258,7 +258,7 @@ fn stopped_watch_outcome_releases_the_driver_and_session_fences()
             wait.cancel();
             work.cancellation().cancel();
         }
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         let stop = match mode {
             0 => NativeSessionStopWork::Meter(&work),
             1 => NativeSessionStopWork::AcceptedWait(&wait),
@@ -317,11 +317,11 @@ fn stopped_watch_outcome_releases_the_driver_and_session_fences()
         );
         retired(root.path(), &fence)?;
         assert_eq!(
-            work.receipt().allocation_operations,
+            work.receipt().unwrap().allocation_operations,
             before.allocation_operations
         );
         assert_eq!(
-            work.receipt().peak_allocation_bytes,
+            work.receipt().unwrap().peak_allocation_bytes,
             before.peak_allocation_bytes
         );
     }

@@ -132,7 +132,7 @@ fn assert_authority_before_work<T>(
     } else {
         matches!(failure.error, AuthorityStoreError::RejectedStatic(_))
     });
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -242,11 +242,11 @@ fn assert_object_before_work<T>(
         )
     });
     if cancelled {
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
-    assert_eq!(failure.work.durability_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().durability_operations, 0);
     Ok(())
 }
 

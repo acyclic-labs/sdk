@@ -25,7 +25,7 @@ impl FuseProjection {
                 Ok(_) => refusal,
             };
             let errno = callback_errno(&cause);
-            let prefix = work.state.lock().work;
+            let prefix = work.receipt();
             self.core.retain_handler_failure((cause, prefix));
             return Err(errno.into());
         }
@@ -130,7 +130,7 @@ impl FuseProjection {
         #[cfg(test)]
         tests::write_gate::pause(&self.core)?;
         let length = u32::try_from(data.len()).map_err(|_| libc::EOVERFLOW)?;
-        let bytes = fuse_source_chunk(data, work)?;
+        let bytes = source_chunk(data, work)?;
         let result = self.source_write(work, || {
             Ok(open_file
                 .file()
@@ -240,13 +240,13 @@ impl FuseProjection {
             return Err(libc::EINVAL.into());
         }
         let operation = if mode == (PUNCH_HOLE | KEEP_SIZE) {
-            crate::MountRangeAllocation::PunchHole
+            acyclic_fs_native_contract::MountRangeAllocation::PunchHole
         } else if mode == ZERO_RANGE || mode == (ZERO_RANGE | KEEP_SIZE) {
-            crate::MountRangeAllocation::ZeroRange {
+            acyclic_fs_native_contract::MountRangeAllocation::ZeroRange {
                 extend: mode == ZERO_RANGE,
             }
         } else if mode == 0 || mode == KEEP_SIZE {
-            crate::MountRangeAllocation::Preallocate {
+            acyclic_fs_native_contract::MountRangeAllocation::Preallocate {
                 keep_size: mode == KEEP_SIZE,
             }
         } else {
@@ -398,7 +398,7 @@ impl FuseProjection {
                     Ok(copied) => copied,
                     Err(error) if transferred == 0 => return Err(error),
                     Err(error) => {
-                        let prefix = work.state.lock().work;
+                        let prefix = work.receipt();
                         let _ = self.core.finish::<()>(Err((error, prefix)));
                         break;
                     }

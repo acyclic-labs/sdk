@@ -22,17 +22,17 @@ fn cached_absence_lookup_cost_is_bounded_by_record_identity_width() {
         }
         log.commit(&namespace, change).unwrap();
         log.adopt_native(&work).unwrap();
-        let before = work.receipt().items_examined;
+        let before = work.receipt().unwrap().items_examined;
         let id = WorkspaceId::from_bytes(u128::try_from(count - 1).unwrap().to_le_bytes());
         assert!(
             log.get::<WorkspaceLineageRecord>(&namespace, id, None, None)
                 .unwrap()
                 .is_none()
         );
-        let examined = work.receipt().items_examined - before;
+        let examined = work.receipt().unwrap().items_examined - before;
         eprintln!("CACHED_RECORD_LOOKUP agents={count} items_examined={examined}");
         measured.push((count, examined));
-        work.receipt().verify(budget).unwrap();
+        work.receipt().unwrap().verify(budget).unwrap();
     }
     assert!(
         measured.iter().all(|(_, examined)| *examined <= 137),
@@ -66,15 +66,15 @@ fn already_adopted_residents_are_not_reexamined_on_each_call() {
     }
     log.commit(&namespace, change).unwrap();
     log.adopt_native(&work).unwrap();
-    let before = work.receipt().items_examined;
+    let before = work.receipt().unwrap().items_examined;
     log.adopt_native(&work).unwrap();
-    let examined = work.receipt().items_examined - before;
+    let examined = work.receipt().unwrap().items_examined - before;
     eprintln!("CACHED_RECORD_ADOPTION agents=256 items_examined={examined}");
     assert_eq!(
         examined, 0,
         "retained funding must be consumed once at installation"
     );
-    work.receipt().verify(budget).unwrap();
+    work.receipt().unwrap().verify(budget).unwrap();
 }
 
 #[test]
@@ -103,29 +103,29 @@ fn borrowing_a_funded_cache_does_not_reallocate_its_original_backing() {
     }
     log.commit(&namespace, change).unwrap();
     log.adopt_native(&original).unwrap();
-    let before = original.live_allocation_bytes();
+    let before = original.live_allocation_bytes().unwrap();
     let borrower = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
     assert!(!original.shares_allocation_context(&borrower));
-    let borrowed_before = borrower.receipt();
+    let borrowed_before = borrower.receipt().unwrap();
     log.adopt_native(&borrower).unwrap();
-    let copied = borrower.receipt().bytes_copied - borrowed_before.bytes_copied;
+    let copied = borrower.receipt().unwrap().bytes_copied - borrowed_before.bytes_copied;
     eprintln!(
         "CACHED_RECORD_CUSTODY agents=256 copied_bytes={copied} original_before={before} original_after={}",
-        original.live_allocation_bytes()
+        original.live_allocation_bytes().unwrap()
     );
     assert_eq!(
         copied, 0,
         "a borrowed cache keeps its original backing and original ledger"
     );
-    assert_eq!(original.live_allocation_bytes(), before);
+    assert_eq!(original.live_allocation_bytes().unwrap(), before);
     drop(log);
     drop(namespace);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
-    original.receipt().verify(budget).unwrap();
-    borrower.receipt().verify(budget).unwrap();
+    original.receipt().unwrap().verify(budget).unwrap();
+    borrower.receipt().unwrap().verify(budget).unwrap();
 }
 
 #[test]

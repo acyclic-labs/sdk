@@ -305,7 +305,7 @@ pub(in crate::bindings) fn authored_transaction(
 
 pub(in crate::bindings) fn authored_live_mutation_value(
     result: acyclic_fs::AuthoredLiveMutationResult,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<Ts<BrowserLiveTransactionResult>, JsValue> {
     let value = live_mutation_value(result.outcome, work)?;
     ts(BrowserLiveTransactionResult {

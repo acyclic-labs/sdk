@@ -267,14 +267,14 @@ mod tests {
         super::super::validate_projected_context(&context, required, None)?;
         assert!(super::super::validate_projected_context(&context, optional, None).is_err());
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget {
+        let budget = acyclic_fs_work::performance::WorkBudget {
             bytes_copied: 1_048_576,
             bytes_encoded: 1_048_576,
             bytes_hashed: 1_048_576,
             items_examined: 4096,
             allocation_operations: 4096,
             peak_allocation_bytes: 1_048_576,
-            ..acyclic_fs::WorkBudget::default()
+            ..acyclic_fs_work::performance::WorkBudget::default()
         };
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         cancellation.cancel();

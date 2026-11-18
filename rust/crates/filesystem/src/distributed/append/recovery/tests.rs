@@ -161,6 +161,7 @@ async fn ordinary_and_native_receipt_recovery_require_atomic_locators() -> TestR
                 }
                 original
                     .receipt()
+                    .unwrap()
                     .verify(crate::performance::BOUNDARY_BUDGET)?;
             }
         }
@@ -239,12 +240,12 @@ async fn conflict_reply_recovers_only_its_missing_prefix_without_head_probes() -
         reply_cursor(recovered);
         assert_eq!(recovered.epoch, Epoch::GENESIS);
         assert_eq!(
-            work.spent().authority_records_read,
+            work.spent().unwrap().authority_records_read,
             3,
             "recovery re-read the known prefix"
         );
         assert_eq!(
-            work.spent().backend_read_operations,
+            work.spent().unwrap().backend_read_operations,
             1,
             "recovery probed an already known tail"
         );
@@ -315,8 +316,8 @@ async fn conflict_epoch_uses_its_reply_tail_without_a_probe() -> TestResult {
             .await?,
         expected
     );
-    assert_eq!(work.spent().backend_read_operations, 1);
-    assert_eq!(work.spent().authority_records_read, 1);
+    assert_eq!(work.spent().unwrap().backend_read_operations, 1);
+    assert_eq!(work.spent().unwrap().authority_records_read, 1);
     Ok(())
 }
 

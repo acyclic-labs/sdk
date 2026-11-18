@@ -1,3 +1,13 @@
+/// Fresh source identities. Production supplies OS randomness; a simulation
+/// supplies its own seeded source, so a replay owns the identity it draws.
+pub type SourceEntropy = Arc<dyn Fn() -> [u8; 16] + Send + Sync>;
+
+/// The production entropy capability: one fresh OS-random identity.
+#[must_use]
+pub fn os_source_entropy() -> SourceEntropy {
+    Arc::new(|| *uuid::Uuid::new_v4().as_bytes())
+}
+
 /// One native root. Opening it does not enumerate any descendants.
 #[derive(Clone)]
 pub struct NativeDemandSource {
@@ -63,6 +73,30 @@ impl NativeDemandSource {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, DemandError> {
+        Self::open_with_entropy(
+            path,
+            profile,
+            limits,
+            reference,
+            observer,
+            work,
+            cancellation,
+            os_source_entropy(),
+        )
+        .await
+    }
+
+    /// Opens a source whose fresh identity comes from `entropy`.
+    pub async fn open_with_entropy<W: FsWork + Send>(
+        path: std::borrow::Cow<'_, Path>,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+        reference: Option<SourceReference>,
+        observer: Option<Arc<dyn DemandDirectoryObserver>>,
+        work: W,
+        cancellation: &CancellationToken,
+        entropy: SourceEntropy,
+    ) -> W::Output<Self, DemandError> {
         Self::open_root(
             SourceRoot::Path(path),
             profile,
@@ -71,6 +105,7 @@ impl NativeDemandSource {
             observer,
             work,
             cancellation,
+            entropy,
         )
         .await
     }
@@ -86,6 +121,30 @@ impl NativeDemandSource {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, DemandError> {
+        Self::open_held_with_entropy(
+            held,
+            profile,
+            limits,
+            reference,
+            observer,
+            work,
+            cancellation,
+            os_source_entropy(),
+        )
+        .await
+    }
+
+    /// Binds a held root whose fresh identity comes from `entropy`.
+    pub async fn open_held_with_entropy<W: FsWork + Send>(
+        held: crate::HeldRoot,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+        reference: Option<SourceReference>,
+        observer: Option<Arc<dyn DemandDirectoryObserver>>,
+        work: W,
+        cancellation: &CancellationToken,
+        entropy: SourceEntropy,
+    ) -> W::Output<Self, DemandError> {
         Self::open_root(
             SourceRoot::Held(held),
             profile,
@@ -94,6 +153,7 @@ impl NativeDemandSource {
             observer,
             work,
             cancellation,
+            entropy,
         )
         .await
     }
@@ -106,6 +166,7 @@ impl NativeDemandSource {
         observer: Option<Arc<dyn DemandDirectoryObserver>>,
         work: W,
         cancellation: &CancellationToken,
+        entropy: SourceEntropy,
     ) -> W::Output<Self, DemandError> {
         let (path, held) = match root {
             SourceRoot::Path(path) => (path, None),
@@ -162,7 +223,7 @@ impl NativeDemandSource {
                             }
                             let reference = reference.unwrap_or_else(|| SourceReference {
                                 components: acyclic_stream::OwnedBytes::new(),
-                                identity: *crate::identity::fresh_uuid().as_bytes(),
+                                identity: entropy(),
                                 epoch: 0,
                             });
                             if !reference.components.is_empty() {
@@ -387,6 +448,8 @@ impl NativeDemandSource {
             .root
             .held(context)
             .and_then(|root| root.stat(&relative, context));
+        #[cfg(feature = "test-support")]
+        let result = result.and_then(|stat| with_fixture_content(self, &relative, stat, context));
         drop(relative);
         context.release(allocation)?;
         match result {
@@ -396,7 +459,7 @@ impl NativeDemandSource {
         }
     }
 
-    fn node(metadata: &HostStat) -> SourceNode {
+    fn node(path: Option<&[u8]>, metadata: &HostStat) -> SourceNode {
         let kind = metadata.file_type();
         SourceNode {
             kind,
@@ -406,7 +469,7 @@ impl NativeDemandSource {
             logical_bytes: (kind == SourceNodeKind::RegularFile
                 || cfg!(unix) && kind == SourceNodeKind::SymbolicLink)
                 .then_some(metadata.len()),
-            version: version(metadata),
+            version: version(path, metadata),
             metadata: source_metadata(metadata),
         }
     }

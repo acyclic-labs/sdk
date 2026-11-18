@@ -14,21 +14,30 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm.d.ts",
+      "bun": "./src/wasm.ts",
+      "default": "./dist/wasm.js"
     },
     "./observe": {
       "types": "./dist/observe.d.ts",
+      "bun": "./src/observe.ts",
       "default": "./dist/observe.js"
     },
     "./deadline": {
       "types": "./dist/deadline.d.ts",
+      "bun": "./src/deadline.ts",
       "default": "./dist/deadline.js"
     }
   },
   "files": [
     "dist",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "src"
   ],
   "dependencies": {
     "@connectrpc/connect": "2.3.0"

@@ -1,100 +1,32 @@
 use super::*;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
-use crate::model::{CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy};
+use crate::model::FilesystemProfile;
 use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite};
+use crate::test_support::allow_publication::allow;
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn config() -> VolumeConfig {
-    VolumeConfig::portable(Lifecycle::Ephemeral)
-}
+#[path = "../../../tests/support/checkout_fixture.rs"]
+mod checkout_fixture;
+use checkout_fixture::{config, path, path_parts, writable_pinned};
 
-fn serialized_config() -> VolumeConfig {
-    VolumeConfig {
-        concurrency: ConcurrencyMode::SerializedAuthority,
-        ..config()
-    }
-}
+#[path = "../../../tests/support/checkout_manual.rs"]
+mod checkout_manual;
+use checkout_manual::{manual, writable_manual};
 
-fn exclusive_config() -> VolumeConfig {
-    VolumeConfig {
-        concurrency: ConcurrencyMode::ExclusiveWriter,
-        ..config()
-    }
-}
+#[path = "../../../tests/support/checkout_tracking.rs"]
+mod checkout_tracking;
+use checkout_tracking::tracking;
+
+#[path = "../../../tests/support/checkout_live_fixture.rs"]
+mod live_fixture;
+use live_fixture::writable_live;
+#[path = "../../../tests/support/checkout_serialized.rs"]
+mod checkout_serialized;
+use checkout_serialized::serialized_config;
 
 fn pinned() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadOnly,
-        consistency: ConsistencyMode::Pinned,
-        mutations: MutationMode::None,
-    }
-}
-
-fn writable_pinned() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Pinned,
-        mutations: MutationMode::PrivateOverlay,
-    }
-}
-
-fn manual() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadOnly,
-        consistency: ConsistencyMode::Manual,
-        mutations: MutationMode::None,
-    }
-}
-
-fn tracking() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadOnly,
-        consistency: ConsistencyMode::TrackingSafe,
-        mutations: MutationMode::None,
-    }
-}
-
-fn writable_manual() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Manual,
-        mutations: MutationMode::PrivateOverlay,
-    }
-}
-
-fn writable_tracking() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::TrackingSafe,
-        mutations: MutationMode::PrivateOverlay,
-    }
-}
-
-fn writable_live() -> CheckoutMode {
-    CheckoutMode {
-        access: AccessMode::ReadWrite,
-        consistency: ConsistencyMode::Live,
-        mutations: MutationMode::DirectLive,
-    }
-}
-
-fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
-    Ok(NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            value.as_bytes().to_vec(),
-        )?],
-        config().limits,
-    )?)
-}
-
-fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
-    let components = values
-        .iter()
-        .map(|value| LogicalName::new(NameEncoding::Utf8, value.as_bytes().to_vec()))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(NamespacePath::new(components, config().limits)?)
+    CheckoutMode::read_only_pinned()
 }
 
 fn root_path() -> Result<NamespacePath, Box<dyn std::error::Error>> {
@@ -111,28 +43,6 @@ struct CheckoutState {
     prepared_merge_parent: Option<ObjectId>,
     dependencies: CheckoutDependencies,
     mode: CheckoutMode,
-}
-
-// --- Case-folding / Unicode-normalization ---
-//
-// `CaseSensitivity::ProfileFolded` rejects same-directory siblings whose
-// names collide once case-folded (`FsError::NameCollision`) and resolves
-// lookups case-insensitively; `UnicodePolicy::RequireNfc` rejects any new
-// name that is not canonical NFC (`FsError::NonNormalizedName`). Both are
-// admitted at volume creation (pinned above).
-
-fn folded_config() -> VolumeConfig {
-    VolumeConfig {
-        case_sensitivity: CaseSensitivity::ProfileFolded,
-        ..config()
-    }
-}
-
-fn nfc_config() -> VolumeConfig {
-    VolumeConfig {
-        unicode: UnicodePolicy::RequireNfc,
-        ..config()
-    }
 }
 
 fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
@@ -609,7 +519,6 @@ impl AsyncObjectStore for PostPutObjectStore {
     }
 }
 mod adoption;
-mod attributes;
 mod concurrency;
 mod content;
 mod creation;
@@ -618,32 +527,26 @@ mod fault_creation;
 mod fault_mutations;
 mod fault_publication;
 mod fork_proof;
-mod generation_position;
 #[cfg(not(target_arch = "wasm32"))]
 mod heterogeneous_mount;
 mod identity;
 mod live;
 mod local;
 mod merge;
-mod paths;
 mod profiles;
 mod protocol_helpers;
-mod publication;
-mod read;
 mod selection;
 mod special;
 mod tracking;
 mod transactions;
-mod transfer;
 use protocol_helpers::*;
+#[path = "../../../tests/support/volume_fixture.rs"]
 mod fixtures;
 use fixtures::*;
+#[path = "../../../tests/support/volume_commit.rs"]
+mod volume_commit;
+#[path = "../../../tests/support/volume_read.rs"]
+mod volume_read;
+use volume_commit::commit;
+use volume_read::read;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
-fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<Result<OperationReceipt<()>, OperationFailure<E>>> {
-    std::future::ready(Ok(OperationReceipt {
-        value: (),
-        work: WorkCounters::UNCHARGED,
-    }))
-}

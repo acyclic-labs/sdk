@@ -112,7 +112,8 @@ fn copy_owned_text(
     accounting.admit(copied)?;
     let mut bytes = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
     let result = accounting.perform(copied, || {
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         model::completed(length as u64);
         bytes.value.extend_from_slice(prefix.as_bytes());
         bytes.value.extend_from_slice(text.as_bytes());
@@ -130,13 +131,15 @@ fn copy_owned_text(
 
 pub(super) fn merge_workspace_backend<T, E: Into<WorkspaceError>>(
     result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
-    work: &mut crate::WorkCounters,
-    live: u64,
-) -> Result<crate::OperationReceipt<T>, WorkspaceError> {
-    let backend = match &result {
-        Ok(receipt) => receipt.work,
-        Err(failure) => *failure.work,
-    };
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<T, WorkspaceError> {
+    let (result, backend) = accounting.split_receipt(
+        result.map_err(|failure| failure.map_error(|error| -> WorkspaceError { error.into() })),
+    )?;
+    let (allocations, work, budget, _) = accounting
+        .standalone_parts()
+        .ok_or(crate::WorkError::Overflow)?;
+    let live = allocations.live_bytes();
     *work = work
         .with_backend(backend, live)
         .map_err(|error| WorkspaceError::WorkMerge {
@@ -144,7 +147,8 @@ pub(super) fn merge_workspace_backend<T, E: Into<WorkspaceError>>(
             backend: Box::new(backend),
             error,
         })?;
-    result.map_err(|failure| failure.error.into())
+    work.verify(budget)?;
+    result
 }
 
 pub(super) fn workspace_allocation_error(
@@ -182,6 +186,7 @@ pub(super) fn workspace_allocation(
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 #[path = "paths_loom.rs"]
 mod model;

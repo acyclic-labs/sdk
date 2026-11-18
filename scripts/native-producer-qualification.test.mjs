@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { nativeFamily } from "./native-family.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 
 const module = await import(process.env.NATIVE_PRODUCER_UNDER_TEST ?? "./build-native-family.mjs");
 const producer = module.createNativeProducer(nativeFamily("stream"));

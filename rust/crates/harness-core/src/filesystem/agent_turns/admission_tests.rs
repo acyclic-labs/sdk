@@ -111,6 +111,34 @@ async fn child_activity_verifies_under_the_admission_that_signed_it() -> Result<
             .is_some()
     );
 
+    // A child spawned under the host's local root signs under its own
+    // conversation. A later admission of the same parent must still verify
+    // that checkpoint, not the admission's audience.
+    let local_operation = OperationId::new();
+    query_journal(&stream, &host, &issuer, &TurnAdmission::LocalRoot, &state)
+        .await?
+        .with_turn(local_operation, local_operation)
+        .append(
+            local_operation,
+            "start",
+            &crate::executor::ExecutionEvent::Started {
+                request_digest: [2; 32],
+            },
+            None,
+        )?
+        .await?;
+    let observed = query_activity_journal(&stream, &host, &issuer, &admission, &state)
+        .await?
+        .ok_or_else(|| Error::Storage("native host lost child activity authority".into()))?
+        .with_turn(local_operation, local_operation);
+    assert!(
+        observed
+            .activity(local_operation, &acyclic_actors::local::SystemClock)
+            .await?
+            .is_some(),
+        "a later admission rejected the child's original checkpoint"
+    );
+
     for (scope, expected) in [(scope, false), (broad, true)] {
         let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
         let context = acyclic_auth::operation::Context::from_stopped(
@@ -168,7 +196,7 @@ async fn native_exact_grants_repair_a_retained_foreign_journal_as_its_owner() ->
         .filesystem
         .open_workspace(
             foreign.storage_name(&mut None)?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -501,14 +529,17 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .filesystem
             .open_workspace(
                 private.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
             .map_err(|failure| crate::filesystem::map_error(failure.error))?
             .value;
         let private_head = private_workspace
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(|failure| crate::filesystem::map_error(failure.error))?
             .value;
@@ -516,7 +547,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .read(
                 "/.system/interactions/custody.json",
                 file_bytes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -802,7 +833,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .filesystem
             .open_workspace(
                 journal.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -1093,7 +1124,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .filesystem
             .open_workspace(
                 foreign.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await

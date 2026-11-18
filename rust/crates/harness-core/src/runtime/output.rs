@@ -20,7 +20,7 @@ impl ToolContext {
         operation.copy_from_slice(&hash.finalize().as_bytes()[..16]);
         let mut context = self.clone();
         if let Some((journal, operation)) = &self.task.journal {
-            let content = journal.output_content(*operation)?.ok_or_else(|| {
+            let content = journal.output_content(*operation, None)?.ok_or_else(|| {
                 Error::Unsupported("execution journal has no output publication owner".into())
             })?;
             let mut task = self.task().clone();

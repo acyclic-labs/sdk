@@ -51,8 +51,8 @@ fn retirement(control: Control, authored: usize) -> Result<bool, Box<dyn std::er
         retained_source: None,
         terminal_source_failure: None,
     };
-    let before = work.receipt();
-    let live = work.live_allocation_bytes();
+    let before = work.receipt().unwrap();
+    let live = work.live_allocation_bytes().unwrap();
     let guard = packet.destination_guard.as_mut().unwrap();
     let (fence, _) = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?;
     assert!(fence.is_file(), "fixture did not acquire its actual fence");
@@ -81,13 +81,13 @@ fn retirement(control: Control, authored: usize) -> Result<bool, Box<dyn std::er
             None,
             crate::native_mount::retirement::SourceRetirementWait::Caller
         )?);
-        let completed = work.receipt();
+        let completed = work.receipt().unwrap();
         assert!(!packet.retire(
             None,
             crate::native_mount::retirement::SourceRetirementWait::Caller
         )?);
         assert_eq!(
-            work.receipt(),
+            work.receipt().unwrap(),
             completed,
             "retirement retried physical work"
         );
@@ -100,14 +100,14 @@ fn retirement(control: Control, authored: usize) -> Result<bool, Box<dyn std::er
         (registry_before.dev(), registry_before.ino()),
         (registry_after.dev(), registry_after.ino()),
     );
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
     for index in 0..authored {
         assert_eq!(
             std::fs::read(root.path().join(format!("user-{index}")))?,
             index.to_le_bytes(),
         );
     }
-    Ok(work.receipt() == expected(before, live, "owned-mount"))
+    Ok(work.receipt().unwrap() == expected(before, live, "owned-mount"))
 }
 
 #[test]

@@ -242,11 +242,11 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
     let journal: Arc<dyn crate::executor::ExecutionJournal> = storage.journal.clone();
     let turn = OperationId::new();
     let journal_volume = journal
-        .output_content(turn)?
+        .output_content(turn, None)?
         .expect("journal output")
         .volume;
     let journal_writer = journal
-        .output_content(turn)?
+        .output_content(turn, None)?
         .and_then(|content| content.writer)
         .expect("host journal writer");
     let reserved = async {
@@ -667,7 +667,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     graph
         .register_root(
             &root,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -677,7 +677,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             &root,
             "uploads",
             acyclic_fs::IdempotencyKey::new(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?
@@ -749,7 +749,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             },
         )?
         .await?;
-    assert!(committed_io.receipt().backend_write_operations > 0);
+    assert!(committed_io.receipt()?.backend_write_operations > 0);
     let original_key =
         crate::filesystem::content_publisher::once_key(operation, Some(&committed_io))?;
     let original_key =
@@ -818,7 +818,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     let mut digest_only = committed.clone();
     let generation = storage.host.file_generation_id(&committed, None)?;
     digest_only.pin_version(hex::encode(generation.digest().as_bytes()), &mut None)?;
-    let writes = committed_io.receipt().backend_write_operations;
+    let writes = committed_io.receipt()?.backend_write_operations;
     assert!(matches!(
         storage
             .publisher
@@ -832,7 +832,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .await,
         Err(error) if error.code() == crate::wire::ErrorCode::Invalid
     ));
-    assert_eq!(committed_io.receipt().backend_write_operations, writes);
+    assert_eq!(committed_io.receipt()?.backend_write_operations, writes);
     repository
         .register_branch_workspace("main", root.id(), None, true)
         .await?;
@@ -876,12 +876,18 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .await?;
     assert_eq!(recovered.as_ref(), Some(&committed));
     let root_before = root
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value
         .id();
     let branch_before = branch
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value
         .id();
@@ -903,15 +909,21 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         committed
     );
     assert_eq!(
-        root.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value
-            .id(),
+        root.head(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation
+        )
+        .await?
+        .value
+        .id(),
         root_before
     );
     assert_eq!(
         branch
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await?
             .value
             .id(),
@@ -962,7 +974,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             )
             .is_err()
     );
-    assert_eq!(cancelled_io.receipt().backend_write_operations, 0);
+    assert_eq!(cancelled_io.receipt()?.backend_write_operations, 0);
     let denied_operation = OperationId::new();
     let mut denied = FINITE_CONTENT_BUDGET;
     denied.peak_allocation_bytes = 0;
@@ -1009,7 +1021,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     storage.publisher.supports_stage(Some(&io))?;
-    assert_eq!(work.receipt().backend_write_operations, 0);
+    assert_eq!(work.receipt()?.backend_write_operations, 0);
     struct OrdinaryOnlyPublisher {
         volume: VolumeRef,
     }
@@ -1046,7 +1058,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
         })
     ));
     let mut frame_budget = FINITE_CONTENT_BUDGET;
-    frame_budget.allocation_operations = work.receipt().allocation_operations;
+    frame_budget.allocation_operations = work.receipt()?.allocation_operations;
     let frame_work = acyclic_fs::NativeMaterializationWork::new(
         frame_budget,
         &acyclic_fs::CancellationToken::new(),
@@ -1069,7 +1081,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
             )
             .is_err()
     );
-    assert_eq!(frame_work.receipt().backend_write_operations, 0);
+    assert_eq!(frame_work.receipt()?.backend_write_operations, 0);
     let operation = OperationId::new();
     let (file, file_hold) = storage
         .publisher
@@ -1086,18 +1098,18 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
         )?
         .await?;
     assert!(file_hold.as_ref().is_some_and(|hold| hold.bytes() > 0));
-    assert!(work.receipt().backend_write_operations > 0);
-    let before_read = work.live_allocation_bytes();
+    assert!(work.receipt()?.backend_write_operations > 0);
+    let before_read = work.live_allocation_bytes()?;
     let bytes = storage
         .content_verifier
         .read(&file, 1024, None, Some(&io))?
         .await?;
     assert_eq!(bytes.as_ref(), b"original");
     assert!(bytes.matches_meter(&work.runtime_meter()));
-    assert!(work.live_allocation_bytes() > before_read);
-    let with_output = work.live_allocation_bytes();
+    assert!(work.live_allocation_bytes()? > before_read);
+    let with_output = work.live_allocation_bytes()?;
     drop(bytes);
-    assert!(work.live_allocation_bytes() < with_output);
+    assert!(work.live_allocation_bytes()? < with_output);
     assert!(
         storage
             .publisher
@@ -1157,7 +1169,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
             .await
             .is_err()
     );
-    assert_eq!(denied_work.receipt().backend_write_operations, 0);
+    assert_eq!(denied_work.receipt()?.backend_write_operations, 0);
     Ok(())
 }
 
@@ -1177,11 +1189,11 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let key = IdempotencyKey::new("acyclic.pi/input/root-task/original-operation/label")?;
     let mut path_budget = FINITE_CONTENT_BUDGET;
-    path_budget.allocation_operations = work.receipt().allocation_operations;
+    path_budget.allocation_operations = work.receipt()?.allocation_operations;
     let path_work = acyclic_fs::NativeMaterializationWork::new(path_budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let path_io = crate::filesystem::PreparationIo::from_native_work(&path_work)?;
-    let path_prefix = path_work.receipt();
+    let path_prefix = path_work.receipt()?;
     let path = "../outside";
     let rejection = storage
         .host
@@ -1231,10 +1243,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             ..
         })
     ));
-    let rejected = path_work.receipt();
+    let rejected = path_work.receipt()?;
     assert_eq!(
         rejected,
-        acyclic_fs::WorkCounters {
+        acyclic_fs_work::performance::WorkCounters {
             items_examined: rejected.items_examined,
             ..path_prefix
         }
@@ -1348,7 +1360,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         .await?;
     assert_eq!(content.as_ref(), b"original");
     drop(content);
-    let writes = work.receipt().backend_write_operations;
+    let writes = work.receipt()?.backend_write_operations;
     assert!(
         storage
             .host
@@ -1370,7 +1382,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             .await
             .is_err()
     );
-    assert_eq!(work.receipt().backend_write_operations, writes);
+    assert_eq!(work.receipt()?.backend_write_operations, writes);
     assert!(
         storage
             .host
@@ -1415,7 +1427,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancelled)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&cancelled_work)?;
-    let prefix = cancelled_work.receipt();
+    let prefix = cancelled_work.receipt()?;
     cancelled.cancel();
     assert!(matches!(
         storage
@@ -1437,12 +1449,12 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             ..
         })
     ));
-    assert_eq!(cancelled_work.receipt(), prefix);
+    assert_eq!(cancelled_work.receipt()?, prefix);
     drop(io);
-    let with_storage = work.live_allocation_bytes();
+    let with_storage = work.live_allocation_bytes()?;
     // Checkout registrations remain on the original ledger until that ledger drops.
     drop(storage);
-    assert!(work.live_allocation_bytes() < with_storage);
+    assert!(work.live_allocation_bytes()? < with_storage);
     Ok(())
 }
 
@@ -1454,11 +1466,11 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let bytes = io.encode(&serde_json::Value::Null, 1024, true)?;
     let held = io.owned_bytes()?;
-    let live_held = work.live_allocation_bytes() - baseline;
+    let live_held = work.live_allocation_bytes()? - baseline;
     let Err(error) = io.into_native_custody(held + work.remaining()?.peak_allocation_bytes + 1)
     else {
         panic!("custody beyond the original remaining quota must fail");
@@ -1471,12 +1483,12 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
             custody: Some(_),
         }
     ));
-    assert_eq!(work.live_allocation_bytes(), baseline + live_held);
+    assert_eq!(work.live_allocation_bytes()?, baseline + live_held);
     let empty_alias = failure.0.slice(0..0);
     drop(failure);
-    assert!(work.live_allocation_bytes() > baseline);
+    assert!(work.live_allocation_bytes()? > baseline);
     drop(empty_alias);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -1489,15 +1501,15 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
     let producing = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &token)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let receiver_io = crate::filesystem::PreparationIo::from_native_work(&receiving)?;
-    let receiver_baseline = receiving.live_allocation_bytes();
-    let producer_baseline = producing.live_allocation_bytes();
+    let receiver_baseline = receiving.live_allocation_bytes()?;
+    let producer_baseline = producing.live_allocation_bytes()?;
     let producer_io = crate::filesystem::PreparationIo::from_native_work(&producing)?;
     let bytes = producer_io.encode(&serde_json::Value::Null, 1024, true)?;
     drop(producer_io);
     let (metadata, incoming) = producing
         .display("source carrier metadata")
         .map_err(Error::from)?;
-    let held = producing.live_allocation_bytes() - producer_baseline;
+    let held = producing.live_allocation_bytes()? - producer_baseline;
     let Err(error) = receiver_io.absorb_native_custody(incoming) else {
         panic!("distinct original allocation ledgers must not merge");
     };
@@ -1509,9 +1521,9 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
             custody: Some(_),
         }
     ));
-    assert_eq!(receiving.live_allocation_bytes(), receiver_baseline);
-    assert_eq!(producing.live_allocation_bytes(), producer_baseline + held);
+    assert_eq!(receiving.live_allocation_bytes()?, receiver_baseline);
+    assert_eq!(producing.live_allocation_bytes()?, producer_baseline + held);
     drop(failure);
-    assert_eq!(producing.live_allocation_bytes(), producer_baseline);
+    assert_eq!(producing.live_allocation_bytes()?, producer_baseline);
     Ok(())
 }

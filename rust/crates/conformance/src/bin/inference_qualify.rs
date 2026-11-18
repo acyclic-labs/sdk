@@ -6,7 +6,7 @@ async fn main() {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     if arguments.is_empty() {
         eprintln!(
-            "STEP_FAILED arguments: manifest paths required; recovery: cargo run -p acyclic-conformance --features inference --bin inference-qualify -- PATH/manifest.json"
+            "STEP_FAILED arguments: manifest paths required; recovery: bazel run //rust/crates/conformance:inference-qualify -- PATH/manifest.json"
         );
         std::process::exit(2);
     }
@@ -52,7 +52,7 @@ async fn main() {
             ),
             Err(cause) => {
                 eprintln!(
-                    "STEP_FAILED inference {:?}: {cause}; recovery: cargo run -p acyclic-conformance --features inference --bin inference-qualify -- {:?}",
+                    "STEP_FAILED inference {:?}: {cause}; recovery: bazel run //rust/crates/conformance:inference-qualify -- {:?}",
                     path, path
                 );
                 std::process::exit(1);

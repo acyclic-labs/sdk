@@ -31,10 +31,10 @@ rust_proc_macro(
     ],
     lint_config = ":lints",
     deps = [
-        "@crates//proc-macro2-1.0.107",
-        "@crates//quote-1.0.47",
-        "@crates//syn_2_0_119-2.0.119",
-        "@crates//termcolor-1.4.1",
+        "@sdk_crates//proc-macro2-1.0.107",
+        "@sdk_crates//quote-1.0.47",
+        "@sdk_crates//syn_2_0_119-2.0.119",
+        "@sdk_crates//termcolor-1.4.1",
     ],
     visibility = ["//visibility:public"],
 )
@@ -58,7 +58,20 @@ isolated_test(
     name = "ts_rs_macros_test",
     binary = ":ts_rs_macros_test_cases",
     id = "ts-rs-macros",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "ts_rs_macros_test_full-cloud",
+    binary = ":ts_rs_macros_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "ts-rs-macros",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -68,13 +81,4 @@ filegroup(
 )
 
 
-exports_files([
-        "src/attr/enum.rs",
-        "src/attr/field.rs",
-        "src/attr/mod.rs",
-        "src/attr/struct.rs",
-        "src/attr/variant.rs",
-        "src/deps.rs",
-        "src/optional.rs",
-        "src/utils.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])

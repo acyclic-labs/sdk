@@ -144,7 +144,10 @@ where
             receipt: PublicationReceipt {
                 proof: output.0,
                 outcome: appended,
-                work: accounting.spent(),
+                work: accounting
+                    .spent()
+                    .map_err(crate::FsError::from)
+                    .map_err(E::from)?,
             },
             published,
             allocation: output.1,

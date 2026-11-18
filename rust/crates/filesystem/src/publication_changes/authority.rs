@@ -58,7 +58,7 @@ pub(super) async fn base<A: AsyncAuthorityStore>(
             &mut work,
         )
         .await;
-    let spent = work.spent();
+    let spent = work.spent()?;
     drop(work);
     merge_backend(accounting, spent)?;
     let ((head, payload), _custody) = observed?;
@@ -113,7 +113,7 @@ async fn creation_config<A: AsyncAuthorityStore>(
             &mut work,
         )
         .await;
-    let spent = work.spent();
+    let spent = work.spent()?;
     drop(work);
     merge_backend(accounting, spent)?;
     let (records, _custody) = observed?;

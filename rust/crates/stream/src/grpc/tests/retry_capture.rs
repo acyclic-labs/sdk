@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_grpc_observability::tests::Capture;
+use acyclic_test_support::trace_capture::Capture;
 use tracing::Dispatch;
 use tracing_subscriber::layer::SubscriberExt as _;
 

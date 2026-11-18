@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+acyclic-fs-work = { version = "=0.2.0", path = "../../rust/crates/filesystem-work" }
 acyclic-objects = { path = "../../rust/crates/objects", default-features = false }
 acyclic-stream = { path = "../../rust/crates/stream", default-features = false }
 acyclic-actors = { path = "../../rust/crates/actors" }

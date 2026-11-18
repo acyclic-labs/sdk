@@ -1,10 +1,19 @@
 use super::*;
-use acyclic_fs::kernel::{
-    FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot, TreePage,
+use {
+    acyclic_fs::kernel::{
+        FileKind, FilePayload, FileRecord, FileTablePage, GenerationRoot, TreePage,
+    },
+    acyclic_fs_format::metadata::FileMetadata,
 };
-use acyclic_fs::{AuthorityWork, ObjectSealer, WorkCounters};
-use acyclic_fs::{
-    Digest, FileId, GenerationId, HashedObject, NativeMaterializationWork, ObjectKind, WorkBudget,
+use {
+    acyclic_fs::{AuthorityWork, ObjectSealer},
+    acyclic_fs_work::performance::WorkCounters,
+};
+use {
+    acyclic_fs::{GenerationId, HashedObject, NativeMaterializationWork},
+    acyclic_fs_format::identity::{Digest, FileId},
+    acyclic_fs_format::object_reference::ObjectKind,
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 #[derive(Clone)]
@@ -158,6 +167,8 @@ async fn sealed_spills_stay_private_until_explicit_publication()
     let hold = staged
         .flush_before_publish(
             acyclic_fs::PublicationScope {
+                root: None,
+                related_root: None,
                 objects: &[id, small_id],
                 related_objects: &[],
                 proven_at: staged.collection_sweeps(),
@@ -207,11 +218,11 @@ async fn sealed_reconstruction_preserves_association_without_publication()
         .await?;
     let id = object.object_id();
     let stored = object.stored_bytes().clone();
-    let hashed = context.spent().bytes_hashed;
+    let hashed = context.spent().unwrap().bytes_hashed;
     let restored = erased.restore_hashed(id, stored.clone(), object.length(), &mut context)?;
     assert_eq!(restored, object);
     assert_eq!(
-        context.spent().bytes_hashed - hashed,
+        context.spent().unwrap().bytes_hashed - hashed,
         stored.len() as u64 + object.length(),
         "each representation must be authenticated exactly once",
     );
@@ -283,13 +294,13 @@ async fn required_sealing_refuses_every_unprepared_write_before_provider_dispatc
                 .await,
             Err(ObjectStoreError::Corrupt)
         ));
-        assert_eq!(work.spent().backend_write_operations, 0);
-        assert_eq!(work.spent().object_bytes_written, 0);
+        assert_eq!(work.spent().unwrap().backend_write_operations, 0);
+        assert_eq!(work.spent().unwrap().object_bytes_written, 0);
         assert!(matches!(provider.head(blob(object.object_id())).await,
             Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound));
     }
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.receipt().object_bytes_written, 0);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(original.receipt().unwrap().object_bytes_written, 0);
     Ok(())
 }
 
@@ -334,6 +345,8 @@ async fn sealing_preserves_the_epoch_roots_retention() -> Result<(), Box<dyn std
     let _second = second
         .flush_before_publish(
             acyclic_fs::PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &[id],
                 proven_at: 0,
@@ -476,7 +489,7 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
         generation: GenerationId::new(Digest::from_bytes([19; 32])),
     });
     let mut root = GenerationRoot {
-        volume_id: acyclic_fs::VolumeId::from_bytes([20; 16]),
+        volume_id: acyclic_fs_format::identity::VolumeId::from_bytes([20; 16]),
         root_file_id: lineage,
         file_table: table_id,
         parents: Vec::new(),
@@ -523,6 +536,8 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     let recovered = historical.object_id();
     let ids = [recovered];
     let scope = acyclic_fs::PublicationScope {
+        root: None,
+        related_root: None,
         related_objects: &[],
         objects: &ids,
         proven_at: 0,
@@ -540,15 +555,18 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
         cold.flush_before_publish(scope, &mut denied).await,
         Err(ObjectStoreError::Work(_))
     ));
-    assert_eq!(denied.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(denied.spent().unwrap(), WorkCounters::UNCHARGED);
     let mut commit = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let _hold = cold.flush_before_publish(scope, &mut commit).await?;
-    assert_eq!(commit.spent().durability_operations, 1);
-    let before = original.receipt().durability_operations;
-    let live = original.live_allocation_bytes();
+    assert_eq!(commit.spent().unwrap().durability_operations, 1);
+    let before = original.receipt().unwrap().durability_operations;
+    let live = original.live_allocation_bytes().unwrap();
     let _hold = cold.flush_before_publish(scope, &mut work).await?;
-    assert_eq!(original.receipt().durability_operations, before + 1);
-    assert_eq!(original.live_allocation_bytes(), live);
+    assert_eq!(
+        original.receipt().unwrap().durability_operations,
+        before + 1
+    );
+    assert_eq!(original.live_allocation_bytes().unwrap(), live);
     let read = cold.read(recovered, 1024, &mut work).await?;
     assert!(
         cold.put(recovered, read.bytes.clone(), &mut work)
@@ -743,10 +761,13 @@ fn blob(id: ObjectId) -> acyclic_objects::Digest {
 #[tokio::test]
 async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_fs::{
-        CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
-        MemoryAuthorityBackend, OperationId, PublicationPermit, TransactionCommit, VolumeConfig,
-        VolumeInitialization, WorkspaceError,
+    use {
+        acyclic_fs::{
+            CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
+            MemoryAuthorityBackend, PublicationPermit, TransactionCommit, VolumeConfig,
+            VolumeInitialization, WorkspaceError,
+        },
+        acyclic_fs_format::identity::OperationId,
     };
 
     use acyclic_fs::model::{CheckoutMode, GenerationSelector};

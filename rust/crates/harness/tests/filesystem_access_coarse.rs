@@ -1,6 +1,8 @@
 use super::*;
 
-fn assert_denied(result: Result<(), acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>) {
+fn assert_denied(
+    result: Result<(), acyclic_fs_work::performance::OperationFailure<acyclic_fs::WorkspaceError>>,
+) {
     assert!(
         matches!(result, Err(failure) if matches!(failure.error, acyclic_fs::WorkspaceError::AccessDenied)),
         "coarse disclosure returned revoked bytes"
@@ -53,7 +55,8 @@ async fn racing_read(protected: bool, range: bool, revoke: bool) -> Result<(), B
         .generation(pinned.id(), WorkBudget::UNBOUNDED, &cancellation)
         .await?
         .value;
-    let (entered, release) = objects.pause(acyclic_fs::ObjectKind::BlobChunk)?;
+    let (entered, release) =
+        objects.pause(acyclic_fs_format::object_reference::ObjectKind::BlobChunk)?;
     let read = async {
         if !protected {
             // The former path authorized its selected checkout before storage

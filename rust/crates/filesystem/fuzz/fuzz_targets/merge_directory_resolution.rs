@@ -4,8 +4,10 @@
 use acyclic_fs::workspace::{MergeCleanFile, MergeConflictFile, MergeDirectoryPlan};
 
 fn admit<T: serde::de::DeserializeOwned>(bytes: &[u8]) {
-    let _: T =
-        serde_json::from_slice(bytes).expect("captured merge-directory writer output was refused");
+    assert!(
+        serde_json::from_slice::<T>(bytes).is_ok(),
+        "captured merge-directory writer output was refused"
+    );
     acyclic_fs::workspace::check_merge_directory_resolution(bytes);
 }
 

@@ -32,11 +32,12 @@ cargo_build_script(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV,
     deps = [
-        "@crates//napi-build-2.6.0",
+        "@sdk_crates//napi-build-2.6.0",
     ],
 )
 
@@ -55,6 +56,7 @@ rust_shared_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -62,14 +64,14 @@ rust_shared_library(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "@crates//napi-3.15.0",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
-        "@crates//tokio-1.54.1",
-        "@crates//tokio-util-0.7.20",
+        "//rust/vendor/napi-3.15.0:napi",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tokio-util-0.7.20",
     ],
     proc_macro_deps = [
-        "@crates//napi-derive-3.6.13",
+        "@sdk_crates//napi-derive-3.6.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -89,6 +91,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -96,14 +99,14 @@ rust_library(
     ] + [
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
-        "@crates//napi-3.15.0",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
-        "@crates//tokio-1.54.1",
-        "@crates//tokio-util-0.7.20",
+        "//rust/vendor/napi-3.15.0:napi",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tokio-util-0.7.20",
     ],
     proc_macro_deps = [
-        "@crates//napi-derive-3.6.13",
+        "@sdk_crates//napi-derive-3.6.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -120,6 +123,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
@@ -130,7 +134,20 @@ isolated_test(
     name = "acyclic_actors_napi_test",
     binary = ":acyclic_actors_napi_test_cases",
     id = "acyclic-actors-napi",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_actors_napi_test_full-cloud",
+    binary = ":acyclic_actors_napi_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-actors-napi",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -139,6 +156,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

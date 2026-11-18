@@ -414,7 +414,9 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         accounting
             .with_allocations(|accounting| accounting.claim_owned(standing, 0).map(drop))
-            .map_err(|error| failed(project_probe_error(error), accounting.spent()))?;
+            .map_err(|error| {
+                OperationFailure::observed(project_probe_error(error), accounting.spent())
+            })?;
         Ok(accounting)
     }
 
@@ -438,10 +440,11 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let result = self
             .capture_many_with_accounting(generation, regions, &mut accounting, cancellation)
             .await;
-        let work = accounting.spent();
-        result
-            .map(|(value, _)| OperationReceipt { value, work })
-            .map_err(|error| failed(project_probe_error(error), work))
+        crate::performance::finish_measured(
+            result.map(|(value, _)| value).map_err(project_probe_error),
+            accounting.spent(),
+            |error| project_probe_error(crate::FsError::from(error)),
+        )
     }
 
     pub(crate) async fn capture_many_with_accounting(
@@ -509,10 +512,11 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                 self.data_custody,
             )
             .await;
-        let work = accounting.spent();
-        result
-            .map(|(value, _)| OperationReceipt { value, work })
-            .map_err(|error| failed(project_probe_error(error), work))
+        crate::performance::finish_measured(
+            result.map(|(value, _)| value).map_err(project_probe_error),
+            accounting.spent(),
+            |error| project_probe_error(crate::FsError::from(error)),
+        )
     }
 
     pub(crate) async fn capture_records_many_with_accounting(
@@ -892,10 +896,15 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let result = self
             .probe_async_with_accounting(generation, region, &mut accounting, cancellation)
             .await;
-        let work = accounting.spent();
-        result
-            .map(|value| ProbeReceipt { value, work })
-            .map_err(|error| failed(project_probe_error(error), work))
+        crate::performance::finish_measured(
+            result.map_err(project_probe_error),
+            accounting.spent(),
+            |error| project_probe_error(crate::FsError::from(error)),
+        )
+        .map(|receipt| ProbeReceipt {
+            value: receipt.value,
+            work: receipt.work,
+        })
     }
 
     pub(crate) async fn probe_async_with_accounting(
@@ -949,10 +958,15 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                 self.data_custody,
             )
             .await;
-        let work = accounting.spent();
-        result
-            .map(|value| ProbeReceipt { value, work })
-            .map_err(|error| failed(project_probe_error(error), work))
+        crate::performance::finish_measured(
+            result.map_err(project_probe_error),
+            accounting.spent(),
+            |error| project_probe_error(crate::FsError::from(error)),
+        )
+        .map(|receipt| ProbeReceipt {
+            value: receipt.value,
+            work: receipt.work,
+        })
     }
 
     async fn capture_validated_record_with_accounting(

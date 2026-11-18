@@ -18,10 +18,26 @@ pub(super) fn retention(
         value: super::Epoch::root_from(epoch, root.value),
         allocation: root.allocation,
     };
-    let mut references = Retained::<Vec<acyclic_objects::Digest>>::allocate(scope.len(), work)?;
+    // A root's envelope chain holds its whole closure, so the batch links to
+    // a scope's root instead of enumerating every descendant.
+    let (objects, related) = (
+        scope
+            .root
+            .as_ref()
+            .map_or(scope.objects, std::slice::from_ref),
+        scope
+            .related_root
+            .as_ref()
+            .map_or(scope.related_objects, std::slice::from_ref),
+    );
+    let count = objects
+        .len()
+        .checked_add(related.len())
+        .ok_or(WorkError::Overflow)?;
+    let mut references = Retained::<Vec<acyclic_objects::Digest>>::allocate(count, work)?;
     references
         .value
-        .extend(scope.object_ids().copied().map(blob));
+        .extend(objects.iter().chain(related).copied().map(blob));
     Ok((root, references))
 }
 

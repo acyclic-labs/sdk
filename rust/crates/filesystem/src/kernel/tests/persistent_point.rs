@@ -64,7 +64,7 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
             };
             let live = |accounting: &mut KernelAccounting<'_>| {
                 accounting.standalone_parts().map_or_else(
-                    || original.live_allocation_bytes(),
+                    || original.live_allocation_bytes().unwrap(),
                     |(ledger, ..)| ledger.live_bytes(),
                 )
             };
@@ -76,7 +76,7 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
             earlier.value.push(7);
             accounting.charge_items(1)?;
             let baseline = live(&mut accounting);
-            let before = accounting.spent();
+            let before = accounting.spent().unwrap();
             let selected = record(if outcome == 1 { 7 } else { 2 }).file_id;
             let (producer, completion) = tokio::sync::oneshot::channel();
             *store.release.lock().unwrap() = Some(completion);
@@ -132,10 +132,13 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
                     drop(producer);
                 }
             }
-            accounting.spent().verify(budget)?;
+            accounting.spent().unwrap().verify(budget)?;
             let pages = if outcome < 2 { 2 } else { 1 };
-            assert_eq!(accounting.spent().page_reads, before.page_reads + pages);
-            assert!(accounting.spent().items_examined >= before.items_examined);
+            assert_eq!(
+                accounting.spent().unwrap().page_reads,
+                before.page_reads + pages
+            );
+            assert!(accounting.spent().unwrap().items_examined >= before.items_examined);
             assert_eq!(live(&mut accounting), baseline);
             assert_eq!(earlier.value, [7]);
             earlier.retire(&mut accounting)?;
@@ -224,7 +227,7 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (value, allocation) = lookup_async_with_accounting::<FileTableFormat>(
         &store,
@@ -237,10 +240,10 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
     )
     .await?;
     assert_eq!(value, Some(record(2)));
-    assert_eq!(original.receipt().page_reads, 1);
-    assert!(original.receipt().backend_read_operations > 0);
+    assert_eq!(original.receipt().unwrap().page_reads, 1);
+    assert!(original.receipt().unwrap().backend_read_operations > 0);
     drop(allocation);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -259,7 +262,7 @@ async fn native_point_denies_scratch_before_provider_work() -> Result<(), Box<dy
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = lookup_async_with_accounting::<FileTableFormat>(
         &store,
@@ -272,8 +275,8 @@ async fn native_point_denies_scratch_before_provider_work() -> Result<(), Box<dy
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(original.receipt(), before);
-    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.receipt().unwrap(), before);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
     Ok(())
 }
 
@@ -284,7 +287,7 @@ fn native_owned_reserve_preserves_the_actual_allocator_error()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(
         isize::MAX as usize + 1,
@@ -296,7 +299,7 @@ fn native_owned_reserve_preserves_the_actual_allocator_error()
             crate::NativeTreeMaterializationError::AllocationFailed(_)
         ))
     ));
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -373,7 +376,7 @@ fn owned_growth_admits_the_original_and_replacement_before_allocating()
                     values.bytes = capacity.logical_bytes();
                 }
                 values.value.push(7);
-                let before = accounting.spent();
+                let before = accounting.spent().unwrap();
                 if refusal == Some("cancelled") {
                     cancellation.cancel();
                 }
@@ -416,19 +419,25 @@ fn owned_growth_admits_the_original_and_replacement_before_allocating()
                         "refused growth allocated physical backing"
                     );
                     assert_eq!(values.value.capacity(), 1);
-                    assert_eq!(accounting.spent(), before);
+                    assert_eq!(accounting.spent().unwrap(), before);
                 } else {
                     result?;
                     assert_eq!(physical.count_total, 1);
                     assert_eq!(physical.bytes_total, 2);
                     assert_eq!(values.value.capacity(), 2);
-                    assert_eq!(accounting.spent().bytes_copied, before.bytes_copied + 1);
-                    assert_eq!(accounting.spent().peak_allocation_bytes, baseline + 3);
+                    assert_eq!(
+                        accounting.spent().unwrap().bytes_copied,
+                        before.bytes_copied + 1
+                    );
+                    assert_eq!(
+                        accounting.spent().unwrap().peak_allocation_bytes,
+                        baseline + 3
+                    );
                 }
                 assert_eq!(values.value, [7]);
                 values.retire(&mut accounting)?;
                 if let Some(original) = original {
-                    assert_eq!(original.live_allocation_bytes(), baseline);
+                    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
                 } else {
                     assert_eq!(
                         accounting

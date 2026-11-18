@@ -1,5 +1,6 @@
 use super::*;
 use crate::NativeStreamProviderExt as _;
+use acyclic_native_runtime::testing::drive;
 
 #[test]
 fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
@@ -13,7 +14,7 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
         .build()?;
     runtime.block_on(async {
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-        journal_lifecycle(&schedule, &mut boundaries, async {
+        drive(&schedule, &mut boundaries, |_| {}, async {
             let directory = tempfile::tempdir()?;
             let provider =
                 LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -79,7 +80,7 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
             assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             Ok::<_, Box<dyn std::error::Error>>(())
         })
-        .await?
+        .await
     })
 }
 
@@ -156,7 +157,7 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
         .build()?;
     runtime.block_on(async {
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-        journal_lifecycle(&schedule, &mut boundaries, async {
+        drive(&schedule, &mut boundaries, |_| {}, async {
             let directory = tempfile::tempdir()?;
             let limits = LocalStreamLimits::default();
             let provider = LocalStream::open(directory.path(), limits).await?;
@@ -239,6 +240,6 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
             meter.assert_refunded();
             Ok::<_, Box<dyn std::error::Error>>(())
         })
-        .await?
+        .await
     })
 }

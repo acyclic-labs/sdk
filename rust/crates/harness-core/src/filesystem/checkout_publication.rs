@@ -1,13 +1,17 @@
 //! Bound native checkout publication, including original allocation custody.
 use crate::{Error, Result};
-use acyclic_fs::{
-    Generation, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend,
-    MaterializationJournal, MaterializeOptions, NativeAllocation, NativeMaterializationWork,
-    NativeRootIdentity, NativeWorkspacePublication, OperationId,
-};
 use std::{
     future::Future,
     path::{Path, PathBuf},
+};
+use {
+    acyclic_fs::{
+        Generation, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend,
+        MaterializationJournal, MaterializeOptions, NativeAllocation, NativeMaterializationWork,
+        NativeWorkspacePublication,
+    },
+    acyclic_fs_format::identity::OperationId,
+    acyclic_fs_native_contract::NativeRootIdentity,
 };
 
 type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
@@ -120,7 +124,12 @@ impl CheckoutPublication {
         .await;
         match prepared {
             Ok(receipt) => Ok(receipt.value),
-            Err((source, _)) => Err(source.into()),
+            Err(failure) => {
+                failure
+                    .work
+                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                Err(failure.error.into())
+            }
         }
     }
     /// Publishes with the caller's guard and original native work ledger.
@@ -154,7 +163,12 @@ impl CheckoutPublication {
                 .await;
         let journal = match retained {
             Ok(receipt) => receipt.value,
-            Err((cause, _)) => return Err(cause.into()),
+            Err(failure) => {
+                failure
+                    .work
+                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                return Err(failure.error.into());
+            }
         };
         let journal = match (journal, approved) {
             (Some(journal), Some(approved)) => {
@@ -179,7 +193,11 @@ impl CheckoutPublication {
                 let mut copy = approved.copy_empty().ok_or_else(|| {
                     Error::Unauthorized("checkout approval contains preimages".into())
                 })?;
-                copy.custody = Some(work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
+                copy.custody = Some(work.claim(
+                    0,
+                    0,
+                    acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+                )?);
                 copy
             }
             (None, Some(_)) => {
@@ -239,13 +257,19 @@ impl CheckoutPublication {
             },
         )
         .await;
-        let journal = result.map(|receipt| receipt.value).map_err(|(source, _)| {
-            guard_cause
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .unwrap_or_else(|| Error::from(source))
-        })?;
+        let journal = match result {
+            Ok(receipt) => receipt.value,
+            Err(failure) => {
+                failure
+                    .work
+                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                return Err(guard_cause
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .unwrap_or_else(|| Error::from(failure.error)));
+            }
+        };
         cleanup_directory(&self.directory)?;
         Ok(journal)
     }
@@ -259,8 +283,11 @@ impl CheckoutPublication {
         // Remove staging before its replay evidence: a failed cleanup must
         // leave the completed marker available to protect later host edits.
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let (directory, _custody) =
             state.native_preparation_directory(identity, operation, &work)?;
         cleanup_directory(&directory)?;
@@ -310,19 +337,21 @@ mod tests {
     #[test]
     fn checkout_paths_retain_the_original_ledger_on_success_and_refusal() -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work =
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let work = NativeMaterializationWork::new(
+            acyclic_fs_work::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes()?;
         let identity = NativeRootIdentity::from_bytes([0; 16]);
         let root = std::env::temp_dir().join("checkout-parent/checkout");
         let state = LocalCoreStateStore::new(std::env::temp_dir().join("host-state/core"));
         let publication =
             CheckoutPublication::new(&root, identity, OperationId::new(), &state, &work)?;
         assert_eq!(publication.root(), root.as_path());
-        assert!(work.live_allocation_bytes() > baseline);
+        assert!(work.live_allocation_bytes()? > baseline);
         drop(publication);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         let refused =
             CheckoutPublication::new(Path::new(""), identity, OperationId::new(), &state, &work);
         assert!(matches!(
@@ -333,7 +362,7 @@ mod tests {
             })
         ));
         drop(refused);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         Ok(())
     }
 }

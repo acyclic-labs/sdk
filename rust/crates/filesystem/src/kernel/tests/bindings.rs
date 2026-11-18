@@ -140,7 +140,7 @@ fn binding_pages_preserve_aliases_sealed_children_and_original_credit()
         encode(&leaf, &mut canceled),
         Err(FsError::Cancelled(_))
     ));
-    assert_eq!(canceled.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(canceled.spent().unwrap(), WorkCounters::UNCHARGED);
     Ok(())
 }
 

@@ -1,7 +1,10 @@
-use acyclic_fs::{CancellationToken, Fs, MemoryFs, NativeMaterializationWork, WorkCounters};
 use divan::Bencher;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
+use {
+    acyclic_fs::{CancellationToken, Fs, MemoryFs, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
     eprintln!("canonical-write benchmark failed: {error:?}");
@@ -21,7 +24,7 @@ fn complete<T>(future: impl Future<Output = T>) -> T {
 #[divan::bench(args = [false, true], threads = [1, 4], sample_count = 64, sample_size = 8)]
 fn workspace_create(bencher: Bencher, native: bool) {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let fixture = || {
         (
             Fs::memory(),
@@ -41,7 +44,7 @@ fn workspace_create(bencher: Bencher, native: bool) {
                         ),
                         access_policy: None,
                     },
-                    acyclic_fs::OperationId::from_bytes([4; 16]),
+                    acyclic_fs_format::identity::OperationId::from_bytes([4; 16]),
                     work,
                     &cancellation,
                     None,
@@ -60,7 +63,7 @@ fn workspace_create(bencher: Bencher, native: bool) {
                         ),
                         access_policy: None,
                     },
-                    acyclic_fs::OperationId::from_bytes([4; 16]),
+                    acyclic_fs_format::identity::OperationId::from_bytes([4; 16]),
                     budget,
                     &cancellation,
                     None,

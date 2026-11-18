@@ -34,7 +34,7 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
-        "@crates//hex-0.4.3",
+        "@sdk_crates//hex-0.4.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -69,7 +69,20 @@ isolated_test(
     name = "acyclic_fs_lease_path_proof_test",
     binary = ":acyclic_fs_lease_path_proof_test_cases",
     id = "acyclic-fs-lease-path-proof",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_fs_lease_path_proof_test_full-cloud",
+    binary = ":acyclic_fs_lease_path_proof_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs-lease-path-proof",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -78,6 +91,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

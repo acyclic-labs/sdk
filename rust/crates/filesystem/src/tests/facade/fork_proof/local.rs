@@ -77,7 +77,7 @@ async fn retained_source_fork_work(
     let destination = fs.workspace_id_for_name(&name, accounting)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
     admitted?;
-    let start = accounting.spent();
+    let start = accounting.spent().unwrap();
     let (proof, source_object, pending, filtered) = fs
         .materialize_forked_generation_root(
             source,
@@ -91,7 +91,7 @@ async fn retained_source_fork_work(
     assert!(!filtered);
     assert!(pending.is_some());
     drop((proof, pending));
-    let end = accounting.spent();
+    let end = accounting.spent().unwrap();
     Ok(crate::WorkCounters {
         backend_read_operations: end.backend_read_operations - start.backend_read_operations,
         object_bytes_read: end.object_bytes_read - start.object_bytes_read,
@@ -155,7 +155,7 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
         drop(transaction);
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let source = workspace.head(B, &cancel).await?.value;
         // The checkout and its handback share the original standalone ledger.
         // A fresh handback ledger would promote a third allocation here.
@@ -175,11 +175,17 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
                     &cancel,
                 )
                 .await?;
-            let before = accounting.spent().allocation_operations;
+            let before = accounting.spent().unwrap().allocation_operations;
             let closure = checkout.into_generation_closure(&mut accounting)?;
-            assert_eq!(accounting.spent().allocation_operations - before, 2);
+            assert_eq!(
+                accounting.spent().unwrap().allocation_operations - before,
+                2
+            );
             let alias = closure.clone();
-            assert_eq!(accounting.spent().allocation_operations - before, 2);
+            assert_eq!(
+                accounting.spent().unwrap().allocation_operations - before,
+                2
+            );
             drop((closure, alias));
         }
         let native = workspace
@@ -268,8 +274,8 @@ async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
             .ok_or("missing release barrier")?;
         drop(fs);
         released.released().await;
-        original.receipt().verify(WorkBudget::UNBOUNDED)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().unwrap().verify(WorkBudget::UNBOUNDED)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

@@ -36,6 +36,7 @@ fn manifest() -> Manifest {
             length: BODY.len() as u64,
         }],
         edges: Vec::new(),
+        sha256: None,
     }
 }
 

@@ -8,11 +8,12 @@ macro_rules! kernel_cases {
     };
     ($name:ident: $kind:ty, $project:path { $($code:ident => [$($error:expr),+ $(,)?];)+ }) => {
         #[test]
-        fn $name() {
+        fn $name() -> Result<(), Box<dyn std::error::Error>> {
             type E = $kind;
             $(for error in [$($error),+] {
                 assert_eq!($project(&error), Code::$code, "{error:?}");
             })+
+            Ok(())
         }
     };
 }
@@ -89,7 +90,7 @@ kernel_cases! { tree_read: TreeReadError {
 kernel_cases! { blob_build: BlobBuildError {
     Cancelled => [E::Cancelled];
     InvalidArgument => [E::InvalidOptions];
-    ResourceExhausted => [E::PageTooLarge {observed: 2, maximum: 1}, E::AllocationFailed, E::ReserveFailed(allocation()), E::TooLarge, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::PageTooLarge {observed: 2, maximum: 1}, E::AllocationFailed, E::ReserveFailed(allocation()?), E::TooLarge, E::Work(WorkError::Overflow)];
     Unimplemented => [E::NativeSourceUnavailable];
     Internal => [E::InvalidIndexState];
     NotFound => [E::Storage(ObjectStoreError::Missing), E::Source(io(std::io::ErrorKind::NotFound))];
@@ -164,7 +165,7 @@ kernel_cases! { extent_clone: ExtentCloneError {
 kernel_cases! { probe: AuthenticatedProbeError {
     Cancelled => [E::Cancelled];
     InvalidArgument => [E::InvalidLimits, E::RecordIdentityMismatch];
-    ResourceExhausted => [E::AllocationFailed, E::EncodedAllocationFailed(allocation()), E::DirectoryPageTooLarge, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::AllocationFailed, E::EncodedAllocationFailed(allocation()?), E::DirectoryPageTooLarge, E::Work(WorkError::Overflow)];
     Internal => [E::CachePoisoned];
     DataLoss => [E::Decode(CanonicalDecodeError::Truncated)];
     PermissionDenied => [E::Context(Box::new(FsError::InvalidAccessPolicy))];
@@ -206,7 +207,7 @@ fn native_objects_keep_the_service_failure() {
     ));
     assert!(std::error::Error::source(&error).is_none());
     assert_eq!(
-        status(&object(ObjectStoreError::NativeObjects(error))).code(),
+        Status::from(&object(ObjectStoreError::NativeObjects(error))).code(),
         Code::PermissionDenied
     );
 }

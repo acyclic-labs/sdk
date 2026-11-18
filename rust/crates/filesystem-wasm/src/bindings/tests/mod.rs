@@ -21,9 +21,9 @@ fn text(value: &JsValue, name: &str) -> Result<Option<String>, JsValue> {
 }
 
 fn work() -> BrowserWorkCounters {
-    browser_work(acyclic_fs::WorkCounters {
+    browser_work(acyclic_fs_work::performance::WorkCounters {
         bytes_copied: 17,
-        ..acyclic_fs::WorkCounters::default()
+        ..acyclic_fs_work::performance::WorkCounters::default()
     })
 }
 
@@ -99,7 +99,7 @@ fn result_dtos_preserve_bytes_bigints_and_work_counters() -> Result<(), JsValue>
     let commit = js(BrowserCommitResult {
         status: "committed",
         generation_id: Some(
-            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([5; 32]))
+            acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([5; 32]))
                 .to_bytes()
                 .to_vec()
                 .into(),

@@ -1,6 +1,9 @@
 use acyclic_fs::facade::FsWork;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use divan::Bencher;
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
     eprintln!("admission benchmark failed: {error:?}");
@@ -23,7 +26,7 @@ const CHARGES_PER_BATCH: usize = 1024;
 
 fn fixture(context: u8, recheck: bool) -> NativeMaterializationWork {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let original = NativeMaterializationWork::new(budget, &cancellation).unwrap_or_else(fail);
     let work = match context {
         0 => original,
@@ -142,7 +145,7 @@ fn kernel_charge_shared(bencher: Bencher, context: u8) {
 #[divan::bench]
 fn admission_charge_local(bencher: Bencher) {
     let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let delta = WorkCounters {
         items_examined: 1,
         bytes_copied: 1,

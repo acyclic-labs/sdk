@@ -7,6 +7,9 @@
 
 use std::{error::Error, fmt, future::Future};
 
+mod ordered;
+use ordered::OrderedInputs;
+
 /// Work permitted as an independently varied input grows. Keep unrelated
 /// inputs fixed: for example, vary history with a fixed viewport, or changed
 /// bytes with a fixed resident population.
@@ -23,13 +26,12 @@ pub enum Bound {
 /// separately; an absent observation must never be supplied as zero.
 #[track_caller]
 pub fn assert_scales(bound: Bound, small: (u64, u64), large: (u64, u64)) {
-    assert!(
-        small.0 > 0 && large.0 > small.0,
-        "require increasing positive inputs"
-    );
+    let Some(inputs) = OrderedInputs::new(small.0, large.0) else {
+        panic!("require increasing positive inputs");
+    };
     let (before_units, after_units) = match bound {
         Bound::Constant => (1, 1),
-        Bound::Linear => (small.0, large.0),
+        Bound::Linear => (inputs.small(), inputs.large()),
     };
     assert!(
         !mean_grows(

@@ -113,10 +113,11 @@ pub enum ProgressPublication<'a> {
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Host-owned publication handles for one execution's observable output.
-    /// These handles never enter the ordinary model/tool content scope.
+    /// Caller IO owns native reader admission; publication remains host-owned.
     fn output_content(
         &self,
         _operation: OperationId,
+        _io: Option<&PreparationIo>,
     ) -> Result<Option<crate::runtime::ContentBindings>> {
         Ok(None)
     }

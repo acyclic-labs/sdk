@@ -1,7 +1,7 @@
 //! Metered process recovery delegates identity and OS queries to native-runtime.
 use super::super::custody::{ProcessObservation, require_dead_incarnation};
 use super::{NativeHostWork, NativeMountError, ReadOperations, WriteOperations};
-use acyclic_native_runtime::process_identity::{ProcessProbe, current_process_started};
+use acyclic_process_identity::process_identity::{ProcessProbe, current_process_started};
 
 struct ProcessHandle {
     process: ProcessProbe,
@@ -26,7 +26,7 @@ pub(in crate::native_mount) fn require_dead_process_owner(
     started: u64,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
-    if acyclic_native_runtime::process_identity::ProcessIncarnation::new(pid, started).is_none() {
+    if acyclic_process_identity::process_identity::ProcessIncarnation::new(pid, started).is_none() {
         return require_dead_incarnation(pid, started, ProcessObservation::Unknown);
     }
     let close = work.reserve_work(WriteOperations.delta(1))?;

@@ -143,7 +143,11 @@ impl GenerationReceipt {
         failure: OperationFailure<crate::FsError>,
     ) -> MaterializeError {
         let error = MaterializeError::from(failure.error);
-        match self.custody.work().clone().merge(*failure.work) {
+        let completed = match failure.work {
+            Ok(work) => work,
+            Err(observation) => return MaterializeError::from(crate::FsError::from(observation)),
+        };
+        match self.custody.work().clone().merge(*completed) {
             Ok(()) => error,
             Err(failure) => failure.into(),
         }

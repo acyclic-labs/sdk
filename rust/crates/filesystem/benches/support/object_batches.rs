@@ -1,12 +1,16 @@
-use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, CancellationToken, HashedObject, LogicalObjectStore,
-    NativeMaterializationWork, ObjectKind, WorkCounters, storage::ObjectWrite,
-};
 use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+use {
+    acyclic_fs::{
+        AsyncObjectStore, AuthorityWork, CancellationToken, HashedObject, LogicalObjectStore,
+        NativeMaterializationWork, storage::ObjectWrite,
+    },
+    acyclic_fs_format::object_reference::ObjectKind,
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 pub fn main() {
     if std::env::var_os("ACYCLIC_BENCH_TRACE").is_some() {
@@ -28,7 +32,7 @@ fn publish(
 ) -> WorkCounters {
     let mut work = match original {
         Some(original) => AuthorityWork::native(original, cancellation),
-        None => AuthorityWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, cancellation),
+        None => AuthorityWork::new(acyclic_fs_work::performance::BOUNDARY_BUDGET, cancellation),
     };
     // These are the two actual BlobBatchStore::flush dispatch paths.
     if original.is_some() {
@@ -60,8 +64,11 @@ fn authenticated_batch(bencher: Bencher, (native, size): (bool, usize)) {
     let input = || {
         let cancellation = CancellationToken::new();
         let original = native.then(|| {
-            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                .unwrap()
+            NativeMaterializationWork::new(
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .unwrap()
         });
         let provider = MemoryObjects::memory();
         let store = LogicalObjectStore::new(Arc::new(provider));

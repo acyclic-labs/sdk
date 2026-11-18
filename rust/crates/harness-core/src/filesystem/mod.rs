@@ -16,13 +16,13 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
-use acyclic_fs::WorkCounters;
 use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, Generation, GenerationId,
     IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
     WorkspaceStat,
 };
+use acyclic_fs_work::performance::WorkCounters;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 mod content_input;
@@ -141,7 +141,7 @@ pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectS
                 "harness-generation-{}",
                 hex::encode(generation.id().to_bytes().as_slice())
             ),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -390,7 +390,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 if active_io.cancellation().is_cancelled() { Error::Cancelled }
                                 else { Error::Storage(format!("content source read failed: {error}; recovery: recreate the complete original source and replay the same publication")) }
                             })?;
-                        active_io.charge(acyclic_fs::WorkCounters { source_bytes_read: read as u64, ..Default::default() })?;
+                        active_io.charge(acyclic_fs_work::performance::WorkCounters { source_bytes_read: read as u64, ..Default::default() })?;
                         if maximum_bytes.is_some_and(|maximum| source.length > maximum) {
                             return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                                 "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
@@ -531,11 +531,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(all(test, not(target_arch = "wasm32")))]
-            pinned_read_tests::retained::sample_items(false, io);
+            pinned_read_tests::retained::sample_items(false, io)?;
             #[cfg(all(test, not(target_arch = "wasm32")))]
             if pinned_read_tests::retained::reopen() {
                 let result = self.read_pinned_io(reference, maximum_bytes, io).await;
-                pinned_read_tests::retained::sample_items(true, io);
+                pinned_read_tests::retained::sample_items(true, io)?;
                 return result.map(Charged::into_custody);
             }
             if let Some(io) = io {
@@ -582,7 +582,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 reference.descriptor().verify(&bytes, work)
             })?;
             #[cfg(all(test, not(target_arch = "wasm32")))]
-            pinned_read_tests::retained::sample_items(true, io);
+            pinned_read_tests::retained::sample_items(true, io)?;
             Ok(bytes.into_custody())
         })
     }

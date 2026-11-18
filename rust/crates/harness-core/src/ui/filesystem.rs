@@ -1,7 +1,10 @@
 //! The shared UI View served by the filesystem's existing Computed adapter.
 use super::{Affected, Cut, Error, View};
-use acyclic_fs::{WorkCounters, WorkError, demand::*, kernel::*};
 use std::{io::Write, marker::PhantomData};
+use {
+    acyclic_fs::{demand::*, kernel::*},
+    acyclic_fs_work::performance::{WorkCounters, WorkError},
+};
 
 /// Immutable UI inputs plus the host's authorized navigation namespace.
 /// Implementations prepare only the requested page and retain their original

@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/local/host_process/children.rs b/rust/crates/harness/src/local/host_process/children.rs
+diff --git a/rust/crates/harness-local/src/local/host_process/children.rs b/rust/crates/harness-local/src/local/host_process/children.rs
 index d68399c060c..b3d52e2ac52 100644
---- a/rust/crates/harness/src/local/host_process/children.rs
-+++ b/rust/crates/harness/src/local/host_process/children.rs
+--- a/rust/crates/harness-local/src/local/host_process/children.rs
++++ b/rust/crates/harness-local/src/local/host_process/children.rs
 @@ -658,28 +658,14 @@ impl NativeChildren {
      }
  

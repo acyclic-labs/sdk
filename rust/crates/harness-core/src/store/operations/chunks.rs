@@ -23,7 +23,7 @@ where
             .transpose()?;
         let mut value = (value, hold);
         if let Some(io) = io {
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_copied: chunk.len() as u64,
                 ..Default::default()
             })?;
@@ -112,7 +112,7 @@ pub(crate) async fn read_chunks<'a, P: crate::store::JournalProvider + ?Sized>(
                 "content chunk length differs",
             ));
         }
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_copied: expected as u64,
             ..Default::default()
         })?;

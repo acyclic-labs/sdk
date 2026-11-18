@@ -41,10 +41,15 @@ struct PrivateReadSelection<'a, A: 'static, O: 'static> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PrivateReadSelection<'_, A, O> {
-    async fn recheck(&self, grant: &ContentGrant, io: &PreparationIo) -> Result<()> {
-        super::super::access::require_current(&self.workspace, &self.view.0, io).await?;
+    async fn recheck(
+        &self,
+        grant: &ContentGrant,
+        io: &PreparationIo,
+        clock: &dyn acyclic_stream::UnixMillisClock,
+    ) -> Result<()> {
+        super::super::access::require_current(&self.workspace, &self.view.0, io, clock).await?;
         if let Some((workspace, view)) = &self.data_access {
-            super::super::access::require_current(workspace, &view.0, io).await?;
+            super::super::access::require_current(workspace, &view.0, io, clock).await?;
         }
         grant.recheck(Some(io))
     }
@@ -70,20 +75,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(workspace_ref);
         let cut = self.select_cut(&workspace, expected_generation, io).await?;
         let generation = &cut.generation;
-        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
-        super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
-        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        let now = self.access_now()?;
+        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io, now).await?;
+        super::super::access::require_at(&view.0, acyclic_fs::access::Action::List, path, io, now)?;
+        super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
             generation,
             grant.policy_scope(),
             ceiling,
             io,
+            now,
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
-            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+            super::super::access::require_at(
+                &view.0,
+                acyclic_fs::access::Action::List,
+                path,
+                io,
+                now,
+            )?;
+            super::super::access::require_at(
+                &view.0,
+                acyclic_fs::access::Action::Read,
+                path,
+                io,
+                now,
+            )?;
         }
         bounded_io::retain(generation, Some(io)).await?;
         Ok(PrivateReadSelection {
@@ -238,6 +257,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         read_generation(&cut.generation, path, maximum, io).await
     }
 
+    /// Reads the whole regular file at absolute `path` at the private cut
+    /// `cut`, bounded by `maximum`, and returns its bytes retained on `io`
+    /// as every other workspace read returns them.
+    pub(in crate::filesystem) async fn read_private_cut_retained(
+        &self,
+        cut: &SelectedCut<A, O>,
+        path: &str,
+        maximum: u64,
+        io: &PreparationIo,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        let bytes = self
+            .read_cut(cut, path, Some(maximum), io)
+            .await?
+            .into_unmeasured();
+        if io.original_native_work().is_none() {
+            io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+        }
+        Ok(bytes)
+    }
+
     /// Reads the file `reference` names at the private cut `expected` selects
     /// on `workspace`, and returns the authored generation under that cut.
     /// Pinned readers enter it only when `selects_private_cut` holds, and
@@ -333,11 +372,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let selected = self
             .select_private_read(volume, grant, path, expected_generation, access.ceiling, io)
             .await?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(cut) = &selected.cut.snapshot {
             self.validate_private_snapshot(cut, io).await?;
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
         }
         self.cut_ref(&selected.cut, expected_generation, io)
     }
@@ -371,7 +410,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(cut) = &selected.cut.snapshot {
             let stat = self.stat_private_snapshot(cut, &requested, io).await?;
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             return Ok(stat);
         }
         let stat = io.sdk_if_present(
@@ -381,7 +420,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .stat(&requested, io, io.cancellation())
                 .await,
         )?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         Ok(stat)
     }
 
@@ -652,7 +691,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             None
         };
-        read.recheck(grant, io).await?;
+        read.recheck(grant, io, self.clock()).await?;
         selected
             .map(|(reference, bytes, publication)| {
                 reference.1.into_retained()?;
@@ -740,7 +779,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let (bytes, length) = self
                 .read_private_snapshot(cut, &requested, range, io)
                 .await?;
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             return Ok((
                 io.retain_read_bytes(bytes)?,
                 self.private_generation_ref(cut, expected_generation, io)?,
@@ -774,7 +813,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await,
         )?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         drop(requested_hold);
         let selected_id = self.generation_ref_id(generation.id(), Some(io))?;
         Ok((io.retain_read_bytes(chunk.bytes)?, selected_id, length))
@@ -815,7 +854,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?
         else {
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             return Ok(None);
         };
         let length = stat
@@ -860,7 +899,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read_range(&requested, prefix, delta, io, io.cancellation())
                 .await,
         )?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         Ok(Some(io.retain_read_bytes(chunk.bytes)?.into_custody()))
     }
 
@@ -914,6 +953,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             grant.policy_scope().capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
+        let now = self.access_now()?;
         let view = crate::filesystem::access::access_view(
             &workspace,
             grant.policy_scope(),
@@ -921,19 +961,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
             ceiling,
             io,
+            now,
         )
         .await?;
-        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
             &pinned,
             grant.policy_scope(),
             ceiling,
             io,
+            now,
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+            super::super::access::require_at(
+                &view.0,
+                acyclic_fs::access::Action::Read,
+                path,
+                io,
+                now,
+            )?;
         }
         bounded_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
@@ -987,9 +1035,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(path_hold);
         drop(reference);
         drop(reference_hold);
-        super::super::access::require_current(&workspace, &view.0, io).await?;
+        super::super::access::require_current(&workspace, &view.0, io, self.clock()).await?;
         if let Some((workspace, view)) = &data_access {
-            super::super::access::require_current(workspace, &view.0, io).await?;
+            super::super::access::require_current(workspace, &view.0, io, self.clock()).await?;
         }
         grant.recheck(Some(io))?;
         Ok(bytes)
@@ -1265,6 +1313,7 @@ async fn private_read_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: GenerationId,
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<super::super::access::CompiledAccess<'a>> {
     let label = crate::core::filesystem_scope_label(
         grant.policy_scope().capabilities(),
@@ -1277,6 +1326,7 @@ async fn private_read_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
         ceiling,
         io,
+        now,
     )
     .await
 }

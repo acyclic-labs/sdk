@@ -33,7 +33,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
     std::fs::write(&path, b"actual")?;
     let file = fixture_file(&path)?;
     assert_eq!(
-        acyclic_native_runtime::resources::descriptors_naming(&path)?,
+        acyclic_process_resources::resources::descriptors_naming(&path)?,
         1
     );
     let cancellation = CancellationToken::new();
@@ -46,7 +46,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
         Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::Cancelled(_))
     ));
     assert_eq!(
-        acyclic_native_runtime::resources::descriptors_naming(&path)?,
+        acyclic_process_resources::resources::descriptors_naming(&path)?,
         0
     );
     scope.release()?;
@@ -156,7 +156,7 @@ fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
                 ..WorkBudget::UNBOUNDED
             };
             let original = NativeMaterializationWork::new(allowance, &cancellation).unwrap();
-            let initial = original.live_allocation_bytes();
+            let initial = original.live_allocation_bytes().unwrap();
             let mut source = acyclic_native_runtime::AsyncRangeReader::new(
                 &native,
                 offset as u64,
@@ -181,12 +181,15 @@ fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
                 if requested != 0 {
                     prop_assert!(chunk.bytes.matches_meter(&original.runtime_meter()));
                 }
-                prop_assert_eq!(original.receipt().bytes_copied, 0);
+                prop_assert_eq!(original.receipt().unwrap().bytes_copied, 0);
                 drop(chunk);
             }
-            prop_assert_eq!(original.receipt().source_bytes_read, expected as u64);
-            prop_assert!(original.receipt().verify(allowance).is_ok());
-            prop_assert_eq!(original.live_allocation_bytes(), initial);
+            prop_assert_eq!(
+                original.receipt().unwrap().source_bytes_read,
+                expected as u64
+            );
+            prop_assert!(original.receipt().unwrap().verify(allowance).is_ok());
+            prop_assert_eq!(original.live_allocation_bytes().unwrap(), initial);
             Ok(())
         },
     )?;
@@ -240,13 +243,16 @@ fn owned_native_worker_completes_then_cancellation_preserves_cursor()
                 let cancellation = CancellationToken::new();
                 let original =
                     NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-                let initial = original.live_allocation_bytes();
+                let initial = original.live_allocation_bytes().unwrap();
                 let mut source =
                     acyclic_native_runtime::AsyncRangeReader::new(native, 0, body.len() as u64);
                 let storage = native_source_storage(maximum, &original, &cancellation).unwrap();
                 let finish = |read: std::io::Result<_>| {
                     assert!(read.is_ok(), "the worker must complete before cancellation");
-                    assert_eq!(original.receipt().source_bytes_read, maximum as u64);
+                    assert_eq!(
+                        original.receipt().unwrap().source_bytes_read,
+                        maximum as u64
+                    );
                     cancellation.cancel();
                     accept_native_source_chunk(read, maximum, &original, &cancellation)
                 };
@@ -293,9 +299,12 @@ fn owned_native_worker_completes_then_cancellation_preserves_cursor()
                     prop_assert_eq!(chunk.bytes.as_ref(), &body[..maximum]);
                     drop(chunk);
                 }
-                prop_assert_eq!(original.receipt().source_bytes_read, maximum as u64);
-                prop_assert_eq!(original.receipt().bytes_copied, 0);
-                prop_assert_eq!(original.live_allocation_bytes(), initial);
+                prop_assert_eq!(
+                    original.receipt().unwrap().source_bytes_read,
+                    maximum as u64
+                );
+                prop_assert_eq!(original.receipt().unwrap().bytes_copied, 0);
+                prop_assert_eq!(original.live_allocation_bytes().unwrap(), initial);
             }
             Ok(())
         },
@@ -333,7 +342,7 @@ async fn owned_native_refusals_and_cancellation_precede_reads()
         }
         let original =
             NativeMaterializationWork::new(limit, &cancellation).map_err(|(error, _)| error)?;
-        let initial = original.live_allocation_bytes();
+        let initial = original.live_allocation_bytes().unwrap();
         if counter == "cancelled" {
             cancellation.cancel();
         }
@@ -345,10 +354,10 @@ async fn owned_native_refusals_and_cancellation_precede_reads()
             let chunk = result?.ok_or("owned source must return its chunk")?;
             assert_eq!(chunk.bytes.as_ref(), b"abc");
             assert_eq!(source.remaining(), 0);
-            assert_eq!(original.receipt().source_bytes_read, 3);
-            assert_eq!(original.receipt().bytes_copied, 0);
+            assert_eq!(original.receipt().unwrap().source_bytes_read, 3);
+            assert_eq!(original.receipt().unwrap().bytes_copied, 0);
             drop(chunk);
-            assert_eq!(original.live_allocation_bytes(), initial);
+            assert_eq!(original.live_allocation_bytes().unwrap(), initial);
             continue;
         }
         if counter == "cancelled" {
@@ -364,9 +373,9 @@ async fn owned_native_refusals_and_cancellation_precede_reads()
             )) if refused == expected));
         }
         assert_eq!(source.remaining(), 3);
-        assert_eq!(original.receipt().source_bytes_read, 0);
-        assert_eq!(original.receipt().backend_read_operations, 0);
-        assert_eq!(original.live_allocation_bytes(), initial);
+        assert_eq!(original.receipt().unwrap().source_bytes_read, 0);
+        assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
+        assert_eq!(original.live_allocation_bytes().unwrap(), initial);
     }
     Ok(())
 }

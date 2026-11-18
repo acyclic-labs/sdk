@@ -1,6 +1,6 @@
 //! GEM-TOOL-05/06: results follow their parallel calls in call order.
 use super::wire::{Item, Message};
-use crate::protocol::sequence::{Exchange, GeminiPart, answered, exchange};
+use acyclic_harness_provider_protocol::sequence::{Exchange, GeminiPart, answered, exchange};
 use std::collections::HashMap;
 
 pub(super) fn order(messages: &mut [Message<'_>]) {

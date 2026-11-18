@@ -12,7 +12,7 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
     }
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
+    let captured = acyclic_test_support::trace_capture::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -98,7 +98,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
+    let captured = acyclic_test_support::trace_capture::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -563,7 +563,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits::default();
     let path = directory.path().join(JOURNAL_FILE);
-    let paths = ["source", "branch", "branch/child", "copy"]
+    let paths = ["source", "branch"]
         .map(StreamPath::new)
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
@@ -583,54 +583,38 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     provider
         .append(AppendRequest {
             path: paths[0].clone(),
-            records: vec![body(b"a", b"alice")?, body(b"z", b"bob")?],
+            records: vec![body(b"a", b"alice")?],
             if_tail: Some(0),
             idempotency_key: IdempotencyKey::new("seed")?,
         })
         .await?;
-    for pair in paths[..3].windows(2) {
-        provider
-            .fork(ForkRequest {
-                source: pair[0].clone(),
-                destination: pair[1].clone(),
-                at_tail: Some(2),
-                exclude: Vec::new(),
-                idempotency_key: IdempotencyKey::unique(),
-            })
-            .await?;
-    }
+    provider
+        .fork(ForkRequest {
+            source: paths[0].clone(),
+            destination: paths[1].clone(),
+            at_tail: Some(1),
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
     let requests = [
         WriteRequest::Append(AppendRequest {
             path: paths[0].clone(),
             records: vec![body(b"b", b"alice")?],
-            if_tail: Some(2),
+            if_tail: Some(1),
             idempotency_key: IdempotencyKey::new("partial-append")?,
         }),
         WriteRequest::Commit(CommitRequest {
             deadline_unix_millis: None,
             effects: vec![crate::CommitEffect::hard(
-                vec![
-                    crate::CommitCondition::Tail {
-                        path: paths[2].clone(),
-                        expected: 2,
-                    },
-                    crate::CommitCondition::Absent {
-                        path: paths[3].clone(),
-                    },
-                ],
-                vec![
-                    crate::CommitMutation::Append {
-                        path: paths[2].clone(),
-                        records: vec![body(b"b", b"bob")?, body(b"a", b"alice")?],
-                    },
-                    crate::CommitMutation::Fork {
-                        source: paths[2].clone(),
-                        destination: paths[3].clone(),
-                        at_tail: 2,
-                        exclude: Vec::new(),
-                        records: vec![body(b"c", b"alice")?],
-                    },
-                ],
+                vec![crate::CommitCondition::Tail {
+                    path: paths[1].clone(),
+                    expected: 1,
+                }],
+                vec![crate::CommitMutation::Append {
+                    path: paths[1].clone(),
+                    records: vec![body(b"b", b"bob")?],
+                }],
             )],
             idempotency_key: IdempotencyKey::new("partial-commit")?,
         }),
@@ -664,14 +648,11 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
                 .map(|records| records.as_ref().map(Vec::len))
                 .collect::<Vec<_>>(),
             if index == 0 {
-                vec![Some(3), Some(2), Some(2), None]
+                vec![Some(2), Some(1)]
             } else {
-                vec![Some(3), Some(2), Some(4), Some(3)]
+                vec![Some(2), Some(2)]
             }
         );
-        if let Some(copy) = &after[3] {
-            assert_eq!(Some(&copy[..2]), before[2].as_deref());
-        }
         let observed = provider
             .inspect_idempotency(key.clone())
             .await?
@@ -682,6 +663,25 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
 
     for (key, prefix, frame, before, after, outcome) in &captures {
         for cut in 0..=frame.len() {
+            // Exhaust the actual recovery parser at every byte. Physical
+            // recovery then covers each distinct framing/repair boundary.
+            assert_eq!(
+                read_frame(std::io::Cursor::new(&frame[..cut]), u64::try_from(cut)?)?.is_some(),
+                cut == frame.len(),
+                "frame {key:?}, cut {cut} admitted a partial command"
+            );
+            if ![
+                0,
+                1,
+                4,
+                frame.len() - FRAME_CHECKSUM_BYTES,
+                frame.len() - 1,
+                frame.len(),
+            ]
+            .contains(&cut)
+            {
+                continue;
+            }
             let mut bytes = prefix.clone();
             bytes.extend_from_slice(&frame[..cut]);
             std::fs::write(&path, &bytes)?;
@@ -990,19 +990,61 @@ async fn barrier_policy_uses_full_flush_and_preserves_exact_replay()
 #[tokio::test]
 async fn a_journal_torn_before_its_header_completed_is_created_again()
 -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join(JOURNAL_FILE);
-    let limits = LocalStreamLimits::default();
-    let header = encode_header(limits, 0)?;
-    for cut in 0..header.len() {
-        std::fs::write(
-            &path,
-            header.get(..cut).ok_or(StreamError::InvalidArgument)?,
-        )?;
-        let provider = LocalStream::open(directory.path(), limits).await?;
-        drop(provider);
-        assert_eq!(std::fs::read(&path)?, header);
-    }
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    acyclic_native_runtime::testing::drive(&schedule, &mut events, |_| {}, async {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(JOURNAL_FILE);
+        let limits = LocalStreamLimits::default();
+        let header = encode_header(limits, 0)?;
+        for cut in 0..header.len() {
+            let mut partial = header[..cut].to_vec();
+            assert_eq!(
+                read_header(
+                    std::io::Cursor::new(&partial),
+                    u64::try_from(cut)?,
+                    limits,
+                    0
+                )?,
+                None
+            );
+            for index in 0..cut {
+                partial[index] ^= 1;
+                assert!(matches!(
+                    read_header(
+                        std::io::Cursor::new(&partial),
+                        u64::try_from(cut)?,
+                        limits,
+                        0
+                    ),
+                    Err(LocalStreamError::Corrupt)
+                ));
+                partial[index] ^= 1;
+            }
+            // Empty, first-byte and final-byte tears traverse the same physical
+            // restart path; every canonical and corrupt byte cut was checked above.
+            if ![0, 1, header.len() - 1].contains(&cut) {
+                continue;
+            }
+            std::fs::write(
+                &path,
+                header.get(..cut).ok_or(StreamError::InvalidArgument)?,
+            )?;
+            let provider = LocalStream::open(directory.path(), limits).await?;
+            drop(provider);
+            assert_eq!(std::fs::read(&path)?, header);
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?;
+    assert_eq!(
+        schedule
+            .durable_writes()
+            .iter()
+            .filter(|call| call.operation == "file:sync_parent")
+            .count(),
+        3,
+        "header byte cuts repeated physical recovery"
+    );
     Ok(())
 }
 
@@ -1051,7 +1093,7 @@ async fn deferred_mutations_wait_for_the_next_flush() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
+    let captured = acyclic_test_support::trace_capture::Capture::default();
     let subscriber = tracing_subscriber::Registry::default()
         .with(captured.clone())
         .with(tracing_subscriber::filter::filter_fn(|metadata| {
@@ -1128,7 +1170,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
-        let captured = acyclic_grpc_observability::tests::Capture::default();
+        let captured = acyclic_test_support::trace_capture::Capture::default();
         let mut records = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
@@ -1147,7 +1189,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
         // The open is its own operation, complete once the cursor is returned.
         let open = captured.fields("acyclic.stream.follow");
         assert_eq!(open.get("outcome").ok_or("missing span field")?, "ok");
-        let other = acyclic_grpc_observability::tests::Capture::default();
+        let other = acyclic_test_support::trace_capture::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );

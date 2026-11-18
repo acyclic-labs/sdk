@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/harness/src/local/agent_conversation.rs
---- a/rust/crates/harness/src/local/agent_conversation.rs
-+++ b/rust/crates/harness/src/local/agent_conversation.rs
+diff --git a/rust/crates/harness-local/src/local/agent_conversation.rs b/rust/crates/harness-local/src/local/agent_conversation.rs
+--- a/rust/crates/harness-local/src/local/agent_conversation.rs
++++ b/rust/crates/harness-local/src/local/agent_conversation.rs
 @@ -539,6 +539,7 @@
          inbox: u64,
          events: &mut super::Observer,

@@ -684,9 +684,13 @@ fn merge_promotion_failure(
     live_bytes: u64,
     failure: ObjectFailure,
 ) -> ObjectFailure {
-    match merge_promotion_work(prior, live_bytes, *failure.work) {
+    let nested = match failure.work {
+        Ok(work) => *work,
+        Err(error) => return ObjectFailure::without_receipt(failure.error, error),
+    };
+    match merge_promotion_work(prior, live_bytes, nested) {
         Ok(combined) => ObjectFailure::new(failure.error, combined),
-        Err(error) => ObjectFailure::new(error.into(), prior),
+        Err(error) => ObjectFailure::without_receipt(failure.error, error.into()),
     }
 }
 

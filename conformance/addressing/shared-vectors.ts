@@ -33,9 +33,6 @@ export async function resourceIdentityConformance(binding: typeof Binding, name:
         expect(ActorReference.decode(unhex(row.encoded_hex)).equals(value)).toBe(true);
         expect(hex(value.toFields().namespace)).toBe(row.namespace_hex);
         expect(() => ResourceIdentity.decode(value.encode())).toThrow();
-        if (row.legacy) {
-          expect(ActorReference.fromLegacyFields(unhex(row.account_hex), undefined, new TextDecoder().decode(unhex(row.id_hex))).equals(value)).toBe(true);
-        }
         value.account.fill(0); value.namespace.fill(0); value.id.fill(0); value.encode().fill(0);
         expect(hex(value.encode())).toBe(row.encoded_hex);
         expect(() => ActorReference.decode(new Uint8Array([...value.encode(), 0]))).toThrow();

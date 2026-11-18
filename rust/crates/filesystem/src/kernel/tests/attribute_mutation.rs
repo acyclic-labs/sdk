@@ -247,8 +247,8 @@ async fn pre_cancelled_attribute_mutation_accesses_no_backend()
         failure.error,
         AttributeMutationError::Storage(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -368,7 +368,7 @@ async fn oversized_attribute_item_takes_a_page_and_only_the_object_bound_refuses
         failure.error,
         AttributeMutationError::PageItemTooLarge
     ));
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -508,7 +508,7 @@ async fn hard_object_bounds_keep_valid_attributes_writable_and_history_independe
             }
         }
         assert_eq!(measured.get(), credit);
-        assert_eq!(accounting.spent().items_examined, credit);
+        assert_eq!(accounting.spent().unwrap().items_examined, credit);
     }
     async fn apply(
         store: &MemoryObjectStore,

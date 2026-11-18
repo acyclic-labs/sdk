@@ -61,7 +61,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
         };
         assert_eq!(
             crate::http_failure(response, 2048, None).await.code(),
-            crate::http_error(status).code(),
+            acyclic_harness_provider_response::http_error(status).code(),
         );
     }
 }
@@ -71,7 +71,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let baseline = NativeMaterializationWork::accounting_state_bytes();
     let work = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 8_000_000),
+        acyclic_fs_work::performance::work_budget(1_000_000, 8_000_000),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -144,7 +144,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     let denied = NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, baseline),
+        acyclic_fs_work::performance::work_budget(1_000_000, baseline),
         &CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

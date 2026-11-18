@@ -11,7 +11,7 @@ pub(super) fn broken_release() -> bool {
 }
 
 #[test]
-fn concurrent_capture_retirement_and_transfer_conserve_every_byte() {
+fn concurrent_capture_retirement_and_transfer_conserve_every_byte() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let exercise = |broken| {
         loom::model(move || {
@@ -44,4 +44,5 @@ fn concurrent_capture_retirement_and_transfer_conserve_every_byte() {
         .expect_err("a non-atomic release must lose an update");
     let message = error.downcast_ref::<String>().expect("assertion message");
     assert!(message.contains("capture byte conservation"), "{message}");
+    Ok(())
 }

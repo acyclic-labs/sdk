@@ -1,8 +1,8 @@
 //! Optional context edits preserve the frozen provider prefix.
 use super::*;
-use acyclic_harness::AgentId as StorageAgentId;
-use acyclic_harness::projection::*;
-use acyclic_harness::{
+use acyclic_harness_core::AgentId as StorageAgentId;
+use acyclic_harness_core::projection::*;
+use acyclic_harness_core::{
     OperationId, context::*, filesystem::MemoryHarnessStorage, model::*, tool::ToolRegistry,
 };
 use futures::TryStreamExt as _;
@@ -47,6 +47,7 @@ fn transport(path: &'static str) -> Arc<Scripted> {
     Arc::new(Scripted {
         path,
         state: Mutex::new(("agent", VecDeque::new(), Vec::new())),
+        context: Mutex::default(),
         cache: Mutex::new(harness_mock_model::PromptCache::default().with_implicit_chat()),
     })
 }
@@ -59,20 +60,20 @@ async fn manifest(
 ) -> TestResult<(ContextManifest, ToolRegistry)> {
     let mut extra = Vec::new();
     if matches!(feature, Feature::Mcp) && version != 0 {
-        let catalog: acyclic_harness::mcp::McpCatalog = serde_json::from_value(json!({
+        let catalog: acyclic_harness_core::mcp::McpCatalog = serde_json::from_value(json!({
             "server":"fixture", "revision":version.to_string(),
             "schema_exposure":{"kind":"eager"}, "discovery":"disabled",
-            "projection_schema":acyclic_harness::tool::json_projection_schema(json!({"type":"object"})),
+            "projection_schema":acyclic_harness_core::tool::json_projection_schema(json!({"type":"object"})),
             "tools":[{"name":"inspect", "description":format!("feature-v{version}"),
                 "inputSchema":{"type":"object"}}],
         }))?;
         for definition in catalog.model_definitions(None, None)? {
-            let mut tool = super::super::providers::echo_tool(&definition.name);
+            let mut tool = crate::integration_helpers::echo_tool(&definition.name);
             tool.definition = definition;
             extra.push(tool);
         }
     }
-    let tools = acyclic_harness::tools::registry(&[], |_| false, extra)?;
+    let tools = acyclic_harness_core::tools::registry(&[], |_| false, extra)?;
     let mut manifest = ContextManifest::new(Default::default(), Vec::new(), &tools)?;
     manifest.conventions.push("Keep the cached policy.".into());
     if version == 0 {
@@ -311,7 +312,7 @@ async fn optional_features_preserve_prefix() -> TestResult {
 #[tokio::test]
 async fn compaction_summaries_preserve_prefix() -> TestResult {
     for (adapter, path) in FAMILIES {
-        use acyclic_harness::executor::{ExecutionEvent, StockExecutor, TurnInput};
+        use acyclic_harness_core::executor::{ExecutionEvent, StockExecutor, TurnInput};
         let transport = transport(path);
         let mut storage =
             MemoryHarnessStorage::new(StorageAgentId::from_bytes([92; 16]), 1 << 20).await?;
@@ -345,11 +346,6 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
             storage = storage.with_bound_selection(selected.clone())?;
             let journal = storage.journal();
             let input = TurnInput::from_selected_context(op, selected)?;
-            if turn == 1 {
-                transport.state.lock().unwrap().1.push_back(text(
-                    r#"{"version":1,"drop_through":2,"summary":"retained summary"}"#,
-                ));
-            }
             let output = executor.execute(input.clone(), journal.as_ref()).await?;
             let count = transport.state.lock().unwrap().2.len();
             let replay = executor.execute(input, journal.as_ref()).await?;
@@ -364,13 +360,16 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
             history.push(message(ModelRole::Assistant, output.text));
         }
         let sent = transport.state.lock().unwrap();
-        assert_eq!(sent.2.len(), 3);
-        let before = &sent.2[0];
-        let after = &sent.2[2];
-        assert!(holds(&sent.2[1].body, b"Source count:"));
+        let context = transport.context.lock().unwrap();
+        assert_eq!(sent.2.len(), 2);
+        let [summary] = &context[..] else {
+            return Err(format!("{} context calls", context.len()).into());
+        };
+        let (before, after) = (&sent.2[0], &sent.2[1]);
+        assert!(holds(&summary.body, b"Source count:"));
         assert_eq!(header(path, &before.body)?, header(path, &after.body)?);
         assert!(after.cached.read > 0, "compaction lost the cached header");
-        assert!(holds(&after.body, b"retained summary"));
+        assert!(holds(&after.body, BACKSTOP.as_bytes()));
         assert!(!holds(&after.body, b"older-0:"));
     }
     Ok(())

@@ -1,0 +1,915 @@
+use super::*;
+use crate::{
+    context::{
+        ContextDiscoveryLimits, ContextDiscoveryPolicy, ContextEpoch, ContextManifest,
+        DiscoveredContext,
+    },
+    conversation::{ContentResidencyVerifier, FileRef},
+    filesystem::FilesystemContentVerifier,
+};
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+mod checkout;
+mod commands;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+mod environment;
+pub(super) mod skills;
+
+/// The executing agent's retained volumes and read authority. The workspace is
+/// the same bound view used by its tools, including for a spawned agent.
+pub(super) struct Binding<'a> {
+    pub(super) project: &'a VolumeRef,
+    pub(super) project_root: &'a str,
+    pub(super) scratch: &'a VolumeRef,
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub(super) journal: &'a VolumeRef,
+    pub(super) reader: &'a dyn ContentResidencyVerifier,
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub(super) verifier: AuthorityVerifier,
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub(super) scope: &'a Scope,
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub(super) workspace: Option<Arc<LocalWorkspace>>,
+}
+
+pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(key);
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
+}
+
+/// The one publication identity of `turn`'s pinned host hooks: its staging
+/// operation and journal path. Every reader derives it here, never by text.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+pub(super) fn host_hooks_publication(turn: OperationId) -> (OperationId, String) {
+    (
+        publication_operation(b"acyclic.local.host-hooks/v1\0", &turn.into_bytes()),
+        format!("config/host-hooks/{turn}.json"),
+    )
+}
+
+/// What one agent was last told of its epoch's model-visible sources.
+pub(super) struct Told {
+    epoch: FileRef,
+    file: Option<FileRef>,
+    state: ToldState,
+    /// Exclusive inbox cursor after the last committed notice. Every turn
+    /// preparation fences its first request with it, so a retried
+    /// preparation still admits a notice an earlier attempt sent; a reload
+    /// recovers it by resending the retained outbox entry.
+    through: Option<u64>,
+}
+
+impl Told {
+    fn delivered(&mut self, delivery: crate::agent::Delivered) -> Result<()> {
+        if let crate::agent::Delivered::Committed { inbox } = delivery {
+            let cursor = inbox
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("context delivery cursor overflow".into()))?;
+            self.through = Some(self.through.map_or(cursor, |previous| previous.max(cursor)));
+        }
+        Ok(())
+    }
+}
+
+/// The durable delivery frontier, including the outbox entry that must be
+/// resent after a crash. Publishing it precedes the idempotent inbox send.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToldState {
+    version: u8,
+    digests: std::collections::BTreeMap<String, [u8; 32]>,
+    sent: u64,
+    pending: Option<crate::agent::InboxRecord>,
+}
+
+impl LocalHarness {
+    pub(super) fn context_reader(
+        &self,
+    ) -> Result<Arc<FilesystemContentVerifier<LocalAuthorityBackend, LocalObjectBackend>>> {
+        FilesystemContentVerifier::new(
+            self.files.clone(),
+            &self.verifier,
+            &self.signed,
+            self.limits.file_bytes,
+            None,
+        )
+    }
+
+    /// The complete tool array every request of an epoch declares. The agent
+    /// tools bind per turn, outside the registry; a turn binds each over any
+    /// registered tool of its name, so the array lists it in that tool's place.
+    pub(super) fn declared_tools(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
+        let agent_tools = crate::tools::agent_tool_definitions(&self.agent_tools)?;
+        let mut tools = self.tools().definitions(None)?;
+        tools.retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
+        tools.extend(agent_tools);
+        Ok(tools)
+    }
+
+    /// `agent`'s frozen context epoch: rendered from the live sources and
+    /// staged once at session start and after each compaction (its context
+    /// checkpoint), and replayed unchanged by every other turn, so the cached
+    /// prefix never changes between compactions.
+    #[inline(never)]
+    pub(super) fn context_epoch<'a>(
+        &'a self,
+        agent: &'a crate::agent::AgentState,
+        binding: &'a Binding<'a>,
+        publisher: &'a dyn ContentPublisher,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ContextEpoch>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let mut tools = self.declared_tools()?;
+            if let Some(topology) = agent
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.topology.as_ref())
+            {
+                tools.retain(|tool| topology.offers_tool(&tool.name, agent.path.depth()));
+            }
+            let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
+            ContextEpoch::open(publisher, operation, self.limits, || {
+                self.live_manifest(binding, publisher, tools)
+            })
+            .await
+        })
+    }
+
+    /// Tells `agent`, as appended quiet notices, each model-visible source
+    /// change since its epoch froze that it was not told yet. Its requests
+    /// keep the epoch's prefix and see each change after it. A notice's
+    /// intent binds the epoch, the source, both digests and the durable
+    /// count. The retained outbox recovers a send interrupted by a crash;
+    /// unchanged requests use the in-memory frontier without storage reads.
+    /// Delivery state belongs to the host journal, outside model-readable
+    /// inputs; live source discovery keeps its original task authority.
+    pub(super) async fn announce_changes(
+        &self,
+        agent: &crate::agent::AgentState,
+        epoch: &ContextEpoch,
+        binding: &Binding<'_>,
+        delivery: &crate::runtime::ContentBindings,
+    ) -> Result<Option<u64>> {
+        let Some(hosted) = self.agents.get() else {
+            return Ok(None);
+        };
+        let delivery_writer = delivery
+            .writer
+            .as_deref()
+            .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
+        let live = self
+            .live_manifest(binding, delivery_writer, Vec::new())
+            .await?;
+        let cached = self
+            .told
+            .lock()
+            .map_err(|_| Error::Storage("context change lock poisoned".into()))?
+            .remove(&agent.path)
+            .filter(|told| told.epoch == *epoch.manifest());
+        let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
+        let path = format!("context/told/{operation}.json");
+        let mut told = match cached {
+            Some(told) => told,
+            None => {
+                let retained = delivery
+                    .reader
+                    .read_private_path(
+                        &delivery.volume,
+                        "context/told",
+                        &path,
+                        None,
+                        None,
+                        crate::conversation::ContentAccess::default(),
+                    )?
+                    .await?;
+                let (file, state) = match retained {
+                    Some((file, bytes, _)) => {
+                        let state: ToldState = serde_json::from_slice(&bytes).map_err(storage)?;
+                        if state.version != 1 {
+                            return Err(Error::Invalid(
+                                "unsupported context delivery version".into(),
+                            ));
+                        }
+                        (Some(file), state)
+                    }
+                    None => (
+                        None,
+                        ToldState {
+                            version: 1,
+                            digests: epoch.digests(delivery.reader.as_ref(), self.limits).await?,
+                            sent: 0,
+                            pending: None,
+                        },
+                    ),
+                };
+                Told {
+                    epoch: epoch.manifest().clone(),
+                    file,
+                    state,
+                    through: None,
+                }
+            }
+        };
+        let by = crate::agent::Sender::Agent {
+            path: agent.path.clone(),
+        };
+        if let Some(pending) = told.state.pending.take() {
+            told.delivered(
+                hosted
+                    .agents()
+                    .send(&agent.path, &by, &pending)
+                    .await
+                    .map_err(storage)?,
+            )?;
+        }
+        for change in ContextEpoch::changes(&told.state.digests, &live, binding.reader).await? {
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.local.context-change.v1");
+            hash.update(epoch.manifest().descriptor().sha256());
+            hash.update(&(change.source.len() as u64).to_le_bytes());
+            hash.update(change.source.as_bytes());
+            hash.update(told.state.digests.get(&change.source).unwrap_or(&[0; 32]));
+            hash.update(change.digest.as_ref().unwrap_or(&[0; 32]));
+            hash.update(&told.state.sent.to_le_bytes());
+            let id = crate::agent::IntentId::try_from(format!(
+                "context:{}",
+                &hash.finalize().to_hex()[..32]
+            ))
+            .map_err(storage)?;
+            let operation =
+                publication_operation(b"acyclic.local.context-told/v1\0", id.as_str().as_bytes());
+            let record = crate::agent::InboxRecord::Notice {
+                id,
+                notice: crate::agent::NoticePayload::Quiet(change.notice),
+            };
+            match change.digest {
+                Some(digest) => told.state.digests.insert(change.source, digest),
+                None => told.state.digests.remove(&change.source),
+            };
+            told.state.sent += 1;
+            told.state.pending = Some(record.clone());
+            let bytes = serde_json::to_vec(&told.state).map_err(storage)?;
+            // The generation check prevents two writers from advancing the
+            // same frontier; the operation receipt recovers an uncertain write.
+            let (file, _) = match &told.file {
+                Some(file) => {
+                    delivery_writer
+                        .stage_at(operation, file, &bytes, None, None)?
+                        .await?
+                }
+                None => {
+                    delivery_writer
+                        .stage_once(
+                            operation,
+                            &path,
+                            &bytes,
+                            "application/json",
+                            "context-delivery.json",
+                            crate::conversation::ContentAccess::default(),
+                        )?
+                        .await?
+                }
+            };
+            told.file = Some(file);
+            told.delivered(
+                hosted
+                    .agents()
+                    .send(&agent.path, &by, &record)
+                    .await
+                    .map_err(storage)?,
+            )?;
+            told.state.pending = None;
+        }
+        let through = told.through;
+        self.told
+            .lock()
+            .map_err(|_| Error::Storage("context change lock poisoned".into()))?
+            .insert(agent.path.clone(), told);
+        Ok(through)
+    }
+
+    /// Imported host rules, pinned once per turn. Plugin selection is kept
+    /// separate so subsequent model steps cannot replace the host contribution.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub(super) async fn turn_hooks(
+        &self,
+        turn: OperationId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<Option<FileRef>> {
+        let (operation, path) = host_hooks_publication(turn);
+        if let Some(hooks) = self.observe_manifest(operation, publisher).await? {
+            return Ok(Some(hooks));
+        }
+        // The user's imported host hooks rank above every plugin.
+        let hooks = match &self.settings {
+            Some(settings) => {
+                crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings)).await?
+            }
+            None => crate::hooks::Hooks::default(),
+        };
+        let bytes = hooks.encode(self.limits.file_bytes)?;
+        let staged = publisher
+            .stage_once(
+                operation,
+                &path,
+                &bytes,
+                crate::hooks::Hooks::MEDIA_TYPE,
+                "hooks.json",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        match staged {
+            Ok((hooks, _)) => Ok(Some(hooks)),
+            Err(error) => self
+                .observe_manifest(operation, publisher)
+                .await?
+                .map(Some)
+                .ok_or(error),
+        }
+    }
+    /// The manifest the live sources render now, as `binding` sees them.
+    pub(super) async fn live_manifest(
+        &self,
+        binding: &Binding<'_>,
+        publisher: &dyn ContentPublisher,
+        tools: Vec<crate::tool::ToolDefinition>,
+    ) -> Result<ContextManifest> {
+        let policy = ContextDiscoveryPolicy::default();
+        let limits = ContextDiscoveryLimits::default();
+        let maximum = self
+            .limits
+            .file_bytes
+            .map_or(limits.instruction_bytes, |maximum| {
+                maximum.min(limits.instruction_bytes)
+            });
+        let mut work = crate::context::DiscoveryWork {
+            limits: ContextDiscoveryLimits {
+                instruction_bytes: maximum,
+                ..limits
+            },
+            ..Default::default()
+        };
+        let discovery = self
+            .instructions(binding, &policy.instruction_names, publisher, &mut work)
+            .await?;
+        let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        manifest.documents =
+            crate::context::capture_working_documents(binding.reader, binding.scratch, self.limits)
+                .await?;
+        manifest.tools = tools;
+        manifest.conventions.push(
+            "volume:///shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read.".into(),
+        );
+        #[cfg(any(test, not(target_arch = "wasm32")))]
+        {
+            let cwd = if let Some(workspace) = &binding.workspace {
+                manifest
+                    .conventions
+                    .push(workspace.context_line().to_owned());
+                if !super::open::uses_native_execution(&self.tools)? {
+                    None
+                } else if self.checkout_context {
+                    let (selected, _) = Box::pin(workspace.selected_view()).await?;
+                    // A selected branch can use a separate physical mount. Reuse
+                    // that admitted handle; never report the base mount for it.
+                    let selected_mount = if let Some(view) = &selected
+                        && workspace.mounted.is_some()
+                    {
+                        workspace
+                            .state
+                            .lock()
+                            .await
+                            .workspace
+                            .as_ref()
+                            .filter(|(id, _)| *id == view.workspace().id())
+                            .map(|(_, mounted)| Arc::clone(mounted))
+                    } else {
+                        None
+                    };
+                    if selected.is_none() || workspace.mounted.is_none() {
+                        workspace.native_cwd()?.map(std::path::Path::to_path_buf)
+                    } else {
+                        selected_mount
+                            .as_ref()
+                            .map(|mounted| mounted.native_cwd())
+                            .transpose()?
+                            .flatten()
+                            .map(std::path::Path::to_path_buf)
+                    }
+                } else {
+                    // A configured volume has an admitted native directory too;
+                    // executable discovery needs it even though the model sees
+                    // the task-relative `.` everywhere.
+                    workspace.native_cwd()?.map(std::path::Path::to_path_buf)
+                }
+            } else {
+                None
+            };
+            manifest.environment = Some(environment::gather(
+                cwd.as_deref(),
+                self.clock.now_unix_millis(),
+                &self.environment_platform,
+            )?);
+        }
+        Ok(manifest)
+    }
+
+    async fn instructions(
+        &self,
+        binding: &Binding<'_>,
+        names: &[String],
+        publisher: &dyn ContentPublisher,
+        work: &mut crate::context::DiscoveryWork,
+    ) -> Result<DiscoveredContext> {
+        #[cfg(any(test, not(target_arch = "wasm32")))]
+        if self.checkout_context
+            && let Some(workspace) = &binding.workspace
+        {
+            let mut discovery = self
+                .checkout_instructions_with_work(
+                    workspace,
+                    names,
+                    publisher,
+                    work,
+                    (&binding.verifier, binding.scope),
+                )
+                .await?;
+            discovery.skills = self.bound_skills(binding, None, work)?.await?;
+            return Ok(discovery);
+        }
+        let _ = publisher;
+        self.volume_instructions_with_work(binding, names, work)
+            .await
+    }
+
+    async fn volume_instructions_with_work(
+        &self,
+        binding: &Binding<'_>,
+        names: &[String],
+        work: &mut crate::context::DiscoveryWork,
+    ) -> Result<DiscoveredContext> {
+        let workspace = crate::filesystem::workspace_ref(
+            binding.project.provider().clone(),
+            &binding.project.storage_name(&mut None)?,
+        )?;
+        let generation = self.files.resolve(&workspace, None).await?.generation;
+        let root = crate::context::ContextRoot {
+            volume: binding.project.clone(),
+            directory: binding.project_root.into(),
+        };
+        let mut source = VolumeInstructions {
+            harness: self,
+            source: crate::context::VolumeDiscovery {
+                reader: binding.reader,
+                root: &root,
+                io: None,
+            },
+        };
+        let instructions = crate::context::capture_instructions(
+            &mut source,
+            binding.project_root,
+            &self.active_directory,
+            names,
+            work,
+            Some(&generation),
+        )
+        .await?;
+        let mut discovery = DiscoveredContext {
+            instructions,
+            skills: Vec::new(),
+        };
+        discovery.skills = self.bound_skills(binding, Some(&generation), work)?.await?;
+        Ok(discovery)
+    }
+}
+
+impl LocalHarness {
+    /// The attachment manifest of the files a prompt's `@` mentions name,
+    /// pinned as it is sent: a checkout's mentioned files are captured at one
+    /// snapshot onto the recipient's journal, a volume project's are read
+    /// at its current generation. Each resolves and projects through the one
+    /// mention path. `key` is the message's own identity: the manifest is
+    /// staged once for it, beside its copies, so a resend replays it exactly
+    /// whatever has happened to the files since, and the message carries one
+    /// reference however many files it names.
+    pub(super) async fn prompt_attachments(
+        &self,
+        agent: &crate::agent::AgentPath,
+        key: &[u8],
+        text: Option<&str>,
+    ) -> Result<Option<FileRef>> {
+        // A new prompt without mentions stages nothing and observes nothing.
+        if let Some(text) = text
+            && crate::client::file_mention_paths(text)?.is_empty()
+        {
+            return Ok(None);
+        }
+        // The manifest's own encoding bounds it: it lists files already
+        // admitted under the content bounds, so it takes no content bound.
+        let content = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+            .server()
+            .bound()
+            .input_content(agent, None)
+            .await
+            .map_err(Error::from)?;
+        let publisher = content
+            .writer
+            .as_deref()
+            .ok_or_else(|| Error::Unauthorized("mention capture has no journal writer".into()))?;
+        let operation = publication_operation(b"acyclic.local.mention-manifest/v2\0", key);
+        if let Some(manifest) = self.observe_manifest(operation, publisher).await? {
+            return Ok(Some(manifest));
+        }
+        // A replay whose first delivery staged no manifest attaches none.
+        let Some(text) = text else {
+            return Ok(None);
+        };
+        let reader = self.client_reader()?;
+        if self
+            .limits
+            .file_bytes
+            .is_some_and(|maximum| maximum == 0 || text.len() as u64 > maximum)
+        {
+            return Err(Error::Invalid("mention input exceeds byte bound".into()));
+        }
+        let base = format!(
+            "inputs/mentions/{}/{}",
+            blake3::hash(key),
+            blake3::hash(text.as_bytes())
+        );
+        let copies_operation = publication_operation(b"acyclic.local.mention-copies/v1\0", key);
+        let items = self
+            .resolve_attachments(&base, text, &*reader, publisher, copies_operation)
+            .await?
+            .into_iter()
+            .map(|file| crate::conversation::Attachment { file, label: None })
+            .collect::<Vec<_>>();
+        let bytes = crate::conversation::encode_attachment_manifest(&items)?;
+        let path = format!("{base}/{}.json", blake3::hash(&bytes));
+        let staged = publisher
+            .stage_once(
+                operation,
+                &path,
+                &bytes,
+                crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
+                "attachments.json",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        match staged {
+            Ok((manifest, _)) => Ok(Some(manifest)),
+            // A concurrent first send pinned its manifest first: that one stands.
+            Err(error) => self
+                .observe_manifest(operation, publisher)
+                .await?
+                .map(Some)
+                .ok_or(error),
+        }
+    }
+
+    async fn observe_manifest(
+        &self,
+        operation: OperationId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<Option<FileRef>> {
+        let (manifest, _) = publisher
+            .observe_staged_once(
+                operation,
+                None,
+                None,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        Ok(manifest)
+    }
+
+    async fn resolve_attachments(
+        &self,
+        base: &str,
+        text: &str,
+        reader: &dyn ContentResidencyVerifier,
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+    ) -> Result<Vec<FileRef>> {
+        use crate::conversation::ContentAccess;
+        // A dropped acknowledgement after the copies committed must not read
+        // changed or deleted source files on recovery.
+        let copies = match publisher
+            .observe_changes(
+                publisher.volume(),
+                operation,
+                None,
+                ContentAccess::default(),
+            )?
+            .await?
+            .0
+        {
+            Some(copies) => copies,
+            None => {
+                match self
+                    .checkout_mentions(base, text, publisher, operation)
+                    .await?
+                {
+                    Some(copies) => copies,
+                    None => {
+                        let copies = self.project_mention_copies(text, reader).await?;
+                        self.publish_mention_copies(base, copies, publisher, operation)
+                            .await?
+                    }
+                }
+            }
+        };
+        let mut files = copies
+            .files()
+            .map(|file| (file.path().to_owned(), file.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut selected = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, _, path) in crate::client::file_mention_paths(text)? {
+            if seen.insert(path) {
+                selected.push(
+                    files
+                        .remove(&format!("{base}/{}", copy_name(path)))
+                        .ok_or_else(|| {
+                            Error::Conflict("mention publication has another source".into())
+                        })?,
+                );
+            }
+        }
+        if !files.is_empty() {
+            return Err(Error::Conflict(
+                "mention publication has another selection".into(),
+            ));
+        }
+        Ok(selected)
+    }
+
+    /// Publishes the complete selected set in one authenticated journal commit.
+    async fn publish_mention_copies(
+        &self,
+        base: &str,
+        copies: std::collections::BTreeMap<String, crate::conversation::Custody>,
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+    ) -> Result<crate::conversation::ContentChanges> {
+        use crate::conversation::{ContentAccess, ContentChange};
+        let paths = copies
+            .keys()
+            .map(|path| format!("{base}/{}", copy_name(path)))
+            .collect::<Vec<_>>();
+        let changes = copies
+            .iter()
+            .zip(&paths)
+            .map(|((_, bytes), path)| ContentChange::CreateAbsent {
+                path,
+                bytes: bytes.as_ref(),
+                media_type: crate::filesystem::captured_media_type(bytes.as_ref()),
+                display_name: path.rsplit('/').next().unwrap_or(path),
+            })
+            .collect::<Vec<_>>();
+        Ok(publisher
+            .stage_changes(
+                publisher.volume(),
+                operation,
+                &changes,
+                ContentAccess::default(),
+            )?
+            .await?
+            .0)
+    }
+    /// Reads a volume project's mentioned files at one immutable generation.
+    /// Publication uses the host input writer; source authority stays here.
+    async fn project_mention_copies(
+        &self,
+        text: &str,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<std::collections::BTreeMap<String, crate::conversation::Custody>> {
+        let project = crate::context::ContextRoot {
+            volume: self.project.clone(),
+            directory: String::new(),
+        };
+        let mut copies = std::collections::BTreeMap::new();
+        let locate = |path: &str| path.to_owned();
+        for file in self.resolve_at(&project, text, reader, locate).await? {
+            let bytes = reader
+                .read(&file, file.descriptor().byte_length(), None, None)?
+                .await?;
+            copies.insert(file.path().trim_start_matches('/').to_owned(), bytes);
+        }
+        Ok(copies)
+    }
+    /// The files `text` mentions, resolved at the head of `root`'s volume,
+    /// in mention order.
+    async fn resolve_at(
+        &self,
+        root: &crate::context::ContextRoot,
+        text: &str,
+        reader: &dyn ContentResidencyVerifier,
+        locate: impl Fn(&str) -> String,
+    ) -> Result<Vec<FileRef>> {
+        let workspace = crate::filesystem::workspace_ref(
+            root.volume.provider().clone(),
+            &root.volume.storage_name(&mut None)?,
+        )?;
+        let generation = self.files.resolve(&workspace, None).await?.generation;
+        let mentions = crate::client::resolve_file_mentions_at(
+            text,
+            root,
+            &generation,
+            reader,
+            self.limits.file_bytes,
+            locate,
+        )
+        .await?;
+        let content = crate::command_request::CommandResolution::Prompt {
+            text: text.into(),
+            source: None,
+            mentions,
+        }
+        .into_model_input()?;
+        // The leading part is the prompt text, which the message body carries.
+        Ok(match content {
+            crate::model::ModelContent::Parts(parts) => parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    crate::model::ModelContentPart::File { file, .. } => Some(file),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+}
+
+/// The name of a mentioned path's copy: 128 bits of its hash, so the copy's
+/// path has a fixed length. A model never sees it; it sees the mentioned
+/// path in the prompt and the copy's bytes.
+pub(in crate::local) fn copy_name(path: &str) -> String {
+    blake3::hash(path.as_bytes()).to_hex()[..32].to_owned()
+}
+
+impl LocalHarness {
+    /// Captures mentioned checkout files under their original native admission.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    async fn checkout_mentions(
+        &self,
+        base: &str,
+        text: &str,
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+    ) -> Result<Option<crate::conversation::ContentChanges>> {
+        let Some(workspace) = &self.workspace else {
+            return Ok(None);
+        };
+        self.capture_checkout_mentions(workspace, text, base, publisher, operation)
+            .await
+            .map(Some)
+    }
+    #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+    async fn checkout_mentions(
+        &self,
+        _: &str,
+        _: &str,
+        _: &dyn ContentPublisher,
+        _: OperationId,
+    ) -> Result<Option<crate::conversation::ContentChanges>> {
+        Ok(None)
+    }
+}
+
+struct VolumeInstructions<'a> {
+    harness: &'a LocalHarness,
+    source: crate::context::VolumeDiscovery<'a>,
+}
+impl crate::context::DiscoverySource for VolumeInstructions<'_> {
+    type Revision = crate::resources::GenerationRef;
+    type Cursor = Vec<u8>;
+    fn page<'a>(
+        &'a mut self,
+        directory: &'a str,
+        revision: Option<&'a Self::Revision>,
+        cursor: Option<Vec<u8>>,
+        maximum: u32,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'a,
+        Result<Option<crate::context::DiscoveryPage<Self::Revision, Vec<u8>>>>,
+    > {
+        self.source.page(directory, revision, cursor, maximum)
+    }
+}
+impl crate::context::InstructionReader for VolumeInstructions<'_> {
+    fn instruction<'a>(
+        &'a mut self,
+        path: &'a str,
+        revision: &'a Self::Revision,
+        maximum: u64,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
+    {
+        Box::pin(async move {
+            if self
+                .harness
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+            {
+                return Err(Error::Invalid("instruction path exceeds path bound".into()));
+            }
+            let Some(instruction) = self.source.instruction(path, revision, maximum).await? else {
+                return Ok(None);
+            };
+            self.harness.limits.validate_file(&instruction, &mut None)?;
+            #[cfg(test)]
+            if let Some(observer) = self.harness.context_read_observer {
+                observer(self.harness, path).await?;
+            }
+            Ok(Some(instruction))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use proptest::prelude::*;
+
+    fn retained_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+        std::mem::size_of::<T>()
+    }
+
+    #[test]
+    fn context_boundaries_retain_only_owned_polling_handles() {
+        let manifest = retained_operation_bytes(
+            |(local, agent, binding, publisher): (
+                &'static LocalHarness,
+                &'static crate::agent::AgentState,
+                &'static Binding<'static>,
+                &'static dyn ContentPublisher,
+            )| local.context_epoch(agent, binding, publisher),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let catalog = retained_operation_bytes(
+            |(sources, root, view, cut, work): (
+                &'static crate::context::native_skills::NativeSkills,
+                &'static std::path::Path,
+                &'static super::super::workspace::View,
+                &'static acyclic_fs::LazySnapshotRef,
+                &'static mut crate::context::DiscoveryWork,
+            )| sources.catalog(root, view, cut, "", work),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let users = retained_operation_bytes(
+            |(sources, work): (
+                &'static crate::context::native_skills::NativeSkills,
+                &'static mut crate::context::DiscoveryWork,
+            )| sources.user_catalog(work),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let sizes = [manifest, catalog, users];
+        #[cfg(target_arch = "wasm32")]
+        let sizes = [manifest];
+        eprintln!("context retained bytes: {sizes:?}");
+        assert!(
+            sizes.into_iter().all(|bytes| bytes <= 512),
+            "context embeds a concrete child operation in its caller"
+        );
+    }
+
+    proptest! {
+        // Property: every accepted instruction round-trips without normalization;
+        // exactly the positive byte bound, UTF-8 and NUL constraints determine acceptance.
+        #[test]
+        fn instruction_text_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..128), maximum in 0u64..128) {
+            let limits = ContextDiscoveryLimits { instruction_bytes: maximum, ..Default::default() };
+            let accepted = limits.validate_instruction(&bytes).is_ok();
+            prop_assert_eq!(accepted, maximum > 0 && bytes.len() as u64 <= maximum && std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0));
+            if accepted {
+                prop_assert_eq!(std::str::from_utf8(&bytes).unwrap().as_bytes(), bytes.as_slice());
+                let mut invalid = bytes;
+                invalid.push(0);
+                prop_assert!(limits.validate_instruction(&invalid).is_err());
+            }
+        }
+
+        // Property: an epoch's path stays in the private input subtree within
+        // the path bound, and agents or checkpoints never share an epoch.
+        #[test]
+        fn epochs_are_distinct_per_agent_and_checkpoint(agent in "[a-z]{1,16}", other in "[a-z]{1,16}", checkpoint in proptest::option::of(any::<u64>()), next in any::<u64>()) {
+            let operation = ContextEpoch::operation(&agent, checkpoint)?;
+            let path = ContextEpoch::path(operation);
+            crate::conversation::validate_content_path(&path, &mut None)?;
+            prop_assert_eq!(ContextEpoch::operation(&agent, checkpoint)?, operation);
+            if agent != other {
+                prop_assert_ne!(ContextEpoch::operation(&other, checkpoint)?, operation);
+            }
+            if checkpoint != Some(next) {
+                prop_assert_ne!(ContextEpoch::operation(&agent, Some(next))?, operation);
+            }
+        }
+    }
+}

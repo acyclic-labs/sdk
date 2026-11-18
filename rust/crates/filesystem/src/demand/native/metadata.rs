@@ -1,4 +1,160 @@
-fn version(metadata: &HostStat) -> SourceVersion {
+#[cfg(feature = "test-support")]
+fn path_key(path: &NamespacePath) -> Vec<u8> {
+    let mut key = Vec::new();
+    for name in path.components() {
+        key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
+        key.extend_from_slice(name.as_bytes());
+    }
+    key
+}
+
+#[cfg(feature = "test-support")]
+fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> Vec<u8> {
+    let mut key = path_key(parent);
+    key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
+/// A fixture path key, or nothing when the metadata is not a fixture (and in
+/// production, where a source version does not include the logical path).
+fn fixture_path_key(path: &NamespacePath, metadata: &HostStat) -> Option<Vec<u8>> {
+    #[cfg(feature = "test-support")]
+    {
+        fixture_times(metadata).map(|_| path_key(path))
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = (path, metadata);
+        None
+    }
+}
+
+fn child_fixture_path_key(
+    parent: &NamespacePath,
+    name: &crate::kernel::LogicalName,
+    metadata: &HostStat,
+) -> Option<Vec<u8>> {
+    #[cfg(feature = "test-support")]
+    {
+        fixture_times(metadata).map(|_| child_path_key(parent, name))
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = (parent, name, metadata);
+        None
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing::NativeTimes> {
+    use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes, capture_native_times};
+    let identity = metadata.identity();
+    let nanos = |time: Option<i128>| time.and_then(|time| i64::try_from(time).ok());
+    let times = NativeTimes {
+        created_ns: nanos(metadata.birth_time().and_then(system_time_nanos)),
+        modified_ns: nanos(metadata.modified().ok().and_then(system_time_nanos)),
+        accessed_ns: nanos(metadata.accessed().ok().and_then(system_time_nanos)),
+        changed_ns: nanos(source_metadata(metadata).changed_ns),
+    };
+    capture_native_times(NativeMetadataInput {
+        device: identity.device,
+        object: identity.object,
+        directory: metadata.is_dir(),
+        times,
+    })
+}
+
+#[cfg(feature = "test-support")]
+fn with_fixture_content(
+    provider: &NativeDemandSource,
+    relative: &DemandPath,
+    stat: HostStat,
+    context: &mut CallbackWork,
+) -> Result<HostStat, DemandError> {
+    if stat.file_type() != crate::demand::SourceNodeKind::RegularFile
+        || fixture_times(&stat).is_none()
+    {
+        return Ok(stat);
+    }
+    context.check()?;
+    #[cfg(unix)]
+    let path = provider.inner.path.join(relative);
+    #[cfg(windows)]
+    let path = provider
+        .inner
+        .path
+        .join(std::ffi::OsString::from_wide(relative));
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Ok(stat);
+    };
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        context.check()?;
+        let Ok(read) = std::io::Read::read(&mut file, &mut buffer) else {
+            return Ok(stat);
+        };
+        if read == 0 {
+            break;
+        }
+        context.admit(WorkCounters {
+            bytes_hashed: read as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok(stat.with_content(*hasher.finalize().as_bytes()))
+}
+
+/// Hashes the already-open file, not its current name, so a rename and
+/// same-length replacement at the old path cannot satisfy a held-file check.
+#[cfg(feature = "test-support")]
+fn with_fixture_content_file(
+    stat: HostStat,
+    file: &SourceFile,
+    context: &mut CallbackWork,
+) -> Result<HostStat, DemandError> {
+    if stat.file_type() != crate::demand::SourceNodeKind::RegularFile
+        || fixture_times(&stat).is_none()
+    {
+        return Ok(stat);
+    }
+    let mut hasher = blake3::Hasher::new();
+    let mut offset = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        context.check()?;
+        let read = read_at(file, offset, &mut buffer, context)?;
+        if read == 0 {
+            break;
+        }
+        context.admit(WorkCounters {
+            bytes_hashed: read as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        hasher.update(&buffer[..read]);
+        offset += read as u64;
+    }
+    Ok(stat.with_content(*hasher.finalize().as_bytes()))
+}
+
+fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {
+    #[cfg(feature = "test-support")]
+    if let Some(times) = fixture_times(metadata) {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-version-v1\0");
+        hash.update(&metadata.len().to_le_bytes());
+        if let Some(path) = path {
+            hash.update(path);
+        }
+        if let Some(content) = metadata.content() {
+            hash.update(&content);
+        }
+        hash.update(&times.modified_ns.unwrap_or_default().to_le_bytes());
+        hash.update(&times.changed_ns.unwrap_or_default().to_le_bytes());
+        return SourceVersion(*hash.finalize().as_bytes());
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-version-v1\0");
     hash.update(&metadata.len().to_le_bytes());

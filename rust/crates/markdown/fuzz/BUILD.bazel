@@ -29,8 +29,8 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/markdown:acyclic_markdown",
-        "@crates//acyclic-syntect-0.2.0",
-        "@crates//libfuzzer-sys-0.4.13",
+        "//rust/vendor/syntect-5.3.0:syntect",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -51,8 +51,8 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/markdown:acyclic_markdown",
-        "@crates//acyclic-syntect-0.2.0",
-        "@crates//libfuzzer-sys-0.4.13",
+        "//rust/vendor/syntect-5.3.0:syntect",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -73,8 +73,8 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/markdown:acyclic_markdown",
-        "@crates//acyclic-syntect-0.2.0",
-        "@crates//libfuzzer-sys-0.4.13",
+        "//rust/vendor/syntect-5.3.0:syntect",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -86,9 +86,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/streaming/control-delimiter-context",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

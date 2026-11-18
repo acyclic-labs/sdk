@@ -31,7 +31,7 @@ fn concurrent_held_reads_share_one_actual_started_request_allowance()
                 .any(|result| matches!(result, Err(NativeTreeMaterializationError::Work(_))))
         );
     });
-    work.receipt().verify(budget)?;
+    work.receipt().unwrap().verify(budget)?;
     Ok(())
 }
 
@@ -102,7 +102,10 @@ fn relative_root_preserves_raw_join_semantics_and_retained_capacity()
         let mut work = ordinary_work();
         let normalized = normalize_root_path(relative, &mut work)?;
         assert_eq!(normalized, cwd.join(relative));
-        assert_eq!(work.live_allocation_bytes(), normalized.capacity() as u64);
+        assert_eq!(
+            work.live_allocation_bytes().unwrap(),
+            normalized.capacity() as u64
+        );
     }
     Ok(())
 }
@@ -133,7 +136,7 @@ fn held_cwd_ancestry_reconstructs_paths_beyond_native_path_max()
     let reconstructed = canonical_directory_path_held(directory, &mut work)?.0;
     assert_eq!(reconstructed, expected);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         reconstructed.capacity() as u64
     );
     Ok(())

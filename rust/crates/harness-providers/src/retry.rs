@@ -69,7 +69,7 @@ impl Attempt {
         if !retryable {
             return None;
         }
-        let computed = Duration::from_millis(u64::from(self.redelivery.delay_ms()));
+        let computed = self.redelivery.delay();
         let wait = retry_after.unwrap_or(computed);
         self.status = None;
         Some(wait)
@@ -131,12 +131,10 @@ pub(crate) fn events<'a>(
     }
 }
 
-#[cfg(any(test, feature = "fuzzing"))]
-pub(crate) use acyclic_harness_core::http::retry_after_at;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_harness_core::http::retry_after_at;
     use acyclic_harness_core::{ModelTransportFailure, OperationId};
     fn dispatch() -> ModelDispatch {
         ModelDispatch {

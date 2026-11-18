@@ -10,7 +10,8 @@ pub struct NativeMountSourceWatchOwner {
 }
 
 impl NativeMountSourceWatchOwner {
-    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    #[cfg(test)]
+    #[cfg(all(any(target_os = "linux", target_os = "macos")))]
     pub(in crate::native_mount) fn from_native_watch_fixture(watch: Box<dyn SourceWatch>) -> Self {
         Self {
             watch: Some(watch),

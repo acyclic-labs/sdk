@@ -45,8 +45,9 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let completion = super::phase::PreparedPhase::new(journal, self.io)?;
-        completion
-            .run(async {
+        super::cost_operation(
+            "model_step",
+            completion.run(async {
                 // Construct and retire provider custody inside the completion body.
                 let cancellation = journal.model_cancellation();
                 let execution =
@@ -61,8 +62,9 @@ impl StockExecution<'_> {
                     }
                     Either::Right((result, _)) => result,
                 }
-            })
-            .await
+            }),
+        )
+        .await
     }
 
     /// Replays or resolves one model step.

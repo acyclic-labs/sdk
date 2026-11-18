@@ -1,9 +1,10 @@
 //! Tool-call arguments through the real stream against the recording rule.
-use crate::{Adapter, stream};
+use crate::Adapter;
 use acyclic_harness_core::{
     OperationId,
     model::{ModelDispatch, ModelEvent},
 };
+use acyclic_harness_provider_response::stream;
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 
@@ -40,7 +41,7 @@ fn retained_bytes(text: &str, dispatch: ModelDispatch) -> usize {
     // Independent inventory of this one-delta fixture, not Budget::used or
     // production's charge helpers. Appended buffers start with capacity eight;
     // the provider ID is installed directly, with exactly its input length.
-    std::mem::size_of::<(u64, stream::Call)>()
+    stream::call_slot_bytes()
         + PROVIDER_ID.len()
         + NAME.len().max(8)
         + if text.is_empty() {
@@ -90,7 +91,7 @@ pub(super) fn check(input: &[u8], maximum: usize) {
         request_digest: [0; 32],
     };
     let events: Result<Vec<_>, _> = futures::executor::block_on(
-        stream::events(Adapter::Chat, body, maximum, dispatch).try_collect(),
+        crate::event_driver::events(Adapter::Chat, body, maximum, dispatch).try_collect(),
     );
     // Framing precedes parsing and finalization's retained-state admission.
     let limited = |reason: &str| matches!(&events, Err(acyclic_harness_core::Error::Invalid(actual)) if actual == reason);

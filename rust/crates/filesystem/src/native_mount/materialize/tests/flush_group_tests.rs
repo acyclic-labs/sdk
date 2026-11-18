@@ -68,7 +68,7 @@ async fn verify_materialization<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             NativeMaterializationActionPhase::Completed => {
                 assert!(active, "physical work was never accepted");
                 active = false;
-                let total = work.receipt().durability_operations;
+                let total = work.receipt().unwrap().durability_operations;
                 if total != prior {
                     groups.push(total - prior);
                 }
@@ -104,10 +104,13 @@ async fn verify_materialization<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             [width as u64, width as u64, 1],
             "independent full flushes were serialized or omitted"
         );
-        assert_eq!(work.receipt().durability_operations, expected.len() as u64);
+        assert_eq!(
+            work.receipt().unwrap().durability_operations,
+            expected.len() as u64
+        );
     } else {
         assert!(groups.is_empty());
-        assert_eq!(work.receipt().durability_operations, 0);
+        assert_eq!(work.receipt().unwrap().durability_operations, 0);
     }
     for (name, bytes) in expected {
         let path = output.path().join(name);
@@ -120,6 +123,8 @@ async fn verify_materialization<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             1_700_000_000_123_456_700
         );
     }
-    work.receipt().verify(FINITE_MATERIALIZATION_BUDGET)?;
+    work.receipt()
+        .unwrap()
+        .verify(FINITE_MATERIALIZATION_BUDGET)?;
     Ok(())
 }

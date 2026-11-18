@@ -228,7 +228,7 @@ impl<
     {
         let expected = self.generations[5];
         let candidate = self.with_home(apply.candidate)?;
-        let mut spent = acyclic_fs::WorkCounters::UNCHARGED;
+        let mut spent = acyclic_fs_work::performance::WorkCounters::UNCHARGED;
         let mut changes = io.cursor_receipt(
             expected
                 .changed_paths_to(apply.candidate, io, io.cancellation())
@@ -301,7 +301,7 @@ pub struct HomeApply<'a, A: 'static, O: 'static> {
     /// Host clock observation used for permission expiry.
     pub now: u64,
     /// Stable filesystem publication identity, unchanged on exact retry.
-    pub operation: acyclic_fs::OperationId,
+    pub operation: acyclic_fs_format::identity::OperationId,
     /// Original filesystem admission; the shared publication core checks it.
     pub permit: acyclic_fs::PublicationPermit,
 }

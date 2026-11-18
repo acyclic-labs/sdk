@@ -8,13 +8,10 @@ license.workspace = true
 repository.workspace = true
 description = "Incremental Markdown presentation as renderer-independent styled lines"
 
-[[test]]
-name = "streaming"
-path = "tests/streaming.rs"
 
 [[test]]
-name = "streaming_properties"
-path = "tests/streaming_properties.rs"
+name = "main"
+path = "tests/main.rs"
 
 [[bench]]
 name = "audit"

@@ -35,7 +35,7 @@ impl TurnExecutors for Inspect {
             let tool = acyclic_harness_core::tool::files::read()?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .expect("test work");
@@ -150,6 +150,8 @@ pub(crate) async fn check_diagnostic_read(
             }),
         ]),
         ScriptedTurn::Text("inspected".into()),
+        // The default completion flow asks for one feedback retrospective.
+        ScriptedTurn::Text("none".into()),
     ]));
     let mut tools = ToolRegistry::default();
     tools.register(
@@ -223,7 +225,11 @@ pub(crate) async fn check_diagnostic_read(
         .await?;
     assert_eq!(output.text, "inspected");
     let requests = model.requests();
-    assert_eq!(requests.len(), 2);
+    // The call, its continuation and the settlement's retrospective.
+    assert_eq!(requests.len(), 3);
+    assert!(acyclic_harness_core::test_support::is_retrospective(
+        &requests[2]
+    ));
     let value = requests[1]
         .messages
         .iter()

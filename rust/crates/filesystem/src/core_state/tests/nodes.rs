@@ -51,7 +51,7 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
         let reopened = LocalCoreStateStore::new(directory.path());
         let work =
             crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let mut ctx = crate::kernel::KernelAccounting::native(&work, work.cancellation());
         let loaded = reopened
             .load_lazy_overlay(id, &mut ctx)
@@ -75,12 +75,12 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
         crate::kernel::retire_allocation(loaded.1, bytes, &mut ctx).unwrap();
         drop(reopened);
         assert!(
-            work.live_allocation_bytes() >= baseline + alias.components.len() as u64,
+            work.live_allocation_bytes().unwrap() >= baseline + alias.components.len() as u64,
             "overlay source alias lost its decoded memory credit"
         );
         drop(alias);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             baseline,
             "source credit failed to retire"
         );
@@ -123,7 +123,7 @@ async fn reopened_shadow_source_alias_keeps_decoded_credit_until_last_drop() {
     let reopened = LocalCoreStateStore::new(directory.path());
     let work =
         crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let mut ctx = crate::kernel::KernelAccounting::native(&work, work.cancellation());
     let loaded = reopened
         .load_lazy_shadow(id, &mut ctx)
@@ -144,11 +144,11 @@ async fn reopened_shadow_source_alias_keeps_decoded_credit_until_last_drop() {
     crate::kernel::retire_allocation(loaded.1, bytes, &mut ctx).unwrap();
     drop(reopened);
     assert!(
-        work.live_allocation_bytes() >= baseline + alias.components.len() as u64,
+        work.live_allocation_bytes().unwrap() >= baseline + alias.components.len() as u64,
         "shadow source alias lost its decoded memory credit"
     );
     drop(alias);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 }
 
 #[tokio::test]
@@ -270,7 +270,7 @@ async fn concurrent_immutable_nodes_retain_payload_and_publication_custody() {
     boundary.release();
     schedule.drained().await;
     assert!(
-        caller.spent().object_bytes_written > 0,
+        caller.spent().unwrap().object_bytes_written > 0,
         "withdrawn publication lost its completed original work"
     );
     let live = accounting.standalone_parts().unwrap().0.live_bytes();
@@ -401,10 +401,10 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         .unwrap();
     assert_eq!(&first, &state);
     assert!(
-        work.receipt().bytes_hashed >= 5,
+        work.receipt().unwrap().bytes_hashed >= 5,
         "completed hash prefix was lost"
     );
-    let before = work.receipt().object_bytes_written;
+    let before = work.receipt().unwrap().object_bytes_written;
     let mut stale = state.clone();
     stale.revision += 1;
     assert!(
@@ -413,7 +413,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
             .await
             .unwrap()
     );
-    assert_eq!(work.receipt().object_bytes_written, before);
+    assert_eq!(work.receipt().unwrap().object_bytes_written, before);
     drop(store);
     // Run the real native transaction inline so its completion owner retires
     // before the alias assertions; background completion headers have their
@@ -425,7 +425,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         &cancellation,
     )
     .unwrap();
-    let decoded_baseline = decoded_work.live_allocation_bytes();
+    let decoded_baseline = decoded_work.live_allocation_bytes().unwrap();
     let mut decoded_accounting =
         crate::kernel::KernelAccounting::native(&decoded_work, decoded_work.cancellation());
     let original = restarted
@@ -441,12 +441,15 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     drop(original);
     drop(restarted);
     assert!(
-        decoded_work.live_allocation_bytes() > decoded_baseline,
+        decoded_work.live_allocation_bytes().unwrap() > decoded_baseline,
         "returned source aliases retain their original decoded backing"
     );
     drop(held_cut);
     drop(held_roots);
-    assert_eq!(decoded_work.live_allocation_bytes(), decoded_baseline);
+    assert_eq!(
+        decoded_work.live_allocation_bytes().unwrap(),
+        decoded_baseline
+    );
 }
 
 #[tokio::test]
@@ -477,16 +480,16 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
         error,
         crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
     ));
-    assert_eq!(work.receipt().source_bytes_read, 7);
-    assert_eq!(work.receipt().bytes_hashed, 5);
-    work.receipt().verify(budget).unwrap();
-    let before = work.receipt();
+    assert_eq!(work.receipt().unwrap().source_bytes_read, 7);
+    assert_eq!(work.receipt().unwrap().bytes_hashed, 5);
+    work.receipt().unwrap().verify(budget).unwrap();
+    let before = work.receipt().unwrap();
     cancellation.cancel();
     assert!(matches!(
         restarted.load_lazy_workspace(id, &mut accounting).await,
         Err(crate::LazyWorkspaceError::Cancelled),
     ));
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt().unwrap(), before);
 }
 
 #[tokio::test]
@@ -552,7 +555,7 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
             crate::LazyWorkspaceError::Filesystem(crate::FsError::Cancelled(_))
         ));
     }
-    assert_eq!(accounting.spent(), crate::WorkCounters::UNCHARGED);
+    assert_eq!(accounting.spent().unwrap(), crate::WorkCounters::UNCHARGED);
     assert!(
         std::fs::read_dir(directory.path())
             .unwrap()

@@ -207,7 +207,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             .await
         }
         .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            WorkspaceLineageError::Workspace(error.into())
+        })
     }
 
     /// Forks a real SDK workspace and durably records its direct parent.
@@ -288,7 +290,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             })
             .await,
         );
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            WorkspaceLineageError::Workspace(error.into())
+        })
     }
 
     /// Registers a child created by another SDK-owned fork façade.
@@ -357,7 +361,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         let result = self
             .register_child_accounted(parent, child, fork_generation, initial, &mut accounting)
             .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            WorkspaceLineageError::Workspace(error.into())
+        })
     }
 
     pub(crate) async fn register_child_accounted<
@@ -432,7 +438,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             Ok(record)
         }
         .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            WorkspaceLineageError::Workspace(error.into())
+        })
     }
 
     /// Resolves one durable workspace identity to its canonical lineage record.
@@ -449,7 +457,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 .ok_or(WorkspaceLineageError::IncompatibleState)
         }
         .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            WorkspaceLineageError::Workspace(error.into())
+        })
     }
 
     /// Returns the direct-parent chain, nearest parent first.
@@ -494,7 +504,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             }
         }
         .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            WorkspaceLineageError::Workspace(error.into())
+        })
     }
 
     /// Authenticate a workspace below an already authenticated repository root.
@@ -518,7 +530,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 |_, _| Ok(()),
             )
             .await;
-        work.finish(result, &accounting)
+        work.finish_with(result, &accounting, |error| {
+            WorkspaceLineageError::Workspace(error.into())
+        })
     }
 
     async fn ancestry_until(

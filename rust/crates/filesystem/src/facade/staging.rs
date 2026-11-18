@@ -74,6 +74,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let result = self
                 .flush_publication(
                     crate::PublicationScope {
+                        root: None,
+                        related_root: None,
                         related_objects: &[],
                         objects: &closure,
                         proven_at,
@@ -113,6 +115,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let result = self
                 .flush_publication(
                     crate::PublicationScope {
+                        root: Some(publication.generation_root),
+                        related_root: None,
                         related_objects: &[],
                         objects: &publication.objects,
                         proven_at: publication.proven_at,
@@ -306,7 +310,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .objects
                 .put_hashed(hashed, &mut object_work)
                 .await;
-            object_work.spent().verify(object_work.budget)?;
+            object_work.spent()?.verify(object_work.budget)?;
             result
         };
         let (allocations, ..) = accounting

@@ -373,7 +373,7 @@ async fn source_eof_is_unavailable_without_reopening() -> TestResult {
             .map(|result| result.map_err(|error| error.category())),
         Some(Err(StreamCategory::Unavailable))
     );
-    assert_eq!(records.next().await, None);
+    assert!(records.next().await.is_none());
     assert_eq!(follows.load(Ordering::SeqCst), 1);
     Ok(())
 }
@@ -593,8 +593,8 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
         #[cfg(feature = "serde")]
         let append = root.within(append);
         assert_eq!(
-            append.await,
-            Err(error.clone()),
+            append.await.map_err(|error| error.category()),
+            Err(error.category()),
             "public transport changed application error {error:?}"
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -762,12 +762,12 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
     let result = async {
         let platform = Client::connect_eager(&endpoint, "exact-token").await;
         if mode == "file" || mode == "dir" {
-            assert_eq!(
+            assert!(matches!(
                 platform?
                     .inspect_idempotency(IdempotencyKey::unique())
                     .await,
                 Ok(None)
-            );
+            ));
         } else {
             assert!(platform.is_err(), "private endpoint unexpectedly trusted");
         }
@@ -775,10 +775,10 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
         for roots in [pem.as_bytes(), bundle.as_bytes()] {
             let pinned =
                 Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", roots).await?;
-            assert_eq!(
+            assert!(matches!(
                 pinned.inspect_idempotency(IdempotencyKey::unique()).await,
                 Ok(None)
-            );
+            ));
         }
         let denied =
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", &unrelated).await;
@@ -822,7 +822,9 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
     assert_eq!(result.len(), 21);
     for (sequence, item) in result.iter().take(20).enumerate() {
         assert_eq!(
-            item.as_ref().map(|record| record.sequence),
+            item.as_ref()
+                .map(|record| record.sequence)
+                .map_err(|error| error.category()),
             Ok(u64::try_from(sequence)?)
         );
     }
@@ -917,7 +919,7 @@ fn every_member_refusal_round_trips_its_original_status() {
         assert_eq!(error.code(), "unavailable");
         for encoded in [Status::from(&error), Status::from(error.clone())] {
             assert_eq!(original(&encoded), original(&relayed));
-            assert_eq!(status(&encoded), error);
+            assert_eq!(status(&encoded).category(), error.category());
         }
     }
 }
@@ -1003,7 +1005,7 @@ proptest::proptest! {
     ) {
         for error in StreamCategory::ALL.map(StreamError::from) {
             for encoded in [Status::from(&error), Status::from(error.clone())] {
-                proptest::prop_assert_eq!(status(&encoded), error.clone());
+                proptest::prop_assert_eq!(status(&encoded).category(), error.category());
             }
         }
         proptest::prop_assert!(crate::codec_fuzz::grpc_status(&details));
@@ -1018,7 +1020,7 @@ proptest::proptest! {
         proptest::prop_assert_eq!(decoded.uncertain(), category(&relayed).uncertain());
         for encoded in [Status::from(&decoded), Status::from(decoded.clone())] {
             proptest::prop_assert_eq!(original(&encoded), original(&relayed));
-            proptest::prop_assert_eq!(status(&encoded), decoded.clone());
+            proptest::prop_assert_eq!(status(&encoded).category(), decoded.category());
         }
     }
 }
@@ -1026,19 +1028,22 @@ proptest::proptest! {
 /// A member's refusal before dispatch replays the same request through the
 /// member the route selects next: the unchanged append lands in the second
 /// member's provider only. A route that declines returns the refusal after
-/// one attempt, and nothing lands anywhere.
+/// one attempt, and nothing lands anywhere. Even a route that selects a former
+/// member cannot dispatch the same refused operation to that member again.
 #[tokio::test]
-async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestResult {
+async fn routed_refusals_preserve_the_request_without_revisiting_a_member() -> TestResult {
     struct Members {
         channels: [Channel; 2],
-        current: AtomicUsize,
-        replay: bool,
+        selections: std::sync::Mutex<std::collections::VecDeque<usize>>,
         refused: std::sync::Mutex<Vec<usize>>,
         served: std::sync::Mutex<Vec<usize>>,
     }
     impl HomeRoute for Members {
         fn current(&self) -> RoutedChannel {
-            let member = self.current.load(Ordering::SeqCst);
+            let member = self
+                .selections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)[0];
             RoutedChannel {
                 member,
                 channel: self.channels[member].clone(),
@@ -1053,10 +1058,12 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(member);
-            if self.replay {
-                self.current.store(member + 1, Ordering::SeqCst);
-            }
-            Box::pin(std::future::ready(self.replay))
+            let mut selections = self
+                .selections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            selections.pop_front();
+            Box::pin(std::future::ready(!selections.is_empty()))
         }
         fn served(&self, member: usize) {
             self.served
@@ -1065,24 +1072,37 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .push(member);
         }
     }
-    for replay in [true, false] {
+    for (selections, serves) in [(vec![0, 1], true), (vec![0], false), (vec![0, 1, 0], false)] {
+        let visits_second = selections.len() > 1;
         let (follower, leader) = (MemoryStream::default(), MemoryStream::default());
         let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
         let refusing = Arc::clone(&calls[0]);
         let serving = Arc::clone(&calls[1]);
+        let mut refusal = Status::with_details(
+            Code::Unavailable,
+            "not the leader",
+            Bytes::from_static(b"original member details"),
+        );
+        refusal
+            .metadata_mut()
+            .insert("acyclic-member", "first".parse()?);
+        let first_refusal = refusal.clone();
         let route = Arc::new(Members {
             channels: [
                 served_channel(follower.clone(), move |_: Request<()>| {
                     refusing.fetch_add(1, Ordering::SeqCst);
-                    Err::<Request<()>, _>(Status::unavailable("not the leader"))
+                    Err::<Request<()>, _>(first_refusal.clone())
                 }),
                 served_channel(leader.clone(), move |request: Request<()>| {
                     serving.fetch_add(1, Ordering::SeqCst);
-                    Ok(request)
+                    if serves {
+                        Ok(request)
+                    } else {
+                        Err(Status::unavailable("account not ready"))
+                    }
                 }),
             ],
-            current: AtomicUsize::new(0),
-            replay,
+            selections: std::sync::Mutex::new(selections.into()),
             refused: std::sync::Mutex::new(Vec::new()),
             served: std::sync::Mutex::new(Vec::new()),
         });
@@ -1101,9 +1121,12 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
             idempotency_key: IdempotencyKey::unique(),
         };
         let result = client.append(request.clone()).await;
-        assert_eq!(result.is_ok(), replay, "{result:?}");
+        assert_eq!(result.is_ok(), serves, "{result:?}");
+        if let Err(error) = &result {
+            assert_eq!(original(&Status::from(error.clone())), original(&refusal));
+        }
         let hits = calls.each_ref().map(|calls| calls.load(Ordering::SeqCst));
-        assert_eq!(hits, [1, usize::from(replay)]);
+        assert_eq!(hits, [1, usize::from(visits_second)]);
         assert_eq!(
             follower
                 .inspect_idempotency(request.idempotency_key.clone())
@@ -1115,7 +1138,7 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .inspect_idempotency(request.idempotency_key.clone())
                 .await?
                 .is_some(),
-            replay,
+            serves,
             "the unchanged request lands only on the member that served it"
         );
         assert_eq!(
@@ -1123,9 +1146,13 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .refused
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-            vec![0]
+            if visits_second && !serves {
+                vec![0, 1]
+            } else {
+                vec![0]
+            }
         );
-        let served = if replay { vec![1] } else { vec![] };
+        let served = if serves { vec![1] } else { vec![] };
         assert_eq!(
             *route
                 .served

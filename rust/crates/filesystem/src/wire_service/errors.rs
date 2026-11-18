@@ -8,8 +8,10 @@ use kernel::kernel_code;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 
-pub(super) fn status(error: &WorkspaceError) -> Status {
-    Status::new(workspace_code(error), error.to_string())
+impl From<&WorkspaceError> for Status {
+    fn from(error: &WorkspaceError) -> Self {
+        Self::new(workspace_code(error), error.to_string())
+    }
 }
 
 fn workspace_code(error: &WorkspaceError) -> Code {
@@ -65,6 +67,7 @@ fn stream_state_code<C>(error: &crate::StreamStateStoreError<C>) -> Code {
 fn filesystem_code(error: &FsError) -> Code {
     use FsError as E;
     match error {
+        E::WorkObservation(_) => Code::Internal,
         E::InvalidAccessPolicy => Code::PermissionDenied,
         E::UnauthenticatedAccessFacts => Code::Unauthenticated,
         E::Cancelled(_) => Code::Cancelled,
@@ -160,6 +163,7 @@ fn filesystem_code(error: &FsError) -> Code {
 fn authority_code(error: &AuthorityStoreError) -> Code {
     use AuthorityStoreError as E;
     match error {
+        E::WorkObservation(_) => Code::Internal,
         E::Missing | E::Retired => Code::NotFound,
         E::Cancelled => Code::Cancelled,
         E::NativeStream(error) => stream_code(error),
@@ -203,6 +207,7 @@ fn authority_code(error: &AuthorityStoreError) -> Code {
 fn object_code(error: &ObjectStoreError) -> Code {
     use ObjectStoreError as E;
     match error {
+        E::WorkObservation(_) => Code::Internal,
         E::Cancelled => Code::Cancelled,
         E::Missing => Code::NotFound,
         E::DigestMismatch | E::EmptyWriteBatch | E::EmptyReadBatch | E::InvalidRange => {
@@ -397,20 +402,7 @@ fn native_code(error: &crate::NativeTreeMaterializationError) -> Code {
 }
 
 fn objects_service_code(error: &acyclic_objects::Error) -> Code {
-    use acyclic_objects::wire::ErrorCode as E;
-    match error.code {
-        E::InvalidArgument | E::DigestMismatch => Code::InvalidArgument,
-        E::NotFound => Code::NotFound,
-        E::MissingReference | E::Conflict | E::RevisionForeign => Code::FailedPrecondition,
-        E::AccessDenied => Code::PermissionDenied,
-        E::QuotaExceeded => Code::ResourceExhausted,
-        E::Unavailable | E::Suspended | E::OutcomeUnknown => Code::Unavailable,
-        E::Corrupt => Code::DataLoss,
-        E::Unspecified => Code::Internal,
-        E::Unsupported => Code::Unimplemented,
-        E::RangeNotSatisfiable => Code::OutOfRange,
-        E::DeadlineElapsed => Code::DeadlineExceeded,
-    }
+    Code::from_i32(error.status_code())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

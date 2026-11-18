@@ -6,7 +6,6 @@
     "typescript/packages/*"
   ],
   "scripts": {
-    "bench:clients": "node scripts/bench-client-requests.mjs",
     "build:wasm": "bun scripts/build-wasm.mjs",
     "build": "node scripts/web-docs-build.mjs build",
     "check": "node scripts/web-docs-build.mjs check",
@@ -14,7 +13,7 @@
     "check:types": "tsc -p typescript/packages/actors/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/filesystem/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/harness/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/inference/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/workers/tsconfig.type-tests.json --pretty false && node --test conformance/addressing/type-controls.test.mjs",
     "test:contracts": "tsc -b typescript/packages/actors typescript/packages/objects typescript/packages/workers typescript/packages/stream typescript/packages/filesystem && node --test typescript/packages/workers/test/entry-publication.test.mjs && node scripts/generate-public-rpc-matrix.mjs complete && node --test scripts/public-rpc-source.test.mjs && node --test typescript/packages/actors/test/fixture-server.test.mjs && node typescript/packages/actors/test/grpc-conformance.mjs && node typescript/packages/stream/test/grpc-provider-conformance.mjs && node typescript/packages/stream/test/http-provider-conformance.mjs && node --test typescript/packages/objects/test/v1-conformance.mjs && bun test ./typescript/packages/objects/test/v1-conformance.mjs && node typescript/packages/objects/test/v1-grpc-conformance.mjs && node --test typescript/packages/filesystem/test/cloud-contract.test.mjs",
     "generate": "bun scripts/generate.mjs && node scripts/generate-sdk-readmes.mjs write",
-    "check:native-adapter": "bun run check && cargo build -p acyclic-fs-napi --locked && bun scripts/check-filesystem-napi.mjs --adapter",
+    "check:native-adapter": "bun run check && bun scripts/check-filesystem-napi.mjs --adapter",
     "test:node": "node scripts/node-tests.mjs --all",
     "test:artifact-cache": "node --test scripts/web-docs-cache.integration.mjs",
     "test:wasm-provenance": "node --test scripts/wasm-build-provenance.integration.mjs",
@@ -25,7 +24,7 @@
     "check:no-polling": "node scripts/check-no-polling.mjs",
     "check:wasm": "node scripts/check-wasm.mjs",
     "check:docs": "node --test scripts/check-sdk-readmes.test.mjs && node scripts/web-docs-build.mjs readmes",
-    "check:baselines": "node --test scripts/web-docs-incremental.test.mjs scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs scripts/native-producer-entrypoints.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs scripts/archive-utils.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs && bun scripts/check-baselines.mjs"
+    "check:baselines": "node --test scripts/web-docs-incremental.test.mjs scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs scripts/native-producer-entrypoints.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs scripts/archive-utils.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/node-modules.test.mjs scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs && bun scripts/check-baselines.mjs"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.75.0",

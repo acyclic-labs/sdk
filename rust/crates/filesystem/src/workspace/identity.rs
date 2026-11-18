@@ -116,7 +116,8 @@ impl WorkspaceName {
             accounting,
         )?;
         let output = Self(retained);
-        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
         name_tests::redundant_allocation();
         Ok(output)
     }
@@ -218,7 +219,8 @@ impl WorkspaceId {
             hasher.update(name.as_str().as_bytes());
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            #[cfg(all(test, loom, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(loom, not(target_arch = "wasm32")))]
             model::completed(
                 bytes.len() as u64,
                 (WORKSPACE_ID_DOMAIN.len() + namespace.len() + 8 + name.as_str().len()) as u64,
@@ -295,7 +297,8 @@ fn charged<T>(
     delta: crate::WorkCounters,
     effect: impl FnOnce() -> T,
 ) -> Result<T, FsError> {
-    #[cfg(all(test, loom, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(loom, not(target_arch = "wasm32")))]
     if name_model::check_only() {
         accounting.admit(delta)?;
         let output = effect();

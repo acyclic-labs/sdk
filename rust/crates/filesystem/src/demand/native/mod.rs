@@ -66,5 +66,6 @@ fn account_source<T>(
     })
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux"))]
 mod watch_tests;

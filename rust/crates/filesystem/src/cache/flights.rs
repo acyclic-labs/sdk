@@ -128,7 +128,8 @@ pub(super) fn insertion_work<T>(
         .map_err(crate::async_storage::object_error)?
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 pub(crate) fn verify_original_flight_admission_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::KernelAccounting;
@@ -188,21 +189,21 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         };
         let original = crate::NativeMaterializationWork::new(setup_budget, &cancel)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let owner = RetainedArc::new(Flight::new(0), &mut accounting)?;
         let mut index = Flights::default();
-        let before_empty = original.receipt().items_examined;
+        let before_empty = original.receipt().unwrap().items_examined;
         assert!(
             read_work(&mut accounting, |work, _| {
                 index.get((u64::MAX, object), work)
             })?
             .is_none()
         );
-        assert_eq!(original.receipt().items_examined, before_empty);
+        assert_eq!(original.receipt().unwrap().items_examined, before_empty);
         // Actual input construction is separate from the fixed-output probe.
         for namespace in (0..population).rev().chain(std::iter::once(u64::MAX)) {
-            let before = original.receipt().items_examined;
+            let before = original.receipt().unwrap().items_examined;
             let visits = insertion_work(&mut accounting, |work, _| {
                 let mut measured = Counted {
                     original: work,
@@ -214,9 +215,9 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
                 ));
                 Ok(measured.visits)
             })?;
-            assert_eq!(original.receipt().items_examined - before, visits);
+            assert_eq!(original.receipt().unwrap().items_examined - before, visits);
         }
-        let before = original.receipt().items_examined;
+        let before = original.receipt().unwrap().items_examined;
         let visits = read_work(&mut accounting, |work, _| {
             let mut measured = Counted {
                 original: work,
@@ -230,7 +231,7 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
             ));
             Ok(measured.visits)
         })?;
-        assert_eq!(original.receipt().items_examined - before, visits);
+        assert_eq!(original.receipt().unwrap().items_examined - before, visits);
         counts.push(visits);
         let mut old = BTreeMap::new();
         for namespace in 0..population {
@@ -242,8 +243,8 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         ordered_counts.push(COMPARISONS.load(Ordering::Relaxed));
         drop(index);
         drop(owner);
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        original.receipt().verify(setup_budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        original.receipt().unwrap().verify(setup_budget)?;
     }
     assert_eq!(counts[0], counts[1]);
     assert!(counts[0] <= KEY_BYTES as u64 + 2);
@@ -256,7 +257,7 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancel);
     let owner = RetainedArc::new(Flight::new(0), &mut accounting)?;
     let replacement = RetainedArc::new(Flight::new(1), &mut accounting)?;
@@ -299,13 +300,13 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
     assert!(index.detach((7, object), &owner).is_none());
     assert!(index.detach((7, sealed), &replacement).is_none());
     assert_eq!(index.len(), 2);
-    let before_retirement = original.live_allocation_bytes();
+    let before_retirement = original.live_allocation_bytes().unwrap();
     drop(retired);
-    assert!(original.live_allocation_bytes() < before_retirement);
+    assert!(original.live_allocation_bytes().unwrap() < before_retirement);
     drop(index);
     drop(owner);
     drop(replacement);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     // Ordinary retention splits the same original ledger. Failed splits leave
     // both claims intact; no new ledger or copied allowance can fund the node.
@@ -353,7 +354,11 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
     let owner = RetainedArc::new(Flight::new(0), &mut ordinary)?;
     let mut index = Flights::default();
     let mut visits = 0;
-    let before = ordinary.standalone_parts().unwrap().1.items_examined;
+    let before = ordinary
+        .standalone_parts()
+        .ok_or("missing original ledger")?
+        .1
+        .items_examined;
     assert!(matches!(
         insertion_work(&mut ordinary, |work, _| {
             let mut measured = Counted {
@@ -367,7 +372,12 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         (true, _)
     ));
     assert_eq!(
-        ordinary.standalone_parts().unwrap().1.items_examined - before,
+        ordinary
+            .standalone_parts()
+            .ok_or("missing original ledger")?
+            .1
+            .items_examined
+            - before,
         visits
     );
     drop(index);
@@ -390,7 +400,7 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
     };
     let original =
         crate::NativeMaterializationWork::new(denied, &cancel).map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut entered = false;
     assert!(
         insertion_work(&mut KernelAccounting::native(&original, &cancel), |_, _| {
@@ -400,6 +410,6 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         .is_err()
     );
     assert!(!entered);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }

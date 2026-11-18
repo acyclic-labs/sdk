@@ -8,13 +8,9 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
         cancelled: state,
-        watch: WatchReply::Items(Vec::new()),
+        ..OperationService::new(key, operation, machine)
     };
     let (machines, shutdown_tx, server) = serve_operation_service(service).await?;
     let client = machines.client().await?;
@@ -88,13 +84,9 @@ async fn remote_bearer_crosses_mtls_constructor_and_operation_clones()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
         watch: WatchReply::Items(vec![WatchItem::State(state)]),
+        ..OperationService::new(key, operation, machine)
     };
     let observed = Arc::new(AtomicUsize::new(0));
     let received = observed.clone();
@@ -176,13 +168,9 @@ async fn local_bearer_crosses_owner_confined_socket_and_operation_clones()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
         watch: WatchReply::Items(vec![WatchItem::State(state)]),
+        ..OperationService::new(key, operation, machine)
     };
     let directory = std::env::temp_dir().join(format!("machines-bearer-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory)?;
@@ -322,13 +310,9 @@ async fn public_https_service_uses_fresh_bearer_without_client_certificates()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
         cancelled: state,
-        watch: WatchReply::Items(vec![]),
+        ..OperationService::new(key, operation, machine)
     };
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let uri = format!("https://localhost:{}", listener.local_addr()?.port());
@@ -404,5 +388,173 @@ async fn local_socket_metadata_must_be_owner_private() -> Result<(), Box<dyn std
     drop(listener);
     std::fs::remove_file(&path)?;
     std::fs::remove_dir(&directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_mutation_reply_retains_original_recovery_key()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use acyclic_auth::credential::{CredentialCache, CredentialSnapshot, CredentialValidity};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    for expires_after_dispatch in [false, true] {
+        let original = SimulatedMachines::default();
+        let MutationOutcome::Created(machine) = original
+            .create(CreateMachine::new(
+                IdempotencyKey::from_digest([81; 32]),
+                Some(Image::custom([7; 32])?),
+                [8; 32],
+            ))
+            .await?
+        else {
+            unreachable!("original create")
+        };
+        let (mut service, script, _) = scripted_operation_service(Vec::new(), Vec::new());
+        let key = service.expected_key;
+        service.recovered = recovered_suspend(
+            service.expected_operation,
+            service.expected_operation,
+            machine.id,
+        );
+        script.lock().unwrap().results = Some(original.clone());
+        let now = Arc::new(AtomicU64::new(if expires_after_dispatch { 1 } else { 100 }));
+        let clock = now.clone();
+        let cache = CredentialCache::new(
+            |_| async { CredentialSnapshot::new("opaque.account+/=".into(), [1; 32].into(), 100) },
+            move || CredentialValidity {
+                now_unix_seconds: clock.load(Ordering::SeqCst),
+                revision: Some([1; 32].into()),
+            },
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let received = calls.clone();
+        let (provider, shutdown, server) =
+            serve_operation_service_with(service, move |request: Request<()>| {
+                received.fetch_add(1, Ordering::SeqCst);
+                now.store(100, Ordering::SeqCst);
+                Ok(request)
+            })
+            .await?;
+        let provider = provider.with_credential_provider(cache.into());
+        let error = provider.suspend(machine.id, key).await.unwrap_err();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            usize::from(expires_after_dispatch)
+        );
+        if expires_after_dispatch {
+            assert_eq!(error.classification(), &ProviderError::Indeterminate(key));
+            assert_eq!(
+                original.recover(key).await?,
+                MutationOutcome::Suspended(machine.id)
+            );
+            assert_eq!(
+                original.inspect_machine(machine.id).await?.state,
+                MachineState::Suspended
+            );
+        } else {
+            assert!(matches!(error.classification(), ProviderError::Rejected(_)));
+            assert!(matches!(
+                original.recover(key).await,
+                Err(ProviderError::NotFound(_))
+            ));
+            assert_eq!(
+                original.inspect_machine(machine.id).await?.state,
+                MachineState::Running
+            );
+        }
+        let _ = shutdown.send(());
+        server.await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_rpc_retains_exact_lease_at_dispatch_and_reply()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use acyclic_auth::credential::{CredentialCache, CredentialSnapshot, CredentialValidity};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for stage in ["dispatch", "reply", "rejection", "unchanged"] {
+        let cache = CredentialCache::new(
+            |_| async { CredentialSnapshot::new("opaque.account+/=".into(), [1; 32].into(), 100) },
+            || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some([1; 32].into()),
+            },
+        );
+        let original = cache.resolve().await?;
+        let key = IdempotencyKey::new();
+        let operation = OperationId::new();
+        let machine = MachineId::new();
+        let state = operation_state(operation, wire::OperationStatus::Succeeded);
+        let service = OperationService {
+            guest: None,
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: state.clone(),
+            cancelled: state,
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let received = calls.clone();
+        let source = cache.clone();
+        let (provider, shutdown, server) =
+            serve_operation_service_with(service, move |request: Request<()>| {
+                if request
+                    .metadata()
+                    .get("authorization")
+                    .is_none_or(|value| value != "Bearer opaque.account+/=")
+                {
+                    return Err(Status::unauthenticated("original bearer absent"));
+                }
+                received.fetch_add(1, Ordering::SeqCst);
+                if stage == "reply" {
+                    source
+                        .invalidate()
+                        .map_err(|_| Status::unavailable("source owner lost"))?;
+                }
+                if stage == "rejection" {
+                    return Err(Status::unauthenticated("original bearer rejected"));
+                }
+                Ok(request)
+            })
+            .await?;
+        let provider = provider.with_credential_provider(cache.clone().into());
+        let mut client = provider.client().await?;
+        if stage == "dispatch" {
+            cache.invalidate()?;
+        }
+        let result = client.inspect_operation(operation_request(operation)).await;
+        if stage == "unchanged" {
+            assert_eq!(
+                result?.into_inner().operation.unwrap().value,
+                operation.as_bytes()
+            );
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.code(),
+                if stage == "rejection" {
+                    Code::Unauthenticated
+                } else {
+                    Code::Unavailable
+                }
+            );
+            if stage != "rejection" {
+                assert!(std::error::Error::source(&error).is_some());
+            }
+            assert!(
+                cache.check(&original).is_err(),
+                "the original lease must lose admission"
+            );
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            usize::from(stage != "dispatch")
+        );
+        let _ = shutdown.send(());
+        server.await??;
+    }
     Ok(())
 }

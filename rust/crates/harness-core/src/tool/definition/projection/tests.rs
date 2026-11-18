@@ -22,10 +22,11 @@ fn rejected_projection_releases_its_private_pool_on_finite_and_native_ledgers() 
                 continue;
             }
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let io = if native {
                 crate::executor::PreparationIo::from_native_work(&work)?
             } else {
@@ -53,7 +54,7 @@ fn rejected_projection_releases_its_private_pool_on_finite_and_native_ledgers() 
                 );
             }
             drop(io);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())
@@ -62,10 +63,10 @@ fn rejected_projection_releases_its_private_pool_on_finite_and_native_ledgers() 
 #[test]
 fn native_tool_definition_keeps_sparse_schema_slots_until_destruction() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let schema = r#"{"type":"object","properties":{"field":{"type":"string"}}}"#;
     let (definition, custody) =
         ToolDefinition::new("tool", "1", "fixture", schema, schema, schema, 4096, &work)?;
@@ -86,9 +87,9 @@ fn native_tool_definition_keeps_sparse_schema_slots_until_destruction() -> Resul
         former < retained,
         "old inventory must omit sparse schema slots"
     );
-    assert_eq!(work.live_allocation_bytes(), baseline + retained);
+    assert_eq!(work.live_allocation_bytes()?, baseline + retained);
     drop(definition);
     drop(custody);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }

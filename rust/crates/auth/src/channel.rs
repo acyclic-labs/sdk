@@ -2,6 +2,7 @@
 //! Channel shares its connection; no per-product authority pool or refresh loop.
 use crate::credential::{
     CredentialAction, CredentialError, CredentialPending, CredentialProvider, ResolvedCredential,
+    ResponseCredentialError,
 };
 use std::{
     future::{Future, Ready},
@@ -41,13 +42,26 @@ pub enum ConnectError {
     Transport(#[from] tonic::transport::Error),
 }
 
-fn credential_error(error: CredentialError) -> Status {
-    let mut status = match error.denial_cause() {
+impl From<CredentialError> for Status {
+    fn from(error: CredentialError) -> Self {
+        credential_status(error.denial_cause(), error)
+    }
+}
+
+fn credential_status(
+    denial: Option<crate::DenialCause>,
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> Status {
+    let mut status = match denial {
         Some(cause) => cause.into(),
         None => Status::unavailable("credential source unavailable or changed"),
     };
     status.set_source(Arc::new(error));
     status
+}
+
+fn response_credential_error(error: CredentialError) -> Status {
+    credential_status(error.denial_cause(), ResponseCredentialError(Some(error)))
 }
 
 fn stopped_status(reason: crate::operation::Stopped) -> Status {
@@ -141,7 +155,7 @@ impl Future for CredentialDispatch {
                             }
                         }
                         (Err(error), _) => {
-                            Dispatch::Refused(std::future::ready(Err(credential_error(error))))
+                            Dispatch::Refused(std::future::ready(Err(Status::from(error))))
                         }
                         (Ok(()), other) => other,
                     };
@@ -178,7 +192,7 @@ impl Service<http::Request<Body>> for CredentialChannel {
                 CredentialAction::Ready(result) => {
                     if let Err(error) = result.into_inner() {
                         return CredentialDispatch(Dispatch::Refused(std::future::ready(Err(
-                            credential_error(error),
+                            Status::from(error),
                         ))));
                     }
                 }
@@ -320,7 +334,7 @@ where
     let deadline = budget.deadline();
     budget
         .run(async {
-            let lease = credential.resolve().await.map_err(credential_error)?;
+            let lease = credential.resolve().await.map_err(Status::from)?;
             if let Budget::Operation { context, .. } = budget {
                 context.check().map_err(stopped_status)?;
             }
@@ -329,19 +343,31 @@ where
                 Budget::Operation { context, .. } => Some(context.clone()),
                 Budget::Deadline(_) => None,
             };
-            let response = dispatch(guard(channel).with_context(context), request).await;
-            if response.as_ref().is_err_and(|error| {
-                error.code() == tonic::Code::Unauthenticated
-                    && std::error::Error::source(error).is_none()
-            }) {
-                lease.reject().await.map_err(credential_error)?;
-            }
-            if response.is_ok() {
-                lease.check().await.map_err(credential_error)?;
-            }
-            response
+            admit_response(
+                &lease,
+                dispatch(guard(channel).with_context(context), request).await,
+            )
+            .await
         })
         .await
+}
+
+/// Admit an original transport response against the exact dispatched lease.
+/// Only an authenticated remote rejection invalidates that lease; successful
+/// results are checked against its current custodian before becoming visible.
+pub async fn admit_response<T>(
+    lease: &ResolvedCredential,
+    response: Result<Response<T>, Status>,
+) -> Result<Response<T>, Status> {
+    if response.as_ref().is_err_and(|error| {
+        error.code() == tonic::Code::Unauthenticated && std::error::Error::source(error).is_none()
+    }) {
+        lease.reject().await.map_err(response_credential_error)?;
+    }
+    if response.is_ok() {
+        lease.check().await.map_err(response_credential_error)?;
+    }
+    response
 }
 
 /// Build metadata while retaining the exact lease in native request extensions.
@@ -370,12 +396,21 @@ pub fn request<T>(
 /// governed by its producer, without imposing a periodic reconnect deadline.
 /// Dispatch performs the same exact-lease check as a finite request.
 pub fn retained_request<T>(body: T, lease: &ResolvedCredential) -> Result<Request<T>, Status> {
-    let authorization =
-        crate::credential::bearer_metadata(lease.as_str()).map_err(credential_error)?;
     let mut request = Request::new(body);
+    retain_credential(&mut request, lease)?;
+    Ok(request)
+}
+
+/// Bind an existing request's metadata and extensions to its original lease,
+/// preserving caller-owned deadlines and streaming producers.
+pub fn retain_credential<T>(
+    request: &mut Request<T>,
+    lease: &ResolvedCredential,
+) -> Result<(), Status> {
+    let authorization = crate::credential::bearer_metadata(lease.as_str()).map_err(Status::from)?;
     request
         .metadata_mut()
         .insert("authorization", authorization);
     request.extensions_mut().insert(lease.clone());
-    Ok(request)
+    Ok(())
 }

@@ -2,10 +2,13 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::kernel::FileMetadata;
-use acyclic_fs::{
-    CancellationToken, FsError, IdempotencyKey, Transaction, TransactionCommit, WorkBudget,
-    Workspace, WorkspaceError,
+use acyclic_fs_format::metadata::FileMetadata;
+use {
+    acyclic_fs::{
+        CancellationToken, FsError, IdempotencyKey, Transaction, TransactionCommit, Workspace,
+        WorkspaceError,
+    },
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 type MemoryWorkspace =
@@ -40,7 +43,7 @@ async fn commit(
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
                     work: Default::default(),
                 }))

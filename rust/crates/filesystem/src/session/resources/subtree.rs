@@ -1,7 +1,8 @@
 //! One indexed candidate selection and its lossless namespace boundary.
 use crate::kernel::NamespacePath;
 use crate::{VolumeConfig, VolumeId};
-use acyclic_stream::{FollowFilter, StreamError, wire};
+use acyclic_stream::{FollowFilter, StreamError};
+use acyclic_stream_wire::wire;
 
 pub(super) struct Selection {
     resource: String,
@@ -84,7 +85,8 @@ impl Selection {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod tests {
     use super::*;
     use crate::session::ChangeProvider;
@@ -111,17 +113,20 @@ mod tests {
                     }),
                 });
             }
-            block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
-                grants: vec![Grant {
-                    kind: GrantKind::Resource(ResourceGrant {
-                        resource: ResourcePattern {
-                            name: resource.to_owned(),
-                            prefix: true,
-                        },
-                        actions: vec!["fs/list".into()],
-                    }),
-                }],
-            };
+            assert!(block.certificates.is_some(), "root certificate is present");
+            if let Some(certificates) = block.certificates.as_mut() {
+                certificates.keys[0].key.grants = GrantSet {
+                    grants: vec![Grant {
+                        kind: GrantKind::Resource(ResourceGrant {
+                            resource: ResourcePattern {
+                                name: resource.to_owned(),
+                                prefix: true,
+                            },
+                            actions: vec!["fs/list".into()],
+                        }),
+                    }],
+                };
+            }
         })
     }
 

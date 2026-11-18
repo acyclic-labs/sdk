@@ -54,7 +54,7 @@ fn negative_controls_fault_the_production_successor_rule() {
     );
     let run = [item(0, ""), item(0, ""), item(2, "")];
     let former = replay_responses_with(&run, |previous, next| {
-        use crate::protocol::sequence::ResponseItem;
+        use acyclic_harness_provider_protocol::sequence::ResponseItem;
         previous != ResponseItem::Reasoning || next == ResponseItem::Output
     });
     assert_eq!(
@@ -74,7 +74,7 @@ fn checked_in_byte_corpus() {
     }
     // A lone surrogate in an ignored field is rejected before validation.
     assert!(
-        crate::json(include_bytes!(
+        acyclic_harness_provider_response::json(include_bytes!(
             "../../../fuzz/corpus/response_sequence/malformed-skipped.json"
         ))
         .is_err()

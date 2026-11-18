@@ -1,7 +1,6 @@
-import {execFileSync, spawn} from 'node:child_process';
+import {workspaceGraph} from './workspace-model.mjs';
 import {readFileSync} from 'node:fs';
-import {resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {evaluateCfg, featureClosure, readSources, trackedFiles} from './policy-core.mjs';
 
 // Inspect declarations, not unified enabled features: a dev dependency or
 // another workspace member must not accidentally supply the missing edge.
@@ -19,13 +18,7 @@ export function checkTestSupport(metadata) {
     if (!Object.hasOwn(pkg.features, 'test-support')) continue;
     const node = nodes.get(id);
     if (!node) throw new Error(`missing resolved workspace package ${id}`);
-    const reachable = new Set();
-    const visit = feature => {
-      if (reachable.has(feature)) return;
-      reachable.add(feature);
-      for (const next of pkg.features[feature] ?? []) visit(next);
-    };
-    visit('test-support');
+    const reachable = featureClosure(pkg.features, ['test-support']);
     for (const edge of node.deps) {
       const dependency = packages.get(edge.pkg);
       if (!dependency) throw new Error(`missing resolved dependency ${edge.pkg}`);
@@ -153,22 +146,9 @@ export function checkDeserializedTestSupport(sources) {
 // Evaluate only the two cfg inputs whose relationship this policy owns. Other
 // features and platform predicates remain unknown, so an OS-specific export
 // cannot hide a target that unconditionally requires test-support.
-function testCfg(attributes) {
-  const evaluate = expression => {
-    const call = /^(all|any|not)\((.*)\)$/s.exec(expression.trim());
-    if (call) {
-      const values = splitUse(call[2]).map(evaluate);
-      if (call[1] === 'not') return values[0] === undefined ? undefined : !values[0];
-      const decisive = call[1] === 'any';
-      return values.includes(decisive) ? decisive : values.includes(undefined) ? undefined : !decisive;
-    }
-    if (expression.trim() === 'test') return true;
-    if (/^feature\s*=\s*"test-support"$/.test(expression.trim())) return false;
-    return undefined;
-  };
-  return [...attributes.matchAll(/#\[\s*cfg\s*\((.*?)\)\s*\]/gs)]
-    .some(match => evaluate(match[1]) === false) ? false : undefined;
-}
+const testCfg = attributes => [...attributes.matchAll(/#\[\s*cfg\s*\((.*?)\)\s*\]/gs)]
+  .some(match => evaluateCfg(match[1], (name, value) => name === 'test' && value === undefined ? true
+    : name === 'feature' && value === 'test-support' ? false : undefined) === false) ? false : undefined;
 
 function splitUse(text) {
   let depth = 0, start = 0;
@@ -241,21 +221,14 @@ export function checkTestSupportExports(sources) {
   return exports.length;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   // Resolve every optional and target-specific edge, including registry crates.
-  const child = spawn('cargo', ['metadata', '--locked', '--all-features', '--format-version', '1'],
-    {stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true});
-  let output = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', chunk => { output += chunk; });
-  const status = await new Promise((accept, reject) => child.on('error', reject).on('close', accept));
-  if (status !== 0) throw new Error(`cargo metadata failed (${status})`);
-  console.log(`test-support forwarding: ${checkTestSupport(JSON.parse(output))} dependency declarations checked`);
-  const files = execFileSync('git', ['ls-files', '--', '*.rs'], {encoding: 'utf8'}).split('\n').filter(Boolean);
-  const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
-  const commands = execFileSync('git', ['ls-files', '--', ':!scripts/tests/fixtures'], {encoding: 'utf8'}).split('\n')
-    .filter(file => COMMAND_FILE.test(file)).map(file => [file, readFileSync(file, 'utf8')]);
-  console.log(`loom opt-in: ${checkLoomOptIn(JSON.parse(output), sources)} model packages checked, ` +
+  const metadata = workspaceGraph(process.cwd(), null);
+  console.log(`test-support forwarding: ${checkTestSupport(metadata)} dependency declarations checked`);
+  const sources = await readSources(process.cwd(), trackedFiles(process.cwd(), ['*.rs']));
+  const commands = await readSources(process.cwd(), trackedFiles(process.cwd(), [':!scripts/tests/fixtures'])
+    .filter(file => COMMAND_FILE.test(file)));
+  console.log(`loom opt-in: ${checkLoomOptIn(metadata, sources)} model packages checked, ` +
     `${checkNoLoomCfgFlag(commands)} command files without a hand-passed loom cfg`);
   console.log(`test-support deserialized members: ${checkDeserializedTestSupport(sources)} Rust sources checked`);
   console.log(`test-support exports: ${checkTestSupportExports(sources)} local re-exports checked`);

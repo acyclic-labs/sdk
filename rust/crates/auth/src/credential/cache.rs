@@ -244,6 +244,7 @@ struct Inner {
 }
 
 /// One credential source/auth partition, shared by all its product requests.
+/// Native cache handles are Send + Sync, as required by retained transport credentials.
 /// Native warm reads use an atomic snapshot, without the refresh mutex. Refresh
 /// is polled by its callers, with no detached task, timer, retry or fallback.
 #[derive(Clone)]

@@ -2,23 +2,19 @@ use crate::{
     OperationId, Result,
     conversation::Limits,
     model::{
-        Divergence, DivergenceSink, Model, ModelContent, ModelDelivery, ModelDispatch, ModelEvent,
+        IgnoreDivergence, Model, ModelContent, ModelDelivery, ModelDispatch, ModelEvent,
         ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest, RecordedCall,
         RecordedModel, RecordedToolOutcome, Recording, replay_key,
     },
     tool::ToolResult,
 };
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, performance::BOUNDARY_BUDGET};
 use futures::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
-
-struct NoLive;
-impl DivergenceSink for NoLive {
-    fn diverged(&self, _: Divergence) {
-        panic!("a retained replay selection entered the live provider");
-    }
-}
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::BOUNDARY_BUDGET,
+};
 
 fn events(context: usize, occurrence: usize) -> Vec<ModelEvent> {
     let text = format!("{context}:{occurrence}");
@@ -51,7 +47,11 @@ pub fn assert_replay_admission(schedule: &[u8]) {
         0x79,
     ]);
     for operation in [operation, captured] {
-        futures::executor::block_on(check(schedule, operation)).expect("replay schedule admission");
+        let result = futures::executor::block_on(check(schedule, operation));
+        assert!(
+            result.is_ok(),
+            "replay schedule admission failed: {result:?}"
+        );
     }
 }
 
@@ -102,7 +102,7 @@ async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
     let trial = RecordedModel::new(
         Arc::new(super::ScriptedModelProvider::new([])),
         Arc::new(source),
-        Arc::new(NoLive),
+        Arc::new(IgnoreDivergence),
     );
     let mut selected = [[None; 4]; 2];
     let mut next = [0; 2];
@@ -125,11 +125,11 @@ async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
         let work =
             NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
         let prior_unused = trial.unused();
-        let retained = work.live_allocation_bytes();
-        match trial.generate_with_native_work(request, dispatch, &work) {
+        let retained = work.live_allocation_bytes()?;
+        let occurrence = match trial.generate_with_native_work(request, dispatch, &work) {
             Err(crate::Error::NativeWork { .. }) => {
                 assert_eq!(
-                    work.live_allocation_bytes(),
+                    work.live_allocation_bytes()?,
                     retained,
                     "refused replay retained index funding"
                 );
@@ -154,10 +154,11 @@ async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
             }
             Err(error) => return Err(error),
             Ok(future) => {
-                if selected[context][slot].is_none() {
-                    selected[context][slot] = Some(next[context]);
+                let occurrence = *selected[context][slot].get_or_insert_with(|| {
+                    let occurrence = next[context];
                     next[context] += 1;
-                }
+                    occurrence
+                });
                 if action & 64 != 0 {
                     cancellation.cancel();
                 }
@@ -166,15 +167,16 @@ async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
                     crate::Error::NativeWork { cause, .. } => {
                         cancelled =
                             matches!(cause, acyclic_fs::NativeTreeMaterializationError::Cancelled);
+                        Ok(())
                     }
-                    other => panic!("unexpected replay admission failure: {other}"),
+                    other => Err(other),
                 };
                 match future.await {
-                    Err(error) => failure(error),
+                    Err(error) => failure(error)?,
                     Ok(mut stream) => {
                         while let Some(event) = stream.next().await {
                             if let Err(error) = event {
-                                failure(error);
+                                failure(error)?;
                                 break;
                             }
                         }
@@ -186,9 +188,9 @@ async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
                         "accepted cancellation did not terminate with its typed cause"
                     );
                 }
+                occurrence
             }
-        }
-        let occurrence = selected[context][slot].expect("accepted source coordinate");
+        };
         let expected = events(context, occurrence);
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)

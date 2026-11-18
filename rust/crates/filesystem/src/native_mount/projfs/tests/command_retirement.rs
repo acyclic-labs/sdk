@@ -190,7 +190,7 @@ async fn retire_after_cancellation(
             })?;
         }
     }
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     cancellation.cancel();
     mount.abandon()?;
     assert!(!destination.exists());
@@ -200,7 +200,7 @@ async fn retire_after_cancellation(
         "retirement unlinked the shared registry"
     );
     assert!(mount.session.lock().unwrap().is_none());
-    Ok(work.receipt().backend_write_operations - before.backend_write_operations)
+    Ok(work.receipt().unwrap().backend_write_operations - before.backend_write_operations)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -256,14 +256,14 @@ async fn failed_projection_cleanup_refunds_no_work_and_retries_on_original_budge
         // the authentic root handle while forcing actual Windows failures.
         let authentic_root = std::mem::replace(&mut cleanup.1, tempfile::tempfile()?);
         cancellation.cancel();
-        let allocations = work.receipt().allocation_operations;
+        let allocations = work.receipt().unwrap().allocation_operations;
         for attempt in 0..4 {
-            let before = work.receipt().backend_write_operations;
+            let before = work.receipt().unwrap().backend_write_operations;
             let error = finish_projection_cleanup(&mut cleanup).unwrap_err();
             assert!(matches!(error, NativeMountError::Io(_)), "{error:?}");
             assert!(cleanup.0.is_empty());
             if attempt > 0 {
-                assert_eq!(work.receipt().backend_write_operations, before + 1);
+                assert_eq!(work.receipt().unwrap().backend_write_operations, before + 1);
             }
         }
         // Negative control: the former fixed reservation denies the next
@@ -274,18 +274,22 @@ async fn failed_projection_cleanup_refunds_no_work_and_retries_on_original_budge
                 .started_io(WriteOperations.delta(1), None)
                 .is_err()
         );
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         ledger.lock().budget.backend_write_operations = before.backend_write_operations;
         assert!(finish_projection_cleanup(&mut cleanup).is_err());
-        assert_eq!(work.receipt(), before, "denied refill performed work");
+        assert_eq!(
+            work.receipt().unwrap(),
+            before,
+            "denied refill performed work"
+        );
         ledger.lock().budget.backend_write_operations = 256;
         cleanup.1 = authentic_root;
         finish_projection_cleanup(&mut cleanup)?;
         assert_eq!(
-            work.receipt().backend_write_operations,
+            work.receipt().unwrap().backend_write_operations,
             before.backend_write_operations + 1
         );
-        assert_eq!(work.receipt().allocation_operations, allocations);
+        assert_eq!(work.receipt().unwrap().allocation_operations, allocations);
         drop(cleanup);
         assert_eq!(super::reparse_tag(&destination)?.0, None);
         assert!(sorted_names(&destination)?.is_empty());

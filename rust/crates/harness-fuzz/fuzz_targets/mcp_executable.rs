@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use std::ffi::OsString;
 
-use acyclic_native_runtime::ExecutableSearch;
+use acyclic_executable_search::ExecutableSearch;
 
 fuzz_target!(|input: &str| {
     if input.len() > 4096 {

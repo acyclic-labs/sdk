@@ -9,7 +9,8 @@ use acyclic_harness::local::{
     Event,
     agent_conversation::{Conversation, Sent, Settlement, ended},
 };
-use acyclic_native_runtime::{InheritedOutput, lines::AsyncLines};
+use acyclic_native_lines::lines::AsyncLines;
+use acyclic_native_runtime::InheritedOutput;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -506,8 +507,8 @@ impl Output {
 
 /// Stdin's lines, read off the coordination runtime's blocking slot: an open
 /// stdin's read may never return.
-fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_runtime::Stdin>> {
-    Ok(AsyncLines::new(acyclic_native_runtime::stdin()?, None))
+fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_stdin::Stdin>> {
+    Ok(AsyncLines::new(acyclic_native_stdin::stdin()?, None))
 }
 
 /// Send `prompt` as message `operation` and print its answer; rerunning the

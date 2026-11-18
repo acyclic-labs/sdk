@@ -38,6 +38,29 @@ describe("guest dependency failures", () => {
     expect(() => resolve(true)).toThrow(DependencyUnavailableError);
   });
 
+  test("a frozen binding is wrapped like any other", async () => {
+    // A host freezes its admitted bindings; proxying the frozen value itself
+    // made every member read a TypeError, so readiness refused the binding.
+    const original = new Error("connection reset");
+    // Negative control: a get trap on the frozen value itself cannot return a wrapper.
+    const wrapped = new Proxy(Object.freeze({ admit() {} }), { get: () => () => undefined });
+    expect(() => wrapped.admit).toThrow(TypeError);
+    const workspace = dependencyBinding("machinesWorkspace", Object.freeze({
+      admit: async (request: bigint) => { if (request === 0n) throw original; return { request }; },
+      limit: 3,
+    }));
+    expect(typeof workspace.admit).toBe("function");
+    expect(workspace.limit).toBe(3);
+    expect(await workspace.admit(1n)).toEqual({ request: 1n });
+    const rejected = await workspace.admit(0n).then(() => undefined, (error: unknown) => error);
+    expect(rejected).toBeInstanceOf(DependencyUnavailableError);
+    expect((rejected as Error).cause).toBe(original);
+    const resolve = dependencyBinding("modelFetch", Object.freeze((fail: boolean) => { if (fail) throw original; return 7; }));
+    expect(typeof resolve).toBe("function");
+    expect(resolve(false)).toBe(7);
+    expect(() => resolve(true)).toThrow(DependencyUnavailableError);
+  });
+
   test("a readiness step names a rejected thenable that is not a native Promise", async () => {
     const original = new Error("connection reset");
     const foreign: PromiseLike<never> = { then: (_resolve, reject) => { reject?.(original); return foreign as never; } };

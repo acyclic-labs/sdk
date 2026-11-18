@@ -124,15 +124,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                             },
                         )
                         .await;
-                    let (allocations, spent, _, _) = accounting
-                        .standalone_parts()
-                        .ok_or(crate::WorkError::Overflow)?;
-                    let live = allocations.live_bytes();
-                    merge_workspace_backend(committed, spent, live).map(|receipt| receipt.value)
+                    merge_workspace_backend(committed, &mut accounting)
                 }
                 .await;
                 accounting.check().map_err(|error| {
-                    crate::OperationFailure::new(WorkspaceError::from(error), accounting.spent())
+                    crate::OperationFailure::observed(
+                        WorkspaceError::from(error),
+                        accounting.spent(),
+                    )
                 })?;
                 crate::facade::measured(result, &accounting)
             },

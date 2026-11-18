@@ -22,13 +22,16 @@ fn shared_demand_claims_and_cleanup_keep_one_leaf_boundary()
     // A bounded operation spends only its completed prefix from the original
     // reservation. Refusal and cancelled waiting must not enter the operation.
     let reservation = root.reserve_work(items(3))?;
-    let before = root.receipt();
+    let before = root.receipt().unwrap();
     let (value, locks) = root
         .state
         .count_locks(|| reservation.with_admitted_work(items(3), None, || (17, items(1))));
     assert_eq!(value?, 17);
     assert_eq!(locks, 1);
-    assert_eq!(root.receipt().items_examined - before.items_examined, 1);
+    assert_eq!(
+        root.receipt().unwrap().items_examined - before.items_examined,
+        1
+    );
     assert_eq!(reservation.remaining_work().items_examined, 2);
     let mut entered = false;
     assert!(
@@ -51,7 +54,10 @@ fn shared_demand_claims_and_cleanup_keep_one_leaf_boundary()
     ));
     assert!(!entered);
     drop(reservation);
-    assert_eq!(root.receipt().items_examined - before.items_examined, 1);
+    assert_eq!(
+        root.receipt().unwrap().items_examined - before.items_examined,
+        1
+    );
 
     fn exercise<W: DemandWorkContext>(
         work: &mut W,
@@ -75,7 +81,7 @@ fn shared_demand_claims_and_cleanup_keep_one_leaf_boundary()
         });
         assert!(unlocked);
         recorded?;
-        assert_eq!(owner.receipt().backend_write_operations, 1);
+        assert_eq!(owner.receipt().unwrap().backend_write_operations, 1);
         Ok(())
     }
 

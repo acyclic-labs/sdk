@@ -31,7 +31,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 workspace
                     .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(|failure| status(&failure.error))?
+                    .map_err(|failure| Status::from(&failure.error))?
                     .value
             }
         };
@@ -95,7 +95,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let head = workspace
                 .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(|failure| status(&failure.error))?
+                .map_err(|failure| Status::from(&failure.error))?
                 .value;
             if head.id() != generation.id() {
                 return Err(Status::failed_precondition(
@@ -105,7 +105,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             workspace
                 .checkpoint(&request.identity)
                 .await
-                .map_err(|error| status(&error))?;
+                .map_err(|error| Status::from(&error))?;
         } else {
             generation
                 .pin(
@@ -114,7 +114,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     &CancellationToken::new(),
                 )
                 .await
-                .map_err(|failure| status(&failure.error))?;
+                .map_err(|failure| Status::from(&failure.error))?;
         }
         Ok(Response::new(wire::RetainGenerationResponse {
             generation: Some(generation_ref(&generation)),

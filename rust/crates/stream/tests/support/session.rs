@@ -2,8 +2,8 @@
 use acyclic_stream::{
     StreamError, StreamProvider, grpc,
     session::{self, Limits},
-    wire,
 };
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use futures::{
     StreamExt as _,

@@ -53,7 +53,7 @@ fn compare_known_prefix<const SKIP_FIRST: bool, const UNCHARGED_PROBE: bool>(
     let found = binary_search_from_with_accounting(items, offset, &mut accounting, compare)
         .map_err(|error| TestCaseError::fail(error.to_string()))?;
     prop_assert_eq!(
-        accounting.spent().items_examined,
+        accounting.spent().unwrap().items_examined,
         calls,
         "charge every actual comparison"
     );
@@ -163,7 +163,7 @@ fn empty_known_prefix_retains_admission_without_comparisons() -> Result<(), crat
         })
         .is_err()
     );
-    assert_eq!(accounting.spent(), crate::WorkCounters::UNCHARGED);
+    assert_eq!(accounting.spent().unwrap(), crate::WorkCounters::UNCHARGED);
     assert_eq!(calls, 0);
     Ok(())
 }
@@ -184,7 +184,7 @@ fn known_prefix_denies_each_probe_before_its_comparator() -> Result<(), crate::F
                 &mut unlimited,
                 |item| item.cmp(&key),
             )?;
-            let required = unlimited.spent().items_examined;
+            let required = unlimited.spent().unwrap().items_examined;
             for budget in 0..=required {
                 let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
                     crate::WorkBudget {
@@ -204,7 +204,7 @@ fn known_prefix_denies_each_probe_before_its_comparator() -> Result<(), crate::F
                     },
                 );
                 assert_eq!(calls, budget);
-                assert_eq!(accounting.spent().items_examined, calls);
+                assert_eq!(accounting.spent().unwrap().items_examined, calls);
                 if budget == required {
                     assert_eq!(found?, expected);
                 } else {
@@ -234,7 +234,7 @@ fn native_known_prefix_preserves_completed_comparisons_on_cancellation()
     });
     assert!(found.is_err());
     assert_eq!(calls, 1);
-    assert_eq!(original.receipt().items_examined, calls);
+    assert_eq!(original.receipt().unwrap().items_examined, calls);
     assert!(
         binary_search_from_with_accounting::<u8>(&[], 0, &mut accounting, |_| {
             calls += 1;
@@ -263,7 +263,7 @@ fn accounting_denies_a_probe_before_calling_its_comparator() -> Result<(), crate
     });
     assert!(result.is_err());
     assert_eq!(calls, 1);
-    assert_eq!(accounting.spent().items_examined, 1);
+    assert_eq!(accounting.spent().unwrap().items_examined, 1);
     Ok(())
 }
 
@@ -285,6 +285,6 @@ fn native_search_keeps_completed_probes_when_the_next_probe_is_cancelled()
     });
     assert!(result.is_err());
     assert_eq!(calls, 1);
-    assert_eq!(original.receipt().items_examined, 1);
+    assert_eq!(original.receipt().unwrap().items_examined, 1);
     Ok(())
 }

@@ -318,6 +318,17 @@ test("Objects v1 never reports a reply that does not answer its request", async 
   const unknown = await client(json("PutResponse", wire.PutResponseSchema, { outcome: { case: "unknown", value: true } })).put(bytes);
   assert.equal(verified(unknown), undefined);
   await assert.rejects(client(json("PutResponse", wire.PutResponseSchema, {})).put(bytes), fail(wire.ErrorCode.UNAVAILABLE));
+  // An unrecognized detail falls back to the same status contract as the native client.
+  for (const [status, code] of [
+    [400, wire.ErrorCode.INVALID_ARGUMENT], [401, wire.ErrorCode.ACCESS_DENIED],
+    [403, wire.ErrorCode.ACCESS_DENIED], [404, wire.ErrorCode.NOT_FOUND],
+    [409, wire.ErrorCode.CONFLICT], [413, wire.ErrorCode.QUOTA_EXCEEDED],
+    [416, wire.ErrorCode.RANGE_NOT_SATISFIABLE], [429, wire.ErrorCode.QUOTA_EXCEEDED],
+    [501, wire.ErrorCode.UNSUPPORTED], [500, wire.ErrorCode.UNAVAILABLE],
+  ]) {
+    const fallback = new HttpObjectsV1({ endpoint, token: "fixture", fetch: async () => new Response("not a detail", { status }) });
+    await assert.rejects(fallback.put(bytes), fail(code));
+  }
   // A service-side digest refusal keeps its own code.
   const refusing = new HttpObjectsV1({ endpoint, token: "fixture", fetch: async () => new Response(json("ErrorDetail", wire.ErrorDetailSchema, { code: wire.ErrorCode.DIGEST_MISMATCH }), { status: 400 }) });
   await assert.rejects(refusing.put(bytes), fail(wire.ErrorCode.DIGEST_MISMATCH));

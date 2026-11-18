@@ -5,8 +5,12 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[package.metadata.bazel]
+build-script-inputs = []
+
 [dependencies]
 acyclic-stream = { path = "..", default-features = false, features = ["model-checking"] }
+acyclic-stream-wire = { path = "../../stream-wire" }
 futures = "0.3.31"
 loom = { version = "0.7.3", features = ["futures"], optional = true }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }

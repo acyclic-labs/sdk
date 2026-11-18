@@ -1,12 +1,12 @@
 use super::*;
 
 #[cfg(test)]
-pub(super) fn proof_standalone_control_bytes() -> u64 {
+pub(super) fn proof_standalone_control_bytes() -> Result<u64, crate::FsError> {
     let cancellation = CancellationToken::new();
-    ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)
+    Ok(ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)
         .unwrap_or_else(|_| unreachable!("unbounded proof meter admission"))
-        .work()
-        .peak_allocation_bytes
+        .work()?
+        .peak_allocation_bytes)
 }
 
 #[derive(Clone)]
@@ -116,7 +116,7 @@ impl<'a> ProofMeter<'a> {
             .map(|owned| owned.1)
     }
 
-    pub(crate) fn work(&self) -> WorkCounters {
+    pub(crate) fn work(&self) -> Result<WorkCounters, crate::WorkObservationError> {
         match self {
             Self::Standalone { state, .. } => state
                 .try_lock()

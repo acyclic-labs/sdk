@@ -78,7 +78,8 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         });
     }
     let native = native_positional_file(file, meter)?;
-    #[cfg(all(test, any(windows, target_os = "linux")))]
+    #[cfg(test)]
+    #[cfg(all(any(windows, target_os = "linux")))]
     let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
     let ranges = match ranges {

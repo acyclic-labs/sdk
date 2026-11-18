@@ -109,7 +109,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  for (const [file, source] of sources) {
   let unit;
   try {
-   unit = pollingUnit(file, source);
+   unit = pollingUnit(file, source, ts);
    if (/(?:^|\/)package\.json$/.test(file)) {
     let manifest;
     try { manifest = JSON.parse(source); }
@@ -168,6 +168,26 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  /** @type {Map<import('typescript-parser').Symbol, Dependency>} */
  const symbols = new Map();
  const indices = new Map([...units].map(([file, unit]) => [file, new Map(unit.stream.map((token, index) => [token.start, index]))]));
+
+ // A top-level function owns its lexical context, including all local bindings.
+ // Compute its token identity once even when many symbols refer into that scope.
+ const opaqueFiles = new Set([...units].filter(([, unit]) => unit.stream.some(token =>
+  token.kind === 'indirection' || (token.kind === 'word'
+   && ['globalThis', 'global', 'window', 'self'].includes(token.value)))).map(([file]) => file));
+ const functions = new Map();
+ for (const source of program.getSourceFiles()) {
+  const file = source.fileName.slice(1), unit = required(units, file), index = required(indices, file);
+  if (opaqueFiles.has(file)) continue;
+  for (const node of source.statements) {
+   if (!ts.isFunctionDeclaration(node)) continue;
+   const start = index.get(node.getStart(source));
+   if (start === undefined) continue;
+   let end = start;
+   while (end < unit.stream.length && unit.stream[end].start < node.end) end++;
+   functions.set(node, {start, position: file + ':function:' + (node.name?.text ?? 'default'),
+    unit: digest(unit.stream.slice(start, end).map(token => [token.kind, token.value]))});
+  }
+ }
  /** @param {import('typescript-parser').Node} node */
  const nodePosition = node => {
   const file = node.getSourceFile().fileName.slice(1);
@@ -208,24 +228,59 @@ export function projectPollingSites(sources, {historical = false} = {}) {
   if (symbols.has(symbol)) return required(symbols, symbol);
   const declarations = symbol.declarations.filter(node => units.has(node.getSourceFile().fileName.slice(1)));
   if (!declarations.length) return undefined;
-  const positions = declarations.map(node => {
+  const identities = declarations.map(node => {
    const file = node.getSourceFile().fileName.slice(1);
-   const index = indices.get(file)?.get(node.getStart());
-   // Type-only JSDoc bindings and empty module declarations have no executable
-   // token. Keep their identity in the graph rather than dropping the binding.
-   return file + ':' + node.kind + ':' + (index ?? digest(node.getText()));
-  }).sort();
-  const unit = digest(declarations.map(node => required(units, node.getSourceFile().fileName.slice(1)).fingerprint).sort());
+   const source = required(units, file);
+   const index = required(indices, file).get(node.getStart());
+   for (let parent = /** @type {import('typescript-parser').Node} */ (node); parent; parent = parent.parent) {
+    const scope = functions.get(parent);
+    if (!scope) continue;
+    if (parent === node) return scope;
+    const local = index === undefined ? digest(node.getText()) : index - scope.start;
+    return {position: scope.position + ':local:' + node.kind + ':' + local, unit: scope.unit};
+   }
+   if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+    && ts.isVariableDeclarationList(node.parent) && (node.parent.flags & ts.NodeFlags.Const)
+    && ts.isVariableStatement(node.parent.parent) && ts.isSourceFile(node.parent.parent.parent)) {
+    const value = node.initializer;
+    // A primitive const cannot be mutated through an alias. Other initializers
+    // retain their file context until the graph models their writes and effects.
+    if (ts.isStringLiteralLike(value) || ts.isNumericLiteral(value) || ts.isBigIntLiteral(value)
+     || value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword
+     || value.kind === ts.SyntaxKind.NullKeyword)
+     return {position: file + ':const:' + node.name.text, unit: digest([value.kind, value.getText()])};
+   }
+   // Type-only JSDoc bindings and empty module declarations have no executable token.
+   return {position: file + ':' + node.kind + ':' + (index ?? digest(node.getText())), unit: source.fingerprint};
+  });
   // A named default export and its local spelling can be distinct symbols for
   // the same declaration. Declaration identity joins them without joining names
   // in unrelated lexical scopes or source files.
-  const value = dependency(positions.join('|'), unit);
+  const value = dependency(identities.map(item => item.position).sort().join('|'),
+   digest(identities.map(item => item.unit).sort()));
   if (module && temporalModule(module)) value.hazardous = true;
   symbols.set(symbol, value);
   symbolQueue.push(symbol);
   return value;
  };
- const roots = new Map(scripts.map(file => [file, dependency(file + ':initialization', required(units, file.slice(1)).fingerprint)]));
+ const roots = new Map(program.getSourceFiles().map(source => {
+  const file = source.fileName.slice(1);
+  const unit = required(units, file);
+  const bodies = source.statements.flatMap(statement =>
+   ts.isFunctionDeclaration(statement) && statement.body
+    ? [{start: statement.body.getStart(source), end: statement.body.end}] : []);
+  let fingerprint = unit.fingerprint;
+  if (bodies.length && !opaqueFiles.has(file)) {
+   // Initialization calls carry function bodies through their dependency edges.
+   let body = 0;
+   const initialized = unit.stream.filter(token => {
+    while (body < bodies.length && token.start >= bodies[body].end) body++;
+    return body === bodies.length || token.start < bodies[body].start;
+   });
+   fingerprint = digest(initialized.map(token => [token.kind, token.value]));
+  }
+  return [source.fileName, dependency(source.fileName + ':initialization', fingerprint)];
+ }));
  /** @type {Reference[]} */
  const references = [];
  /** @type {{node: import('typescript-parser').Node, owner: Dependency, target: Dependency}[]} */

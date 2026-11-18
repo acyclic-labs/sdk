@@ -36,7 +36,12 @@ fn negative_control_strict_consumption_cannot_apply_a_conflated_jump() {
         Err(StreamCategory::Unavailable)
     );
     assert_eq!(progress.next().unwrap(), 1);
-    assert_eq!(progress.consume_latest(1, 7), Ok(true));
+    assert_eq!(
+        progress
+            .consume_latest(1, 7)
+            .map_err(|error| error.category()),
+        Ok(true)
+    );
     assert_eq!(progress.next().unwrap(), 8);
     assert_eq!(
         progress

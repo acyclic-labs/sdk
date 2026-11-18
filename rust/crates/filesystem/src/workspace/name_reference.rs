@@ -68,7 +68,9 @@ pub(super) fn decode(
         KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
         KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
         #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
+        KernelAccounting::NativeOriginal { work, .. } => {
+            work.live_allocation_bytes().map_err(FsError::from)?
+        }
     };
     accounting.admit(crate::WorkCounters {
         peak_allocation_bytes: live

@@ -31,6 +31,7 @@ mod identity;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
+mod manifest_builder;
 mod medium;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -50,11 +51,12 @@ mod tests;
 
 pub use acyclic_stream::SealedBytes as Sealed;
 pub use availability::{Availability, AvailabilityCursor, AvailabilitySource};
-pub use blob::{ByteRange, Digest, Kind, Manifest, Part};
+pub use blob::{ByteRange, ContentDigests, ContentHasher, Digest, Kind, Manifest, Part};
 pub use error::Error;
+pub use manifest_builder::ManifestBuilder;
 #[cfg(any(test, feature = "test-support"))]
 pub use medium::{Fault, Injected};
-pub use medium::{Medium, MediumError, MemoryMedium};
+pub use medium::{Medium, MediumError, MediumKey, MemoryMedium};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_error::{NativeObjectsCause, NativeObjectsError};
 pub use observation::{Observation, ObservationSource, Observed, ObservedVersion};
@@ -101,25 +103,4 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-objects-v1.bin"));
 
-/// Canonical HTTP route, input message, and output message inventory, relative to `/v1/objects/`.
-pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
-    ("blobs/put", "PutBlobRequest", "PutResponse"),
-    ("blobs/put-batch", "PutBlobsRequest", "PutBlobsResponse"),
-    ("blobs/put-manifest", "PutManifestRequest", "PutResponse"),
-    ("blobs/get", "GetBlobRequest", "GetBlobResponse"),
-    ("blobs/head", "HeadBlobRequest", "BlobInfo"),
-    ("blobs/delete", "DeleteBlobRequest", "DeleteBlobResponse"),
-    ("blobs/list", "ListBlobsRequest", "ListBlobsResponse"),
-    ("blobs/retain", "RetainRequest", "RetainResponse"),
-    ("blobs/release", "ReleaseRequest", "ReleaseResponse"),
-    ("blobs/collect", "CollectRequest", "CollectResponse"),
-    ("blobs/usage", "UsageRequest", "UsageResponse"),
-];
-
-/// Streaming routes, with one canonical Protobuf length-delimited message per
-/// frame. The first frame opens the observation before verification starts.
-pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[(
-    "blobs/availability",
-    "AvailabilityRequest",
-    "AvailabilityCursor",
-)];
+pub use route::{HTTP_ROUTES, HTTP_STREAM_ROUTES};

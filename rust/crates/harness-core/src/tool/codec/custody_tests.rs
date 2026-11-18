@@ -5,7 +5,7 @@ fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Resul
     let source = serde_json::json!({"outer": [{"inner": "value"}]});
     for encode in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
@@ -44,7 +44,7 @@ fn projected_sparse_json_retains_original_custody_on_finite_and_native_paths() -
     };
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();

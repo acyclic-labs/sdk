@@ -1,47 +1,22 @@
 //! Focused public whole-file read behavior tests.
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, Transaction,
-    TransactionCommit, WorkBudget, WorkspaceError,
-};
+use acyclic_fs::{CancellationToken, Fs, IdempotencyKey, TransactionCommit, WorkspaceError};
+use acyclic_fs_work::performance::WorkBudget;
 use bytes::Bytes;
 use std::error::Error;
-
-macro_rules! value {
-    ($result:expr) => {
-        $result
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-    };
-}
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, Transaction,
+        TransactionCommit, WorkspaceError,
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[macro_use]
 #[path = "../support/unbounded.rs"]
 mod unbounded;
-
-fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
-    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-        value: (),
-        work: acyclic_fs::WorkCounters::UNCHARGED,
-    }))
-}
-
-async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    transaction: &mut Transaction<A, O>,
-) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-    value!(
-        transaction
-            .commit::<WorkspaceError, _, _>(
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                allow
-            )
-            .await
-    )
-}
+#[path = "../support/transaction.rs"]
+mod transaction;
+use transaction::commit;
 
 #[tokio::test]
 async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), Box<dyn Error>> {
@@ -106,7 +81,7 @@ async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), B
         #[cfg(not(target_arch = "wasm32"))]
         {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs_work::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
@@ -114,10 +89,10 @@ async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), B
                 .read("/entry", length as u64, &work, &cancellation)
                 .await?;
             assert_eq!(native.as_ref(), bytes.as_ref());
-            assert_eq!(work.receipt().output_bytes, length as u64);
+            assert_eq!(work.receipt().unwrap().output_bytes, length as u64);
             drop(native);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes().unwrap(),
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
             );
         }
@@ -173,7 +148,7 @@ async fn unchanged_range_case(
                 .await?;
         }
         RangeMutation::Metadata => {
-            use acyclic_fs::kernel::{FileMetadata, MetadataField};
+            use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
             let before = unbounded!(original, stat("/entry"))?;
             let mode = before.metadata.posix_mode.unwrap_or(0o100_644) ^ 0o111;
             let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;

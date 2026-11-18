@@ -1,6 +1,10 @@
 //! Populated writer outputs reach every page shape and both reference widths.
 use super::*;
-use acyclic_fs::{Digest, FileId, GenerationId, ObjectId, ObjectKind, ObjectStorage, VolumeId};
+use {
+    acyclic_fs::GenerationId,
+    acyclic_fs_format::identity::{Digest, FileId, VolumeId},
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
+};
 
 type Seeds = Vec<(&'static str, Vec<u8>)>;
 

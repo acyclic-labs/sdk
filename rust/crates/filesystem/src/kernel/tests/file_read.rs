@@ -93,7 +93,7 @@ async fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::err
         return Err("invalid range succeeded".into());
     };
     assert!(matches!(failure.error, FileRangeReadError::InvalidRange));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -121,7 +121,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     .err()
     .ok_or("cancelled read succeeded")?;
     assert!(matches!(cancelled.error, FileRangeReadError::Cancelled));
-    assert_eq!(*cancelled.work, WorkCounters::default());
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
 
     let metadata = inline_record(b"")?.metadata;
     let not_regular = FileRecord {
@@ -156,7 +156,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     .err()
     .ok_or("non-regular read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    assert_eq!(*rejected.work().unwrap(), WorkCounters::default());
 
     let mut mismatched = inline_record(b"abc")?;
     mismatched.payload = FilePayload::SymbolicLink {
@@ -185,7 +185,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     .err()
     .ok_or("payload-mismatched read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    assert_eq!(*rejected.work().unwrap(), WorkCounters::default());
 
     Ok(())
 }
@@ -220,7 +220,7 @@ async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn
             ..
         })
     ));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    assert_eq!(*rejected.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -354,9 +354,9 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
     ))
     .await
     .expect_err("the canonical sparse future is admitted before immutable I/O");
-    assert_eq!(denied.work.allocation_operations, 0);
-    assert_eq!(denied.work.backend_read_operations, 0);
-    assert_eq!(denied.work.bytes_copied, 0);
+    assert_eq!(denied.work().unwrap().allocation_operations, 0);
+    assert_eq!(denied.work().unwrap().backend_read_operations, 0);
+    assert_eq!(denied.work().unwrap().bytes_copied, 0);
     let read = (read_file_range_async(
         &store,
         FileRangeRequest {
@@ -384,7 +384,7 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let native = (read_file_range_with_accounting(
             &store,
@@ -403,16 +403,16 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         ))
         .await?;
         assert_eq!(native.bytes.as_ref(), read.bytes.as_ref());
-        assert_eq!(original.receipt().output_bytes, 8);
-        assert!(original.receipt().backend_read_operations >= 3);
+        assert_eq!(original.receipt().unwrap().output_bytes, 8);
+        assert!(original.receipt().unwrap().backend_read_operations >= 3);
         let alias = native.bytes.slice(1..4);
         drop(native);
         assert!(
-            original.live_allocation_bytes() > baseline,
+            original.live_allocation_bytes().unwrap() > baseline,
             "a physical OwnedBytes alias retains original custody"
         );
         drop(alias);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     assert_sparse_initialized_once(&store, record, extent_root).await?;
     Ok(())
@@ -503,7 +503,7 @@ async fn assert_sparse_initialized_once(
             .await
             .expect_err("one fewer copy byte cannot initialize this range");
             assert!(denied.error.to_string().contains("bytes_copied"));
-            assert!(denied.work.bytes_copied < copies);
+            assert!(denied.work().unwrap().bytes_copied < copies);
         }
         #[cfg(not(target_arch = "wasm32"))]
         assert_native_sparse_copy_budget(store, request, expected).await?;
@@ -520,21 +520,24 @@ async fn assert_native_sparse_copy_budget(
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(request.budget, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let read =
         read_file_range_with_accounting(store, request, &mut accounting, &cancellation).await?;
     assert_eq!(read.bytes.as_ref(), expected);
-    assert_eq!(original.receipt().bytes_copied, request.budget.bytes_copied);
+    assert_eq!(
+        original.receipt().unwrap().bytes_copied,
+        request.budget.bytes_copied
+    );
     drop(read);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     cancellation.cancel();
     assert!(
         read_file_range_with_accounting(store, request, &mut accounting, &cancellation)
             .await
             .is_err()
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -546,7 +549,7 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let mut observed = OriginalReadAccounting::new(&mut accounting)?;
     let mut bytes = Vec::<u8>::new();
@@ -566,9 +569,9 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
             crate::NativeTreeMaterializationError::Cancelled
         ))
     ));
-    assert_eq!(original.receipt().bytes_copied, 4);
-    assert_eq!(original.receipt().items_examined, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().bytes_copied, 4);
+    assert_eq!(original.receipt().unwrap().items_examined, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -585,7 +588,7 @@ fn owned_read_error_scope_drops_payload_before_original_guard()
     impl Drop for Payload<'_> {
         fn drop(&mut self) {
             assert_eq!(
-                self.original.live_allocation_bytes(),
+                self.original.live_allocation_bytes().unwrap(),
                 self.baseline + usize_to_u64(self.bytes.capacity())
             );
             self.dropped.set(true);
@@ -594,7 +597,7 @@ fn owned_read_error_scope_drops_payload_before_original_guard()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let dropped = std::cell::Cell::new(false);
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let buffer = allocate_read_buffer(4, &mut accounting)?;
@@ -613,6 +616,6 @@ fn owned_read_error_scope_drops_payload_before_original_guard()
     };
     assert!(fail(owner).is_err());
     assert!(dropped.get());
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }

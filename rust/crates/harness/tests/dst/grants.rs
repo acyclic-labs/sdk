@@ -515,7 +515,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 kind: AggregateKind::Task,
                 id: format!("grants-{custody}"),
             };
-            let directory = tempfile::tempdir().map_err(oracle::failed)?;
+            let directory = temporary_directory().map_err(oracle::failed)?;
             match custody {
                 "logical" => {
                     let host = FilesystemHost::new(
@@ -539,9 +539,9 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 _ => {
                     let custody_dir = directory.path().join("signing");
                     let signing = SigningCustody::PrivateFile(&custody_dir);
-                    let reference = SigningKeyReference::create(signing)
-                        .map_err(oracle::failed)?
-                        .reference();
+                    let provisional =
+                        SigningKeyReference::create(signing).map_err(oracle::failed)?;
+                    let reference = provisional.reference();
                     let seed_key = reference
                         .with_seed(signing, |seed| *seed)
                         .map_err(oracle::failed)?;

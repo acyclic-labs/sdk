@@ -1,6 +1,6 @@
 //! Atomic window and exact-expiry gate transactions on Streams.
 use super::*;
-use acyclic_stream::StreamProviderExt as _;
+use acyclic_stream::{ProviderOwner, StreamProviderExt as _};
 
 #[cfg(test)]
 mod tests;
@@ -14,13 +14,13 @@ pub(super) mod fuzzing;
 /// A generation publication conditioned on tail 1 therefore linearizes
 /// exactly against fencing.
 pub struct StreamOperationWindowStore<P: ?Sized> {
-    provider: Arc<P>,
+    provider: ProviderOwner<P>,
 }
 
 impl<P: ?Sized> Clone for StreamOperationWindowStore<P> {
     fn clone(&self) -> Self {
         Self {
-            provider: Arc::clone(&self.provider),
+            provider: self.provider.clone(),
         }
     }
 }
@@ -29,7 +29,7 @@ impl<P: ?Sized> StreamOperationWindowStore<P> {
     /// Binds operation windows to the exact provider used by filesystem
     /// authority publication.
     #[must_use]
-    pub fn new(provider: Arc<P>) -> Self {
+    pub fn new(provider: ProviderOwner<P>) -> Self {
         Self { provider }
     }
 }

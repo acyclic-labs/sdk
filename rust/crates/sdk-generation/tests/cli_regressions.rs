@@ -100,10 +100,6 @@ fn init_git(root: &Path, message: &str) {
     git(root, &["commit", "--quiet", "-m", message]);
 }
 
-fn fixture(include_plugin: bool) -> Fixture {
-    copy_fixture(&runtime::fixture(u8::from(include_plugin)))
-}
-
 fn copy_fixture(template: &Fixture) -> Fixture {
     let directory = fixture_directory();
     let root = directory.path().join("source");
@@ -131,7 +127,7 @@ fn copy_fixture(template: &Fixture) -> Fixture {
     }
 }
 
-fn build_fixture(include_plugin: bool) -> Fixture {
+fn fixture(include_plugin: bool) -> Fixture {
     let directory = fixture_directory();
     let root = directory.path().join("source");
     fs::create_dir_all(root.join("rust/crates/demo/src")).unwrap();
@@ -196,40 +192,47 @@ fn build_fixture(include_plugin: bool) -> Fixture {
 /// source and receipt identities; silently dropping it would make the sidecar
 /// claim coverage for an item that no catalog row can represent.
 fn feature_profile_fixture() -> Fixture {
-    copy_fixture(&runtime::fixture(2))
+    let fixture = feature_profile_source();
+    init_git(&fixture.root, "feature profile fixture");
+    fixture
 }
 
 fn feature_profile_source() -> Fixture {
+    profile_source(
+        include_str!("fixtures/feature-profile/rust/crates/demo/Cargo.toml"),
+        "src/lib.rs",
+        include_str!("fixtures/feature-profile/rust/crates/demo/src/lib.rs"),
+    )
+}
+
+fn profile_source(manifest: &str, entrypoint: &str, source: &str) -> Fixture {
     let directory = fixture_directory();
     let root = directory.path().join("source");
     fs::create_dir_all(root.join("rust/crates/demo/src")).unwrap();
     fs::create_dir_all(root.join("release")).unwrap();
     fs::write(
         root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"rust/crates/demo\"]\nresolver = \"2\"\n",
+        include_str!("fixtures/feature-profile/Cargo.toml"),
     )
     .unwrap();
     fs::write(
         root.join("rust-toolchain.toml"),
-        "[toolchain]\nchannel = \"1.98.1\"\nprofile = \"minimal\"\n",
-    )
-    .unwrap();
-    fs::write(root.join("release/cargo-crates.json"), "[\"demo\"]\n").unwrap();
-    fs::write(
-        root.join("rust/crates/demo/Cargo.toml"),
-        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[features]\ndefault = [\"base\"]\nbase = []\nextra = []\n",
+        include_str!("fixtures/feature-profile/rust-toolchain.toml"),
     )
     .unwrap();
     fs::write(
-        root.join("rust/crates/demo/src/lib.rs"),
-        "pub struct Always;\n\n#[cfg(feature = \"base\")]\npub fn base_only() {}\n\n#[cfg(feature = \"default\")]\npub fn default_only() {}\n\n#[cfg(not(feature = \"extra\"))]\npub fn overloaded(value: u64) -> u64 { value }\n\n#[cfg(feature = \"extra\")]\npub fn overloaded(value: &str) -> usize { value.len() }\n\n#[cfg(feature = \"extra\")]\npub struct FeatureOnly;\n",
+        root.join("release/cargo-crates.json"),
+        include_str!("fixtures/feature-profile/release/cargo-crates.json"),
     )
     .unwrap();
+    let package = root.join("rust/crates/demo");
+    fs::write(package.join("Cargo.toml"), manifest).unwrap();
+    fs::write(package.join(entrypoint), source).unwrap();
     // This dependency-free lockfile is the exact lock input for the fixture;
     // no network or workspace checkout is involved in the producer run.
     fs::write(
         root.join("Cargo.lock"),
-        "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+        include_str!("fixtures/feature-profile/Cargo.lock"),
     )
     .unwrap();
     let output = directory.path().join("output");
@@ -333,15 +336,19 @@ fn write_manifest(output: &Path, value: &Value) {
     .unwrap();
 }
 
-fn invoke(command: &mut Command) -> std::process::Output {
+fn configure_cli(command: &mut Command) -> &mut Command {
     runtime::configure(command);
-    command.env("RUSTC", runtime::rustc());
     if !command
         .get_envs()
         .any(|(key, _)| key.as_encoded_bytes().eq_ignore_ascii_case(b"PATH"))
     {
         command.env("PATH", runtime::path());
     }
+    command
+}
+
+fn invoke(command: &mut Command) -> std::process::Output {
+    configure_cli(command);
     let mut stdout = Vec::new();
     let result = commands::execute(|| {
         sdk_docs::with_command_environment(command, || {
@@ -393,12 +400,7 @@ fn run_drift(fixture: &Fixture) -> std::process::Output {
 
 fn fixture_path(support: &Path) -> std::ffi::OsString {
     std::env::join_paths(
-        std::iter::once(support.to_owned())
-            .chain(std::iter::once(
-                runtime::cargo().parent().unwrap().to_owned(),
-            ))
-            .chain(std::iter::once(runtime::git().parent().unwrap().to_owned()))
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        std::iter::once(support.to_owned()).chain(std::env::split_paths(&runtime::path())),
     )
     .unwrap()
 }
@@ -420,9 +422,6 @@ fn generate_command(
     skip_scenarios: bool,
 ) -> Command {
     let mut command = Command::new(runtime::binary("sdk-generation"));
-    runtime::configure(&mut command);
-    command.env("PATH", runtime::path());
-    command.env("RUSTC", runtime::rustc());
     command.args([
         "generate",
         "--root",
@@ -460,64 +459,53 @@ fn run_generate(
     ))
 }
 
-fn generated_span_fixture_pair() -> (Fixture, Fixture) {
-    let first = fixture(false);
-    let generated_relative = "target/generated/wire.rs";
-    let generated = first.root.join(generated_relative);
-    fs::create_dir_all(generated.parent().unwrap()).unwrap();
-    fs::write(&generated, b"pub struct Wire;\n").unwrap();
-
-    let receipt_path = first.rustdoc.join("demo_docs.json");
-    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
-    receipt["index"]["0"]["span"] = json!({
-        "filename": generated.canonicalize().unwrap().to_string_lossy(),
-        "begin": [1, 0],
-        "end": [1, 16]
-    });
-    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
-
-    let directory = fixture_directory();
-    let second_root = directory.path().join("source");
+fn clone_source(source: &Path, destination: &Path) {
     let clone = Command::new(runtime::git())
-        .args([
-            "clone",
-            "--quiet",
-            first.root.to_str().unwrap(),
-            second_root.to_str().unwrap(),
-        ])
+        .args(["clone", "--quiet"])
+        .arg(source)
+        .arg(destination)
         .output()
         .unwrap();
     assert!(
         clone.status.success(),
         "git clone failed: {}",
-        String::from_utf8_lossy(&clone.stderr)
+        output_message(&clone)
     );
+}
+
+fn generated_span_fixture_pair() -> (Fixture, Fixture) {
+    fn place_span(root: &Path, receipt: &mut Value) {
+        let generated = root.join("target/generated/wire.rs");
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        fs::write(&generated, b"pub struct Wire;\n").unwrap();
+        receipt["index"]["0"]["span"] = json!({
+            "filename": generated.canonicalize().unwrap().to_string_lossy(),
+            "begin": [1, 0],
+            "end": [1, 16]
+        });
+    }
+    let first = fixture(false);
+
+    let receipt_path = first.rustdoc.join("demo_docs.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    place_span(&first.root, &mut receipt);
+    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+
+    let directory = fixture_directory();
+    let second_root = directory.path().join("source");
+    clone_source(&first.root, &second_root);
     fs::create_dir_all(second_root.join("rustdoc")).unwrap();
-    fs::copy(
-        first.rustdoc.join("demo_docs.json"),
-        second_root.join("rustdoc/demo_docs.json"),
-    )
-    .unwrap();
     fs::copy(
         first.rustdoc.join("demo_docs.source.sha256"),
         second_root.join("rustdoc/demo_docs.source.sha256"),
     )
     .unwrap();
-    let second_generated = second_root.join(generated_relative);
-    fs::create_dir_all(second_generated.parent().unwrap()).unwrap();
-    fs::write(&second_generated, b"pub struct Wire;\n").unwrap();
-    let second_receipt = second_root.join("rustdoc/demo_docs.json");
-    let mut second_json: Value =
-        serde_json::from_slice(&fs::read(&second_receipt).unwrap()).unwrap();
-    second_json["index"]["0"]["span"] = json!({
-        "filename": second_generated
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy(),
-        "begin": [1, 0],
-        "end": [1, 16]
-    });
-    fs::write(&second_receipt, serde_json::to_vec(&second_json).unwrap()).unwrap();
+    place_span(&second_root, &mut receipt);
+    fs::write(
+        second_root.join("rustdoc/demo_docs.json"),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
 
     let second = Fixture {
         directory,
@@ -619,15 +607,19 @@ fn output_message(result: &std::process::Output) -> String {
     )
 }
 
-fn assert_executed_profiles(output: &Path, rustdoc: &Path, expected: &[(&str, usize)]) {
-    let rows: Value = serde_json::from_slice(
+fn assert_executed_profiles(
+    output: &Path,
+    rustdoc: &Path,
+    expected: &[(&str, usize)],
+) -> Vec<Value> {
+    let rows: Vec<Value> = serde_json::from_slice(
         &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
     )
     .unwrap();
-    let rows = rows.as_array().unwrap();
+
     let mut counts = BTreeMap::new();
     let mut identities = std::collections::BTreeSet::new();
-    for row in rows {
+    for row in &rows {
         assert_eq!(row["rustdocProfilesCovered"], true);
         *counts.entry(row["package"].as_str().unwrap()).or_insert(0) += 1;
         assert!(
@@ -648,11 +640,14 @@ fn assert_executed_profiles(output: &Path, rustdoc: &Path, expected: &[(&str, us
             .with_extension("source.sha256")
             .is_file());
     }
+    let expected_counts = expected.iter().copied().collect::<BTreeMap<_, _>>();
     assert_eq!(
-        rows.len(),
-        expected.iter().map(|(_, count)| count).sum::<usize>()
+        expected_counts.len(),
+        expected.len(),
+        "duplicate expected owner"
     );
-    assert_eq!(counts, expected.iter().copied().collect::<BTreeMap<_, _>>());
+    assert_eq!(counts, expected_counts);
+    rows
 }
 
 fn historical_source_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
@@ -684,39 +679,40 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
     let (fixture, support) = historical_source_fixture(mutation);
     init_git(&fixture.root, "historical docs fixture");
     let package = fixture.root.join("rust/crates/demo");
-    let archives = support.join("registry");
-    let archive_source = support.join("archive-source/demo-1.0.0");
-    fs::create_dir_all(&archives).unwrap();
-    fs::create_dir_all(archive_source.join("src")).unwrap();
-    fs::create_dir_all(archive_source.join("examples")).unwrap();
-    for name in [
+    let mut members = [
         "src/lib.rs",
         "examples/historical.rs",
         "README.md",
         "descriptor.bin",
         "input.json",
         "schema.proto",
-    ] {
-        fs::copy(package.join(name), archive_source.join(name)).unwrap();
-    }
-    fs::copy(
-        package.join("Cargo.toml"),
-        archive_source.join("Cargo.toml.orig"),
-    )
-    .unwrap();
+    ]
+    .into_iter()
+    .map(|path| (path.to_owned(), fs::read(package.join(path)).unwrap()))
+    .collect::<BTreeMap<_, _>>();
+    members.extend([
+        (
+            "Cargo.toml.orig".into(),
+            fs::read(package.join("Cargo.toml")).unwrap(),
+        ),
+        (
+            "Cargo.toml".into(),
+            b"# Cargo-produced normalized manifest fixture\n".to_vec(),
+        ),
+        (
+            "Cargo.lock".into(),
+            b"# Cargo-produced standalone package lock fixture\n".to_vec(),
+        ),
+        (
+            ".cargo_vcs_info.json".into(),
+            packaging::publisher_vcs(&fixture.root, false),
+        ),
+    ]);
     fs::write(
-        archive_source.join("Cargo.toml"),
-        "# Cargo-produced normalized manifest fixture\n",
+        support.join("registry/demo-1.0.0.crate"),
+        archives::encode("demo-1.0.0", &members),
     )
     .unwrap();
-    fs::write(
-        archive_source.join("Cargo.lock"),
-        "# Cargo-produced standalone package lock fixture\n",
-    )
-    .unwrap();
-    fs::write(archive_source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":false},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
-    let archive = archives.join("demo-1.0.0.crate");
-    archives::pack(&archive_source, &archive);
     write_registry_transport(&support);
     (fixture, support)
 }
@@ -724,7 +720,7 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
 fn write_registry_transport(support: &Path) {
     let mut responses = fs::read_dir(support.join("registry")).unwrap().flat_map(|entry| {
         let archive = entry.unwrap().path();
-        let package = archive.file_stem().unwrap().to_str().unwrap().strip_suffix("-1.0.0").unwrap().to_owned();
+        let package = archive.file_stem().unwrap().to_str().unwrap().strip_suffix("-1.0.0").unwrap();
         let version = json!({"crate":package,"num":"1.0.0","checksum":hash_file(&archive).trim_start_matches("sha256:"),"yanked":false});
         [
             (format!("/{package}/1.0.0"), serde_json::to_string(&json!({"version":version})).unwrap()),
@@ -737,13 +733,11 @@ fn write_registry_transport(support: &Path) {
         .map(|(suffix, response)| format!("{suffix}\n{response}\n"))
         .collect::<String>();
     fs::write(support.join("registry-responses.txt"), records).unwrap();
-    let source = packaging::transport();
     let destination = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
-    if !destination.exists() {
-        fs::hard_link(&source, &destination)
-            .or_else(|_| fs::copy(&source, &destination).map(|_| ()))
-            .unwrap();
-    }
+    let source = runtime::binary("registry-transport-fixture");
+    fs::hard_link(&source, &destination)
+        .or_else(|_| fs::copy(&source, &destination).map(|_| ()))
+        .unwrap();
 }
 
 fn run_historical_generate(fixture: &Fixture, support: &Path) -> std::process::Output {
@@ -755,24 +749,31 @@ fn run_historical_generate_mode(
     support: &Path,
     mode: Option<&str>,
 ) -> std::process::Output {
-    run_historical_generate_mode_with_env(fixture, support, mode, None)
+    run_historical_generation(fixture, support, mode, None, &[])
 }
 
-fn run_historical_generate_mode_with_env(
+enum HistoricalAuthority<'a> {
+    Lock(&'a Path),
+    CargoHome(&'a Path),
+    WorkingDirectory(&'a Path),
+}
+
+impl HistoricalAuthority<'_> {
+    fn configure(&self, command: &mut Command) {
+        match self {
+            Self::Lock(lock) => command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock),
+            Self::CargoHome(home) => command.env("CARGO_HOME", home),
+            Self::WorkingDirectory(directory) => command.current_dir(directory),
+        };
+    }
+}
+
+fn run_historical_generation(
     fixture: &Fixture,
     support: &Path,
     mode: Option<&str>,
-    override_lock: Option<&Path>,
-) -> std::process::Output {
-    run_historical_generate_mode_with_authority(fixture, support, mode, override_lock, None)
-}
-
-fn run_historical_generate_mode_with_authority(
-    fixture: &Fixture,
-    support: &Path,
-    mode: Option<&str>,
-    override_lock: Option<&Path>,
-    automatic_config: Option<(&Path, bool)>,
+    authority: Option<HistoricalAuthority<'_>>,
+    expected_owners: &[&str],
 ) -> std::process::Output {
     let path = fixture_path(support);
     let mut command = Command::new(runtime::binary("sdk-generation"));
@@ -808,15 +809,8 @@ fn run_historical_generate_mode_with_authority(
                 .arg(revisions.trim());
         }
     }
-    if let Some(lock) = override_lock {
-        command.env("CARGO_RESOLVER_LOCKFILE_PATH", lock);
-    }
-    if let Some((directory, cargo_home)) = automatic_config {
-        if cargo_home {
-            command.env("CARGO_HOME", directory);
-        } else {
-            command.current_dir(directory);
-        }
+    if let Some(authority) = authority {
+        authority.configure(&mut command);
     }
     let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");
@@ -831,7 +825,16 @@ fn run_historical_generate_mode_with_authority(
             .iter()
             .map(|release| (release["crate"].as_str().unwrap(), 4))
             .collect::<Vec<_>>();
-        assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
+        if !expected_owners.is_empty() {
+            assert_eq!(
+                expected
+                    .iter()
+                    .map(|&(owner, _)| owner)
+                    .collect::<BTreeSet<_>>(),
+                expected_owners.iter().copied().collect::<BTreeSet<_>>(),
+            );
+        }
+        let _ = assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
     }
     result
 }
@@ -842,28 +845,20 @@ fn registry_archive_fixture(
     mutation: Option<&str>,
     publisher_vcs: bool,
 ) -> (Fixture, PathBuf) {
-    registry_archive_fixture_named(dirty, published_lock, mutation, publisher_vcs, "demo")
-}
-
-fn registry_archive_fixture_named(
-    dirty: bool,
-    published_lock: bool,
-    mutation: Option<&str>,
-    publisher_vcs: bool,
-    package_name: &str,
-) -> (Fixture, PathBuf) {
-    registry_archive_fixture_configured(
+    let (fixture, support) = build_registry_archive_fixture(
         dirty,
         published_lock,
         mutation,
         publisher_vcs,
-        package_name,
+        "demo",
         None,
         None,
-    )
+    );
+    write_registry_transport(&support);
+    (fixture, support)
 }
 
-fn registry_archive_fixture_configured(
+fn build_registry_archive_fixture(
     dirty: bool,
     published_lock: bool,
     mutation: Option<&str>,
@@ -875,25 +870,25 @@ fn registry_archive_fixture_configured(
     let needs_commit = prepared.is_some() || package_name != "demo";
     let (fixture, support) = prepared.unwrap_or_else(packaging::source_fixture);
     let package = fixture.root.join("rust/crates/demo");
-    let manifest = fs::read_to_string(package.join("Cargo.toml"))
-        .unwrap()
-        .replace("name = \"demo\"", &format!("name = {package_name:?}"));
-    fs::write(package.join("Cargo.toml"), manifest).unwrap();
-    packaging::include_sources(&package);
-    // Original Cargo and release manifests establish each renamed owner's
-    // authority. Archive-only API bytes below remain divergent from this root.
-    fs::write(
-        fixture.root.join("release/cargo-crates.json"),
-        serde_json::to_vec(&vec![package_name]).unwrap(),
-    )
-    .unwrap();
-    let lock = fs::read_to_string(fixture.root.join("Cargo.lock")).unwrap();
-    fs::write(
-        fixture.root.join("Cargo.lock"),
-        lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
-    )
-    .unwrap();
     if needs_commit {
+        let manifest = fs::read_to_string(package.join("Cargo.toml"))
+            .unwrap()
+            .replace("name = \"demo\"", &format!("name = {package_name:?}"));
+        fs::write(package.join("Cargo.toml"), manifest).unwrap();
+        packaging::include_sources(&package);
+        // Original Cargo and release manifests establish each renamed owner's
+        // authority. Archive-only API bytes below remain divergent from this root.
+        fs::write(
+            fixture.root.join("release/cargo-crates.json"),
+            serde_json::to_vec(&vec![package_name]).unwrap(),
+        )
+        .unwrap();
+        let lock = fs::read_to_string(fixture.root.join("Cargo.lock")).unwrap();
+        fs::write(
+            fixture.root.join("Cargo.lock"),
+            lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
+        )
+        .unwrap();
         git(
             &fixture.root,
             &[
@@ -931,19 +926,18 @@ fn registry_archive_fixture_configured(
         setup(&package);
     }
     let source = packaging::materialize(&package, &support, package_name);
-    fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
-    if !publisher_vcs {
-        fs::remove_file(source.join(".cargo_vcs_info.json")).unwrap();
+    if publisher_vcs {
+        fs::write(
+            source.join(".cargo_vcs_info.json"),
+            packaging::publisher_vcs(&fixture.root, dirty),
+        )
+        .unwrap();
     }
     if !published_lock {
         fs::remove_file(source.join("Cargo.lock")).unwrap();
     }
     let archive = support.join(format!("registry/{package_name}-1.0.0.crate"));
     archives::pack(&source, &archive);
-    if package_name != "demo" && support.join("registry/demo-1.0.0.crate").exists() {
-        fs::remove_file(support.join("registry/demo-1.0.0.crate")).unwrap();
-    }
-    write_registry_transport(&support);
     (fixture, support)
 }
 

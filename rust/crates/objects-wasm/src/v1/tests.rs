@@ -5,6 +5,15 @@ use acyclic_objects::{
 };
 use acyclic_stream::OwnedBytes;
 
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn json_byte_limits_preserve_wasm_address_bounds() {
+    assert_eq!(byte_limit(-0.0).unwrap(), 0);
+    assert_eq!(byte_limit(4_294_967_296.0).unwrap(), usize::MAX);
+    for invalid in [-1.0, 4_294_967_296.5, f64::INFINITY, f64::NAN] {
+        assert!(byte_limit(invalid).is_err());
+    }
+}
+
 // Only fault selection and ownership counters wrap the actual public memory
 // binding. Every reply and mutation is produced by the original Rust account.
 #[wasm_bindgen(inline_js = "
@@ -270,7 +279,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
             .metadata
             .append("acyclic-original-bin", "AwQ=".parse().unwrap());
         let error = Error::from_status_parts(parts.clone());
-        let port = refusal_port(js_error(error.clone()));
+        let port = refusal_port(js_error(&error));
         let client = BinaryObjects::new(JavaScriptTransport::new(port.clone()).unwrap());
         let actual = client.head(digest).await.unwrap_err();
         assert_eq!(
@@ -285,7 +294,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
         assert!(owners_balanced(&port));
     }
     for cut in 0..11 {
-        let port = refusal_port(corrupt_refusal(js_error(expected.clone()), cut));
+        let port = refusal_port(corrupt_refusal(js_error(&expected), cut));
         let client = BinaryObjects::new(JavaScriptTransport::new(port.clone()).unwrap());
         assert_eq!(
             client.head(digest).await.unwrap_err(),

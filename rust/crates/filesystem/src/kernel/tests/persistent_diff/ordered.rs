@@ -81,7 +81,7 @@ async fn compare(
     }
     cursor.retire(&mut accounting)?;
     assert_eq!(observed, expected);
-    let paged = accounting.spent();
+    let paged = accounting.spent().unwrap();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let (diff, allocation) = diff_with_accounting::<FileTableFormat>(
         &store,
@@ -150,16 +150,16 @@ async fn retained_pair_frontier_keeps_early_output_and_cancellation_custody()
         .ok_or("missing early change")?;
     assert_eq!(first.value, expected(&before, &after)[0]);
     assert!(
-        accounting.spent().page_reads < 10,
+        accounting.spent().unwrap().page_reads < 10,
         "one row exported the remaining tree"
     );
-    let reads = accounting.spent().page_reads;
+    let reads = accounting.spent().unwrap().page_reads;
     cancellation.cancel();
     assert!(matches!(
         cursor.next(&store, &mut accounting, &cancellation).await,
         Err(FsError::Cancelled(_))
     ));
-    assert_eq!(accounting.spent().page_reads, reads);
+    assert_eq!(accounting.spent().unwrap().page_reads, reads);
     // Refusal retains both the delivered value and the held frontier until
     // their original physical retirement, even after caller cancellation.
     first.retire(&mut accounting)?;
@@ -189,7 +189,7 @@ async fn retained_pair_frontier_keeps_early_output_and_cancellation_custody()
         }))
     ));
     cursor.retire(&mut accounting)?;
-    assert!(accounting.spent().items_examined <= 1);
+    assert!(accounting.spent().unwrap().items_examined <= 1);
     assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
     Ok(())
 }

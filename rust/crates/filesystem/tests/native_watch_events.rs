@@ -7,10 +7,13 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::watch::{
     NativeWatch, NativeWatchError, NativeWatchOptions, WatchBatch, WatchChange,
 };
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
+};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkBudget,
 };
 
 fn native_watch_work() -> Result<NativeMaterializationWork, Box<dyn std::error::Error>> {
@@ -50,7 +53,7 @@ async fn native_change_wait_uses_retained_events_and_settles_on_cancel_or_drop()
             changed.as_mut().poll(&mut Context::from_waker(&waker)),
             Poll::Pending
         ));
-        let idle = work.receipt();
+        let idle = work.receipt().unwrap();
         assert_eq!(
             wakes.0.load(Ordering::Acquire),
             0,

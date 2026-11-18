@@ -302,6 +302,12 @@ impl From<crate::AuthorityStoreError> for WorkspaceError {
     }
 }
 
+impl From<crate::WorkObservationError> for WorkspaceError {
+    fn from(error: crate::WorkObservationError) -> Self {
+        Self::from(FsError::from(error))
+    }
+}
+
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
         if let Some(cause) = workspace_bounded_error(&error) {

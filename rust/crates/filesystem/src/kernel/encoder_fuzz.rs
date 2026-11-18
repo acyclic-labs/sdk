@@ -37,7 +37,7 @@ fn check_file_table_write(
     encode: impl FnOnce(
         &mut dyn FnMut(EncodeWorkStep) -> Result<(), FsError>,
     ) -> Result<Vec<u8>, FsError>,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
     let mut completed = WorkCounters::UNCHARGED;
     let mut allocated = false;
     let result = encode(&mut |step| {
@@ -53,11 +53,15 @@ fn check_file_table_write(
         Ok(())
     });
     let Some(expected) = expected else {
-        assert!(
-            result.is_ok(),
-            "file-table writer refused an admitted record"
-        );
-        return result.ok();
+        if !(result.is_ok()) {
+            return Err(CanonicalDecodeError::Invariant(
+                crate::kernel::codec::CanonicalInvariant::Static(
+                    "file-table writer refused an admitted record",
+                ),
+            )
+            .into());
+        };
+        return Ok(Some(result?));
     };
     let actual = match result {
         Err(FsError::Decode(CanonicalDecodeError::Invariant(
@@ -65,45 +69,67 @@ fn check_file_table_write(
         ))) => Some(error),
         _ => None,
     };
-    assert_eq!(actual, Some(expected), "file-table writer refusal differs");
-    assert_eq!(
-        completed,
-        WorkCounters {
+    if !(&(actual) == &(Some(expected))) {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static("file-table writer refusal differs"),
+        )
+        .into());
+    };
+    if !(&(completed)
+        == &(WorkCounters {
             items_examined: examined,
             ..WorkCounters::UNCHARGED
-        },
-        "file-table writer refusal completed effects"
-    );
-    assert!(!allocated, "file-table writer refusal allocated output");
-    None
+        }))
+    {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static(
+                "file-table writer refusal completed effects",
+            ),
+        )
+        .into());
+    };
+    if !(!allocated) {
+        return Err(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static(
+                "file-table writer refusal allocated output",
+            ),
+        )
+        .into());
+    };
+    Ok(None)
 }
 
 // Mutate admitted records, retaining their captured identities and references.
 // Both production writer entry points must agree on admission and preserve values.
-fn check_file_record_writer(record: FileRecord) {
-    let check = |record: FileRecord, valid: bool| {
+fn check_file_record_writer(record: FileRecord) -> Result<(), Box<dyn std::error::Error>> {
+    let check = |record: FileRecord, valid: bool| -> Result<(), Box<dyn std::error::Error>> {
         let expected = (!valid).then_some(FileTableError::InvalidRecord);
         let bytes = check_file_table_write(expected, 1, |observe| {
             super::file_table::encode_file_record(record, observe, |_| {
                 FsError::from(CanonicalDecodeError::AllocationFailed)
             })
-        });
+        })?;
         if let Some(bytes) = bytes {
             let decoded = super::file_table::decode_file_record(&bytes);
-            assert_eq!(decoded.as_ref().ok(), Some(&record));
+            if !(&(decoded.as_ref().ok()) == &(Some(&record))) {
+                return Err("filesystem oracle invariant failed".into());
+            };
         }
         let page = FileTablePage::Leaf(vec![record]);
         let bytes = check_file_table_write(expected, 1, |observe| {
             encode_file_table_page(&page, u32::MAX, observe, |_| {
                 FsError::from(CanonicalDecodeError::AllocationFailed)
             })
-        });
+        })?;
         if let Some(bytes) = bytes {
             let decoded = decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
                 Ok::<_, FsError>(())
             });
-            assert_eq!(decoded.as_ref().ok(), Some(&page));
+            if !(&(decoded.as_ref().ok()) == &(Some(&page))) {
+                return Err("filesystem oracle invariant failed".into());
+            };
         }
+        Ok(())
     };
     let wrong_reference = crate::ObjectId {
         kind: crate::ObjectKind::Blob,
@@ -123,10 +149,10 @@ fn check_file_record_writer(record: FileRecord) {
             ..record
         },
     ] {
-        check(invalid, false);
+        check(invalid, false)?;
     }
     if let Some(payload) = wrong_payload(record.payload) {
-        check(FileRecord { payload, ..record }, false);
+        check(FileRecord { payload, ..record }, false)?;
     }
     // Enumerate the complete persisted kind byte, rather than a second kind list.
     for kind in (0..=u8::MAX).filter_map(|tag| FileKind::from_tag(tag).ok()) {
@@ -143,8 +169,10 @@ fn check_file_record_writer(record: FileRecord) {
                 FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary
             ),
         };
-        check(FileRecord { kind, ..record }, valid);
+        check(FileRecord { kind, ..record }, valid)?;
     }
+
+    Ok(())
 }
 
 fn wrong_payload(payload: FilePayload) -> Option<FilePayload> {
@@ -189,7 +217,7 @@ fn wrong_payload(payload: FilePayload) -> Option<FilePayload> {
 
 // Derive invalid typed inputs from admitted writer bytes. Strict decoding alone
 // cannot exercise the writer's own admission guards.
-fn check_file_table_writer(page: &FileTablePage) {
+fn check_file_table_writer(page: &FileTablePage) -> Result<(), Box<dyn std::error::Error>> {
     let descending = |id: crate::FileId| {
         let mut other = id.into_bytes();
         other[0] ^= 1;
@@ -201,7 +229,8 @@ fn check_file_table_writer(page: &FileTablePage) {
             encode_file_table_page(page, maximum, observe, |_| {
                 FsError::from(CanonicalDecodeError::AllocationFailed)
             })
-        });
+        })
+        .map(|_| ())
     };
     match page {
         FileTablePage::Leaf(records) => {
@@ -211,22 +240,22 @@ fn check_file_table_writer(page: &FileTablePage) {
                     u32::try_from(records.len() - 1).unwrap_or(u32::MAX),
                     FileTableError::TooManyItems,
                     0,
-                );
+                )?;
                 let mut duplicate = vec![*first; 2];
                 refuse(
                     &FileTablePage::Leaf(duplicate.clone()),
                     u32::MAX,
                     FileTableError::NotStrictlyOrdered,
                     2,
-                );
+                )?;
                 [duplicate[0].file_id, duplicate[1].file_id] = descending(first.file_id);
                 refuse(
                     &FileTablePage::Leaf(duplicate),
                     u32::MAX,
                     FileTableError::NotStrictlyOrdered,
                     2,
-                );
-                check_file_record_writer(*first);
+                )?;
+                check_file_record_writer(*first)?;
             }
         }
         FileTablePage::Internal(children) => {
@@ -235,28 +264,28 @@ fn check_file_table_writer(page: &FileTablePage) {
                 u32::MAX,
                 FileTableError::InvalidInternalPage,
                 0,
-            );
+            )?;
             if let Some(first) = children.first() {
                 refuse(
                     page,
                     u32::try_from(children.len() - 1).unwrap_or(u32::MAX),
                     FileTableError::TooManyItems,
                     0,
-                );
+                )?;
                 let mut duplicate = vec![first.clone(); 2];
                 refuse(
                     &FileTablePage::Internal(duplicate.clone()),
                     u32::MAX,
                     FileTableError::InvalidInternalPage,
                     2,
-                );
+                )?;
                 [duplicate[0].first, duplicate[1].first] = descending(first.first);
                 refuse(
                     &FileTablePage::Internal(duplicate),
                     u32::MAX,
                     FileTableError::InvalidInternalPage,
                     2,
-                );
+                )?;
                 let mut invalid = first.clone();
                 invalid.page.kind = crate::ObjectKind::Blob;
                 refuse(
@@ -264,10 +293,12 @@ fn check_file_table_writer(page: &FileTablePage) {
                     u32::MAX,
                     FileTableError::InvalidInternalPage,
                     1,
-                );
+                )?;
             }
         }
     }
+
+    Ok(())
 }
 
 fn decode_limits() -> DecodeLimits {
@@ -424,17 +455,22 @@ fn reference(
             index += 1;
             let actual = completed(&step);
             if let Some(delta) = actual {
-                assert_eq!(
-                    delta,
-                    WorkCounters {
+                if !(&(delta)
+                    == &(WorkCounters {
                         bytes_encoded: delta.bytes_encoded,
                         bytes_copied: delta.bytes_copied,
                         items_examined: delta.items_examined,
                         page_writes: delta.page_writes,
                         ..WorkCounters::UNCHARGED
-                    },
-                    "unmodeled completed counter"
-                );
+                    }))
+                {
+                    return Err(CanonicalDecodeError::Invariant(
+                        crate::kernel::codec::CanonicalInvariant::Static(
+                            "unmodeled completed counter",
+                        ),
+                    )
+                    .into());
+                };
                 work.bytes_encoded += delta.bytes_encoded;
                 work.bytes_copied += delta.bytes_copied;
                 work.items_examined += if recheck { 0 } else { delta.items_examined };
@@ -504,16 +540,18 @@ fn reference(
 }
 
 /// Fuzz canonical bytes, four independent budgets, callback rejection and cancellation.
-pub fn check(input: &[u8]) {
-    check_inner::<0, true>(input);
+pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    check_inner::<0, true>(input)
 }
-fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
+fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(
+    input: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(header) = input.get(..10) else {
-        return;
+        return Ok(());
     };
     let wire = &input[10..];
     if wire.len() > 4096 {
-        return;
+        return Ok(());
     }
     let (kind, mode, fault, at) = (
         header[0] % 11,
@@ -528,12 +566,12 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
             if let Ok(page) =
                 decode_file_table_page(wire, decode_limits(), &mut |_| Ok::<_, FsError>(()))
             {
-                check_file_table_writer(&page);
+                check_file_table_writer(&page)?;
             }
         }
         10 => {
             if let Ok(record) = super::file_table::decode_file_record(wire) {
-                check_file_record_writer(record);
+                check_file_record_writer(record)?;
             }
         }
         _ => {}
@@ -549,53 +587,63 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
     let (expected_result, mut expected, expected_failure, expected_copies) =
         reference(kind, wire, budget, recheck, fault, at);
     if expected_result.is_ok() {
-        assert_eq!(
-            expected.bytes_encoded,
-            wire.len() as u64,
-            "every encoded byte needs a completion"
-        );
-        assert_eq!(
-            expected.bytes_copied, expected_copies,
-            "canonical schema copy count"
-        );
-        assert_eq!(expected.page_writes, u64::from(kind == 6));
+        if !(&(expected.bytes_encoded) == &(wire.len() as u64)) {
+            return Err("every encoded byte needs a completion".into());
+        };
+        if !(&(expected.bytes_copied) == &(expected_copies)) {
+            return Err("canonical schema copy count".into());
+        };
+        if !(&(expected.page_writes) == &(u64::from(kind == 6))) {
+            return Err("filesystem oracle invariant failed".into());
+        };
     }
     let cancellation = CancellationToken::new();
     #[cfg(not(target_arch = "wasm32"))]
-    let root = (mode != 0).then(|| {
-        crate::NativeMaterializationWork::new(
-            if mode == 2 || mode == 4 {
-                WorkBudget::UNBOUNDED
-            } else {
-                budget
-            },
-            &cancellation,
-        )
-        .unwrap()
-    });
+    let root = (mode != 0)
+        .then(|| {
+            crate::NativeMaterializationWork::new(
+                if mode == 2 || mode == 4 {
+                    WorkBudget::UNBOUNDED
+                } else {
+                    budget
+                },
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)
+        })
+        .transpose()?;
     #[cfg(not(target_arch = "wasm32"))]
-    let context = root.as_ref().map(|root| {
-        let work = if mode == 2 || mode == 4 {
-            root.native_volume_work(budget).unwrap()
-        } else {
-            root.clone()
-        };
-        if recheck {
-            work.recheck_admitted()
-        } else {
-            work
-        }
-    });
+    let context = root
+        .as_ref()
+        .map(|root| -> Result<_, crate::NativeTreeMaterializationError> {
+            let work = if mode == 2 || mode == 4 {
+                root.native_volume_work(budget)?
+            } else {
+                root.clone()
+            };
+            if recheck {
+                Ok(work.recheck_admitted())
+            } else {
+                Ok(work)
+            }
+        })
+        .transpose()?;
     let mut accounting = match mode {
         #[cfg(not(target_arch = "wasm32"))]
-        1..=4 => KernelAccounting::native(context.as_ref().unwrap(), &cancellation),
+        1..=4 => KernelAccounting::native(
+            context
+                .as_ref()
+                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?,
+            &cancellation,
+        ),
         _ => KernelAccounting::standalone(budget, &cancellation),
     };
-    let baseline = accounting.spent();
+    let baseline = accounting.spent()?;
     #[cfg(not(target_arch = "wasm32"))]
-    let live = context
-        .as_ref()
-        .map_or(0, |work| work.live_allocation_bytes());
+    let live = match context.as_ref() {
+        Some(work) => work.live_allocation_bytes()?,
+        None => 0,
+    };
     #[cfg(target_arch = "wasm32")]
     let live = 0;
     let mut observer = EncodeAccounting::new(&mut accounting);
@@ -623,11 +671,9 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
         &mut copies,
     );
     let result = observer.finish(produced);
-    assert_eq!(
-        result.is_ok(),
-        expected_result.is_ok(),
-        "independent encoding outcome kind={kind} mode={mode}"
-    );
+    if !(&(result.is_ok()) == &(expected_result.is_ok())) {
+        return Err("independent encoding outcome kind={kind} mode={mode}".into());
+    };
     if let Some((index, after)) = failure.as_mut() {
         if MUTANT == 2 {
             *index += 1;
@@ -637,60 +683,58 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
         }
     }
     if ASSERT_PREFIX {
-        assert_eq!(
-            failure, expected_failure,
-            "independent encoding failure prefix"
-        );
+        if !(&(failure) == &(expected_failure)) {
+            return Err("independent encoding failure prefix".into());
+        };
     }
     if let Ok((bytes, allocation)) = result {
-        assert_eq!(bytes, wire, "canonical encoding round trip");
+        if !(&(bytes) == &(wire)) {
+            return Err("canonical encoding round trip".into());
+        };
         drop(bytes);
         drop(allocation);
     }
-    assert_eq!(
-        baseline,
-        WorkCounters {
+    if !(&(baseline)
+        == &(WorkCounters {
             allocation_operations: baseline.allocation_operations,
             peak_allocation_bytes: baseline.peak_allocation_bytes,
             ..WorkCounters::UNCHARGED
-        }
-    );
+        }))
+    {
+        return Err("filesystem oracle invariant failed".into());
+    };
     expected.allocation_operations += baseline.allocation_operations;
     expected.peak_allocation_bytes = baseline
         .peak_allocation_bytes
         .max(live + expected.peak_allocation_bytes);
-    assert_eq!(
-        accounting.spent(),
-        expected,
-        "exact independent encoding receipt"
-    );
+    if !(&(accounting.spent()?) == &(expected)) {
+        return Err("exact independent encoding receipt".into());
+    };
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = context.as_ref() {
         let (remaining, restored, initial) =
             work.state(|state| (state.remaining(), state.budget, state.original_budget()));
-        assert_eq!(
-            restored, initial,
-            "no encoding reservation may survive an exit"
-        );
-        let remaining = remaining.unwrap();
-        assert_eq!(
-            remaining.bytes_encoded,
-            budget.bytes_encoded - expected.bytes_encoded
-        );
-        assert_eq!(
-            remaining.bytes_copied,
-            budget.bytes_copied - expected.bytes_copied
-        );
-        assert_eq!(
-            remaining.items_examined,
-            budget.items_examined - expected.items_examined
-        );
-        assert_eq!(
-            remaining.page_writes,
-            budget.page_writes - expected.page_writes
-        );
-        assert_eq!(work.live_allocation_bytes(), live);
+        if !(&(restored) == &(initial)) {
+            return Err("no encoding reservation may survive an exit".into());
+        };
+        let remaining = remaining?;
+        if !(&(remaining.bytes_encoded) == &(budget.bytes_encoded - expected.bytes_encoded)) {
+            return Err("filesystem oracle invariant failed".into());
+        };
+        if !(&(remaining.bytes_copied) == &(budget.bytes_copied - expected.bytes_copied)) {
+            return Err("filesystem oracle invariant failed".into());
+        };
+        if !(&(remaining.items_examined) == &(budget.items_examined - expected.items_examined)) {
+            return Err("filesystem oracle invariant failed".into());
+        };
+        if !(&(remaining.page_writes) == &(budget.page_writes - expected.page_writes)) {
+            return Err("filesystem oracle invariant failed".into());
+        };
+        if !(&(work.live_allocation_bytes()?) == &(live)) {
+            return Err("filesystem oracle invariant failed".into());
+        };
     }
+    Ok(())
 }
 
 #[cfg(test)]

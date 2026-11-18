@@ -1,4 +1,4 @@
-export const rust = [["acyclic-fs", "example", "filesystem-object-reference-contract"]];
+export const rust = ["//rust/crates/filesystem:filesystem-object-reference-contract_example"];
 
 export function render([stdout]) {
   const contract = JSON.parse(stdout);

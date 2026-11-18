@@ -1,6 +1,5 @@
 //! Holder trust adapters preserve the shared verifier's scope and revocations.
-#[path = "../../auth/tests/common/signed.rs"]
-mod signed;
+use acyclic_auth::testing as signed;
 use acyclic_auth::{crypto::BlockId, verify::*};
 use acyclic_auth_wasm::{Snapshot, block_ids};
 use proptest::prelude::*;
@@ -29,12 +28,7 @@ proptest! {
 
     #[test]
     fn partial_ids_are_never_admitted(bytes in prop::collection::vec(any::<u8>(), 1..1024)) {
-        prop_assert_eq!(block_ids(&bytes).is_ok(), bytes.len() % 32 == 0);
-        if bytes.len() % 32 != 0 {
-            // A deliberately truncated decoder accepts what this property rejects.
-            let broken: Vec<_> = bytes.chunks_exact(32).collect();
-            prop_assert_eq!(broken.len(), bytes.len() / 32);
-        }
+        prop_assert_eq!(block_ids(&bytes).is_ok(), bytes.len().is_multiple_of(32));
     }
 
     #[test]

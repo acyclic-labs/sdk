@@ -659,7 +659,7 @@ impl ProjectionState {
             rdev: node
                 .device
                 .map(|(major, minor)| {
-                    crate::native_host::join_device(major, minor)
+                    acyclic_fs_native_contract::device::join_device(major, minor)
                         .and_then(|device| u32::try_from(device).map_err(|_| libc::EOVERFLOW))
                 })
                 .transpose()?

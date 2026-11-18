@@ -33,7 +33,12 @@ mod tests {
         let error = failure(original.clone());
         assert_eq!(error.code, wire::ErrorCode::QuotaExceeded);
         let source = std::error::Error::source(&error).unwrap();
-        assert_eq!(source.downcast_ref::<StreamError>(), Some(&original));
+        assert_eq!(
+            source
+                .downcast_ref::<StreamError>()
+                .map(|error| error.category()),
+            Some(original.category())
+        );
         assert!(source.source().is_some());
     }
 }

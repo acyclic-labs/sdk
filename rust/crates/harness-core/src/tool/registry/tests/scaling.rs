@@ -1,5 +1,8 @@
 use super::*;
-use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use {
+    acyclic_fs::{CancellationToken, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[test]
 fn namespace_selection_resolves_only_its_own_revisions() -> Result<()> {

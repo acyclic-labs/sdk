@@ -13,7 +13,7 @@ pub(crate) async fn replace_policy<
         .checkout(
             acyclic_fs::model::GenerationSelector::Head,
             acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancel,
         )
         .await
@@ -23,24 +23,24 @@ pub(crate) async fn replace_policy<
         .write_access_policy(
             &serde_json::to_vec(policy).map_err(|error| Error::Invalid(error.to_string()))?,
             acyclic_fs::NamedAttributeWriteMode::Replace,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancel,
         )
         .await
         .map_err(|failure| Error::from(failure.error))?;
     let result = checkout
         .commit::<acyclic_fs::FsError, _, _>(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,
             acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &cancel,
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )

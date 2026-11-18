@@ -1,11 +1,14 @@
-use acyclic_fs::{
-    AsyncObjectStore, AuthorityAllocation, AuthorityWork, MemoryObjectBackend, ObjectId,
-    ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError, storage::ObjectWrite,
-};
 use acyclic_stream::OwnedBytes;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
+};
+use {
+    acyclic_fs::{
+        AsyncObjectStore, AuthorityAllocation, AuthorityWork, MemoryObjectBackend, ObjectRead,
+        ObjectReadRequest, ObjectStoreError, storage::ObjectWrite,
+    },
+    acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
 };
 pub(super) type PauseChannels = (
     futures::channel::oneshot::Receiver<()>,

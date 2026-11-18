@@ -1,12 +1,16 @@
 //! Original-ledger admission for the shared wire projections and parsers.
-use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
+use crate::{Adapter, ResolvedModel, dispatch, sse};
 use acyclic_harness_core::{
     Error, Result,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
 };
+use acyclic_harness_provider_response::stream;
 use futures::StreamExt as _;
+use {
+    acyclic_fs::{NativeAllocation, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
+};
 
 #[cfg(test)]
 #[path = "native_accounting_tests.rs"]
@@ -333,7 +337,7 @@ fn parse_response<'a>(
                 let mut admission = reserve(work, bytes, nodes, parser.allocation.bytes())?;
                 parser.allocation.absorb(&mut admission)?;
                 let events = model_diagnostic(stream::parse(&mut parser.state, adapter, frame.data()), &mut parser.allocation)?;
-                let terminal = parser.state.terminal && (frame.data() == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
+                let terminal = parser.state.is_terminal() && (frame.data() == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses));
                 drop(frame);
                 let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
                 let retained = events.iter().try_fold(parser.state.logical_owned_bytes()?.checked_add(slots).ok_or_else(|| invalid("provider retained capacity overflow"))?, |bytes, event| {
@@ -353,7 +357,7 @@ fn parse_response<'a>(
             let (reasoning_bytes, reasoning_nodes) = parser.state.reasoning_shape()?;
             let mut admission = reserve(work, bytes.checked_add(reasoning_bytes).ok_or_else(|| invalid("reasoning size overflow"))?, nodes.checked_add(reasoning_nodes).ok_or_else(|| invalid("reasoning size overflow"))?, parser.allocation.bytes())?;
             parser.allocation.absorb(&mut admission)?;
-            let restored = parser.state.restore_names(names, |length| {
+            let restored = parser.state.restore_names(|wire| names.canonical(wire), |length| {
                 let mut custody = work.claim(length as u64, 1, WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED })?;
                 parser.allocation.absorb(&mut custody)?;
                 Ok(())

@@ -1,9 +1,12 @@
 use super::*;
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use futures::Stream;
 use std::{
     pin::Pin,
     task::{Context, Poll},
+};
+use {
+    acyclic_fs::{NativeAllocation, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkCounters,
 };
 
 struct Body<S> {

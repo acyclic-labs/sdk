@@ -79,7 +79,7 @@ async function statusBindingControl(run, host) {
 }
 
 async function argumentControls(host) {
-  const command = ['--', 'node', '-e', 'process.exit(17)'];
+  const command = ['--', process.execPath, '-e', 'process.exit(17)'];
   async function capture(cases, label) {
     const records = [];
     for (const [args, expected] of cases) {
@@ -461,7 +461,7 @@ if (mode === 'signal-owner') {
   process.stdin.resume();
 } else {
   const host = process.env.ACYCLIC_PROCESS_HOST;
-  assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test main node_process::');
+  assert.ok(host, 'step=process-control-admission; recovery=run bazel test //rust/crates/native-runtime:main --test_arg=node_process::');
   const options = {host};
   await processSignalControls();
   await argumentControls(host);

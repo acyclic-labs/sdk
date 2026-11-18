@@ -109,3 +109,43 @@ pub use grpc::Tls;
 /// Shared provider qualification, checked benchmarks and request accounting.
 #[cfg(feature = "conformance")]
 pub mod conformance;
+
+#[cfg(test)]
+mod admission_tests {
+    use acyclic_auth::action::{Action, MachinesAction};
+
+    use super::MachinesMethod;
+
+    #[test]
+    fn every_machines_method_has_exact_admission() {
+        for &method in MachinesMethod::ALL {
+            let row = method.authorization();
+            let actions: Vec<_> = row.actions().collect();
+            assert_eq!(MachinesMethod::from_route(row.route), Some(method));
+            match method {
+                MachinesMethod::Fork => assert_eq!(
+                    actions,
+                    [
+                        Action::Machines(MachinesAction::ReadCheckpoint),
+                        Action::Machines(MachinesAction::Create),
+                    ]
+                ),
+                MachinesMethod::ForkMachine => assert_eq!(
+                    actions,
+                    [
+                        Action::Machines(MachinesAction::Read),
+                        Action::Machines(MachinesAction::Create),
+                    ]
+                ),
+                _ => assert!(
+                    matches!(actions.as_slice(), [Action::Machines(_)]),
+                    "{method:?}: {actions:?}"
+                ),
+            }
+        }
+        assert_eq!(
+            MachinesMethod::from_route("/acyclic.machines.v1.MachinesService/Unmapped"),
+            None
+        );
+    }
+}

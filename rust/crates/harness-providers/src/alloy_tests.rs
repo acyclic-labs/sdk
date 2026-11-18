@@ -173,7 +173,7 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
         #[cfg(not(target_arch = "wasm32"))]
         {
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(100, 4096),
+                acyclic_fs_work::performance::work_budget(100, 4096),
                 &acyclic_fs::CancellationToken::new(),
             )
             .map_err(|(error, _)| error)?;
@@ -476,7 +476,7 @@ const WIRE_REASONING: [(&str, &str, &[&str]); 4] = [
 
 fn assert_foreign_wire(bytes: &[u8], adapter: Adapter, ordinal: u64) {
     let wire = std::str::from_utf8(bytes).unwrap();
-    let target = crate::stream::family(adapter);
+    let target = acyclic_harness_provider_response::stream::family(adapter);
     for (index, &(origin, readable, opaque)) in WIRE_REASONING.iter().enumerate() {
         if origin == target {
             continue;

@@ -1,4 +1,7 @@
-export const rust = [["acyclic-harness", "example", "model-contract-fixtures"], ["acyclic-harness-core", "example", "agent-record-corpus"]];
+export const rust = [
+  "//rust/crates/harness:model-contract-fixtures_example",
+  "//rust/crates/harness-core:agent-record-corpus_example",
+];
 export function render([stdout, corpus]) {
   const fixture = JSON.parse(stdout);
   if (Object.keys(fixture).sort().join(",") !== "prefix,request"

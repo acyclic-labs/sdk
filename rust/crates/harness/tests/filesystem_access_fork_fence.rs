@@ -3,7 +3,7 @@ use super::*;
 fn assert_fenced(revocation: &Result<(), Box<dyn Error>>) {
     assert!(
         revocation.as_ref().err().is_some_and(|error| matches!(
-            error.downcast_ref::<acyclic_fs::OperationFailure<acyclic_fs::FsError>>(),
+            error.downcast_ref::<acyclic_fs_work::performance::OperationFailure<acyclic_fs::FsError>>(),
             Some(failure) if matches!(failure.error, acyclic_fs::FsError::Publication(
                 acyclic_fs::kernel::PublicationError::ActiveProjection
             ))
@@ -38,7 +38,8 @@ async fn racing_fork(protected: bool, action: Action) -> Result<(), Box<dyn Erro
         )
         .await?
         .value;
-    let (entered, release) = objects.pause_write(acyclic_fs::ObjectKind::GenerationRoot)?;
+    let (entered, release) =
+        objects.pause_write(acyclic_fs_format::object_reference::ObjectKind::GenerationRoot)?;
     let copy = async {
         if protected {
             fixture
@@ -201,7 +202,7 @@ proptest! {
 impl objects::CountingObjects {
     fn pause_write(
         &self,
-        kind: acyclic_fs::ObjectKind,
+        kind: acyclic_fs_format::object_reference::ObjectKind,
     ) -> Result<objects::PauseChannels, acyclic_fs::ObjectStoreError> {
         self.pause_io(kind, true)
     }
@@ -223,9 +224,9 @@ async fn unchecked_fork(
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             &mut |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )

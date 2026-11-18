@@ -171,7 +171,7 @@ async fn checkpoint_and_observation_publish_at_one_authenticated_cut() -> Result
 
 async fn check_cut(native: Option<bool>) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(1_000_000, 4 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = native

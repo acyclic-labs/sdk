@@ -1,11 +1,14 @@
 use super::*;
 use crate::filesystem::PreparationIo;
 use acyclic_fs::access::{Action as FsAction, Effect, Policy};
-use acyclic_fs::{
-    CancellationToken, WorkBudget,
-    model::{CheckoutMode, GenerationSelector},
-};
 use proptest::prelude::*;
+use {
+    acyclic_fs::{
+        CancellationToken,
+        model::{CheckoutMode, GenerationSelector},
+    },
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
@@ -93,7 +96,7 @@ async fn publish_volume_policy(
         .map_err(|failure| super::super::super::map_error(failure.error.into()))?;
     checkout
         .commit::<acyclic_fs::FsError, _, _>(
-            acyclic_fs::OperationId::new(),
+            acyclic_fs_format::identity::OperationId::new(),
             None,
             None,
             None,
@@ -101,9 +104,9 @@ async fn publish_volume_policy(
             WorkBudget::UNBOUNDED,
             &cancel,
             |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    work: acyclic_fs_work::performance::WorkCounters::UNCHARGED,
                 }))
             },
         )
@@ -432,7 +435,7 @@ mod context {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
-    fn cached_directory_replies_pin_data_and_recheck_current_disclosure(
+    fn pinned_directory_pages_recheck_current_disclosure(
         revisions in prop::collection::vec(any::<bool>(), 1..5), narrowed in any::<bool>(),
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
@@ -443,13 +446,8 @@ proptest! {
             for name in ["one", "two"] {
                 storage.stage(OperationId::new(), &format!("notes/{name}"), b"data", "text/plain", name).await?;
             }
-            let tool = storage.list_files_tool(Limits { file_bytes: Some(4096), ..Limits::default() })?;
-            let invocation = ToolInvocation {
-                operation_id: OperationId::new(), call_id: "cached-list".into(), name: "acyclic.list_files".into(),
-                arguments: json!({"path":"notes", "maximum_entries":8}),
-            };
-            let original = tool.executor.execute(invocation.clone(), None).await?;
-            assert_eq!(original.value["entries"].as_array().unwrap().len(), 2);
+            let original = storage.list_private_directory("notes", None, None, 8).await?;
+            assert_eq!(original.entries.len(), 2);
             storage.stage(OperationId::new(), "notes/three", b"later", "text/plain", "three").await?;
             let grants = if narrowed {
                 use acyclic_fs::access::{Capability, Grant, Generations, ResourcePattern};
@@ -462,18 +460,13 @@ proptest! {
                 }.to_scope_label().map_err(|error| Error::Invalid(error.to_string()))?])
             } else { Capabilities::new([storage.read_capability.clone()]) };
             let task = context::content_context(storage.content_verifier.clone(), None, grants).await?;
-            let context = crate::runtime::ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
             for (index, denied) in revisions.into_iter().enumerate() {
                 policy(&fs, &storage, index as u64 + 2, denied.then_some(FsAction::List), "notes/two").await?;
-                let replay = tool.executor.execute(invocation.clone(), Some(context.clone())).await;
-                let reconciled = tool.executor.reconcile(invocation.clone(), Some(context.clone())).await;
-                let allowed = !denied && !narrowed;
-                assert_eq!(replay.is_ok(), allowed, "{replay:?}");
-                assert_eq!(reconciled.is_ok(), allowed, "{reconciled:?}");
-                if allowed {
-                    assert_eq!(replay?, original);
-                    assert_eq!(reconciled?, Some(original.clone()));
-                }
+                let page = task.list_private_directory(
+                    storage.volume(), "notes", "notes", Some(&original.generation), None, 8,
+                ).await?;
+                let names = page.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>();
+                assert_eq!(names, if denied || narrowed { vec!["one"] } else { vec!["one", "two"] });
             }
             Ok::<_, Box<dyn std::error::Error>>(())
         }).map_err(|error| TestCaseError::fail(error.to_string()))?;

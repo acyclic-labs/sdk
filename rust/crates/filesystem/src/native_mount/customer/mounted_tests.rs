@@ -126,7 +126,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .await
         .is_err()
     );
-    path_work.receipt().verify(path_budget)?;
+    path_work.receipt().unwrap().verify(path_budget)?;
     assert_eq!(head(lazy.workspace(), &setup).await?, generation);
     assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
 
@@ -276,15 +276,14 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert!(published.operation().is_some());
     assert!(published.is_lazy());
     assert_eq!(published.workspace_id(), lazy.workspace().id());
-    // The original fixture requested an exact 32-byte range from a ten-byte
-    // file. A bounded whole-file read preserves the intended EOF semantics.
-    assert!(matches!(
+    // An exact range past EOF clamps to the file's remaining bytes.
+    assert_eq!(
         lazy.read_range("/authored.txt", 0, 32, &mut accounting())
-            .await,
-        Err(LazyWorkspaceError::Filesystem(crate::FsError::FileRead(
-            crate::kernel::FileRangeReadError::InvalidRange
-        )))
-    ));
+            .await?
+            .bytes
+            .as_ref(),
+        b"native edit"
+    );
     read("/authored.txt", b"native edit").await?;
 
     let snapshot_work = new_work(WorkBudget::UNBOUNDED)?;

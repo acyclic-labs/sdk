@@ -28,14 +28,15 @@ rust_proc_macro(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "@crates//heck-0.5.0",
-        "@crates//proc-macro2-1.0.107",
-        "@crates//quote-1.0.47",
-        "@crates//syn_3_0_9-3.0.9",
+        "@sdk_crates//heck-0.5.0",
+        "@sdk_crates//proc-macro2-1.0.107",
+        "@sdk_crates//quote-1.0.47",
+        "@sdk_crates//syn_3_0_9-3.0.9",
     ],
     visibility = ["//visibility:public"],
 )
@@ -43,8 +44,10 @@ rust_proc_macro(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/ingress.rs",
+        "tests/main.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -55,24 +58,25 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/test-support:acyclic_test_support",
-        "@crates//heck-0.5.0",
-        "@crates//proc-macro2-1.0.107",
-        "@crates//prost-0.14.4",
-        "@crates//prost-types-0.14.4",
-        "@crates//quote-1.0.47",
-        "@crates//syn_3_0_9-3.0.9",
-        "@crates//tempfile-3.27.0",
+        "@sdk_crates//heck-0.5.0",
+        "@sdk_crates//proc-macro2-1.0.107",
+        "@sdk_crates//prost-0.14.4",
+        "@sdk_crates//prost-types-0.14.4",
+        "@sdk_crates//quote-1.0.47",
+        "@sdk_crates//syn_3_0_9-3.0.9",
+        "@sdk_crates//tempfile-3.27.0",
     ],
     proc_macro_deps = [
         ":acyclic_contract_derive",
     ] + [
-        "@crates//async-trait-0.1.92",
+        "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -82,7 +86,20 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-contract-derive::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-contract-derive::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -92,9 +109,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/authorization.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

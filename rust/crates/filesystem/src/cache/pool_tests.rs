@@ -311,7 +311,7 @@ fn cancelled_flight_settlement_releases_followers_and_original_backing() {
             KernelAccounting::standalone(budget, &cancel)
         };
         let baseline = if native {
-            original.live_allocation_bytes()
+            original.live_allocation_bytes().unwrap()
         } else {
             // The first retained flight promotes this caller's ledger. That
             // original control remains funded while the caller owns it.
@@ -355,7 +355,7 @@ fn cancelled_flight_settlement_releases_followers_and_original_backing() {
         drop(follower);
         assert_eq!(
             if native {
-                original.live_allocation_bytes()
+                original.live_allocation_bytes().unwrap()
             } else {
                 accounting.standalone_parts().unwrap().0.live_bytes()
             },

@@ -8,7 +8,8 @@ mod private_view;
 pub struct FilesystemHost<A: 'static, O: 'static> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
-    pub(in crate::filesystem) changes: Option<Arc<dyn acyclic_stream::StreamProvider>>,
+    pub(in crate::filesystem) changes:
+        Option<acyclic_stream::ProviderOwner<dyn acyclic_stream::StreamProvider>>,
     publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -22,16 +23,79 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
         >,
     >,
     project_family: Option<Arc<dyn family::ProjectFamily<A, O>>>,
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) _native_custody: Option<acyclic_fs::NativeAllocation>,
+    pub(in crate::filesystem) _native_custody: Option<Arc<acyclic_fs::NativeAllocation>>,
 }
 
 impl<A, O> FilesystemHost<A, O> {
+    /// The host clock's current Unix seconds for access decisions.
+    pub(in crate::filesystem) fn access_now(&self) -> Result<u64> {
+        super::access::access_now_at(self.clock.now_unix_millis())
+    }
+
+    /// The one clock every access decision and its recheck read.
+    pub(in crate::filesystem) fn clock(&self) -> &dyn acyclic_stream::UnixMillisClock {
+        self.clock.as_ref()
+    }
+
+    /// An owned handle for work that must outlive this borrow.
+    pub(in crate::filesystem) fn clock_handle(&self) -> Arc<dyn acyclic_stream::UnixMillisClock> {
+        self.clock.clone()
+    }
+
+    /// The same host, with every access decision evaluated on `clock`.
+    #[must_use]
+    pub fn with_clock(&self, clock: Arc<dyn acyclic_stream::UnixMillisClock>) -> Arc<Self> {
+        Arc::new(Self {
+            filesystem: self.filesystem.clone(),
+            provider: self.provider.clone(),
+            changes: self.changes.clone(),
+            publication_domain: Arc::clone(&self.publication_domain),
+            workspace_binding: self.workspace_binding.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            private_view: self.private_view.clone(),
+            #[cfg(test)]
+            publication_pause: self.publication_pause.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_skills: Arc::clone(&self.native_skills),
+            project_family: self.project_family.clone(),
+            clock,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_custody: self._native_custody.clone(),
+        })
+    }
+
+    pub(in crate::filesystem) fn require(
+        &self,
+        view: &acyclic_fs::access::PathTrie,
+        action: acyclic_fs::access::Action,
+        path: &str,
+        io: &PreparationIo,
+    ) -> Result<()> {
+        super::access::require_at(view, action, path, io, self.access_now()?)
+    }
+
     /// Binds a deployment and funds its shared descriptor on the optional ledger.
     pub fn new(
         filesystem: Fs<A, O>,
         provider: &ProviderRef,
         io: Option<&PreparationIo>,
+    ) -> Result<Arc<Self>> {
+        Self::new_with_clock(
+            filesystem,
+            provider,
+            io,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+        )
+    }
+
+    /// Binds a deployment whose access decisions use `clock`.
+    pub fn new_with_clock(
+        filesystem: Fs<A, O>,
+        provider: &ProviderRef,
+        io: Option<&PreparationIo>,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<Arc<Self>> {
         crate::executor::with_history_io(io, |work| provider.validate(work))?;
         if provider.family() != "filesystem" {
@@ -67,8 +131,9 @@ impl<A, O> FilesystemHost<A, O> {
                     std::collections::HashMap::new(),
                 )),
                 project_family: None,
+                clock,
                 #[cfg(not(target_arch = "wasm32"))]
-                _native_custody,
+                _native_custody: _native_custody.map(Arc::new),
             }))
         })
     }
@@ -77,7 +142,7 @@ impl<A, O> FilesystemHost<A, O> {
     /// This port adds no journal, scan, timer or standing task.
     pub fn with_changes(
         mut self: Arc<Self>,
-        streams: Arc<dyn acyclic_stream::StreamProvider>,
+        streams: acyclic_stream::ProviderOwner<dyn acyclic_stream::StreamProvider>,
     ) -> Result<Arc<Self>>
     where
         A: AsyncAuthorityStore,
@@ -145,6 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             native_skills: self.native_skills.clone(),
             project_family: self.project_family.clone(),
+            clock: self.clock.clone(),
             _native_custody: None,
         }))
     }

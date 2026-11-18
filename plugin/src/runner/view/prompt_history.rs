@@ -33,10 +33,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace)?;
-        let model = Arc::new(ScriptedModelProvider::new([
-            ScriptedTurn::Text("answer".into()),
-            ScriptedTurn::Text("none".into()),
-        ]));
+        let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+            "answer".into(),
+        )]));
         let harness = Arc::new(
             LocalHarness::open(
                 local_harness_config(

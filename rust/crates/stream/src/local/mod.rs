@@ -18,7 +18,7 @@ use crate::{ForkRequest, OwnedBytes as Bytes};
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
 #[cfg(all(not(loom), any(test, feature = "test-support")))]
 use acyclic_native_runtime::testing::spawn;
-use acyclic_native_runtime::{OwnershipAnchor, PersistenceKey};
+use acyclic_native_runtime::{Durability, OwnershipAnchor, PersistenceKey, sync_parent};
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(loom)]

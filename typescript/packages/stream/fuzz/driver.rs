@@ -50,13 +50,13 @@ impl Driver {
     pub fn budgeted(root: &Path, scenario: &str, fault: &str, steps: u64) -> io::Result<Self> {
         let mut child = Command::new("bun")
             .arg(if scenario.starts_with("deadline") {
-                "typescript/packages/stream/test/session-deadline-model-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-deadline-model-driver.ts"
             } else if scenario == "queue-work" {
-                "typescript/packages/stream/test/session-queue-work-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-queue-work-driver.ts"
             } else if scenario == "queue" {
-                "typescript/packages/stream/test/session-queue-model-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-queue-model-driver.ts"
             } else {
-                "typescript/packages/stream/test/session-model-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-model-driver.ts"
             })
             .current_dir(root)
             .env("STREAM_SESSION_SCENARIO", scenario)

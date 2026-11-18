@@ -154,38 +154,38 @@ async fn exercise_original_publication<
                 .find_operation(workspace.authority_id(), key.operation_id(), &mut work)
                 .await?,
         );
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes().unwrap();
         let record = authority
             .find_operation(workspace.authority_id(), key.operation_id(), &mut work)
             .await?
             .ok_or("record absent")?;
         drop(record);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes().unwrap(), baseline);
         let recovered = workspace
             .operation_publication(key, None, &native, &cancellation)
             .await?
             .ok_or("publication absent")?;
         assert_eq!(recovered.evidence(), Some(evidence));
-        let recovered_credit = native.live_allocation_bytes() - baseline;
+        let recovered_credit = native.live_allocation_bytes().unwrap() - baseline;
         assert!(
             recovered_credit >= evidence.len() as u64,
             "evidence escaped its original ledger"
         );
         let alias = recovered.evidence.clone().ok_or("evidence absent")?;
         assert_eq!(
-            native.live_allocation_bytes() - baseline,
+            native.live_allocation_bytes().unwrap() - baseline,
             recovered_credit,
             "alias charged original evidence twice"
         );
         drop(recovered);
         assert_eq!(
-            native.live_allocation_bytes() - baseline,
+            native.live_allocation_bytes().unwrap() - baseline,
             recovered_credit,
             "alias lost its original funding"
         );
         drop(alias);
         assert_eq!(
-            native.live_allocation_bytes(),
+            native.live_allocation_bytes().unwrap(),
             baseline,
             "evidence release leaked funding"
         );
@@ -203,20 +203,20 @@ async fn exercise_original_publication<
         .await
         .err()
         .ok_or("unfunded read admitted")?;
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     cancellation.cancel();
     let failure = workspace
         .operation_publication(key, None, budget, &cancellation)
         .await
         .err()
         .ok_or("cancelled read admitted")?;
-    assert_eq!(*failure.work, crate::WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::default());
     let failure = publication
         .predecessor(budget, &cancellation)
         .await
         .err()
         .ok_or("cancelled predecessor lookup admitted")?;
-    assert_eq!(*failure.work, crate::WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::default());
     Ok(key)
 }
 

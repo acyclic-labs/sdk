@@ -8,6 +8,8 @@ pub(crate) use admission::{
 };
 pub(crate) use job::DeferredPoll;
 pub(crate) use job::NativeJob;
+#[cfg(feature = "test-support")]
+use std::sync::atomic::AtomicUsize;
 
 mod admission;
 mod job;
@@ -17,8 +19,61 @@ pub(crate) struct NativeWorkers {
     pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
     /// Existing service width; batches never create another pool or enlarge it.
     pub(crate) threads: usize,
+    service: Option<Service>,
     #[cfg(feature = "test-support")]
     pub(crate) host_pool: Arc<crate::testing::HostPool>,
+}
+
+struct Service {
+    name: &'static str,
+    receiver: Arc<QueueMutex<mpsc::Receiver<NativeJob>>>,
+}
+
+/// A dequeued job retains its running slot through execution and unwinding.
+pub(crate) struct Running(Arc<QueueMutex<AdmissionState>>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .running_jobs -= 1;
+    }
+}
+
+impl NativeWorkers {
+    fn start(&self, admission: &mut AdmissionState) -> io::Result<()> {
+        let demand = admission.running_jobs + admission.queued_jobs + 1;
+        self.start_to(admission, demand)
+    }
+
+    fn start_to(&self, admission: &mut AdmissionState, demand: usize) -> io::Result<()> {
+        let Some(service) = &self.service else {
+            return Ok(());
+        };
+        while admission.started_workers < demand.min(self.threads) {
+            let receiver = Arc::clone(&service.receiver);
+            let shared_admission = Arc::clone(&self.admission);
+            #[cfg(feature = "test-support")]
+            let host_pool = self.host_pool.clone();
+            std::thread::Builder::new()
+                .name(format!("{}-{}", service.name, admission.started_workers))
+                .spawn(move || {
+                    while let Some((job, _running)) = receive_job(&receiver, &shared_admission) {
+                        #[cfg(feature = "test-support")]
+                        let occupant = job.may_wait_for_driver().then(|| host_pool.unscoped());
+                        let waker = job.run();
+                        #[cfg(feature = "test-support")]
+                        drop(occupant);
+                        wake_capacity_waiter(waker);
+                    }
+                })?;
+            #[cfg(feature = "test-support")]
+            self.host_pool.started();
+            admission.started_workers += 1;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -29,6 +84,7 @@ impl NativeWorkers {
             sender,
             admission: Arc::new(QueueMutex::new(admission)),
             threads: 1,
+            service: None,
             #[cfg(feature = "test-support")]
             host_pool: crate::testing::HostPool::new(1),
         }
@@ -57,27 +113,26 @@ impl NativeWorkers {
 // every completion/callback runs after all three locks are released.
 pub(crate) fn receive_job(
     receiver: &QueueMutex<mpsc::Receiver<NativeJob>>,
-    admission: &QueueMutex<AdmissionState>,
-) -> Option<NativeJob> {
+    admission: &Arc<QueueMutex<AdmissionState>>,
+) -> Option<(NativeJob, Running)> {
     let job = receiver
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .recv()
         .ok()?;
-    notify_capacity_released(admission);
-    Some(job)
+    Some((job, notify_capacity_released(admission)))
 }
 
 pub(crate) static NATIVE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-native-io"));
+    LazyLock::new(|| start_workers("acyclic-native-io", parallelism()));
 
 pub(crate) static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-host-io"));
+    LazyLock::new(|| start_workers("acyclic-host-io", parallelism()));
 
 // Persistence never waits for a capture callback or interactive input. Keeping
 // it separate prevents a blocked host callback from occupying its producer.
 pub(crate) static PERSISTENCE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-persistence"));
+    LazyLock::new(|| start_workers("acyclic-persistence", parallelism()));
 
 // A synchronous inherited sink can retain its write until the peer drains.
 // It must not occupy persistence or host-callback capacity. This work class
@@ -85,23 +140,76 @@ pub(crate) static PERSISTENCE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
 // the first synchronous output submission, never per descriptor or agent.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) static OUTPUT_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-output"));
+    LazyLock::new(|| start_workers("acyclic-output", parallelism()));
 
 // Host I/O includes file-lock transactions that wait on other owners. Process
 // launch, capture turns and their owner callbacks never wait on such a lock,
 // so an unrelated command never queues behind them. Created on first use,
 // never per process or agent.
 pub(crate) static PROCESS_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-process-io"));
+    LazyLock::new(|| start_workers("acyclic-process-io", parallelism()));
 
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Seeded worlds currently open in this process. Each world needs at most two
+/// host workers: one for its blocking call and one for a nested child call.
+#[cfg(feature = "test-support")]
+static SEEDED_WORLDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Starts the host workers a new seeded world needs, growing the shared pool
+/// for every world already open instead of shrinking it for everyone.
+#[cfg(feature = "test-support")]
+pub(crate) fn start_seeded_world() {
+    let active = SEEDED_WORLDS.fetch_add(1, Ordering::SeqCst) + 1;
+    start_world_demand(active * 2);
+}
+
+/// Records that a seeded world closed. Its workers stay available to the
+/// shared pool; the next world starts only what it needs.
+#[cfg(feature = "test-support")]
+pub(crate) fn finish_seeded_world() {
+    SEEDED_WORLDS.fetch_sub(1, Ordering::SeqCst);
+}
+
+#[cfg(feature = "test-support")]
+fn seeded_demand() -> Option<usize> {
+    let active = SEEDED_WORLDS.load(Ordering::SeqCst);
+    (active > 0).then(|| active * 2)
+}
+
+#[cfg(feature = "test-support")]
+fn start_world_demand(demand: usize) {
+    let demand = demand.min(parallelism());
+    for slot in [&NATIVE_WORKERS, &BLOCKING_WORKERS] {
+        let Ok(workers) = workers(slot, false) else {
+            continue;
+        };
+        let mut admission = workers
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = workers.start_to(&mut admission, demand) {
+            tracing::error!(%error, "seeded world worker start failed");
+        }
+    }
+}
 
 /// Initializes the existing native and host I/O services before measured requests are admitted.
 pub fn initialize_native_io_services() -> io::Result<()> {
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     FILE_HEALTH.get_or_init(|| Mutex::new(FileHealthRegistry::new()));
-    workers(&NATIVE_WORKERS, false)?;
-    workers(&BLOCKING_WORKERS, false)?;
+    for slot in [&NATIVE_WORKERS, &BLOCKING_WORKERS] {
+        let workers = workers(slot, false)?;
+        let mut admission = workers
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(feature = "test-support")]
+        let demand = seeded_demand().unwrap_or(workers.threads);
+        #[cfg(not(feature = "test-support"))]
+        let demand = workers.threads;
+        workers.start_to(&mut admission, demand)?;
+    }
     IO_SERVICES_INITIALIZED.store(true, Ordering::Release);
     Ok(())
 }
@@ -122,42 +230,25 @@ pub(crate) fn parallelism() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
 
-pub(crate) fn start_workers(name: &str) -> io::Result<NativeWorkers> {
+fn start_workers(name: &'static str, worker_count: usize) -> io::Result<NativeWorkers> {
     // Every process that does native I/O, product or test, starts here.
     crate::raise_descriptor_limit();
-    let worker_count = parallelism();
     let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
-    let receiver = Arc::new(QueueMutex::new(receiver));
     let admission = Arc::new(QueueMutex::new(AdmissionState::new()));
     #[cfg(feature = "test-support")]
     let host_pool = crate::testing::HostPool::new(worker_count);
-    for worker_index in 0..worker_count {
-        let receiver = Arc::clone(&receiver);
-        let admission = Arc::clone(&admission);
-        #[cfg(feature = "test-support")]
-        let host_pool = host_pool.clone();
-        std::thread::Builder::new()
-            .name(format!("{name}-{worker_index}"))
-            .spawn(move || {
-                while let Some(job) = receive_job(&receiver, &admission) {
-                    #[cfg(feature = "test-support")]
-                    let occupant = job.may_wait_for_driver().then(|| host_pool.unscoped());
-                    let waker = job.run();
-                    #[cfg(feature = "test-support")]
-                    drop(occupant);
-                    if let Some(waker) = waker {
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            waker.wake();
-                        }));
-                    }
-                }
-            })?;
-    }
     Ok(NativeWorkers {
         sender,
         admission,
         threads: worker_count,
+        service: Some(Service {
+            name,
+            receiver: Arc::new(QueueMutex::new(receiver)),
+        }),
         #[cfg(feature = "test-support")]
         host_pool,
     })
 }
+
+#[cfg(all(test, not(loom)))]
+mod demand_tests;

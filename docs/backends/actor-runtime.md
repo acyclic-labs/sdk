@@ -34,8 +34,7 @@ Multiple filtered subscriptions share a polling budget and rotate the starting
 subscription after budget exhaustion (#1710). Lookahead keeps the original cut
 and releases provider futures on cancellation. AgentHandler uses one inbox.
 
-Validation commands on Linux: `scripts/check-actor-runtime.sh`, actor and
-agent-model tests, and `scripts/qualify-host-serving.sh`. The shared actor suite
+Validation commands on Linux: the actor and agent-model Bazel tests, and `scripts/qualify-host-serving.sh`. The shared actor suite
 checks cancellation with intervening input and restart. The host suite checks
 saved discovery cursors and in-flight interruption for each backend unchanged.
 On Linux, both native host entries passed in 5.81 seconds and the browser entry

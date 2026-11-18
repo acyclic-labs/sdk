@@ -9,15 +9,21 @@ fn relocation_requires_credit_for_both_original_and_replacement_buffers() -> Res
     // can retain the original buffer while allocating its full replacement.
     for overlap in [false, true] {
         let baseline = NativeMaterializationWork::accounting_state_bytes();
-        let mut budget = acyclic_fs::performance::work_budget(100_000, 8_000_000);
+        let mut budget = acyclic_fs_work::performance::work_budget(100_000, 8_000_000);
         budget.peak_allocation_bytes = baseline + 64 + (2 + u64::from(overlap)) * ORIGINAL as u64;
         let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         {
-            let _original =
-                work.claim(64 + ORIGINAL as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
-            let _former_delta =
-                work.claim(ORIGINAL as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+            let _original = work.claim(
+                64 + ORIGINAL as u64,
+                1,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+            )?;
+            let _former_delta = work.claim(
+                ORIGINAL as u64,
+                1,
+                acyclic_fs_work::performance::WorkCounters::UNCHARGED,
+            )?;
         }
         let body = Box::pin(futures::stream::iter([
             Ok(Bytes::from(vec![b' '; ORIGINAL])),
@@ -40,7 +46,7 @@ fn relocation_requires_credit_for_both_original_and_replacement_buffers() -> Res
                     result,
                     Err(Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::BudgetExceeded {
+                            acyclic_fs_work::performance::WorkError::BudgetExceeded {
                                 counter: "peak_allocation_bytes",
                                 ..
                             }
@@ -72,7 +78,7 @@ proptest::proptest! {
         let chunks = fragments.len() as u64;
         for admitted in [false, true] {
             let baseline = NativeMaterializationWork::accounting_state_bytes();
-            let mut budget = acyclic_fs::performance::work_budget(100_000, 8_000_000);
+            let mut budget = acyclic_fs_work::performance::work_budget(100_000, 8_000_000);
             budget.items_examined = chunks - u64::from(!admitted);
             let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
             let source = Box::pin(futures::stream::iter(fragments.iter().cloned().map(Ok).collect::<Vec<_>>()));
@@ -94,7 +100,7 @@ proptest::proptest! {
             } else {
                 proptest::prop_assert!(matches!(result, Err(Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded { counter: "items_examined", .. }
+                        acyclic_fs_work::performance::WorkError::BudgetExceeded { counter: "items_examined", .. }
                     ), ..
                 })), "the caller's item allowance must end collection");
             }

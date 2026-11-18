@@ -76,7 +76,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(label) => access::capability_payload(Some(label), VolumeOperation::Write, io)?,
                 None => access::whole_volume_payload(acyclic_fs::access::ActionSet::Owner)?,
             };
-            let view = access::access_view(&workspace, scope, None, payload, None, io).await?;
+            let view = access::access_view(
+                &workspace,
+                scope,
+                None,
+                payload,
+                None,
+                io,
+                self.access_now()?,
+            )
+            .await?;
             // The access view selects the policy revision once. If another
             // admission repaired it meanwhile, use that same revision for the
             // comparison and transaction instead of mixing two heads.
@@ -89,12 +98,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if !required
                 && !view
                     .0
-                    .decide(acyclic_fs::access::Action::Admin, "", access::access_now()?)
+                    .decide(acyclic_fs::access::Action::Admin, "", self.access_now()?)
                     .allowed
             {
                 return Ok(());
             }
-            access::require(&view.0, acyclic_fs::access::Action::Admin, "", io)?;
+            self.require(&view.0, acyclic_fs::access::Action::Admin, "", io)?;
             let fence = view
                 .0
                 .publication_fence()
@@ -127,7 +136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             io.sdk(
                 transaction
-                    .observe_policy_fence(fence, io, io.cancellation())
+                    .observe_policy_fence(fence, self.access_now()?, io, io.cancellation())
                     .await,
             )?;
             io.sdk(
@@ -146,6 +155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 io,
                 FilePublication::Authorized(fence, &grant, None),
                 None,
+                self.clock_handle(),
             )?
             .await?;
             Ok(())

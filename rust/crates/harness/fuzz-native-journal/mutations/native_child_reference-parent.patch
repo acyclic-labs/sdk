@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_workspace.rs
-+++ b/rust/crates/harness/src/local/host_workspace.rs
+--- a/rust/crates/harness-local/src/local/host_workspace.rs
++++ b/rust/crates/harness-local/src/local/host_workspace.rs
 @@ -20,7 +20,6 @@
      let portable = !reference.is_empty()
          && reference.len() <= 255

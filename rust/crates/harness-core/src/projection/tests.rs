@@ -72,7 +72,7 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
         }
     }
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -454,7 +454,7 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
         foreign_bytes,
     };
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget {
+        acyclic_fs_work::performance::WorkBudget {
             peak_allocation_bytes: 16 * 1024 * 1024,
             allocation_operations: 1024,
             source_bytes_read: 1024 * 1024,

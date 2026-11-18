@@ -41,7 +41,7 @@ impl OutputDigest {
     fn text(&mut self, value: &str, io: Option<&PreparationIo>) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed: value.len() as u64,
                 ..Default::default()
             })?;
@@ -133,13 +133,9 @@ impl StockExecution<'_> {
             let mut worker = self.preparing(self.io);
             service.review = context_review::Review::Shared(Arc::clone(&review));
             worker.review = context_review::Review::Shared(review);
-            service
-                .with_context_review(
-                    journal,
-                    input,
-                    worker.execute_turn(input, journal, &mut phase),
-                )
-                .await
+            // Keep the worker in one slot while the review service borrows it.
+            let worker = std::pin::pin!(worker.execute_turn(input, journal, &mut phase));
+            service.with_context_review(journal, input, worker).await
         } else {
             self.execute_turn(input, journal, &mut phase).await
         };
@@ -190,6 +186,8 @@ impl StockExecution<'_> {
         // step's messages start. A failure keeps exactly the settled steps.
         let mut settled = 0_u32;
         let mut unsettled = None;
+        let mut settled_call = false;
+        let mut unanswered = Vec::new();
         let progress = async {
             while input.max_steps.is_none_or(|maximum| steps < maximum) {
                 if let Some(control) = journal.supervision().await? {
@@ -197,6 +195,7 @@ impl StockExecution<'_> {
                 }
                 let step = steps;
                 (settled, unsettled) = (step, None);
+                settled_call = false;
                 steps = steps.checked_add(1).ok_or_else(|| {
                     stock_boundary(
                         self.io,
@@ -425,7 +424,12 @@ impl StockExecution<'_> {
                 }
                 stock_retire_text(text, self.io)?;
                 stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
-                for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
+                unanswered.clear();
+                for (_, index) in &calls {
+                    stock_vec_push(&mut unanswered, *index, self.io)?;
+                }
+                let mut calls = stock_into_iter(calls, self.io)?;
+                while let Some((invocation, invocation_index)) = calls.next() {
                     match self
                         .resolve_tool_call(
                             journal,
@@ -441,7 +445,22 @@ impl StockExecution<'_> {
                         ExecutionProgress::Controlled(control) => {
                             return Ok(ExecutionProgress::Controlled(control));
                         }
-                        ExecutionProgress::Ready(()) => {}
+                        ExecutionProgress::Ready(()) => {
+                            // This call settled; a later stop or failure keeps it
+                            // in the transcript the next turn sees.
+                            unanswered.retain(|index| *index != invocation_index);
+                            unsettled = Some(prior_messages.len());
+                            settled_call = true;
+                            // The turn's own stop ends the turn before another
+                            // call can start, after the call it interrupted.
+                            if futures::FutureExt::now_or_never(journal.model_cancellation())
+                                .is_some()
+                            {
+                                return Err(Error::InteractionRejected(
+                                    crate::InteractionRejection::Cancelled,
+                                ));
+                            }
+                        }
                         ExecutionProgress::Pending(wait) => {
                             return Ok(ExecutionProgress::Pending(wait));
                         }
@@ -475,15 +494,24 @@ impl StockExecution<'_> {
             // completed: their applied effects stay in the transcript the
             // next turn's model sees, however often the turn is redelivered.
             Err(error) if error.settles_turn() => {
-                if settled == 0 {
+                if settled == 0 && !settled_call {
                     return Err(error);
                 }
                 if let Some(at) = unsettled {
                     prior_messages.truncate(at);
                 }
+                for index in unanswered.iter().rev() {
+                    if prior_messages.get(*index).is_some() {
+                        prior_messages.remove(*index);
+                    }
+                }
                 let transcript =
                     self.settled_transcript(steering.into_retired(), prior_messages, true, "")?;
-                let mut output = TurnOutput::new(String::new(), Value::Null, settled);
+                let mut output = TurnOutput::new(
+                    String::new(),
+                    Value::Null,
+                    if settled_call { steps } else { settled },
+                );
                 output.transcript = transcript;
                 return Ok(ExecutionProgress::Ended(Box::new((error, output))));
             }

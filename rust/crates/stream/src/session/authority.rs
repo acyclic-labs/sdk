@@ -3,12 +3,12 @@
 #[path = "testing.rs"]
 pub mod testing;
 use super::*;
-use crate::StreamMethod;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Scope, Target},
     trust::{ChangeSource, Changed, SourceClosed},
     verify::{self, Trust, VerifiedCapability, VerifyError},
 };
+use acyclic_stream_wire::authorization::StreamMethod;
 use futures::FutureExt as _;
 
 /// One authenticated, current public trust view and its protected clock.
@@ -23,7 +23,7 @@ pub struct TrustSnapshot {
 
 /// Runtime-owned public trust feed. Waiting must be push driven, including
 /// expiry; callers must never implement this with periodic trust polling.
-pub trait AuthorityState: crate::ProviderPlatform {
+pub trait AuthorityState: Send + Sync {
     /// Captures current authenticated public trust and the protected time.
     fn snapshot(&self) -> Result<TrustSnapshot, VerifyError>;
     /// The owner's trust publications. A registered change resolves only
@@ -236,7 +236,7 @@ impl Authority {
             .as_ref()
             .map_err(|error| *error)?;
         let action = binding.resource_authorization.as_ref().map_or(
-            crate::authorization::FOLLOW_ACTION.as_str(),
+            acyclic_stream_wire::authorization::FOLLOW_ACTION.as_str(),
             |authorization| authorization.action,
         );
         let target = binding
@@ -459,7 +459,7 @@ impl Authority {
         let resource = stream_resource(parent);
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
-        authorization.action = crate::authorization::CHILDREN_ACTION.as_str();
+        authorization.action = acyclic_stream_wire::authorization::CHILDREN_ACTION.as_str();
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
@@ -494,6 +494,12 @@ impl Authority {
         ),
         Rejection,
     > {
+        let read_action = acyclic_stream_wire::authorization::HEAD_ACTION.as_str();
+        let path_action = if request.projection == crate::HeadProjection::Tail {
+            acyclic_stream_wire::authorization::TAIL_ACTION.as_str()
+        } else {
+            read_action
+        };
         let (mut binding, authorization, visibility) = if let Some(page) = &request.children {
             let (binding, visibility) =
                 self.bind_list(slots, slot, page.parent.as_ref(), channels)?;
@@ -512,7 +518,11 @@ impl Authority {
                 resource.clone(),
                 Arc::clone(capability),
             );
-            authorization.action = crate::authorization::HEAD_ACTION.as_str();
+            authorization.action = if request.paths.is_empty() {
+                read_action
+            } else {
+                path_action
+            };
             let binding = Binding {
                 credential_revision: *revision,
                 slot,
@@ -525,14 +535,19 @@ impl Authority {
             };
             (binding, authorization, None)
         };
-        let read_action = crate::authorization::HEAD_ACTION.as_str();
         binding.additional = request
             .paths
             .iter()
-            .chain(request.retained.iter().map(|selected| &selected.path))
-            // Without a child page, the primary binding already checks path one.
+            .map(|path| (path_action, path))
+            .chain(
+                request
+                    .retained
+                    .iter()
+                    .map(|selected| (read_action, &selected.path)),
+            )
+            // Without a child page, the primary binding already checks the first path.
             .skip(usize::from(request.children.is_none()))
-            .map(|path| (read_action, stream_resource(Some(path))))
+            .map(|(action, path)| (action, stream_resource(Some(path))))
             .collect();
         if visibility.is_some() {
             // bind_list already derived this immutable filter. Recheck the

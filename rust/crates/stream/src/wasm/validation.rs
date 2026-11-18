@@ -162,6 +162,9 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
 
 mod http {
     use super::*;
+    use crate::http_validation::{
+        array, boolean, bytes, field, id, key, object, path, string, u64_string,
+    };
 
     type Result<T = ()> = std::result::Result<T, &'static str>;
 
@@ -182,57 +185,6 @@ mod http {
         }
     }
 
-    fn object(value: &Value) -> Result<&serde_json::Map<String, Value>> {
-        value.as_object().ok_or("expected object")
-    }
-    fn field<'a>(item: &'a serde_json::Map<String, Value>, name: &str) -> Result<&'a Value> {
-        item.get(name).ok_or("missing field")
-    }
-    fn string(value: &Value) -> Result<&str> {
-        value
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .ok_or("expected non-empty string")
-    }
-    fn encoded_bytes(value: &Value) -> Result<&str> {
-        value.as_str().ok_or("expected base64 string")
-    }
-    fn u64_string(value: &Value) -> Result<u64> {
-        let value = string(value)?;
-        if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
-            || (value.len() > 1 && value.starts_with('0'))
-        {
-            return Err("expected decimal uint64 string");
-        }
-        value.parse().map_err(|_| "expected decimal uint64 string")
-    }
-    fn boolean(value: &Value) -> Result<bool> {
-        value.as_bool().ok_or("expected boolean")
-    }
-    fn array(value: &Value) -> Result<&Vec<Value>> {
-        value.as_array().ok_or("expected array")
-    }
-    fn path(value: &Value) -> Result<()> {
-        let value = string(value)?;
-        crate::StreamPath::new(value)
-            .map(|_| ())
-            .map_err(|_| "invalid path")
-    }
-    fn bytes(value: &Value) -> Result<Vec<u8>> {
-        let value = encoded_bytes(value)?;
-        decode_base64(value).ok_or("expected base64")
-    }
-    fn id(value: &Value) -> Result<()> {
-        (bytes(value)?.len() == 32)
-            .then_some(())
-            .ok_or("expected 32-byte id")
-    }
-    fn key(value: &Value) -> Result<()> {
-        let len = bytes(value)?.len();
-        (len > 0 && len <= crate::MAX_IDEMPOTENCY_KEY_BYTES)
-            .then_some(())
-            .ok_or("invalid idempotency key")
-    }
     fn set(object: &Object, name: &str, value: &JsValue) -> Result {
         Reflect::set(object.as_ref(), &JsValue::from_str(name), value)
             .map(|_| ())
@@ -323,11 +275,12 @@ mod http {
         set(
             &result,
             "scanned",
-            &JsValue::from_f64(
+            &JsValue::from_f64(f64::from(
                 field(item, "scanned")?
                     .as_u64()
-                    .ok_or("invalid scanned count")? as f64,
-            ),
+                    .and_then(|count| u32::try_from(count).ok())
+                    .ok_or("invalid scanned count")?,
+            )),
         )?;
         set(
             &result,
@@ -672,6 +625,7 @@ mod http {
     fn head_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         let result = Object::new();
+        set(&result, "changedAt", &bigint_js(field(item, "changedAt")?)?)?;
         if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null()) {
             set(&result, "retainedThrough", &bigint_js(through)?)?;
         }
@@ -702,7 +656,7 @@ mod http {
         if let Some(followed) = followed {
             crate::StreamPath::validate(followed).map_err(|_| "invalid followed path")?;
         }
-        match crate::HTTP_RESPONSE_CONTRACT
+        match acyclic_stream_wire::HTTP_RESPONSE_CONTRACT
             .iter()
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {
@@ -798,45 +752,6 @@ mod http {
 
     pub(super) fn validate(route: &str, value: &Value) -> Result {
         crate::http_validation::validate(route, value)
-    }
-    fn decode_base64(value: &str) -> Option<Vec<u8>> {
-        if !value.len().is_multiple_of(4) {
-            return None;
-        }
-        let mut output = Vec::with_capacity(value.len() / 4 * 3);
-        let bytes = value.as_bytes();
-        for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
-            let &[a_byte, b_byte, c_byte, d_byte] = chunk;
-            let a = sextet(a_byte)?;
-            let b = sextet(b_byte)?;
-            let c = if c_byte == b'=' { 0 } else { sextet(c_byte)? };
-            let d = if d_byte == b'=' { 0 } else { sextet(d_byte)? };
-            if c_byte == b'=' {
-                if d_byte != b'=' || b & 0x0f != 0 {
-                    return None;
-                }
-            } else if d_byte == b'=' && (c & 0x03 != 0 || index + 1 != bytes.len() / 4) {
-                return None;
-            }
-            output.push(a << 2 | b >> 4);
-            if c_byte != b'=' {
-                output.push(b << 4 | c >> 2);
-            }
-            if d_byte != b'=' {
-                output.push(c << 6 | d);
-            }
-        }
-        Some(output)
-    }
-    fn sextet(value: u8) -> Option<u8> {
-        match value {
-            b'A'..=b'Z' => Some(value - b'A'),
-            b'a'..=b'z' => Some(value - b'a' + 26),
-            b'0'..=b'9' => Some(value - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
     }
 }
 

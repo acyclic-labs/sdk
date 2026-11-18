@@ -166,7 +166,7 @@ fn decoder_custody(
             independent.value.resize(73, 0xa5);
             let live = |work: &AuthorityWork<'_>| {
                 if let Some(original) = &original {
-                    original.live_allocation_bytes()
+                    original.live_allocation_bytes().unwrap()
                 } else {
                     work.allocations.live_bytes()
                 }
@@ -283,7 +283,7 @@ impl AsyncObjectStore for Archive {
             (id == self.authority && record.digest == self.digest).then(|| self.evidence.clone());
         if value.is_some() {
             self.decode_hash_start.store(
-                work.spent().bytes_hashed,
+                work.spent().unwrap().bytes_hashed,
                 std::sync::atomic::Ordering::Relaxed,
             );
         }

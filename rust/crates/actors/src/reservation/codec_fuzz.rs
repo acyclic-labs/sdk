@@ -3,10 +3,10 @@ use super::*;
 
 /// Checks canonical requests and decisions, and validates checkpoint ownership.
 pub fn check(bytes: &[u8]) -> bool {
-    static WRITERS: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
-        seeds().expect("reservation decoders must admit their production writers");
-    });
-    std::sync::LazyLock::force(&WRITERS);
+    static WRITERS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| seeds().is_ok());
+    if !*WRITERS {
+        return false;
+    }
     if let Ok(book) = decode::<Book>(bytes)
         && book.validate().is_ok()
     {
@@ -163,7 +163,7 @@ async fn publication_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std
                     2 => Decision::Expired,
                     3 => Decision::Released,
                     4 => Decision::Stale,
-                    _ => panic!("reservation writer must grant original capacity"),
+                    _ => return Err("reservation writer must grant original capacity".into()),
                 }
             );
         }

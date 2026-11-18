@@ -160,7 +160,7 @@ impl Before {
                                 key: None,
                                 path: path.clone(),
                                 from: next,
-                                limit: crate::wire::StreamLimit::MaxItems as u32,
+                                limit: acyclic_stream_wire::wire::StreamLimit::MaxItems as u32,
                                 at_least: Default::default(),
                             })
                             .await?;
@@ -228,29 +228,27 @@ pub(super) struct Observer<'a> {
     pub(super) before: Option<Before>,
 }
 impl crate::replicated::ReplayObserver for Observer<'_> {
-    fn observe<'a>(
+    async fn observe<'a>(
         &'a mut self,
         provider: &'a MemoryStream,
         command: &'a WriteRequest,
         after: bool,
-    ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
-        async move {
-            if after {
-                if let Some(before) = self.before.take() {
-                    before
-                        .collect(provider, self.changed, &self.stream.inner.publications)
-                        .await?;
-                    self.announced = self.cursor + 1;
-                }
-                self.cursor += 1;
-            } else {
-                self.before = if self.cursor >= self.announced {
-                    Some(Before::capture(provider, command, &self.stream.inner.publications).await?)
-                } else {
-                    None
-                };
+    ) -> Result<(), StreamError> {
+        if after {
+            if let Some(before) = self.before.take() {
+                before
+                    .collect(provider, self.changed, &self.stream.inner.publications)
+                    .await?;
+                self.announced = self.cursor + 1;
             }
-            Ok(())
+            self.cursor += 1;
+        } else {
+            self.before = if self.cursor >= self.announced {
+                Some(Before::capture(provider, command, &self.stream.inner.publications).await?)
+            } else {
+                None
+            };
         }
+        Ok(())
     }
 }

@@ -76,7 +76,7 @@ impl CoreLog {
             file,
             length,
             flushed: 0,
-            epoch: crate::identity::fresh_time_uuid(),
+            epoch: acyclic_fs_format::identity::fresh_time_uuid(),
             sequence: 0,
             residents: replay_residents,
             dirty: Vec::new(),
@@ -266,7 +266,7 @@ fn open_log_file(
             .open(&paths.current)
         {
             Ok(file) => {
-                sync_directory(paths.directory())?;
+                sync_parent(paths.directory(), NativeDurability::Full)?;
                 file
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()

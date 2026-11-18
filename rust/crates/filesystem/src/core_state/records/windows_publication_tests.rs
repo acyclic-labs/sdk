@@ -28,12 +28,12 @@ fn publishes_fresh_and_existing_records_with_one_image_write()
         let namespace = store.namespace()?;
         let mut paths = namespace.record("publication-one-image", &[0x96; 16])?;
         with_lock(&mut paths, |paths| write_journaled(paths, &value))?;
-        assert_eq!(work.receipt().object_bytes_written, length);
+        assert_eq!(work.receipt().unwrap().object_bytes_written, length);
         let recovered = read_recoverable::<u64>(&paths)?.ok_or("publication disappeared")?;
         assert_eq!(recovered.0, value);
         assert!(!paths.temporary.exists());
         assert!(!paths.previous.exists());
-        work.receipt().verify(budget)?;
+        work.receipt().unwrap().verify(budget)?;
     }
     Ok(())
 }

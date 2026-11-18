@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { constants, createWriteStream } from "node:fs";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { extname, isAbsolute, join, resolve } from "node:path";
+import { extname, isAbsolute, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -59,7 +59,7 @@ export async function stageArtifacts(specifications, destination) {
   return manifest;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const [specification, destination, ...extra] = process.argv.slice(2);
   assert.ok(specification && destination && !extra.length,
     "usage: node artifacts.mjs SPECIFICATION.json FRESH_ABSOLUTE_DIRECTORY");

@@ -68,7 +68,7 @@ async fn unbounded_read_bounds_continue_without_aggregate_overflow()
     for native in [false, true] {
         let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut context = if native {
             AuthorityWork::native(&original, &cancellation)
         } else {
@@ -81,7 +81,7 @@ async fn unbounded_read_bounds_continue_without_aggregate_overflow()
         }
         drop(reads);
         drop(allocation);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }
@@ -99,10 +99,10 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
     };
     let mut work = AuthorityWork::new(budget, &cancel);
     store.put_many_hashed(&objects, &mut work).await?;
-    assert_eq!(work.spent().bytes_hashed, 0);
-    assert_eq!(work.spent().object_bytes_written, 4);
-    assert_eq!(work.spent().backend_write_operations, 1);
-    work.spent().verify(budget)?;
+    assert_eq!(work.spent().unwrap().bytes_hashed, 0);
+    assert_eq!(work.spent().unwrap().object_bytes_written, 4);
+    assert_eq!(work.spent().unwrap().backend_write_operations, 1);
+    work.spent().unwrap().verify(budget)?;
     let writes = [ObjectWrite {
         object_id: object.object_id(),
         bytes: object.bytes().clone(),
@@ -141,7 +141,7 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
                 read.retention,
                 ObjectReadRetention::Owned { logical_bytes: 4 }
             );
-            assert_eq!(work.spent().peak_allocation_bytes, 35);
+            assert_eq!(work.spent().unwrap().peak_allocation_bytes, 35);
             assert_eq!(work.allocations.live_bytes(), 35);
             drop(read);
             // Ordinary output reports its caller-owned charge for retirement.
@@ -153,15 +153,15 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
                     if error.code == wire::ErrorCode::QuotaExceeded
             ));
         }
-        assert_eq!(work.spent().object_probes, 1);
-        assert_eq!(work.spent().backend_read_operations, 1);
-        work.spent().verify(budget)?;
-        let completed = work.spent();
+        assert_eq!(work.spent().unwrap().object_probes, 1);
+        assert_eq!(work.spent().unwrap().backend_read_operations, 1);
+        work.spent().unwrap().verify(budget)?;
+        let completed = work.spent().unwrap();
         assert!(matches!(
             store.read(object.object_id(), 4, &mut work).await,
             Err(ObjectStoreError::Work(WorkError::BudgetExceeded { .. }))
         ));
-        assert_eq!(work.spent(), completed);
+        assert_eq!(work.spent().unwrap(), completed);
         assert_eq!(earlier.value, [7; 31]);
         earlier.retire(&mut work.accounting())?;
         assert_eq!(work.allocations.live_bytes(), 0);
@@ -172,7 +172,7 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
         &mut work.accounting(),
         &cancel,
     )?;
-    let suspended = work.spent();
+    let suspended = work.spent().unwrap();
     assert!(matches!(
         store.read(object.object_id(), 4, &mut work).await,
         Err(ObjectStoreError::AccountingHandoffActive)
@@ -189,7 +189,7 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
             .await,
         Err(ObjectStoreError::AccountingHandoffActive)
     ));
-    assert_eq!(work.spent(), suspended);
+    assert_eq!(work.spent().unwrap(), suspended);
     continuation.restore(&mut work.accounting())?;
     assert_eq!(
         store.read(object.object_id(), 4, &mut work).await?.bytes,
@@ -238,8 +238,8 @@ async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn
                 .await
                 .is_err()
         );
-        assert_eq!(work.spent().bytes_hashed, 0);
-        work.spent().verify(budget)?;
+        assert_eq!(work.spent().unwrap().bytes_hashed, 0);
+        work.spent().unwrap().verify(budget)?;
         assert!(matches!(
             store
                 .read(
@@ -255,7 +255,7 @@ async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn
     cancel.cancel();
     let mut work = AuthorityWork::new(BUDGET, &cancel);
     assert!(store.put_many_hashed(&[object], &mut work).await.is_err());
-    assert_eq!(work.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(work.spent().unwrap(), WorkCounters::UNCHARGED);
     Ok(())
 }
 
@@ -290,7 +290,7 @@ async fn native_local_presence_admits_each_physical_read() -> Result<(), Box<dyn
             };
             let original = crate::NativeMaterializationWork::new(budget, &cancel)
                 .map_err(|(error, _)| error)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let result = store
                 .contains(id, &mut AuthorityWork::native(&original, &cancel))
                 .await;
@@ -309,11 +309,11 @@ async fn native_local_presence_admits_each_physical_read() -> Result<(), Box<dyn
                     "presence bypassed original physical admission: {result:?}"
                 );
             }
-            let receipt = original.receipt();
+            let receipt = original.receipt().unwrap();
             receipt.verify(budget)?;
             assert_eq!(receipt.backend_read_operations, admitted);
             assert_eq!(receipt.object_probes, 1);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
     }
     let original =
@@ -328,7 +328,7 @@ async fn native_local_presence_admits_each_physical_read() -> Result<(), Box<dyn
             .await
             .is_err()
     );
-    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
     Ok(())
 }
 
@@ -346,7 +346,7 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
     };
     let original =
         crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let store = store(4)?;
     let first = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
     let second = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"next"));
@@ -372,7 +372,7 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
     assert_eq!(reads[0].bytes, *second.bytes());
     drop(reads);
     drop(custody);
-    let receipt = original.receipt();
+    let receipt = original.receipt().unwrap();
     receipt.verify(budget)?;
     assert_eq!(receipt.object_bytes_read, 8);
     assert_eq!(receipt.object_bytes_written, 8);
@@ -380,7 +380,7 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
     assert_eq!(receipt.output_bytes, 0);
     assert!(receipt.backend_read_operations > 0);
     assert!(receipt.backend_write_operations > 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     // Canonical byte denial still fences writes before publication and reads before payload.
     let denied_budget = WorkBudget {
@@ -404,7 +404,7 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
             .await
             .is_err()
     );
-    let receipt = denied.receipt();
+    let receipt = denied.receipt().unwrap();
     receipt.verify(denied_budget)?;
     assert_eq!(receipt.object_bytes_read, 0);
     assert_eq!(receipt.object_bytes_written, 0);
@@ -430,7 +430,7 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
             &cancel,
         )
         .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let root = tempfile::tempdir()?;
         let provider =
             acyclic_objects::LocalObjects::open(root.path(), Default::default(), None).await?;
@@ -454,9 +454,9 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
                 )
             });
         assert_eq!(read.bytes, *first.bytes());
-        assert_eq!(original.receipt().object_bytes_read, 4);
+        assert_eq!(original.receipt().unwrap().object_bytes_read, 4);
         drop(read);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }
@@ -467,7 +467,7 @@ async fn authenticated_native_batch_keeps_the_raw_batch_boundary_and_footer()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(e, _)| e)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let store = store(4)?;
     let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
     store
@@ -476,9 +476,9 @@ async fn authenticated_native_batch_keeps_the_raw_batch_boundary_and_footer()
             &mut AuthorityWork::native(&original, &cancel),
         )
         .await?;
-    assert_eq!(original.receipt().object_bytes_written, 4);
-    assert_eq!(original.receipt().bytes_hashed, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().object_bytes_written, 4);
+    assert_eq!(original.receipt().unwrap().bytes_hashed, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     let writes = [ObjectWrite {
         object_id: object.object_id(),
         bytes: object.bytes().clone(),
@@ -486,10 +486,10 @@ async fn authenticated_native_batch_keeps_the_raw_batch_boundary_and_footer()
     store
         .put_many(&writes, &mut AuthorityWork::native(&original, &cancel))
         .await?;
-    assert_eq!(original.receipt().object_bytes_written, 4);
-    original.receipt().verify(BUDGET)?;
+    assert_eq!(original.receipt().unwrap().object_bytes_written, 4);
+    original.receipt().unwrap().verify(BUDGET)?;
     drop(store);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -521,10 +521,10 @@ proptest::proptest! {
             }
             let discarded: u64 = objects.iter().take_while(|o| o.length() <= u64::from(maximum))
                 .map(|o| o.length()).sum();
-            let mut receipt = expected.spent();
+            let mut receipt = expected.spent().unwrap();
             receipt.bytes_hashed -= discarded;
-            proptest::prop_assert_eq!(actual.spent(), receipt);
-            actual.spent().verify(BUDGET).map_err(|e| TestCaseError::fail(e.to_string()))?;
+            proptest::prop_assert_eq!(actual.spent().unwrap(), receipt);
+            actual.spent().unwrap().verify(BUDGET).map_err(|e| TestCaseError::fail(e.to_string()))?;
             if success {
                 for object in &objects {
                     let a = raw.read(object.object_id(), object.length(), &mut AuthorityWork::new(BUDGET, &cancelled)).await.map_err(|e| TestCaseError::fail(e.to_string()))?;
@@ -547,6 +547,8 @@ async fn publish(
     cancel: &CancellationToken,
 ) -> Result<crate::PublicationHold, ObjectStoreError> {
     let scope = crate::PublicationScope {
+        root: None,
+        related_root: None,
         related_objects: &[],
         objects,
         proven_at: 0,
@@ -688,10 +690,12 @@ async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn s
         let native_id = stored(&store, b"native retention").await?;
         let original =
             crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let hold = store
             .flush_before_publish(
                 crate::PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[native_id],
                     proven_at: 0,
@@ -700,7 +704,7 @@ async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn s
             )
             .await?;
         drop(hold);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert!(survives_collections(&store, native_id).await?);
     }
     Ok(())
@@ -787,11 +791,11 @@ async fn optional_policy_and_unbounded_read_maxima_preserve_real_object_results(
         limited.put_many_hashed(&objects, &mut work).await,
         Err(ObjectStoreError::TooLarge { .. })
     ));
-    assert_eq!(work.spent().backend_write_operations, 0);
+    assert_eq!(work.spent().unwrap().backend_write_operations, 0);
     let unlimited = limited.with_object_limit(None)?;
     let mut work = AuthorityWork::new(BUDGET, &cancel);
     unlimited.put_many_hashed(&objects, &mut work).await?;
-    assert_eq!(work.spent().backend_write_operations, 1);
+    assert_eq!(work.spent().unwrap().backend_write_operations, 1);
     let requests = objects.each_ref().map(|object| ObjectReadRequest {
         object_id: object.object_id(),
         maximum_bytes: u64::MAX,
@@ -800,13 +804,13 @@ async fn optional_policy_and_unbounded_read_maxima_preserve_real_object_results(
     // Each original read then uses only the caller's remaining work credit.
     let mut work = AuthorityWork::new(BUDGET, &cancel);
     let (values, _allocation) = unlimited.read_many(&requests, &mut work).await?;
-    assert_eq!(work.spent().backend_read_operations, 2);
+    assert_eq!(work.spent().unwrap().backend_read_operations, 2);
     for (value, object) in values.iter().zip(&objects) {
         assert_eq!(value.bytes, *object.bytes());
     }
     assert_eq!(values.len(), objects.len());
-    assert_eq!(work.spent().object_bytes_read, 11);
-    work.spent().verify(BUDGET)?;
+    assert_eq!(work.spent().unwrap().object_bytes_read, 11);
+    work.spent().unwrap().verify(BUDGET)?;
     let mut work = AuthorityWork::new(BUDGET, &cancel);
     assert!(matches!(
         unlimited

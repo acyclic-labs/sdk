@@ -44,7 +44,9 @@ async fn fork_proof_work(
     .transpose()
     .map_err(|(error, _)| error)?;
     #[cfg(not(target_arch = "wasm32"))]
-    let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
+    let baseline = original
+        .as_ref()
+        .map(|work| work.live_allocation_bytes().unwrap());
     #[cfg(not(target_arch = "wasm32"))]
     let mut transaction = if let Some(original) = &original {
         let mut transaction = workspace
@@ -214,7 +216,7 @@ async fn fork_proof_work(
     let destination = fs.workspace_id_for_name(&name, &mut accounting)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
     admitted?;
-    let start = accounting.spent();
+    let start = accounting.spent().unwrap();
     let (proof, source_object, pending, filtered) = fs
         .materialize_forked_generation_root(
             &source,
@@ -231,7 +233,7 @@ async fn fork_proof_work(
         "the fork's proof must yield a ticket for its own volume"
     );
     drop((proof, pending));
-    let end = accounting.spent();
+    let end = accounting.spent().unwrap();
     drop(source);
     drop(transaction);
     drop(workspace);
@@ -239,8 +241,8 @@ async fn fork_proof_work(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = &original {
         // The final receipt retires the ledger's sole remaining proof counter.
-        original.receipt().verify(B)?;
-        assert_eq!(Some(original.live_allocation_bytes()), baseline);
+        original.receipt().unwrap().verify(B)?;
+        assert_eq!(Some(original.live_allocation_bytes().unwrap()), baseline);
     }
     Ok(WorkCounters {
         object_probes: end.object_probes - start.object_probes,

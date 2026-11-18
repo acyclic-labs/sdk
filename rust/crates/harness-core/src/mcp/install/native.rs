@@ -352,7 +352,7 @@ pub(super) fn command_for(
         .map(|value| std::ffi::OsString::from(value.as_ref()))
         .or_else(|| environment("PATHEXT"));
     // Resolve once, then spawn this absolute executable; do not search PATH again at spawn.
-    let search = acyclic_native_runtime::ExecutableSearch::from_environment(&cwd, |name| {
+    let search = acyclic_executable_search::ExecutableSearch::from_environment(&cwd, |name| {
         if name == "PATH" {
             search_path.clone()
         } else {
@@ -417,7 +417,7 @@ fn expand<'a>(
     if !enabled || !value.contains("${") {
         return Ok(std::borrow::Cow::Borrowed(value));
     }
-    let expanded = acyclic_native_runtime::expand_environment(value, |reference| {
+    let expanded = acyclic_host_platform::expansion::expand_environment(value, |reference| {
         let reference =
             reference.ok_or_else(|| Error::Invalid("invalid MCP environment reference".into()))?;
         environment(reference.name)

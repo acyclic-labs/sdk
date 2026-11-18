@@ -268,7 +268,7 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         let stream = StreamPath::new("original/usage").unwrap();
         let source = Source::new(stream.clone());
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
-        assert_eq!(source.latest(&reader), Err(Error::Pending));
+        assert!(matches!(source.latest(&reader), Err(Error::Pending)));
         // Keep the existing usage format. These generated counters exercise
         // projection arithmetic, not an actual provider completion.
         let bytes = serde_json::to_vec(&call).unwrap();
@@ -311,7 +311,7 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         let count = NonZeroU32::new(1).unwrap();
         let mut page = source.page(&reader, 0, count).unwrap();
         assert_eq!(page.end, 1);
-        assert_eq!(page.next(), Some((0, Err(Error::Pending))));
+        assert!(matches!(page.next(), Some((0, Err(Error::Pending)))));
         assert!(page.next().is_none());
         assert_eq!(reader.issued(), issued, "a projection cannot dispatch IO");
         drop(page);
@@ -332,7 +332,10 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         drop(page);
         assert!(source.page(&reader, 2, count).unwrap().next().is_none());
         assert!(matches!(source.page(&reader, 3, count), Err(Error::Range)));
-        assert_eq!(source.want_page(u64::MAX, count), Err(Error::Range));
+        assert!(matches!(
+            source.want_page(u64::MAX, count),
+            Err(Error::Range)
+        ));
 
         // An ordinary listing supplies fork origin, but no child tail. Its
         // finite nonempty read must make the requested page immediately usable
@@ -385,10 +388,10 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         assert_eq!(listed.cache().tail(&child), None);
         let window = NonZeroU32::new(3).unwrap();
         let want = selected.want_page(0, window).unwrap();
-        assert_eq!(
+        assert!(matches!(
             selected.page(&listed, 0, window).unwrap().next(),
             Some((0, Err(Error::Pending)))
-        );
+        ));
         listed.plan([(want.clone(), Priority::Visible)]);
         let [read]: [Op; 1] = listed.poll(0).try_into().unwrap();
         assert!(matches!(&read, Op::Read { .. }));
@@ -551,9 +554,9 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
             Outcome::Failed(acyclic_stream::StreamError::AccessDenied),
             0,
         );
-        assert_eq!(
+        assert!(matches!(
             source.latest(&reader),
-            Err(Error::Source(&super::super::ReadIssue::AccessDenied))
-        );
+            Err(Error::Source(super::super::ReadIssue::AccessDenied))
+        ));
     });
 }

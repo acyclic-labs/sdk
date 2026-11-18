@@ -9,11 +9,12 @@ use std::time::Instant;
 
 use acyclic_fs::kernel::KernelAccounting;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
-use acyclic_fs::{
-    CancellationToken, Fs, LocalOptions, MaterializeOptions, MountPath, PublicationPermit,
-    WorkBudget,
-};
 use serde_json::json;
+use {
+    acyclic_fs::{CancellationToken, Fs, LocalOptions, MaterializeOptions, PublicationPermit},
+    acyclic_fs_native_contract::MountPath,
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[path = "support/portable_source.rs"]
 mod portable_source;
@@ -189,7 +190,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         json!({
             "attach_us": attach_us,
             "exactify_us": exactify_us,
-            "work": work.receipt(),
+            "work": work.receipt().unwrap(),
         })
     );
     if std::env::var_os("ACYCLIC_APFS_BENCH_EXACT_ONLY").is_some() {

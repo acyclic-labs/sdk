@@ -2,9 +2,11 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { contractModules, loadContractModules } from "./generate-contracts.mjs";
+import { memberDirectory, workspaceMembers } from "./workspace-manifests.mjs";
 import { writeChanged } from "./generated-bindings.mjs";
+import { reachable } from "./policy-core.mjs";
 
 // `generate.mjs` in write mode is one action: its outputs are a function of the files below, the toolchain and the
 // selection. An entry records every file the action projected (`writeChanged`) and every directory it pruned, so a hit
@@ -13,15 +15,17 @@ import { writeChanged } from "./generated-bindings.mjs";
 export const generationStore = () => process.env.SDK_GENERATION_CACHE
   || join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "acyclic-sdk", "generation");
 
-// Non-Rust inputs: the generation scripts, every crate's protobuf schemas (buf reads them across crates), compatibility
-// artifacts, vendored crates, Cargo and package locks and manifests (every workspace member manifest: Cargo reads them
-// all to resolve), and the root files crates include. Rust inputs are the workspace crates the generators compile, from
-// Cargo's own resolution. A traced generation proves the list: every repository file it reads is an input or output.
+// Non-Rust inputs: the generation scripts, the Bazel module and BUILD files that build the generators, every crate's
+// protobuf schemas (buf reads them across crates), compatibility artifacts, vendored crates, Cargo and package locks and
+// manifests (every workspace member manifest), and the root files crates include. Rust inputs are the workspace crates
+// the generators compile, from the manifests' declared path dependencies. A traced generation proves the list: every
+// repository file it reads is an input or output.
 const inputPaths = ["scripts", "proto", ":(glob)rust/crates/*/proto/**", "compatibility", "patches", "rust/vendor", ".cargo",
-  "Cargo.lock", ":(glob)**/Cargo.toml", "rust-toolchain.toml", "package.json", "bun.lock", "buf.yaml", "buf.gen.yaml",
+  "Cargo.lock", ":(glob)**/Cargo.toml", "rust-toolchain.toml", "MODULE.bazel", "MODULE.bazel.lock", "cargo.MODULE.bazel",
+  ".bazelrc", ".bazelversion", ":(glob)*.bzl", ":(glob)*.patch", ":(glob)**/BUILD.bazel", "package.json", "bun.lock", "buf.yaml", "buf.gen.yaml",
   "buf.lock", "tsconfig.json", "tsconfig.base.json", "LICENSE", "README.md",
   ":(glob)typescript/packages/*/package.json", ":(glob)typescript/packages/*/tsconfig.json"];
-const generatorPackages = ["acyclic-auth", "sdk-proto-codegen", "acyclic-actors", "acyclic-manifest"];
+const generatorCrates = ["rust/crates/auth", "rust/crates/proto-codegen", "rust/crates/actors", "rust/crates/manifest"];
 
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: Infinity }).split("\0").filter(Boolean);
@@ -53,34 +57,27 @@ export function digests(root, paths) {
 
 const digestOf = files => sha256([...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, digest]) => `${path}\0${digest}\n`).join(""));
 
-// The generators and every crate a contract module builds: its targets' crates and any it compiles itself.
-const generationRoots = async () => [...generatorPackages,
-  ...(await loadContractModules(contractModules())).flatMap(module => [...(module.rust ?? []).map(([name]) => name), ...module.crates ?? []])];
+// The generators and every crate a contract module builds: its targets' Bazel packages and any it compiles itself.
+const generationRoots = async root => [...generatorCrates,
+  ...(await loadContractModules(contractModules())).flatMap(module => [...(module.rust ?? []).map(label => label.slice(2, label.indexOf(":"))), ...(module.crates ?? []).map(name => memberDirectory(root, name))])];
 
-// The workspace crates an action compiles from its root crates. They follow from the manifests and scripts alone, so the
-// result is kept under those inputs' digest and the action's label, and Cargo runs only when one of them changes.
+// The workspace crates an action compiles from its root crate directories. They follow from the manifests and scripts
+// alone, so the result is kept under those inputs' digest and the action's label.
 async function rustCrates(root, inputs, { label, roots: rootNames }) {
   const cache = join(generationStore(), "crates", `${sha256(`${digestOf(inputs)}\0${label}`)}.json`);
   try { return JSON.parse(readFileSync(cache, "utf8")); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  const roots = new Set(await rootNames());
+  const rootDirs = new Set(await rootNames(root));
   // Declared path dependencies, optional ones included, need no registry resolution; vendored crates are inputs whole.
-  const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"],
-    { cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"] }));
-  const local = new Map(metadata.packages.map(item => [resolve(dirname(item.manifest_path)), item]));
-  const rootDirs = [...local].filter(([, item]) => roots.has(item.name)).map(([directory]) => directory);
-  if (rootDirs.length !== roots.size) throw new Error(`STEP_FAILED generation-inputs: unknown generator package in ${[...roots]}`);
+  const local = workspaceMembers(root);
+  const unknown = [...rootDirs].filter(directory => !local.has(directory));
+  if (unknown.length) throw new Error(`STEP_FAILED generation-inputs: ${unknown.join(", ")} is not a workspace member`);
   // A generator's examples and tests build its dev-dependencies; its dependencies build only theirs.
-  const seen = new Set(), pending = [...rootDirs];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    if (seen.has(directory)) continue;
-    seen.add(directory);
-    for (const dep of local.get(directory).dependencies) {
-      if (dep.path && local.has(resolve(dep.path)) && (rootDirs.includes(directory) || dep.kind !== "dev")) pending.push(resolve(dep.path));
-    }
-  }
-  const crates = [...seen].map(directory => relative(root, directory).replaceAll("\\", "/")).sort();
+  const crates = [...reachable(rootDirs, directory => {
+    const pkg = local.get(directory);
+    if (!pkg) throw new Error(`STEP_FAILED generation-inputs: ${directory} is not a workspace member`);
+    return pkg.dependencies.filter(dep => rootDirs.has(directory) || dep.kind !== "dev").map(dep => dep.directory);
+  })].sort();
   mkdirSync(dirname(cache), { recursive: true });
   const partial = `${cache}.${process.pid}.partial`;
   writeFileSync(partial, JSON.stringify(crates));
@@ -101,22 +98,19 @@ export async function generationInputs(root, action = generation) {
   return [...(await inputDigests(root, action)).keys()].sort();
 }
 
-/** The key of one action over the toolchain and its input files. Generation and each WASM build are actions of this one
- * mechanism: an action names its root crates (its Rust inputs are their workspace closure), any further input paths, and
- * any further parts that select its outputs.
- * @param {string} root @param {{label: string, roots: () => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
 // Every environment setting that selects a compiler or changes what it emits: the compiler Cargo runs, its flags, Cargo's
 // profile, build and per-target configuration. Directories (CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR) place outputs that
 // are remapped away, parallelism (CARGO_BUILD_JOBS) only schedules work, and a linker or runner never runs for a
 // generated source or a wasm module, so none selects an entry.
-const buildSetting = name => /^(?:SDK_PROTO_CODEGEN|ACYCLIC_CARGO_BIN|RUSTC|RUSTFLAGS|RUSTC_BOOTSTRAP|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_\w+|CARGO_BUILD_\w+|CARGO_TARGET_\w+)$/.test(name)
+const buildSetting = name => /^(?:ACYCLIC_CARGO_BIN|RUSTC|RUSTFLAGS|RUSTC_BOOTSTRAP|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_\w+|CARGO_BUILD_\w+|CARGO_TARGET_\w+)$/.test(name)
   && !name.endsWith("_DIR") && name !== "CARGO_BUILD_JOBS" && !/^CARGO_TARGET_\w+_(?:LINKER|RUNNER)$/.test(name);
 
+/** The key of one action over the toolchain and its input files. Generation and each WASM build share this mechanism.
+ * @param {string} root @param {{label: string, roots: (root:string) => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
 export async function generationKey(root, action = generation) {
   const tools = [`sdk-generation-v1\0${process.version}\0${process.platform}-${process.arch}`,
     execFileSync(process.env.RUSTC || "rustc", ["-vV"], { cwd: root, encoding: "utf8" }),
     ...Object.keys(process.env).filter(buildSetting).sort().map(name => `${name}=${process.env[name]}`),
-    process.env.SDK_PROTO_CODEGEN ? sha256(readFileSync(process.env.SDK_PROTO_CODEGEN)) : "",
     action.label, ...action.parts ?? []];
   return sha256(`${tools.map(part => `${part.length}:${part}`).join("")}${digestOf(await inputDigests(root, action))}`);
 }

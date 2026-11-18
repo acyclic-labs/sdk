@@ -214,8 +214,8 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
         };
         cleanup_standalone(accounting, initial_scratch, retained)?;
     }
-    result.map(|mut result| {
-        result.0.lookup.work = accounting.spent();
-        result
+    result.and_then(|mut result| {
+        result.0.lookup.work = accounting.spent()?;
+        Ok(result)
     })
 }

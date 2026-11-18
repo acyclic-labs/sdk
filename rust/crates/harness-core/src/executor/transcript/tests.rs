@@ -152,14 +152,14 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = native
                 .then(|| PreparationIo::from_native_work(&work))
                 .transpose()?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             assert_eq!(
                 load_request(journal, &reference, Limits::default(), io.as_ref())
                     .await
@@ -168,7 +168,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
                     .code(),
                 crate::wire::ErrorCode::Unsupported
             );
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
             if let Some(io) = &io {
                 assert_eq!(io.owned_bytes()?, 0);
             }
@@ -176,7 +176,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             // The original ledger remains alive through `work`; only its
             // accounting state may remain after decoder custody is dropped.
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
             );
         }
@@ -262,7 +262,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         let funded_journal = funded_storage.journal();
         let funded_seed = initial_request(funded_journal.as_ref(), &prepared).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = if native {
@@ -304,12 +304,13 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         drop(funded_storage);
         drop(io);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
         );
         for scoped in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let budget =
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = if native {
@@ -340,7 +341,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         for encoded in [0, 1, 512, 4096] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut budget =
-                acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+                acyclic_fs_work::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
             budget.bytes_encoded = encoded;
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

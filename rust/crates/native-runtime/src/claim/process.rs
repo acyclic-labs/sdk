@@ -81,6 +81,110 @@ impl ProcessOwner {
 /// and the process's start on Linux, or the process and its status on macOS.
 pub(super) const PROBES: u64 = 3;
 
+/// One read operation of a live lock probe, in the order the probe makes it.
+enum LockProbeStep {
+    Open,
+    Identity,
+    LockTest,
+}
+
+/// The read operations a live lock probe makes. [`liveness`] runs this exact
+/// list, so the counted cost cannot drift from the code.
+const LOCK_PROBE_STEPS: [LockProbeStep; 3] = [
+    LockProbeStep::Open,
+    LockProbeStep::Identity,
+    LockProbeStep::LockTest,
+];
+
+/// Physical read operations one live lock probe charges.
+pub(super) const LOCK_PROBE_READ_OPERATIONS: u64 = LOCK_PROBE_STEPS.len() as u64;
+
+/// A live lock probe in progress: the file it opened, whether that file is
+/// the recorded one, and what it has proven so far.
+struct LiveProbe<'a> {
+    process: &'a Process<&'a [u8]>,
+    probe: super::LockProbe,
+    meter: Option<&'a Arc<dyn NativeReadMeter>>,
+    probes: &'a mut u64,
+    lock: Option<File>,
+    identity_matched: bool,
+    outcome: Option<Liveness>,
+}
+
+impl LiveProbe<'_> {
+    fn open(&mut self) -> Result<(), ProbeError> {
+        let opened = crate::namespace::open_read_encoded(self.process.lock, self.meter)
+            .map_err(ProbeError::Work)?;
+        match opened {
+            Ok(lock) => {
+                self.lock = Some(lock);
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.outcome = Some(
+                    without_lock(self.process, self.probes, self.meter)
+                        .map_err(ProbeError::Work)?,
+                );
+                Ok(())
+            }
+            Err(_) => {
+                self.outcome = Some(Liveness::Unknown);
+                Ok(())
+            }
+        }
+    }
+
+    fn identity(&mut self) -> Result<(), ProbeError> {
+        let Some(lock) = self.lock.as_ref() else {
+            return Ok(());
+        };
+        match identity_bytes(lock, self.meter) {
+            Ok(identity) if identity.bytes.as_slice() == self.process.lock_identity => {
+                self.identity_matched = true;
+                Ok(())
+            }
+            Ok(_) => {
+                self.outcome = Some(
+                    without_lock(self.process, self.probes, self.meter)
+                        .map_err(ProbeError::Work)?,
+                );
+                Ok(())
+            }
+            Err(ProbeError::Io(_)) => {
+                self.outcome = Some(Liveness::Unknown);
+                Ok(())
+            }
+            Err(ProbeError::Work(error)) => Err(ProbeError::Work(error)),
+        }
+    }
+
+    fn lock_test(&mut self) -> Result<(), ProbeError> {
+        if !self.identity_matched {
+            return Ok(());
+        }
+        let Some(lock) = self.lock.take() else {
+            return Ok(());
+        };
+        let tested = read_operation(self.meter, || (self.probe)(lock)).map_err(ProbeError::Work)?;
+        match tested {
+            Ok(_) => {
+                self.outcome = Some(Liveness::Dead);
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                self.outcome = Some(
+                    held_lock(self.process, self.probes, self.meter).map_err(ProbeError::Work)?,
+                );
+                Ok(())
+            }
+            Err(_) => {
+                self.outcome = Some(Liveness::Unknown);
+                Ok(())
+            }
+        }
+    }
+}
+
 /// What can be proven about the process a record names. Only a positive proof
 /// of death is `Dead`; every probe that fails to answer is `Unknown`. Counts
 /// each probe it makes in `probes`.
@@ -91,26 +195,31 @@ pub(super) fn liveness(
     meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> io::Result<Liveness> {
     *probes += 1;
-    match crate::namespace::open_read_encoded(process.lock, meter)? {
-        Ok(lock) => match identity_bytes(&lock, meter) {
-            Ok(identity) if identity.bytes.as_slice() == process.lock_identity => {
-                match read_operation(meter, || probe(lock))? {
-                    Ok(_) => Ok(Liveness::Dead),
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        held_lock(process, probes, meter)
-                    }
-                    Err(_) => Ok(Liveness::Unknown),
-                }
-            }
-            Ok(_) => without_lock(process, probes, meter),
-            Err(ProbeError::Io(_)) => Ok(Liveness::Unknown),
-            Err(ProbeError::Work(error)) => Err(error),
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            without_lock(process, probes, meter)
+    let mut live = LiveProbe {
+        process,
+        probe,
+        meter,
+        probes,
+        lock: None,
+        identity_matched: false,
+        outcome: None,
+    };
+    for step in LOCK_PROBE_STEPS {
+        if live.outcome.is_some() {
+            break;
         }
-        Err(_) => Ok(Liveness::Unknown),
+        let step = match step {
+            LockProbeStep::Open => LiveProbe::open,
+            LockProbeStep::Identity => LiveProbe::identity,
+            LockProbeStep::LockTest => LiveProbe::lock_test,
+        };
+        match step(&mut live) {
+            Ok(()) => {}
+            Err(ProbeError::Work(error)) => return Err(error),
+            Err(ProbeError::Io(_)) => live.outcome = Some(Liveness::Unknown),
+        }
     }
+    Ok(live.outcome.unwrap_or(Liveness::Unknown))
 }
 
 /// Windows may retain byte-range locks after process exit. Its original
@@ -549,9 +658,11 @@ fn start_identity(
     pid: u32,
     meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> Result<Identity, ProbeError> {
-    let probe = read_operation(meter, || crate::process_identity::ProcessProbe::open(pid))
-        .map_err(ProbeError::Work)??
-        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    let probe = read_operation(meter, || {
+        acyclic_process_identity::process_identity::ProcessProbe::open(pid)
+    })
+    .map_err(ProbeError::Work)??
+    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
     if read_operation(meter, || probe.exited()).map_err(ProbeError::Work)?? {
         return Err(io::Error::from(io::ErrorKind::NotFound).into());
     }

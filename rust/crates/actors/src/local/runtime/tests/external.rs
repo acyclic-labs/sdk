@@ -196,8 +196,8 @@ async fn indexed_prefixes_deliver_in_source_order_once_across_restart() -> TestR
         package: Package::new()?,
         external: vec!["inbox".into()],
         filter: Some(acyclic_stream::FollowFilter::new(
-            acyclic_stream::wire::SessionFilter {
-                keys: vec![acyclic_stream::wire::KeyRange {
+            acyclic_stream_wire::wire::SessionFilter {
+                keys: vec![acyclic_stream_wire::wire::KeyRange {
                     start: Bytes::from_static(b"folder/"),
                     end: Bytes::from_static(b"folder0"),
                 }],
@@ -311,7 +311,7 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
     let source = StreamPath::new("indexed/order")?;
     let combined = AppendRecord::changes(
         b"original publication",
-        &["inbox", "z"].map(|key| acyclic_stream::wire::ChangeEntry {
+        &["inbox", "z"].map(|key| acyclic_stream_wire::wire::ChangeEntry {
             key: Bytes::copy_from_slice(key.as_bytes()),
             operation: "put".into(),
             metadata: Bytes::copy_from_slice(key.as_bytes()),

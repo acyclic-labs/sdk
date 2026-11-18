@@ -398,11 +398,11 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
     let executor = lookup_executor()?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(1_000_000, 8 * 1024 * 1024),
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let before = work.live_allocation_bytes();
+    let before = work.live_allocation_bytes()?;
     {
         let io = PreparationIo::from_native_work(&work)?;
         let execution = StockExecution {
@@ -440,7 +440,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
             );
         }
         assert!(
-            work.live_allocation_bytes() > before,
+            work.live_allocation_bytes()? > before,
             "the retained index must own its custody"
         );
         cancellation.cancel();
@@ -452,7 +452,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
         );
     }
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         before,
         "dropping the driver must release its index"
     );

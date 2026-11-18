@@ -133,9 +133,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let io = PreparationIo::from_budget(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs_work::performance::BOUNDARY_BUDGET,
                     &cancellation,
                 )?;
+                let now = seconds(clock);
                 let view = super::access::access_view(
                     &workspace,
                     &authority.scope,
@@ -143,6 +144,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     super::access::capability_payload(Some(label), VolumeOperation::Read, &io)?,
                     None,
                     &io,
+                    now,
                 )
                 .await?;
                 if !view.0.allows_subtree(
@@ -151,7 +153,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         acyclic_fs::access::Action::List,
                         acyclic_fs::access::Action::Read,
                     ],
-                    super::access::access_now()?,
+                    now,
                 ) {
                     return Err(Error::Unauthorized(
                         "an observation needs list and read on all of the tool output".into(),

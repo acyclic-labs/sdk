@@ -8,9 +8,6 @@ use acyclic_stream::OwnedBytes;
 
 use std::error::Error;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-
 use std::sync::Arc;
 
 macro_rules! value {
@@ -27,49 +24,9 @@ mod unbounded;
 
 use crate as acyclic_fs;
 
-fn allow<E>(
-    _: WorkBudget,
-) -> std::future::Ready<crate::MeasuredResult<crate::OperationReceipt<()>, E>> {
-    std::future::ready(Ok(crate::OperationReceipt {
-        value: (),
-        work: crate::WorkCounters::UNCHARGED,
-    }))
-}
-
-async fn fork_workspace<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    source: &Workspace<A, O>,
-    name: &str,
-    options: ForkOptions<A, O>,
-) -> Result<Workspace<A, O>, WorkspaceError> {
-    value!(
-        source
-            .fork::<_, _, WorkspaceError>(
-                name,
-                options,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                &mut allow::<FsError>
-            )
-            .await
-    )
-}
-
-async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    transaction: &mut Transaction<A, O>,
-) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-    value!(
-        transaction
-            .commit::<WorkspaceError, _, _>(
-                None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                allow
-            )
-            .await
-    )
-}
+#[path = "../../../tests/support/workspace.rs"]
+mod fixtures;
+use fixtures::{allow, commit, fork_workspace};
 
 mod access_policy;
 mod append_segments;
@@ -87,24 +44,15 @@ mod identity;
 
 mod joins;
 
-mod materialization;
-
 mod merge_drivers;
 
 mod composition;
-mod conditions;
-
-mod creation_race;
 
 mod populated_creation;
-
-mod operation_identity;
 
 mod proof_cache;
 
 mod publication;
-
-mod publication_guards;
 
 mod reads;
 
@@ -112,40 +60,14 @@ mod rebase;
 
 mod restore;
 
-mod sibling_directories;
-
 mod sibling_files;
 
 mod transactions;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod simulation;
+#[path = "../../../tests/support/simulation_image.rs"]
+mod simulation_image;
 
-fn selected_transaction_budget() -> WorkBudget {
-    WorkBudget {
-        authority_records_read: 1_000_000,
-        authority_records_appended: 1_000_000,
-        authority_bytes_read: 1_000_000,
-        authority_bytes_written: 1_000_000,
-        object_probes: 1_000_000,
-        backend_read_operations: 1_000_000,
-        backend_write_operations: 1_000_000,
-        durability_operations: 1_000_000,
-        page_reads: 1_000_000,
-        page_writes: 1_000_000,
-        object_bytes_read: 1_000_000,
-        object_bytes_written: 1_000_000,
-        bytes_hashed: 1_000_000,
-        bytes_copied: 1_000_000,
-        bytes_encoded: 1_000_000,
-        source_bytes_read: 1_000_000,
-        source_path_components: 1_000_000,
-        source_entries_visited: 1_000_000,
-        output_bytes: 1_000_000,
-        items_examined: 1_000_000,
-        items_returned: 1_000_000,
-        allocation_operations: 1_000_000,
-        peak_allocation_bytes: 64 * 1024 * 1024,
-        materializations: 1_000_000,
-    }
-}
+#[path = "../../../tests/support/selected_budget.rs"]
+mod selected_budget;
+use selected_budget::selected_transaction_budget;

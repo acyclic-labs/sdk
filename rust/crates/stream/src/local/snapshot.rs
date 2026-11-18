@@ -131,5 +131,5 @@ fn forget_incarnation(root: &Path) -> Result<(), LocalStreamError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    sync_directory(root, LocalDurability::FullFlush)
+    sync_parent(root, Durability::Full).map_err(LocalStreamError::from)
 }

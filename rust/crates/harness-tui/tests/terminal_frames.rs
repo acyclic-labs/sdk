@@ -3,8 +3,6 @@
 //! (DECSET 2026); a frame identical to the screen writes nothing.
 #![cfg(all(test, not(loom)))]
 
-acyclic_test_support::counting_allocator!();
-
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::rc::Rc;
@@ -531,6 +529,7 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
 /// The old per-command path must fail the same submission oracle.
 #[test]
 fn real_terminal_frame_cost() -> io::Result<()> {
+    let _terminal = crate::terminal_owner();
     use std::fmt::Write as _;
 
     #[cfg(windows)]
@@ -573,7 +572,7 @@ fn real_terminal_frame_cost() -> io::Result<()> {
             io::Error::new(
                 error.kind(),
                 format!(
-                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
+                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --test main -E 'test(=terminal_frames::real_terminal_frame_cost)'"
                 ),
             )
         });

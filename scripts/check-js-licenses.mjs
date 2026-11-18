@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { repositoryRoot } from "./policy-core.mjs";
 
 const allowed = new Set(["Apache-2.0", "MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "BlueOak-1.0.0", "0BSD"]);
 
@@ -64,6 +64,6 @@ export async function auditLicenses(root, io = fs) {
 }
 
 if (import.meta.main) {
-  const failures = await auditLicenses(dirname(dirname(fileURLToPath(import.meta.url))));
+  const failures = await auditLicenses(repositoryRoot);
   if (failures.length) { console.error(failures.join("\n")); process.exitCode = 1; }
 }

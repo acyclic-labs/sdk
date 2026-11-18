@@ -40,7 +40,7 @@ impl FetchRequest {
         {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
-                work.charge(acyclic_fs::WorkCounters {
+                work.charge(acyclic_fs_work::performance::WorkCounters {
                     items_examined: self.url.len() as u64,
                     ..Default::default()
                 })?;

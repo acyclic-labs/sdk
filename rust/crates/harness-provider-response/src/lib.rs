@@ -1,0 +1,266 @@
+//! A fixed-size projection through the original JSON parser, with funded escape scratch.
+use acyclic_harness_core::{Error, Result};
+use acyclic_harness_provider_protocol::refusal::is_context_overflow;
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::Value;
+
+/// Stateful decoding of provider events.
+pub mod stream;
+
+fn invalid(reason: impl Into<String>) -> Error {
+    Error::Invalid(reason.into())
+}
+
+/// No remote string or container survives the classification.
+struct Refusal(bool);
+
+#[derive(Clone, Copy)]
+enum Position {
+    Root,
+    Response,
+    Fields,
+    Text,
+}
+
+#[derive(Default)]
+struct Projection {
+    present: bool,
+    context: bool,
+    invalid_request: bool,
+    long_prompt: bool,
+    response_error: Option<bool>,
+}
+
+impl<'de> DeserializeSeed<'de> for Position {
+    type Value = Projection;
+
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<Projection, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum Field {
+    Code,
+    #[serde(rename = "type")]
+    Kind,
+    Message,
+    Error,
+    Response,
+    #[serde(other)]
+    Other,
+}
+
+impl<'de> Visitor<'de> for Position {
+    type Value = Projection;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a provider refusal")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<Projection, E> {
+        Ok(Projection::default())
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<Projection, E> {
+        Ok(Projection {
+            present: true,
+            ..Default::default()
+        })
+    }
+
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<Projection, E> {
+        self.visit_bool(false)
+    }
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<Projection, E> {
+        self.visit_bool(false)
+    }
+
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<Projection, E> {
+        self.visit_bool(false)
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Projection, E> {
+        Ok(Projection {
+            present: true,
+            context: matches!(self, Self::Text) && is_context_overflow(Some(text), None, None),
+            invalid_request: text == "invalid_request_error",
+            long_prompt: is_context_overflow(None, Some("invalid_request_error"), Some(text)),
+            response_error: None,
+        })
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(
+        self,
+        mut sequence: A,
+    ) -> std::result::Result<Projection, A::Error> {
+        while sequence.next_element::<IgnoredAny>()?.is_some() {}
+        self.visit_bool(false)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Projection, A::Error> {
+        let mut output = Projection {
+            present: true,
+            ..Default::default()
+        };
+        let (mut error, mut response_error) = (None, None);
+        let mut seen = 0u8;
+        let (mut fields_valid, mut envelope_valid) = (true, true);
+        while let Some(field) = map.next_key::<Field>()? {
+            let selected = match (self, field) {
+                (Self::Root | Self::Fields, Field::Code) => Some((1, Self::Text)),
+                (Self::Root | Self::Fields, Field::Kind) => Some((2, Self::Text)),
+                (Self::Root | Self::Fields, Field::Message) => Some((4, Self::Text)),
+                (Self::Root | Self::Response, Field::Error) => Some((8, Self::Fields)),
+                (Self::Root, Field::Response) => Some((16, Self::Response)),
+                (Self::Response, Field::Response) => Some((16, Self::Text)),
+                _ => None,
+            };
+            let Some((bit, position)) = selected else {
+                map.next_value::<IgnoredAny>()?;
+                continue;
+            };
+            if seen & bit != 0 {
+                if bit < 8 {
+                    fields_valid = false;
+                } else {
+                    envelope_valid = false;
+                }
+            }
+            let value = map.next_value_seed(position)?;
+            // Like serde's Option fields, a null does not occupy the slot.
+            if value.present {
+                seen |= bit;
+            }
+            match bit {
+                1 => output.context |= value.context,
+                2 => {
+                    output.context |= value.context;
+                    output.invalid_request = value.invalid_request;
+                }
+                4 => output.long_prompt = value.long_prompt,
+                8 => error = value.present.then_some(value.context),
+                16 => response_error = value.response_error,
+                _ => unreachable!(),
+            }
+        }
+        output.context |= output.invalid_request && output.long_prompt;
+        output.context &= fields_valid;
+        output.context = match self {
+            Self::Root => envelope_valid && error.or(response_error).unwrap_or(output.context),
+            Self::Response => false,
+            Self::Fields => output.context,
+            Self::Text => false,
+        };
+        if matches!(self, Self::Response) {
+            output.response_error = envelope_valid.then_some(error).flatten();
+        }
+        Ok(output)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Refusal {
+    fn deserialize<D: de::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Position::Root
+            .deserialize(deserializer)
+            .map(|value| Self(value.context))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_harness_core::HeapLayout for Refusal {
+    // All containers are inline projection state or IgnoredAny. The shared
+    // layout walker still charges every string and the parser's escape scratch.
+    const LAYOUT: &'static acyclic_harness_core::heap_layout::JsonLayout =
+        &acyclic_harness_core::heap_layout::JsonLayout::Node {
+            seq: Some(acyclic_harness_core::heap_layout::Alloc::INLINE),
+            map: Some(acyclic_harness_core::heap_layout::Alloc::INLINE),
+            tagged: false,
+            fields: &[],
+            elements: &[],
+            flatten: &[],
+        };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_harness_core::filesystem::UploadRecord for Refusal {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
+}
+
+/// Detects a context-window refusal without retaining remote strings or containers.
+pub fn context_overflow_bytes(bytes: &[u8], work: acyclic_fs::NativeWork<'_>) -> Result<bool> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = work {
+        use acyclic_harness_core::filesystem::PreparationIo;
+        return match PreparationIo::from_native_work(work)?.decode_json::<Refusal>(bytes) {
+            Ok(value) => Ok(value.0),
+            Err(Error::NativeJson { .. } | Error::NativeJsonAdmission { .. }) => Ok(false),
+            Err(error) => Err(error),
+        };
+    }
+    let _ = work;
+    Ok(serde_json::from_slice::<Refusal>(bytes).is_ok_and(|value| value.0))
+}
+
+/// Measures the JSON representation without allocating the encoded bytes.
+pub fn encoded_json_len<T: serde::Serialize>(value: &T) -> Result<usize> {
+    usize::try_from(acyclic_harness_core::executor::json::json_byte_length(
+        value, None, &mut None,
+    )?)
+    .map_err(|_| acyclic_harness_core::Error::Invalid("token size overflow".into()))
+}
+
+/// Parses a complete provider JSON value with a typed harness error.
+pub fn json(bytes: &[u8]) -> Result<Value> {
+    decode_json(bytes).map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))
+}
+
+/// Parses a complete provider JSON value and preserves serde's error class.
+pub fn decode_json(bytes: &[u8]) -> serde_json::Result<Value> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
+}
+
+/// The one status classification for dispatch, counting, refresh and stream error events.
+/// 408, 429 and 5xx are a typed refusal before generation that redelivery may clear.
+pub fn http_error(status: u16) -> Error {
+    unavailable(status).unwrap_or_else(|| {
+        let message = format!("model HTTP status {status}");
+        match status {
+            401 | 403 => Error::Unauthorized(message),
+            _ => Error::Invalid(message),
+        }
+    })
+}
+
+/// Classifies a transient status before a model starts generating.
+pub fn unavailable(status: u16) -> Option<Error> {
+    matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
+        failure: acyclic_harness_core::ModelTransportFailure::Status(status),
+        excerpt: String::new(),
+    })
+}
+
+/// Keep the transport class without formatting an untrusted cause. Transport errors
+/// may include request URLs, headers or response text containing credentials.
+pub fn transport_failure(
+    _native: bool,
+    failure: acyclic_harness_core::ModelTransportFailure,
+    _cause: impl std::fmt::Display,
+) -> Error {
+    Error::ModelUnavailable {
+        failure,
+        excerpt: String::new(),
+    }
+}

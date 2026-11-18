@@ -254,7 +254,7 @@ proptest! {
         {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(32 * 1024 * 1024, 32 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(32 * 1024 * 1024, 32 * 1024 * 1024),
                 &cancellation,
             ).unwrap();
             let baseline = work.live_allocation_bytes();
@@ -344,7 +344,7 @@ proptest! {
         {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::performance::work_budget(32 * 1024 * 1024, 32 * 1024 * 1024),
+                acyclic_fs_work::performance::work_budget(32 * 1024 * 1024, 32 * 1024 * 1024),
                 &cancellation,
             ).unwrap();
             let baseline = work.live_allocation_bytes();

@@ -61,7 +61,7 @@ async fn run_cut(
             None,
         )?
         .await?;
-    let mut budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+    let mut budget = acyclic_fs_work::performance::work_budget(1_000_000, 4 * 1024 * 1024);
     budget.allocation_operations = cutoff;
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = if native {
@@ -83,7 +83,7 @@ async fn run_cut(
                 Ok(future) => future.await,
                 Err(error) => Err(error),
             };
-            (outcome, io.receipt().allocation_operations)
+            (outcome, io.receipt()?.allocation_operations)
         }
         Err(error) => (Err(error), 0),
     };

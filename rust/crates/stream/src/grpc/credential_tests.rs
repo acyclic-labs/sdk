@@ -476,7 +476,7 @@ async fn request_metadata_reaches_unary_sessions_and_resumed_streams() -> tests:
         .map_err(|error| format!("session: {error:?}"))?
         .register_credential(0, crate::session::testing::credential())
         .map_err(|error| format!("register: {error:?}"))?;
-    let source: &dyn crate::trust_feed::Source = &client;
+    let source: &dyn acyclic_stream_trust::trust_feed::Source = &client;
     let tail = source
         .tail(path)
         .await
@@ -512,7 +512,7 @@ async fn request_metadata_reaches_unary_sessions_and_resumed_streams() -> tests:
     let bearer = Arc::new(client.with_credential("fixture")?);
     // It holds no in-band session credential, so the server may refuse it;
     // the header is observed either way.
-    let _refused = crate::trust_feed::Source::tail(&bearer, path).await;
+    let _refused = acyclic_stream_trust::trust_feed::Source::tail(&bearer, path).await;
     assert!(headers.load(Ordering::SeqCst) > 0);
     // Transports that cannot omit authorization refuse rather than send none.
     assert!(matches!(

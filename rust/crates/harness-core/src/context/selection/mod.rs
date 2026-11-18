@@ -51,7 +51,7 @@ fn observe_value(value: &Value, work: &mut Option<&mut dyn HistoryIo>) -> Result
                 maximum_items: Some(remaining.items_examined),
                 maximum_depth: 256,
             },
-            crate::executor::json::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::NONE,
             &mut |charge| io.codec_charge(charge),
         )?;
     }

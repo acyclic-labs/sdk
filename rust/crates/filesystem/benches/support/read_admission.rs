@@ -16,7 +16,7 @@ fn namespace_parse(bencher: Bencher, (depth, context): (usize, u8)) {
     let path = "/segment".repeat(depth);
     let cancellation = CancellationToken::new();
     let config = VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral);
-    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
     let markers = std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some();
     let operation = || {
         let original = (context != 0).then(|| {

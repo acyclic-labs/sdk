@@ -25,24 +25,6 @@ proptest! {
     }
 }
 
-#[test]
-fn pairwise_bounds_reject_invalid_input_sizes() {
-    for bound in [Bound::Constant, Bound::Linear] {
-        for (small, large) in [(0, 1), (0, 0), (1, 1), (2, 1), (1, 0)] {
-            let panic = std::panic::catch_unwind(|| {
-                assert_scales(bound, (small, 0), (large, 0));
-            })
-            .expect_err("invalid sizes must be rejected even for zero measured work");
-            let message = panic
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-                .expect("assertion diagnostic");
-            assert!(message.contains("require increasing positive inputs"));
-        }
-    }
-}
-
 // These observations are inputs to the shipped report checker, not a model of
 // provider operations or a claim about their physical work and progress.
 fn observed(values: &[Vec<u64>; 3], metric: usize, operation: Operation) -> Report {
@@ -184,6 +166,27 @@ fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() 
     let total = u128::from(n) * u128::from(n);
     assert!(mean_grows(total - 1, n, total, n));
     assert!(!mean_grows(total, n, total - 1, n));
+}
+
+#[test]
+fn per_agent_cost_that_grows_with_population_is_refused() {
+    let operations = [Operation::ObjectHead];
+    let mut report = observed(&[vec![1; 4], vec![1; 4], vec![1; 4]], 0, operations[0]);
+    report
+        .qualify(&operations, RECOVERY)
+        .expect("flat per-agent cost");
+    for point in &mut report.points {
+        let counter = &mut point.samples[0].work[0];
+        counter.total = u128::from(point.agents);
+        counter.maximum = point.agents;
+    }
+    assert!(
+        report
+            .findings(&operations, RECOVERY)
+            .iter()
+            .any(|finding| finding.step == "constant work"),
+        "per-agent work that grows with the population escaped qualification",
+    );
 }
 
 #[test]

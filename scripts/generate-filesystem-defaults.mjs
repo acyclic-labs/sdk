@@ -60,8 +60,7 @@ function renderDeclarationShape(value, indent) {
   return `{\n${entries.join("\n")}\n${" ".repeat(indent - 2)}}`;
 }
 
-export const rust = [["acyclic-fs", "example", "filesystem-contracts"]];
-export const rustFeatures = ["acyclic-fs/tooling"];
+export const rust = ["//rust/crates/filesystem:filesystem-contracts_example"];
 export const rustPayload = "filesystem-typescript-defaults";
 
 export function render([stdout]) {

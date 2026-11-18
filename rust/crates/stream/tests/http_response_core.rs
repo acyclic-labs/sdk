@@ -1,5 +1,6 @@
 //! Service consumers use the canonical encoder without transport/WASM features.
-use acyclic_stream::{http_response, wire};
+use acyclic_stream::http_response;
+use acyclic_stream_wire::wire;
 use bytes::Bytes;
 use prost::Message;
 

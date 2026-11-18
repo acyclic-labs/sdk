@@ -104,7 +104,7 @@ pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStor
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> TreeReadFailure {
-    OperationFailure::new(map_batch_error(failure.error), *failure.work)
+    failure.map_error(map_batch_error)
 }
 
 fn map_batch_error(error: persistent_batch::Error) -> TreeReadError {

@@ -4,8 +4,8 @@ use super::*;
     not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-fn skip(next: u64) -> acyclic_stream::wire::SessionFrame {
-    use acyclic_stream::wire;
+fn skip(next: u64) -> acyclic_stream_wire::wire::SessionFrame {
+    use acyclic_stream_wire::wire;
     wire::SessionFrame {
         body: Some(wire::session_frame::Body::Watermark(
             wire::SessionWatermark {

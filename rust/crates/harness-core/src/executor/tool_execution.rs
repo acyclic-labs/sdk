@@ -300,6 +300,32 @@ impl<'io> StockExecution<'io> {
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
+        let name = tool_operation_name(&invocation.name);
+        super::cost_operation(
+            name,
+            self.settle_tool_call_inner(
+                journal,
+                operation_id,
+                step,
+                (invocation, pinned),
+                invocation_index,
+                prior_messages,
+                _hook_context,
+            ),
+        )
+        .await
+    }
+
+    async fn settle_tool_call_inner(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
+        invocation_index: usize,
+        prior_messages: &mut Vec<ModelMessage>,
+        _hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         self.verify_invocation_binding(operation_id, &invocation, pinned.as_ref())?;
         let metadata = metadata_for_call(
             prior_messages,
@@ -504,6 +530,11 @@ impl<'io> StockExecution<'io> {
             self.selected_tools().refresh().await?;
             self.selected_tools().resolve(&invocation.name, self.io)?
         };
+        // A host call may be the first observation in its journal. Start it
+        // before any refusal or dispatch record; a turn-started journal keeps
+        // its original request binding.
+        self.ensure_host_started(journal, operation_id, &invocation)
+            .await?;
         let admitted = match selected {
             Some(tool) => self
                 .authorize_tool_invocation(
@@ -840,7 +871,18 @@ impl<'io> StockExecution<'io> {
                         },
                         tool,
                         &mut context,
-                        (started, fenced),
+                        // The exclusive invocation claim proves its predecessor
+                        // future retired. A drop-cancellable executor fenced all
+                        // its I/O too, even without a provider-owner restart.
+                        (
+                            started,
+                            fenced.or_else(|| {
+                                (started
+                                    && !self.stock.reconciliation_only
+                                    && tool.executor.cancellable_on_drop())
+                                .then_some(records.as_slice())
+                            }),
+                        ),
                         original_started_at,
                         _hook_context,
                     )
@@ -1380,12 +1422,12 @@ mod refusal_admission_tests {
     #[test]
     fn native_unavailable_cause_allocates_nothing_before_ledger_admission() -> Result<()> {
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+            acyclic_fs_work::performance::work_budget(65_536, 64 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes()?;
         let mut refusal = None;
         let allocated = acyclic_test_support::measure(|| {
             refusal = Some(ToolCallRejection::Unavailable.into_failure(Some(&io)));
@@ -1394,13 +1436,13 @@ mod refusal_admission_tests {
         assert_eq!(kind, ToolFailureKind::Unavailable);
         assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
         assert_eq!(allocated.count_total, 0);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         // Negative control: the former portable error allocated without any ledger claim.
         let portable = acyclic_test_support::measure(|| {
             std::hint::black_box(Error::NotFound("tool is not available".into()));
         });
         assert!(portable.count_total > 0);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         Ok(())
     }
 }
@@ -1596,5 +1638,22 @@ mod cancellation_tests {
             ));
         }
         Ok(())
+    }
+}
+
+/// The cost-ledger operation a tool call is charged to.
+fn tool_operation_name(name: &str) -> &'static str {
+    match name.split('@').next().unwrap_or(name) {
+        "write" => "write",
+        "edit" => "edit",
+        "remove" => "remove",
+        "read" => "read",
+        "send" => "send",
+        "spawn" => "spawn",
+        "wait" => "wait",
+        "fs" => "fs_diff",
+        "shell" => "shell",
+        "code" => "code",
+        _ => "tool",
     }
 }

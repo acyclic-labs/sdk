@@ -98,7 +98,7 @@ impl HttpTransport for RetryTransport {
                 return Ok(response);
             }
             if attempt < self.failures {
-                return Err(crate::transport_failure(
+                return Err(acyclic_harness_provider_response::transport_failure(
                     true,
                     acyclic_harness_core::ModelTransportFailure::Connect,
                     "unreachable",

@@ -11,7 +11,12 @@ pub struct LazyMount<A: 'static, O: 'static, D, S> {
 
 impl<A, O, D, S> LazyMount<A, O, D, S> {
     /// Takes the first original fatal callback cause and its completed work.
-    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+    pub fn take_callback_failure(
+        &self,
+    ) -> Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )> {
         self.session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -71,7 +76,7 @@ where
         if path.0.is_empty() {
             return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
         }
-        let path = (MountPath { components: path.0 }, path.1);
+        let path = (MountPath::from_components(path.0), path.1);
         with_live_session(&self.session, |session| {
             session.capture_host_paths(std::slice::from_ref(&path.0), &work)
         })?;

@@ -259,7 +259,8 @@ impl Drop for Registration<'_> {
         drop(removed);
     }
 }
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 mod model {
     use super::*;
     fn run(omit_publication_lease: bool, late_admission: bool) {
@@ -381,7 +382,8 @@ mod model {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod properties {
     use super::*;
     use proptest::prelude::*;
@@ -467,7 +469,8 @@ mod properties {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod observation_tests {
     use super::*;
     use std::{

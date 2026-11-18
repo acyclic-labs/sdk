@@ -655,9 +655,10 @@ fn directory_walk_borrows_root_and_preserves_identity_at_every_read_bound()
                     depth,
                     reads,
                     result.is_ok(),
-                    work.receipt().backend_read_operations,
+                    work.receipt().unwrap().backend_read_operations,
                 )?;
                 work.receipt()
+                    .unwrap()
                     .verify(budget)
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 if let Ok(held) = result {
@@ -671,7 +672,7 @@ fn directory_walk_borrows_root_and_preserves_identity_at_every_read_bound()
                 .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
             cancellation.cancel();
             prop_assert!(directory_path(&root.directory(), &path, false, &mut &cancelled).is_err());
-            prop_assert_eq!(cancelled.receipt().backend_read_operations, 0);
+            prop_assert_eq!(cancelled.receipt().unwrap().backend_read_operations, 0);
             if depth > 0 {
                 // Negative control recreates the old root duplicate before the
                 // same production traversal. The exact-read oracle must reject it.
@@ -688,7 +689,7 @@ fn directory_walk_borrows_root_and_preserves_identity_at_every_read_bound()
                         depth,
                         u64::MAX,
                         result.is_ok(),
-                        legacy.receipt().backend_read_operations,
+                        legacy.receipt().unwrap().backend_read_operations,
                     )
                     .is_err()
                 );

@@ -417,11 +417,11 @@ There is no account selector, get, reveal or export command.
 
 ## Assemble a release package locally
 
-Build the native executable with `node scripts/build-product.mjs`, then assemble
+Build the native executable with `bazel build -c opt --remote_download_toplevel //plugin:acyclic`, then assemble
 and smoke-test the package using the same entry point as the release workflow:
 
 ```sh
-node scripts/assemble-plugin-release.mjs --binary linux-x64-gnu=target/dist/acyclic --out release
+node scripts/assemble-plugin-release.mjs --binary "linux-x64-gnu=$(bazel info -c opt bazel-bin)/plugin/acyclic" --out release
 ```
 
 Run from the repository root with Node.js, npm and GNU tar available. Select the

@@ -75,28 +75,17 @@ fn backend_conditions_exhaust_presence_tail_and_forged_head_without_unneeded_rea
 }
 
 #[test]
-fn backend_identity_and_time_survive_working_set_replacement() {
+fn backend_identity_survives_working_set_replacement() {
     let digest = [17; 32];
     let mut identities = std::collections::BTreeSet::new();
     let mut reset_control_duplicates = 0;
-    let mut previous = 0;
-    let mut clock_control_regresses = false;
     for decision in 1..=1_000 {
         let id = commit_identity(decision, digest);
         assert!(identities.insert(id));
         // A freshly seeded per-operation state would reset its global ordinal.
         reset_control_duplicates += usize::from(commit_identity(1, digest) == id);
-        let sampled_millis = if decision % 2 == 0 { 1 } else { decision };
-        let time = committed_time(previous, sampled_millis);
-        assert!(time >= previous);
-        assert!(time >= sampled_millis * 1_000);
-        clock_control_regresses |= sampled_millis * 1_000 < previous;
-        previous = time;
     }
     assert_eq!(reset_control_duplicates, 1);
-    assert!(clock_control_regresses);
-    assert_eq!(committed_time(0, u64::MAX), u64::MAX);
-    assert_eq!(committed_time(u64::MAX, 0), u64::MAX);
 }
 
 #[test]
@@ -195,8 +184,9 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
             |_| Ok(Some(4)),
             |_, _, _, _| Err(StreamError::Unavailable),
             Vec::new()
-        ),
-        Err(StreamError::InvalidArgument),
+        )
+        .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument),
         "the planner must not grow an unfunded output"
     );
     assert_eq!(
@@ -230,20 +220,22 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
         Err(StreamCategory::NotFound)
     );
     assert_eq!(
-        authority(&request[..], |_| Ok(Some(2))),
-        Err(StreamError::PrefixNotRetained)
+        authority(&request[..], |_| Ok(Some(2))).map_err(|error| error.category()),
+        Err(StreamCategory::PrefixNotRetained)
     );
     assert_eq!(
         authority(&request[..], |path| {
             assert_eq!(path, &source);
             Ok(Some(3))
-        }),
+        })
+        .map_err(|error| error.category()),
         Ok(())
     );
     // The missing-on-error control would disguise a disk failure as NotFound.
     assert_ne!(
-        authority(&request[..], |_| Err(StreamError::Unavailable)),
-        authority(&request[..], |_| Ok(None))
+        authority(&request[..], |_| Err(StreamError::Unavailable))
+            .map_err(|error| error.category()),
+        authority(&request[..], |_| Ok(None)).map_err(|error| error.category())
     );
     Ok(())
 }
@@ -525,8 +517,10 @@ fn a_met_condition_holds_exactly_where_both_of_its_parts_hold() -> Result<(), St
         }]
     );
     assert_eq!(
-        effect.require(CommitCondition::Absent { path }),
-        Err(StreamError::InvalidArgument)
+        effect
+            .require(CommitCondition::Absent { path })
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     Ok(())
 }

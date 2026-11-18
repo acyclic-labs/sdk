@@ -400,7 +400,10 @@ export class Processes {
 export async function withCancellation(running, signal, completion = running.closed) {
   let reject;
   const cancelled = new Promise((_, fail) => { reject = fail; });
-  const abort = () => { running.killExecutable(); reject(signal.reason); };
+  const abort = () => {
+    Promise.resolve(running.killExecutable()).catch(() => {});
+    reject(signal.reason);
+  };
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) abort();
   try {

@@ -1,8 +1,9 @@
 //! Byte framing vectors use records returned by the real public memory provider.
 use acyclic_stream::{
     AppendRequest, IdempotencyKey, MemoryStream, OwnedBytes, ReadRequest, StreamError, StreamPath,
-    StreamProvider, StreamProviderExt as _, wire, wire_codec,
+    StreamProvider, StreamProviderExt as _, wire_codec,
 };
+use acyclic_stream_wire::wire;
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use wire_codec::session::{FrameDecoder, encode_grpc_frame};

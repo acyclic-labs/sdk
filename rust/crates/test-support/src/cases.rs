@@ -102,7 +102,8 @@ mod tests {
     use super::Outcome;
 
     fn even(value: u64) -> Result<(), String> {
-        (value % 2 == 0)
+        value
+            .is_multiple_of(2)
             .then_some(())
             .ok_or_else(|| format!("{value} is odd"))
     }

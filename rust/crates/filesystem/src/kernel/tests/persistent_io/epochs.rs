@@ -62,14 +62,14 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                 let cancel = CancellationToken::new();
                 let original = crate::NativeMaterializationWork::new(B, &cancel)
                     .map_err(|(error, _)| error)?;
-                let baseline = original.live_allocation_bytes();
+                let baseline = original.live_allocation_bytes().unwrap();
                 let mut accounting = if native {
                     KernelAccounting::native(&original, &cancel)
                 } else {
                     KernelAccounting::standalone(B, &cancel)
                 };
                 let independent = Retained::<Vec<u8>>::allocate(73, &mut accounting)?;
-                let native_baseline = original.live_allocation_bytes();
+                let native_baseline = original.live_allocation_bytes().unwrap();
                 let standalone_baseline = accounting
                     .standalone_parts()
                     .map(|(allocations, _, _, _)| allocations.live_bytes());
@@ -149,7 +149,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                         );
                         let bytes = page.logical_bytes;
                         if native {
-                            assert!(original.live_allocation_bytes() > native_baseline);
+                            assert!(original.live_allocation_bytes().unwrap() > native_baseline);
                         }
                         Owned::new(page, allocation, bytes).retire(&mut accounting)?;
                     }
@@ -161,7 +161,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                             0
                         }
                     );
-                    assert_eq!(accounting.spent().backend_read_operations, 1);
+                    assert_eq!(accounting.spent().unwrap().backend_read_operations, 1);
                 }
                 assert_eq!(cache.stats()?.in_flight, 0);
                 if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
@@ -178,7 +178,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                     );
                 }
                 drop(accounting);
-                assert_eq!(original.live_allocation_bytes(), baseline);
+                assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
                 // A fresh miss can populate the new epoch, using the same
                 // decoder and immutable source rather than replaying a prefix.
                 let mut fresh = KernelAccounting::standalone(B, &cancel);

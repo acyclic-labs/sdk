@@ -102,7 +102,7 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
         .await?
         .0;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let mut budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+    let mut budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
     let decode_io = PreparationIo::from_budget(budget, &cancellation)?;
     {
         // Inventory the required reads/decodes, signature payload, retained
@@ -135,7 +135,7 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
         drop(cut);
     }
     assert_eq!(decode_io.owned_bytes()?, 0);
-    budget.bytes_copied = decode_io.receipt().bytes_copied;
+    budget.bytes_copied = decode_io.receipt()?.bytes_copied;
     let io = PreparationIo::from_budget(budget, &cancellation)?;
     let execution = StockExecution {
         io: Some(&io),
@@ -144,7 +144,7 @@ async fn private_working_cut_transfers_decoded_values_without_copying_them_again
     let retained = execution
         .load_working_cut(journal.as_ref(), &fixture.reference)
         .await?;
-    assert_eq!(io.receipt().bytes_copied, budget.bytes_copied);
+    assert_eq!(io.receipt()?.bytes_copied, budget.bytes_copied);
     // Restoring the old reconstruction exceeds the independently inventoried
     // allowance, even though all retained bytes have already been admitted.
     assert!(crate::context::copy_context(&expected, Some(&io)).is_err());
@@ -163,12 +163,12 @@ async fn private_working_cut_retains_only_original_custody_through_value_drop() 
         true,
     ] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         #[cfg(target_arch = "wasm32")]
         let baseline = 0;
         #[cfg(target_arch = "wasm32")]
@@ -190,7 +190,7 @@ async fn private_working_cut_retains_only_original_custody_through_value_drop() 
         let held = io.owned_bytes()?;
         #[cfg(not(target_arch = "wasm32"))]
         let held = if _native {
-            work.live_allocation_bytes()
+            work.live_allocation_bytes()?
         } else {
             io.owned_bytes()?
         };
@@ -207,7 +207,7 @@ async fn private_working_cut_retains_only_original_custody_through_value_drop() 
         drop(execution);
         drop(io);
         #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -222,12 +222,12 @@ async fn cancelled_private_working_cut_load_releases_all_original_custody() -> R
         true,
     ] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
         #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         #[cfg(target_arch = "wasm32")]
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -253,7 +253,7 @@ async fn cancelled_private_working_cut_load_releases_all_original_custody() -> R
         assert_eq!(io.owned_bytes()?, 0);
         drop(io);
         #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

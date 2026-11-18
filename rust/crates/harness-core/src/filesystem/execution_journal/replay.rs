@@ -35,7 +35,7 @@ where
                     committed_at_micros: Some(record.committed_at_micros),
                     age_ms: Some(
                         clock
-                            .now_unix_ms()
+                            .now_unix_millis()
                             .saturating_sub(record.committed_at_micros / 1000),
                     ),
                 })
@@ -173,7 +173,7 @@ where
                 (_path_hold, path)
             };
             let _stream_hold = if let Some(io) = io {
-                let copying = acyclic_fs::WorkCounters {
+                let copying = acyclic_fs_work::performance::WorkCounters {
                     bytes_copied: path.len() as u64,
                     ..Default::default()
                 };
@@ -243,7 +243,7 @@ where
                     "execution journal record returned");
                 _record_hold = if let Some(io) = io.filter(|io| io.original_native_work().is_none())
                 {
-                    io.charge(acyclic_fs::WorkCounters {
+                    io.charge(acyclic_fs_work::performance::WorkCounters {
                         source_bytes_read: record.value.len() as u64,
                         ..Default::default()
                     })?;

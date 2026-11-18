@@ -10,6 +10,7 @@ async function mutant(file, original, replacement) {
  assert.equal(source.split(original).length, 2, 'mutation must match one production branch');
  const mutated = source.replace(original, replacement);
  const moduleUrl = text => 'data:text/javascript;base64,' + Buffer.from(text
+  .replace('createRequire(import.meta.url)', 'createRequire(' + JSON.stringify(new URL('./source-policy/index.mjs', import.meta.url).href) + ')')
   .replace("from 'typescript-parser'", 'from ' + JSON.stringify(import.meta.resolve('typescript-parser')))).toString('base64');
  const sourceUrl = file.endsWith('/index.mjs') ? moduleUrl(mutated)
   : new URL('./source-policy/index.mjs', import.meta.url).href;

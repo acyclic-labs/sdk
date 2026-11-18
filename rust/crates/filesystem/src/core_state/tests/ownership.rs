@@ -122,7 +122,7 @@ fn measured_admission(root: &Path) -> crate::WorkCounters {
         crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
     let store = LocalCoreStateStore::new(root).materialization(work.clone());
     drop(store.namespace().unwrap());
-    work.receipt()
+    work.receipt().unwrap()
 }
 
 /// Backend reads one measured shared admission of `root` charges.
@@ -152,12 +152,12 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     let probed = measured_admission_reads(&root);
     // The dead owner's record is read once whole: its length, a rewind and one
     // read, one more than an empty record's two. Its exit released its process
-    // lock, so one lock probe proves it dead: its open, its identity and the
-    // lock test. Only this test's processes use this root, so the count is exact.
+    // lock, so one lock probe proves it dead, at the platform's exact physical
+    // read cost. Only this test's processes use this root, so the count is exact.
     use acyclic_native_runtime::StoreClaim;
     assert_eq!(
         probed - free,
-        1 + StoreClaim::OBSERVATION_READ_OPERATIONS,
+        1 + StoreClaim::LOCK_PROBE_READ_OPERATIONS,
         "free admission {free} reads, after a dead owner {probed}"
     );
     Ok(())

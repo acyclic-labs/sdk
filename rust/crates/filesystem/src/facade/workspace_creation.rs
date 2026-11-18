@@ -52,11 +52,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         G::Error: Into<E>,
         E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
-        let creation = creation.into();
-        let crate::CreationOperation {
-            operation_id,
-            files,
-        } = creation;
+        let requested = creation.into();
+        let operation_id = requested.operation_id;
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let config = initialization.config;
@@ -66,7 +63,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .read_creation(id.volume_id(), &mut accounting, cancellation)
                 .await
                 .map_err(WorkspaceError::from);
-            let ((creation, operation), recovered) = match observed {
+            let ((recorded, operation), recovered) = match observed {
                 Ok(record) => (record, true),
                 Err(WorkspaceError::Filesystem(FsError::Authority(
                     AuthorityStoreError::Missing,
@@ -75,7 +72,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .create_volume_operation(
                             id.volume_id(),
                             initialization,
-                            Some(creation),
+                            Some(&requested),
                             &mut accounting,
                             cancellation,
                             guard,
@@ -96,7 +93,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 Err(error) => return Err(error.into()),
             };
             authenticate_named_creation(
-                &creation,
+                &recorded,
                 operation,
                 id.volume_id(),
                 config,
@@ -111,8 +108,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .initial_generation_matches(
                         id.volume_id(),
                         config,
-                        creation.initial_generation_root,
-                        files,
+                        recorded.initial_generation_root,
+                        requested.files,
+                        &requested.attributes,
                         &mut accounting,
                         cancellation,
                     )
@@ -136,7 +134,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
             self.initial_generation(
                 workspace,
-                creation.initial_generation_root,
+                recorded.initial_generation_root,
                 &mut accounting,
                 cancellation,
             )
@@ -247,6 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting)?;
+            let creation = operation_id.map(crate::CreationOperation::from);
             let (volume, _) = self
                 .create_volume_operation::<FsError, ()>(
                     id.volume_id(),
@@ -254,7 +253,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         config,
                         access_policy: None,
                     },
-                    operation_id.map(crate::CreationOperation::from),
+                    creation.as_ref(),
                     &mut accounting,
                     cancellation,
                     None::<&mut ()>,

@@ -2,6 +2,143 @@ use super::*;
 use proptest::prelude::*;
 use std::cell::Cell;
 
+#[test]
+fn declared_workspace_metadata_round_trips_to_a_new_root() {
+    let source = acyclic_test_support::source_path(
+        "workspace-metadata.json",
+    );
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let metadata = load_workspace_metadata(first.path(), &source).unwrap();
+    let serialized = workspace_metadata_bytes(&metadata).unwrap();
+    let graph = first.path().join("graph.json");
+    fs::write(&graph, serialized).unwrap();
+    let relocated = load_workspace_metadata(second.path(), &graph).unwrap();
+    assert_eq!(metadata.packages.len(), relocated.packages.len());
+    for (before, after) in metadata.packages.iter().zip(&relocated.packages) {
+        assert_eq!(before.id, after.id);
+        assert_eq!(
+            before
+                .manifest_path
+                .as_std_path()
+                .strip_prefix(first.path())
+                .unwrap(),
+            after
+                .manifest_path
+                .as_std_path()
+                .strip_prefix(second.path())
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
+fn workspace_metadata_rebases_percent_encoded_package_ids() {
+    let source = acyclic_test_support::source_path(
+        "workspace-metadata.json",
+    );
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    metadata["workspace_root"] = "/work/sdk checkout".into();
+    metadata["packages"][0]["id"] =
+        "path+file:///work/sdk%20checkout/crate%23one#crate@1.0.0".into();
+    metadata["packages"][0]["manifest_path"] = "/work/sdk checkout/crate#one/Cargo.toml".into();
+    let temp = tempfile::tempdir().unwrap();
+    let graph = temp.path().join("graph.json");
+    fs::write(&graph, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    let destination = temp.path().join("sdk #%");
+    let loaded = load_workspace_metadata(&destination, &graph).unwrap();
+    assert_eq!(
+        loaded.packages[0].manifest_path.as_std_path(),
+        destination.join("crate#one").join("Cargo.toml")
+    );
+    assert!(loaded.packages[0]
+        .id
+        .repr
+        .ends_with("/sdk%20%23%25/crate%23one#crate@1.0.0"));
+    let serialized: serde_json::Value =
+        serde_json::from_slice(&workspace_metadata_bytes(&loaded).unwrap()).unwrap();
+    assert_eq!(
+        serialized["packages"][0]["id"],
+        "path+file://./crate%23one#crate@1.0.0"
+    );
+}
+
+#[test]
+fn workspace_metadata_relocates_windows_path_components() {
+    let mut graph = serde_json::json!({
+        "manifest": r"\\?\C:\BUILD\SDK\crate\Cargo.toml",
+        "target": "c:/build/sdk/crate/src/lib.rs",
+        "sibling": "C:/build/sdk-other/Cargo.toml",
+    });
+    relocate_metadata(&mut graph, r"C:\build\sdk", ".");
+    assert_eq!(graph["manifest"], "./crate/Cargo.toml");
+    assert_eq!(graph["target"], "./crate/src/lib.rs");
+    assert_eq!(graph["sibling"], "C:/build/sdk-other/Cargo.toml");
+
+    let source = acyclic_test_support::source_path(
+        "workspace-metadata.json",
+    );
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    metadata["workspace_root"] = "C:/build/sdk".into();
+    metadata["packages"][0]["manifest_path"] = "C:/build/sdk-other/Cargo.toml".into();
+    metadata["packages"][0]["dependencies"] = serde_json::json!([{
+        "name": "external", "source": null, "req": "*", "kind": null,
+        "rename": null, "optional": false, "uses_default_features": true,
+        "features": [], "target": null, "registry": null, "path": "C:/build/sdk-other"
+    }]);
+    let temp = tempfile::tempdir().unwrap();
+    let graph_path = temp.path().join("graph.json");
+    fs::write(&graph_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let loaded = load_workspace_metadata(temp.path(), &graph_path).unwrap();
+    assert_eq!(
+        loaded.packages[0].manifest_path.as_str(),
+        "C:/build/sdk-other/Cargo.toml"
+    );
+    assert_eq!(
+        loaded.packages[0].dependencies[0]
+            .path
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "C:/build/sdk-other"
+    );
+    metadata["workspace_root"] = "Q:/sdk".into();
+    metadata["packages"][0]["id"] =
+        "path+file:///Q:/sdk/examples/sdk-services#sdk-service-examples@0.0.0".into();
+    let metadata: Metadata = serde_json::from_value(metadata).unwrap();
+    let encoded: serde_json::Value =
+        serde_json::from_slice(&workspace_metadata_bytes(&metadata).unwrap()).unwrap();
+    assert_eq!(
+        encoded["packages"][0]["id"],
+        "path+file://./examples/sdk-services#sdk-service-examples@0.0.0"
+    );
+
+    let mut posix = serde_json::json!({"manifest": r"/source/back\slash/Cargo.toml"});
+    relocate_metadata(&mut posix, "/source", r"/destination/back\slash");
+    assert_eq!(
+        posix["manifest"],
+        r"/destination/back\slash/back\slash/Cargo.toml"
+    );
+    let mut ids = serde_json::json!({
+        "inside": "path+file:///work/sdk/dep#dep@1.0.0",
+        "outside": "path+file:///archive/work/sdk/dep#dep@1.0.0"
+    });
+    relocate_metadata(&mut ids, "/work/sdk", "/checkout");
+    assert_eq!(ids["inside"], "path+file:///checkout/dep#dep@1.0.0");
+    assert_eq!(
+        ids["outside"],
+        "path+file:///archive/work/sdk/dep#dep@1.0.0"
+    );
+    let mut windows_id = serde_json::json!("path+file:///Q:/sdk/examples/pkg#pkg@1.0.0");
+    relocate_metadata(&mut windows_id, "Q:/sdk", "D:/checkout");
+    assert_eq!(
+        windows_id,
+        "path+file:///D:/checkout/examples/pkg#pkg@1.0.0"
+    );
+}
 proptest! {
     #[test]
     fn producer_snapshots_follow_each_environment_and_end_with_the_operation(
@@ -41,23 +178,19 @@ proptest! {
 #[test]
 fn scoped_rustup_homes_select_their_own_commands_targets_and_cfgs() {
     let fixture = acyclic_test_support::crate_path!("tests/fixtures/rustup");
-    let path = std::env::join_paths(
-        std::iter::once(fixture.clone())
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
+    let rustup = fixture.join("rustup");
     crate::with_rustdoc_cache(|| {
         for name in ["a", "b", "a"] {
             let home = fixture.join(name);
-            let mut command = Command::new("rustup");
-            command.env("PATH", &path).env("RUSTUP_HOME", &home);
+            let mut command = Command::new(&rustup);
+            command.env("PATH", &fixture).env("RUSTUP_HOME", &home);
             crate::with_command_environment(&command, || {
                 let host = format!("fixture-{name}");
                 assert_eq!(rustdoc_host().unwrap(), host);
                 assert!(rustdoc_targets(&[&host]).is_ok());
                 assert_eq!(
                     nightly_rustdoc_command(&host).unwrap().get_program(),
-                    home.join("bin/cargo")
+                    home.join("bin/cargo").canonicalize().unwrap()
                 );
                 assert!(rustdoc_platform_cfgs()
                     .unwrap()
@@ -87,12 +220,10 @@ fn a_new_operation_refreshes_installed_targets_in_the_same_home() {
     std::os::unix::fs::symlink(fixtures.join("a/bin/rustc"), home.path().join("bin/rustc"))
         .unwrap();
     std::fs::write(home.path().join("targets"), "fixture-a\nfixture-added\n").unwrap();
-    let path = std::env::join_paths(
-        std::iter::once(fixtures).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
-    let mut command = Command::new("rustup");
-    command.env("PATH", path).env("RUSTUP_HOME", home.path());
+    let mut command = Command::new(fixtures.join("rustup"));
+    command
+        .env("PATH", &fixtures)
+        .env("RUSTUP_HOME", home.path());
     crate::with_command_environment(&command, || {
         crate::with_rustdoc_cache(|| {
             assert!(rustdoc_targets(&["fixture-added"]).is_ok());

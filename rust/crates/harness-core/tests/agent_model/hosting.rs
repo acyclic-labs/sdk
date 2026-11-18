@@ -84,7 +84,7 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
     )?;
     let local = Bound::local_root(issuer, placement(&stream)?, turns()?)?;
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
+        acyclic_fs_work::performance::BOUNDARY_BUDGET,
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, _)| cause)?;
@@ -2731,7 +2731,7 @@ async fn conversation_creation_wait_retains_member_absence_diagnostics() -> Resu
     let diagnostic = missing_refusal();
     provider.missing(root.conversation()?, diagnostic.clone());
     assert!(matches!(host.follow_conversation(&root, 1).await,
-        Err(Error::Stream(error)) if error == diagnostic));
+        Err(Error::Stream(error)) if error.category() == diagnostic.category()));
     provider.missing(root.conversation()?, StreamError::AccessDenied);
     assert!(matches!(
         host.follow_conversation(&root, 0).await,

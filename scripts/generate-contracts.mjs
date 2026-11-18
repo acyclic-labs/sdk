@@ -1,9 +1,8 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
-import { checkGenerated, projectGenerated } from "./generated-bindings.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
@@ -59,15 +58,17 @@ export const keepsGenerator = (generator, families, native) => !generator.native
 /** The contract modules are the one computed import: every caller loads them here. @param {string[]} names */
 export const loadContractModules = names => Promise.all(names.map(name => import(`./${name}`)));
 
-export async function generateContracts(mode = "write", families = [], { native = false } = {}) {
+/** @param {string} [mode] @param {string[]} [families]
+ * @param {{native?:boolean,tools?:ReadonlyMap<string,string>,sourceCommit?:string}} [options] */
+export async function generateContracts(mode = "write", families = [], { native = false, tools = undefined, sourceCommit = undefined } = {}) {
+  const {checkGenerated, projectGenerated} = await import("./generated-bindings.mjs");
   let modules = contractModules(families);
 
   if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
-  // One build compiles every contract target from current Rust source; the
-  // emitted executables are then run directly instead of one `cargo run` each.
-  // Selected packages omit defaults; Cargo still unifies dependency features.
-  /** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, metadata_ms: number, build_ms: number, artifacts: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
-  const report = { revision: 2, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, metadata_ms: 0, build_ms: 0, artifacts: [], generators: [] };
+  // One Bazel build brings every contract target up to date from current Rust source; the
+  // executables are then run directly, each at most once.
+  /** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, build_ms: number, labels: string[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
+  const report = { revision: 3, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, build_ms: 0, labels: [], generators: [] };
   const started = performance.now();
   const saveReport = () => {
     if (!process.env.SDK_TEMP_DIR) return;
@@ -84,7 +85,7 @@ export async function generateContracts(mode = "write", families = [], { native 
   try {
     report.phase = "source";
     saveReport();
-    report.source_commit = captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
+    report.source_commit = sourceCommit ?? captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
     if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
     report.phase = "imports";
     saveReport();
@@ -92,13 +93,16 @@ export async function generateContracts(mode = "write", families = [], { native 
     const kept = generators.map(generator => keepsGenerator(generator, families, native));
     modules = modules.filter((_, index) => kept[index]);
     generators = generators.filter((_, index) => kept[index]);
-    const targets = [...new Map(generators.flatMap(generator => generator.rust ?? [])
-      .map(target => [JSON.stringify(target), target])).values()];
-    const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
-    const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
-    const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
+    const targets = [...new Set(generators.flatMap(generator => generator.rust ?? []))];
+    report.labels = targets;
+    const executables = tools ? targets.map(target => {
+      const executable = tools.get(target);
+      if (!executable) throw Error(`ContractToolMissing: ${target}`);
+      return executable;
+    }) : targets.length === 0 ? [] : buildContractTargets(root, targets, report, saveReport);
+    const targetIndex = new Map(targets.map((target, index) => [target, index]));
     const consumers = generators.flatMap(generator => (generator.rust ?? [])
-      .map(target => [targetIndex.get(JSON.stringify(target)), generator.rustPayload]));
+      .map(target => [targetIndex.get(target), generator.rustPayload]));
     const outputFor = contractTargetOutputs(root, executables, consumers);
 
     const stale = [];
@@ -107,7 +111,7 @@ export async function generateContracts(mode = "write", families = [], { native 
       report.phase = `execute:${modules[index]}`;
       saveReport();
       const stdout = (generator.rust ?? []).map(target => {
-        const targetSlot = targetIndex.get(JSON.stringify(target));
+        const targetSlot = targetIndex.get(target);
         return outputFor(targetSlot, generator.rustPayload);
       });
       const execute_ms = performance.now() - executionStart;
@@ -136,13 +140,13 @@ export async function generateContracts(mode = "write", families = [], { native 
   } finally {
     if (report.status !== "success") report.status = "failed";
     const total_ms = performance.now() - started;
-    console.error(`Rust contracts: ${report.status}; metadata ${report.metadata_ms.toFixed(0)}ms; build ${report.build_ms.toFixed(0)}ms; total ${total_ms.toFixed(0)}ms`);
+    console.error(`Rust contracts: ${report.status}; build ${report.build_ms.toFixed(0)}ms; total ${total_ms.toFixed(0)}ms`);
     saveReport();
   }
 
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const args = process.argv.slice(3);
   await generateContracts(process.argv[2] ?? "write", args.filter(arg => arg !== "--native"), { native: args.includes("--native") });
 }

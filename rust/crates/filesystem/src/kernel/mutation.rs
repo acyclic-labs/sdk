@@ -351,7 +351,7 @@ impl MutationPlan {
         let mut accounting = super::allocation::KernelAccounting::standalone(budget, &cancellation);
         Self::compile_with_accounting(operations, &mut accounting)
             .map(|(plan, _)| plan)
-            .map_err(|error| OperationFailure::new(plan_error(&error), accounting.spent()))
+            .map_err(|error| OperationFailure::observed(plan_error(&error), accounting.spent()))
     }
 
     pub(crate) fn compile_with_accounting(
@@ -459,7 +459,7 @@ impl MutationPlan {
                 ordered_paths,
                 path_nodes,
                 retained_allocation_bytes: allocation_bytes,
-                work: accounting.spent(),
+                work: accounting.spent()?,
             },
             allocation,
         ))
@@ -704,7 +704,7 @@ mod original_controls {
         let cancellation = crate::CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (operations, input_guard) = funded_operation(&mut accounting)?;
         let limited = original.native_volume_work(WorkBudget {
@@ -726,7 +726,7 @@ mod original_controls {
         drop(error);
         drop(input_guard);
         drop(limited);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         Ok(())
     }
 
@@ -736,7 +736,7 @@ mod original_controls {
         let cancellation = crate::CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (operations, input_guard) = funded_operation(&mut accounting)?;
         let KernelOwnedAllocation::NativeOriginal(input_guard) = input_guard else {
@@ -756,13 +756,13 @@ mod original_controls {
         assert_eq!(plan.ordered_paths().count(), 1);
         assert_eq!(plan.path_nodes(), 2);
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             baseline + input_guard.bytes() + index_guard.bytes()
         );
         drop(plan);
         drop(index_guard);
         drop(input_guard);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         Ok(())
     }
 }

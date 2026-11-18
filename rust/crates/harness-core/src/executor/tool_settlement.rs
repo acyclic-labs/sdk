@@ -55,7 +55,7 @@ impl ToolSettlementQuery<'_> {
                         "tool call hash length overflow",
                     )
                 })?;
-            io.charge(acyclic_fs::WorkCounters {
+            io.charge(acyclic_fs_work::performance::WorkCounters {
                 bytes_hashed,
                 items_examined: 4,
                 ..Default::default()
@@ -77,14 +77,11 @@ impl ToolSettlementQuery<'_> {
 pub(crate) fn tool_settlement_key(
     step: u32,
     call_id: &str,
-    outcome: ToolTerminalOutcome,
     io: Option<&PreparationIo>,
 ) -> Result<String> {
-    let kind = match outcome {
-        ToolTerminalOutcome::Completed => "completed",
-        ToolTerminalOutcome::Failed => "failed",
-    };
     with_history_io(io, |work| {
-        preparation_format(format_args!("tool:{step}:{call_id}:{kind}"), work)
+        // A version prefix keeps this identity disjoint from the outcome-suffixed
+        // keys older journals used, whose call IDs may themselves contain colons.
+        preparation_format(format_args!("tool:v2:{step}:{call_id}"), work)
     })
 }

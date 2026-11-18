@@ -9,6 +9,7 @@ pub(super) struct DemandBlobSource<'a, D> {
     pub(super) length: u64,
     pub(super) work: Option<WorkCounters>,
     pub(super) failure: Option<DemandError>,
+    pub(super) observation_error: Option<crate::WorkObservationError>,
 }
 
 impl<D: DemandSource> DemandBlobSource<'_, D> {
@@ -65,8 +66,11 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 receipt.value
             }
             Err(failed) => {
-                self.work = Some(*failed.work);
                 self.failure = Some(failed.error);
+                match failed.work {
+                    Ok(work) => self.work = Some(*work),
+                    Err(observation) => self.observation_error = Some(observation),
+                }
                 return Err(std::io::Error::other("version-pinned source read failed"));
             }
         };

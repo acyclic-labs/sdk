@@ -8,6 +8,25 @@ rust-version = "1.98"
 publish = false
 default-run = "sdk-generation"
 
+[package.metadata.bazel]
+test-workers = 1
+# The cli_regressions harness selects the pinned rustup toolchains and their
+# installed targets; these are the host facts the package's tests read.
+test-env-inherit = ["PATH", "RUSTUP_HOME", "CARGO_HOME"]
+
+[package.metadata.bazel.test-tools.sdk_generation_test]
+CARGO = "//:toolchain_cargo"
+rustc = "//:rustc"
+rustup = "@sdk_compilers//:rustup"
+
+[package.metadata.bazel.test-tools.main]
+CARGO = "//:toolchain_cargo"
+rustc = "//:rustc"
+rustup = "@sdk_compilers//:rustup"
+
+[package.metadata.bazel.test-data.main]
+rustdoc-fixtures = "//rust/proofs/sdk-rustdoc-fixtures:feature_profiles"
+
 [dependencies]
 sdk-docs = { path = "../sdk-docs" }
 sdk-file-identity = { path = "../sdk-docs/file-identity" }

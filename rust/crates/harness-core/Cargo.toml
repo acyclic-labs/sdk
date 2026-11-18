@@ -41,12 +41,20 @@ path = "tests/computed_ui_records.rs"
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
-test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
 model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
+acyclic-decimal-u64 = { version = "=0.2.0", path = "../decimal-u64" }
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
+acyclic-harness-control = { version = "=0.2.0", path = "../harness-control" }
+acyclic-harness-json = { version = "=0.2.0", path = "../harness-json" }
+acyclic-harness-sse = { version = "=0.2.0", path = "../harness-sse" }
+acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout" }
 memchr = "=2.8.3"
 pulldown-cmark.workspace = true
 tar = { version = "=0.4.46", default-features = false }
@@ -71,6 +79,7 @@ acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = fa
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 base64 = "=0.23.1"
 blake3.workspace = true
 bytes.workspace = true
@@ -96,7 +105,6 @@ thiserror.workspace = true
 tracing.workspace = true
 toml = { workspace = true }
 ts-rs = "=12.0.1"
-sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 uuid.workspace = true
@@ -112,22 +120,19 @@ blake3.workspace = true
 prost-build.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
+acyclic-harness-modules = { version = "=0.2.0", path = "../harness-modules" }
 notify.workspace = true
 acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
 rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "parallel"] }
-oxc_allocator = "=0.156.0"
-oxc_codegen = { version = "=0.156.0", default-features = false }
-oxc_parser = { version = "=0.156.0", default-features = false }
-oxc_semantic = { version = "=0.156.0", default-features = false }
-oxc_span = "=0.156.0"
-oxc_transformer = { version = "=0.156.0", default-features = false }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 dirs = { workspace = true }
 tempfile = { version = "3.27.0" }
 getrandom = { workspace = true }
 loom = { version = "=0.7.3", optional = true }
 same-file = { version = "1.0.6", optional = true }
+acyclic-executable-search = { version = "=0.2.0", path = "../executable-search" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true }
 rustls = { workspace = true }
@@ -136,13 +141,14 @@ hyper = { version = "1", default-features = false }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "process"] }
 
 [dev-dependencies]
+acyclic-harness-control = { version = "=0.2.0", path = "../harness-control", features = ["test-support"] }
+acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout", features = ["test-support"] }
 acyclic-actors = { version = "=0.2.0", path = "../actors", features = ["conformance"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 # Hooks record under cfg(test) too, so lib tests observe them without test-support.
 acyclic-differential = { version = "=0.2.0", path = "../differential" }
-proc-macro2 = "=1.0.107"
-syn = { version = "=3.0.9", features = ["full", "visit"] }
+acyclic-harness-control-checks = { path = "../harness-control-checks" }
 proptest.workspace = true
 diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
@@ -155,6 +161,7 @@ serde-saphyr = { version = "=2.0.0", default-features = false, features = ["seri
 tracing-subscriber.workspace = true
 loom = { version = "0.7.3", features = ["futures"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
 tempfile = "3.27.0"
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util", "process", "io-util"] }

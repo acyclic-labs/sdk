@@ -9,7 +9,7 @@ pub(super) fn state_bytes(
     io: Option<&PreparationIo>,
 ) -> Result<[u8; STATE_BYTES]> {
     if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_encoded: STATE_BYTES as u64,
             items_examined: 1,
             ..Default::default()
@@ -72,7 +72,7 @@ pub(super) fn encode_state(
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             bytes_encoded: 64,
             bytes_copied: FRAME_BYTES as u64,
             ..Default::default()
@@ -113,7 +113,7 @@ pub(super) fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Checkpo
         Ok(value)
     }
     if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters {
+        io.charge(acyclic_fs_work::performance::WorkCounters {
             items_examined: 1,
             ..Default::default()
         })?;

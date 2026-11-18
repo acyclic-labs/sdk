@@ -28,6 +28,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -51,6 +52,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -64,7 +66,67 @@ isolated_test(
     name = "acyclic_test_runner_test",
     binary = ":acyclic_test_runner_test_cases",
     id = "acyclic-test-runner::bin/acyclic-test-runner",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_test_runner_test_full-cloud",
+    binary = ":acyclic_test_runner_test_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-test-runner::bin/acyclic-test-runner",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
+)
+
+rust_test(
+    name = "arguments_cases",
+    crate_root = "tests/arguments.rs",
+    srcs = [
+        "tests/arguments.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "//rust/crates/native-runtime:acyclic_native_runtime",
+    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "arguments",
+    binary = ":arguments_cases",
+    binaries = {":acyclic-test-runner":"acyclic-test-runner"},
+    id = "acyclic-test-runner::arguments",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+)
+
+isolated_test(
+    name = "arguments_full-cloud",
+    binary = ":arguments_cases",
+    binaries = {":acyclic-test-runner":"acyclic-test-runner","@nodejs//:node":"node"},
+    id = "acyclic-test-runner::arguments",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
@@ -73,6 +135,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

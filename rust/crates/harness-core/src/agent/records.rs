@@ -782,7 +782,7 @@ impl ChildWakes {
     /// No index IO, reconstruction of a subtree or per-child retained state.
     pub async fn page<P: acyclic_stream::StreamProvider + ?Sized>(
         &self,
-        provider: std::sync::Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         agent: &AgentPath,
         after: Option<u64>,
         limit: usize,
@@ -919,9 +919,9 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
     ) -> Result<acyclic_fs::kernel::Retained<Self>, acyclic_fs::kernel::MetadataDecodeError<Error>>
     {
         use acyclic_fs::kernel::MetadataDecodeError;
-        accounting.charge(acyclic_fs::WorkCounters {
+        accounting.charge(acyclic_fs_work::performance::WorkCounters {
             items_examined: 1,
-            ..acyclic_fs::WorkCounters::UNCHARGED
+            ..acyclic_fs_work::performance::WorkCounters::UNCHARGED
         })?;
         let payload = record_payload(bytes).map_err(MetadataDecodeError::Codec)?;
         let value = decode_payload_with(

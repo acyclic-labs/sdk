@@ -171,7 +171,7 @@ pub(crate) async fn apply_regular_mutation_async<S: AsyncObjectStore>(
         cancellation,
     )
     .await
-    .map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(project_regular_error(error), accounting.spent()))
 }
 
 pub(crate) async fn apply_regular_mutation_with_accounting<S: AsyncObjectStore>(
@@ -201,7 +201,7 @@ pub(crate) async fn apply_regular_mutation_with_accounting<S: AsyncObjectStore>(
         {
             return Ok(RegularMutationReceipt {
                 payload,
-                work: accounting.spent(),
+                work: accounting.spent()?,
             });
         }
         let promoted = promote_inline(store, data, config, accounting, cancellation).await?;
@@ -265,7 +265,7 @@ pub(crate) async fn apply_regular_clone_with_accounting<S: AsyncObjectStore>(
         )?;
         return Ok(RegularCloneReceipt {
             destination: FilePayload::InlineRegular(data),
-            work: accounting.spent(),
+            work: accounting.spent()?,
         });
     }
     let equal = source == destination;
@@ -315,7 +315,7 @@ pub(crate) async fn apply_regular_clone_with_accounting<S: AsyncObjectStore>(
             logical_bytes: receipt.logical_bytes,
             extents: receipt.root,
         }),
-        work: accounting.spent(),
+        work: accounting.spent()?,
     })
 }
 
@@ -385,7 +385,7 @@ pub(crate) async fn clone_extent_range_with_accounting<S: AsyncObjectStore>(
     Ok(ExtentCloneReceipt {
         root: receipt.root,
         logical_bytes: receipt.logical_bytes,
-        work: accounting.spent(),
+        work: accounting.spent()?,
     })
 }
 
@@ -701,7 +701,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
     {
         return Ok(RegularMutationReceipt {
             payload,
-            work: accounting.spent(),
+            work: accounting.spent()?,
         });
     }
     let mut demotion_known_impossible = false;
@@ -724,7 +724,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
         {
             return Ok(RegularMutationReceipt {
                 payload: FilePayload::InlineRegular(data),
-                work: accounting.spent(),
+                work: accounting.spent()?,
             });
         }
         demotion_known_impossible = true;
@@ -807,7 +807,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
     {
         return Ok(RegularMutationReceipt {
             payload: FilePayload::InlineRegular(data),
-            work: accounting.spent(),
+            work: accounting.spent()?,
         });
     }
     Ok(RegularMutationReceipt {
@@ -815,7 +815,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
             logical_bytes: receipt.logical_bytes,
             extents: receipt.root,
         },
-        work: accounting.spent(),
+        work: accounting.spent()?,
     })
 }
 
@@ -936,7 +936,7 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
     mutations.retire(accounting)?;
     Ok(RegularMutationReceipt {
         payload: result?,
-        work: accounting.spent(),
+        work: accounting.spent()?,
     })
 }
 

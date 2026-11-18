@@ -204,7 +204,7 @@ fn pair(
                     .map_err(|f| format!("{:?}", f.error));
                 bytes.insert(path, read);
             }
-            (result, bytes, accounting.spent(), measured)
+            (result, bytes, accounting.spent().unwrap(), measured)
         },
     )
 }

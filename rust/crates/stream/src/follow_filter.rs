@@ -1,4 +1,5 @@
-use crate::{RecordHeaders, StreamError, wire};
+use crate::{RecordHeaders, StreamError};
+use acyclic_stream_wire::wire;
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -717,9 +718,20 @@ mod tests {
                 let projected = projected.as_ref().map_err(|error| error.clone())?;
                 let projected = projected.as_ref();
                 assert_eq!(matched, projected.is_some());
-                assert_eq!(preservation, Ok(projected == Some(record)));
+                assert_eq!(
+                    preservation
+                        .as_ref()
+                        .map(|value| *value)
+                        .map_err(|error| error.category()),
+                    Ok(projected == Some(record))
+                );
                 if let Some(projected) = projected {
-                    assert_eq!(filter.preserves(projected), Ok(true));
+                    assert_eq!(
+                        filter
+                            .preserves(projected)
+                            .map_err(|error| error.category()),
+                        Ok(true)
+                    );
                     assert_eq!(projected.sequence, record.sequence);
                     assert_eq!(projected.commit_id, record.commit_id);
                     assert_eq!(projected.committed_at_micros, record.committed_at_micros);
@@ -738,7 +750,7 @@ mod tests {
             }
             if !valid
                 || index == 0
-                || preservation == Ok(true)
+                || preservation.as_ref().is_ok_and(|value| *value)
                 || format.as_ref().is_ok_and(Option::is_none)
                 || !matched
             {
@@ -1154,8 +1166,12 @@ mod tests {
                     Err(crate::StreamCategory::InvalidArgument)
                 );
                 assert_eq!(
-                    forwarded.project(malformed.clone()),
-                    authorized.project(malformed)
+                    forwarded
+                        .project(malformed.clone())
+                        .map_err(|error| error.category()),
+                    authorized
+                        .project(malformed)
+                        .map_err(|error| error.category())
                 );
             }
             seen += 1;
@@ -1166,8 +1182,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            FollowFilter::authorized(malformed.clone(), &capability),
-            FollowFilter::new(malformed)
+            FollowFilter::authorized(malformed.clone(), &capability)
+                .map_err(|error| error.category()),
+            FollowFilter::new(malformed).map_err(|error| error.category())
         );
         let token = signed::root(|_| {});
         let unrestricted =

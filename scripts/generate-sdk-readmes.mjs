@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const services = ["Objects", "Streams", "Actors", "Workers", "fs"];
 
@@ -37,7 +37,7 @@ export function generatedReadmes(read) {
   return outputs;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const mode = process.argv[2] ?? "check";
   if (mode !== "write" && mode !== "check") throw new Error(`STEP_FAILED README mode: expected write|check; recovery: ${recovery}`);
   const read = file => readFileSync(resolve(root, file), "utf8");

@@ -30,7 +30,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
             let record = registration
                 .register_root(&root, &original, &cancellation)
                 .await?;
-            original.receipt().verify(budget)?;
+            original.receipt().unwrap().verify(budget)?;
             record
         } else {
             let original = Arc::new(Prefunded {
@@ -75,7 +75,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 failure.error,
                 crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
             ));
-            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+            assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
         } else {
             assert!(matches!(
                 failure.error,
@@ -87,7 +87,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 ))
             ));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
         assert!(authority.replay_minimum.lock().unwrap().take().is_some());
     }
     let mut workspaces = vec![root];
@@ -134,7 +134,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                     )
                     .await?
             };
-            original.receipt().verify(budget)?;
+            original.receipt().unwrap().verify(budget)?;
             child
         } else {
             let original = Arc::new(Prefunded {
@@ -232,7 +232,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                                 )
                                 .await?
                         };
-                        (record, original.receipt())
+                        (record, original.receipt().unwrap())
                     } else {
                         let original = Arc::new(Prefunded {
                             budget,
@@ -307,7 +307,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                         failure.error,
                         crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
                     ));
-                    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+                    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
                 } else {
                     assert!(matches!(
                         failure.error,
@@ -319,7 +319,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                         ))
                     ));
                 }
-                assert_eq!(failure.work.backend_read_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
             }
         }
         let read = child.read("/source", 8, budget, &cancellation).await?;
@@ -369,7 +369,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 failure.error,
                 crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
             ));
-            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+            assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
         } else {
             assert!(matches!(
                 failure.error,
@@ -381,7 +381,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 ))
             ));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
         assert!(authority.replay_minimum.lock().unwrap().take().is_some());
     }
     Ok(())
@@ -461,22 +461,25 @@ async fn lineage_resolution_uses_original_name_validation_work()
     assert_eq!(no_allocations.work.allocation_operations, 0);
     let native =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-    let native_before = native.receipt();
-    let native_live = native.live_allocation_bytes();
+    let native_before = native.receipt().unwrap();
+    let native_live = native.live_allocation_bytes().unwrap();
     graph
         .authorize_join(grandchild.id(), child.id(), &native, &cancellation)
         .await?;
     assert_eq!(
-        native.receipt().items_examined,
+        native.receipt().unwrap().items_examined,
         required,
         "native lineage validation detached from original accounting"
     );
-    assert_eq!(native.live_allocation_bytes(), native_live);
+    assert_eq!(native.live_allocation_bytes().unwrap(), native_live);
     assert_eq!(
-        native.receipt().allocation_operations,
+        native.receipt().unwrap().allocation_operations,
         native_before.allocation_operations
     );
-    assert_eq!(native.receipt().bytes_copied, native_before.bytes_copied);
+    assert_eq!(
+        native.receipt().unwrap().bytes_copied,
+        native_before.bytes_copied
+    );
     assert!(matches!(
         graph
             .authorize_join(grandchild.id(), root.id(), budget, &cancellation)
@@ -512,12 +515,12 @@ async fn lineage_resolution_uses_original_name_validation_work()
     let collection_bytes =
         (native_chain.capacity() * std::mem::size_of::<crate::WorkspaceLineageRecord>()) as u64;
     assert!(
-        native.live_allocation_bytes() >= native_live + collection_bytes,
+        native.live_allocation_bytes().unwrap() >= native_live + collection_bytes,
         "lineage ancestry collection lost original backing credit"
     );
     drop(native_chain);
     assert_eq!(
-        native.live_allocation_bytes(),
+        native.live_allocation_bytes().unwrap(),
         native_live,
         "lineage ancestry collection did not retire original backing credit"
     );
@@ -580,7 +583,7 @@ async fn lineage_resolution_uses_original_name_validation_work()
                     failure.error,
                     crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
                 ));
-                assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+                assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
             } else {
                 assert!(matches!(
                     failure.error,
@@ -592,8 +595,8 @@ async fn lineage_resolution_uses_original_name_validation_work()
                     ))
                 ));
             }
-            assert_eq!(failure.work.backend_read_operations, 0);
-            assert_eq!(failure.work.allocation_operations, 0);
+            assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+            assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
         }
     }
     // Corrupt a real persisted edge: the fixed-width visited index must end

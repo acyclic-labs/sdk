@@ -176,7 +176,7 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
                 assert_eq!(completed, maximum, "available encoding work must complete");
             }
         }
-        let receipt = original.receipt();
+        let receipt = original.receipt().unwrap();
         assert_eq!(
             if pages {
                 receipt.page_writes
@@ -393,7 +393,7 @@ fn overlapping_model<const BROKEN: bool, const ASSERT_COMPLETE: bool>() {
                 "an aggregate and its fields must share the exact allowance"
             );
         }
-        assert_eq!(root.receipt().bytes_encoded, completed);
+        assert_eq!(root.receipt().unwrap().bytes_encoded, completed);
         assert_eq!(root.live_allocation_bytes(), baseline);
     });
 }

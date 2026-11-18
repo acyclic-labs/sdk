@@ -47,7 +47,7 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
 
 fn encoded_json(expected: &serde_json::Map<String, Value>, actual: &str, exact: bool) -> bool {
     if !exact && let Some(expected) = expected.get("$skill_catalog") {
-        use acyclic_harness::context::SkillSummary;
+        use acyclic_harness_core::context::SkillSummary;
         let Ok(expected) = serde_json::from_value::<Vec<SkillSummary>>(expected.clone()) else {
             return false;
         };
@@ -87,7 +87,7 @@ fn contains_text(actual: &Value, needle: &str) -> bool {
 #[cfg(test)]
 #[test]
 fn skill_catalog_matches_public_schema_and_rejects_storage_metadata() {
-    use acyclic_harness::context::SkillSummary;
+    use acyclic_harness_core::context::SkillSummary;
     use serde_json::json;
 
     let expected =

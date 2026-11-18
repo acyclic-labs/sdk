@@ -433,7 +433,7 @@ impl TurnExecutors for StockExecutors {
                         .profile
                         .as_ref()
                         .and_then(|profile| profile.topology.as_ref())
-                        .is_none_or(|topology| topology.offers_tool(name, agent.parent.is_none()))
+                        .is_none_or(|topology| topology.offers_tool(name, agent.path.depth()))
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -443,7 +443,7 @@ impl TurnExecutors for StockExecutors {
             {
                 let writer = authority
                     .journal
-                    .output_content(turn)?
+                    .output_content(turn, None)?
                     .and_then(|content| content.writer)
                     .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
                 crate::tools::bind_agent_tools(

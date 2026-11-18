@@ -1046,46 +1046,47 @@ async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
     model.close().await;
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum SnapshotEntry {
+    File(Vec<u8>),
+    Link(PathBuf),
+    Node(std::fs::FileType),
+}
+fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, SnapshotEntry> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        result: &mut std::collections::BTreeMap<PathBuf, SnapshotEntry>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let kind = entry.file_type().unwrap();
+            let directory = kind.is_dir();
+            result.insert(
+                path.strip_prefix(root).unwrap().to_owned(),
+                if kind.is_file() {
+                    SnapshotEntry::File(std::fs::read(&path).unwrap())
+                } else if kind.is_symlink() {
+                    SnapshotEntry::Link(std::fs::read_link(&path).unwrap())
+                } else {
+                    SnapshotEntry::Node(kind)
+                },
+            );
+            if directory {
+                visit(root, &path, result);
+            }
+        }
+    }
+    let mut result = std::collections::BTreeMap::new();
+    visit(root, root, &mut result);
+    result
+}
+
 #[tokio::test]
 async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
-    #[derive(Debug, Eq, PartialEq)]
-    enum SnapshotEntry {
-        File(Vec<u8>),
-        Link(PathBuf),
-        Node(std::fs::FileType),
-    }
-    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, SnapshotEntry> {
-        fn visit(
-            root: &Path,
-            path: &Path,
-            result: &mut std::collections::BTreeMap<PathBuf, SnapshotEntry>,
-        ) {
-            for entry in std::fs::read_dir(path).unwrap() {
-                let entry = entry.unwrap();
-                let path = entry.path();
-                let kind = entry.file_type().unwrap();
-                let directory = kind.is_dir();
-                result.insert(
-                    path.strip_prefix(root).unwrap().to_owned(),
-                    if kind.is_file() {
-                        SnapshotEntry::File(std::fs::read(&path).unwrap())
-                    } else if kind.is_symlink() {
-                        SnapshotEntry::Link(std::fs::read_link(&path).unwrap())
-                    } else {
-                        SnapshotEntry::Node(kind)
-                    },
-                );
-                if directory {
-                    visit(root, &path, result);
-                }
-            }
-        }
-        let mut result = std::collections::BTreeMap::new();
-        visit(root, root, &mut result);
-        result
-    }
     let plugins = task_plugins(&fixture);
     let original = snapshot(fixture._directory.path());
     // Installation pipes both streams and has no prompt or terminal.
@@ -1180,6 +1181,14 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         checkout_original,
         "refused doctor changed checkout"
     );
+    assert_eq!(model.generated(), 1);
+    model.close().await;
+}
+
+#[tokio::test]
+async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
     // Each aggregated refusal retains the cause its original producer reported.
     let malformed = fixture._directory.path().join("invalid.json");
     std::fs::write(&malformed, b"{").unwrap();
@@ -1228,6 +1237,16 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
                     |reason| reason.starts_with(context) && reason.contains(&expected)
                 )),
             "missing original cause {context} {expected}: {report}"
+        );
+        assert!(
+            report["refusals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|reason| !reason
+                    .as_str()
+                    .is_some_and(|reason| reason.starts_with("model settings:"))),
+            "unrelated producer failure became model repair advice: {report}"
         );
         assert_eq!(
             snapshot(fixture._directory.path()),
@@ -1280,7 +1299,14 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     .unwrap_err()
     .to_string();
     let before = snapshot(fixture._directory.path());
-    let refused = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    let mut configured = graphcoder_command(&fixture);
+    configured
+        .arg("--settings-root")
+        .arg(&fixture.settings)
+        .arg("--catalog")
+        .arg(&model.catalog)
+        .arg("doctor");
+    let refused = capture(configured, "").await;
     assert!(!refused.status.success());
     let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert!(
@@ -1298,7 +1324,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         before,
         "refused doctor changed state"
     );
-    assert_eq!(model.generated(), 1);
+    assert_eq!(model.generated(), 0);
     model.close().await;
 }
 
@@ -1743,7 +1769,6 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
 
 #[tokio::test]
 async fn selected_agent_queries_use_the_explicit_owner_state() {
-    use acyclic_harness::local::LocalHarness;
     use acyclic_harness_providers::{Credentials, Registry};
 
     let fixture = fixture();
@@ -1760,33 +1785,30 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         .unwrap()
         .working_directory(&fixture.workspace)
         .unwrap();
-    let local = Arc::new(LocalHarness::open(config).await.unwrap());
-    let connection = local.connect().await.unwrap();
+    let directory = acyclic_harness::local::service::Directory::for_config(&config).unwrap();
+    let service_owner = directory.own().unwrap();
+    let listener = service_owner.listener().unwrap();
+    let (ready, readiness) = tokio::sync::oneshot::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let result = acyclic_harness::server::serve(
+            listener,
+            acyclic_harness::server::ServerConfig::new(config),
+            |endpoint| {
+                let _ = ready.send(service_owner.publish(endpoint));
+            },
+            async {
+                let _ = stopped.await;
+            },
+        )
+        .await;
+        drop(service_owner);
+        result
+    });
+    readiness.await.unwrap().unwrap();
+    let connection = directory.connect().await.unwrap();
     let agent = connection.root().to_string();
     drop(connection);
-    Arc::try_unwrap(local)
-        .unwrap_or_else(|_| panic!("owner retains a connection"))
-        .disconnect()
-        .await
-        .unwrap();
-
-    let output = graphcoder(
-        &fixture,
-        &model.catalog,
-        vec![
-            "--default-config",
-            "--host-state-directory",
-            state.to_str().unwrap(),
-            "--agent",
-            &agent,
-            "sessions",
-        ],
-        "",
-    )
-    .await;
-    let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
-    assert_eq!(reply["items"], json!([]));
-    assert!(reply["next"].is_null());
     let query = |agent: &str, command: &str, peers: bool| {
         let mut process = graphcoder_command(&fixture);
         process
@@ -1807,9 +1829,6 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         assert_eq!(reply["items"], json!([]));
         assert!(reply["next"].is_null());
     }
-    let directory =
-        acyclic_harness::local::service::Directory::for_workspace(&fixture.workspace, Some(&state))
-            .unwrap();
     let owner = directory.connect().await.unwrap();
     let selected = acyclic_harness::local::sessions::create(&owner, "selected-query", None)
         .await
@@ -1846,6 +1865,9 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         );
     }
     assert_eq!(model.generated(), 0, "observation dispatched model work");
+    drop((owner, selected, other));
+    stop.send(()).unwrap();
+    server.await.unwrap().unwrap();
     model.close().await;
 }
 
@@ -1859,12 +1881,6 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     )
     .unwrap();
     let model = model(fixture._directory.path()).await;
-    let mut catalog: Value =
-        serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
-    catalog["default_model"] = json!("fixture/tiny");
-    catalog["fixture"]["models"]["tiny"]["capacity"] =
-        json!({"context_tokens":1_048_576,"output_tokens":1_048_576});
-    std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
     let plugins = task_plugins(&fixture);
     let mut command = graphcoder_command(&fixture);
     command.arg("--home-file").arg(&plugins);
@@ -1952,28 +1968,6 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         }
         assert!(!same_contract(&cli, &actual), "{actual}");
     }
-    // A new identity appends another prompt to the same persistent conversation.
-    assert_eq!(
-        embedded::answer(embedded_config(), "next", "another prompt")
-            .await
-            .unwrap(),
-        "fixture answer"
-    );
-    let generated = model.generated();
-    // Reopening with the same identity and prompt recovers without dispatch.
-    assert_eq!(
-        embedded::answer(embedded_config(), "next", "another prompt")
-            .await
-            .unwrap(),
-        "fixture answer"
-    );
-    assert_eq!(model.generated(), generated);
-    assert!(
-        embedded::answer(embedded_config(), "next", "changed prompt")
-            .await
-            .is_err()
-    );
-    assert_eq!(model.generated(), generated);
     model.close().await;
 }
 

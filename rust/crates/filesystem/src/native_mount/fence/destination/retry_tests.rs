@@ -41,8 +41,8 @@ impl Fixture {
             |work| slot.open(&directory, &mut &*work),
         )?;
         let registry = directory.join(NATIVE_REGISTRY_NAME);
-        let before = work.receipt();
-        let live = work.live_allocation_bytes();
+        let before = work.receipt().unwrap();
+        let live = work.live_allocation_bytes().unwrap();
         let fence = directory.join(std::str::from_utf8(
             guard.as_ref().unwrap().fence_name.as_ref().unwrap(),
         )?);
@@ -91,7 +91,7 @@ impl Fixture {
                 inspect(&registry)?;
                 Ok(true)
             }
-            Err(error) if lock_is_contended(&error) => Ok(false),
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Ok(false),
             Err(error) => Err(error),
         }
     }
@@ -128,8 +128,8 @@ impl Fixture {
         self.packet.is_retired()
             && !self.destination.exists()
             && !self.fence.exists()
-            && self.work.receipt() == expected
-            && self.work.live_allocation_bytes() == self.live
+            && self.work.receipt().unwrap() == expected
+            && self.work.live_allocation_bytes().unwrap() == self.live
     }
 }
 
@@ -209,7 +209,7 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
         .read(true)
         .write(true)
         .open(&unrelated.registry)?;
-    assert!(lock_is_contended(
+    assert!(acyclic_native_runtime::is_exclusive_lock_contention(
         &FileLock::try_acquire(old_probe, FileLockMode::Exclusive).unwrap_err()
     ));
     assert!(fixture.registry_is_unlocked()?);

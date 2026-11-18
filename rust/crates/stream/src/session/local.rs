@@ -1,12 +1,12 @@
 //! In-process platform I/O over the same multiplexed session implementation.
 use super::{CallProvider, Client, Limits, Products, ResourceProvider, SocketProvider, transport};
 use crate::runtime::Executor;
-use crate::{BoxProviderFuture, StreamError, StreamProvider};
+use crate::{BoxProviderFuture, ProviderOwner, StreamError, StreamProvider};
 use futures::StreamExt as _;
 use std::sync::Arc;
 
 struct Local<P: ?Sized> {
-    provider: Arc<P>,
+    provider: ProviderOwner<P>,
     authority: Arc<super::Authority>,
     products: Products,
     lifetime: Option<tokio::sync::watch::Receiver<()>>,
@@ -44,7 +44,7 @@ impl Client {
     /// Shares the platform pool with a caller-selected in-process provider.
     /// The provider supplies authority; no socket, daemon or second protocol runs.
     pub fn in_process<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
+        provider: ProviderOwner<P>,
         authority: Arc<super::Authority>,
         executor: Arc<dyn Executor>,
     ) -> Self {
@@ -55,7 +55,7 @@ impl Client {
     /// changes, are resolved by their owning provider, exactly as a node
     /// session serving the same resources would.
     pub fn in_process_with_resources<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
+        provider: ProviderOwner<P>,
         authority: Arc<super::Authority>,
         resources: Arc<dyn ResourceProvider>,
         executor: Arc<dyn Executor>,
@@ -75,7 +75,7 @@ impl Client {
     /// Uses the identical channel admission/credit/dispatch as a network host.
     /// When supplied, the host's lifetime closes outstanding calls and follows.
     pub fn in_process_with_products<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
+        provider: ProviderOwner<P>,
         authority: Arc<super::Authority>,
         resources: Option<Arc<dyn ResourceProvider>>,
         calls: Arc<dyn CallProvider>,
@@ -99,7 +99,7 @@ impl Client {
     /// The in-process pool whose actor sockets are hosted by `sockets`, on
     /// the same admission, credit and channel lifetime as a network host.
     pub fn in_process_with_sockets<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
+        provider: ProviderOwner<P>,
         authority: Arc<super::Authority>,
         calls: Option<Arc<dyn CallProvider>>,
         sockets: Arc<dyn SocketProvider>,
@@ -120,13 +120,13 @@ impl Client {
     }
 
     fn local<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
+        provider: ProviderOwner<P>,
         authority: Arc<super::Authority>,
         products: Products,
         executor: Arc<dyn Executor>,
         lifetime: Option<tokio::sync::watch::Receiver<()>>,
     ) -> Self {
-        let endpoint: transport::Endpoint = Arc::new(Local {
+        let endpoint: transport::Endpoint = transport::Shared::new(Local {
             provider,
             authority,
             products,
@@ -135,7 +135,7 @@ impl Client {
         let local = endpoint.clone();
         Self::with_transport(
             endpoint,
-            Arc::new(move |node| {
+            transport::Shared::new(move |node| {
                 let local = local.clone();
                 Box::pin(async move {
                     if node.node_id != "local" {

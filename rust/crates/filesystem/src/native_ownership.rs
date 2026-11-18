@@ -24,12 +24,12 @@ impl NativeOwnershipReceipt {
     pub(crate) fn encode(self) -> [u8; RECEIPT_BYTES] {
         let mut bytes = [0; RECEIPT_BYTES];
         let (prefix, checksum) = bytes.split_at_mut(HASHED_BYTES);
-        self.encode_prefix((&mut *prefix).try_into().expect("fixed ownership prefix"));
+        self.encode_prefix(prefix);
         checksum.copy_from_slice(blake3::hash(prefix).as_bytes());
         bytes
     }
 
-    fn encode_prefix(self, bytes: &mut [u8; HASHED_BYTES]) {
+    fn encode_prefix(self, bytes: &mut [u8]) {
         bytes[..10].copy_from_slice(DOMAIN);
         bytes[10..16].copy_from_slice(VERSION);
         bytes[16..32].copy_from_slice(&self.root.to_bytes());
@@ -60,19 +60,20 @@ impl NativeOwnershipReceipt {
         if body[76..] != *blake3::hash(&bytes[..HASHED_BYTES]).as_bytes() {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        Ok(Self::decode_fields(
-            body[..76].try_into().expect("fixed ownership fields"),
-        ))
+        let fields = body
+            .first_chunk::<76>()
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        Ok(Self::decode_fields(fields))
     }
 
     fn decode_fields(bytes: &[u8; 76]) -> Self {
         Self {
-            root: NativeRootIdentity::from_bytes(bytes[..16].try_into().unwrap()),
-            fence: NativeRootIdentity::from_bytes(bytes[16..32].try_into().unwrap()),
-            parent: NativeRootIdentity::from_bytes(bytes[32..48].try_into().unwrap()),
-            volume: VolumeId::from_bytes(bytes[48..64].try_into().unwrap()),
-            pid: u32::from_le_bytes(bytes[64..68].try_into().unwrap()),
-            started: u64::from_le_bytes(bytes[68..].try_into().unwrap()),
+            root: NativeRootIdentity::from_bytes(std::array::from_fn(|i| bytes[i])),
+            fence: NativeRootIdentity::from_bytes(std::array::from_fn(|i| bytes[16 + i])),
+            parent: NativeRootIdentity::from_bytes(std::array::from_fn(|i| bytes[32 + i])),
+            volume: VolumeId::from_bytes(std::array::from_fn(|i| bytes[48 + i])),
+            pid: u32::from_le_bytes(std::array::from_fn(|i| bytes[64 + i])),
+            started: u64::from_le_bytes(std::array::from_fn(|i| bytes[68 + i])),
         }
     }
 

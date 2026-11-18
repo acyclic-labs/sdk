@@ -1,6 +1,7 @@
 use super::*;
 use acyclic_stream::{
-    IdempotencyKey, MemoryLimits, MemoryStream, OwnedBytes, StreamError, StreamProvider,
+    IdempotencyKey, MemoryLimits, MemoryStream, OwnedBytes, StreamCategory, StreamError,
+    StreamProvider,
 };
 use state_record::{CompanionKind, PortableRoot, StateRecord};
 
@@ -107,8 +108,8 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
         }
     );
     assert_eq!(record.commit_id, receipt.commit_id);
-    assert_eq!(read_work.spent().backend_read_operations, 1);
-    assert_eq!(read_work.spent().authority_records_read, 1);
+    assert_eq!(read_work.spent().unwrap().backend_read_operations, 1);
+    assert_eq!(read_work.spent().unwrap().authority_records_read, 1);
     let calls = provider.requests().since(before);
     assert_eq!(calls.class(RequestClass::Head), 1);
     assert_eq!(calls.data(), 0);
@@ -150,7 +151,7 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
         );
         assert_eq!(provider.requests().since(before).control(), 0);
         assert_eq!(provider.requests().since(before).data(), 0);
-        assert_eq!(denied.spent(), WorkCounters::UNCHARGED);
+        assert_eq!(denied.spent().unwrap(), WorkCounters::UNCHARGED);
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -171,8 +172,8 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
             receipt.commit_id
         );
         assert!(observed.allocation.is_some());
-        assert_eq!(native.spent().backend_read_operations, 1);
-        assert_eq!(native.spent().authority_records_read, 1);
+        assert_eq!(native.spent().unwrap().backend_read_operations, 1);
+        assert_eq!(native.spent().unwrap().authority_records_read, 1);
         let calls = provider.requests().since(before);
         assert_eq!(calls.class(RequestClass::Head), 1);
         assert_eq!(calls.data(), 0);
@@ -411,7 +412,7 @@ async fn portable_root_rejects_foreign_lineage_before_publication() -> TestResul
     let mut publication = commit(b"sealed-root")?;
     let original = publication.request().clone();
     let calls = provider.requests();
-    let spent = work.spent();
+    let spent = work.spent().unwrap();
     for invalid in [
         PortableRoot {
             root_file_id: crate::FileId::from_bytes([11; 16]),
@@ -439,7 +440,7 @@ async fn portable_root_rejects_foreign_lineage_before_publication() -> TestResul
             Err(AuthorityStoreError::RejectedStatic(_))
         ));
         assert_eq!(publication.request(), &original);
-        assert_eq!(work.spent(), spent);
+        assert_eq!(work.spent().unwrap(), spent);
         assert_eq!(provider.requests().since(calls).control(), 0);
         assert_eq!(provider.requests().since(calls).data(), 0);
     }
@@ -504,7 +505,10 @@ async fn stale_root_or_authorization_publishes_no_other_root() -> TestResult {
             store.submit(publication, &mut work).await?,
             FilesystemCommitOutcome::Rejected(_)
         ));
-        assert_eq!(provider.tail(right).await, Err(StreamError::NotFound));
+        assert_eq!(
+            provider.tail(right).await.map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
+        );
         assert_eq!(provider.tail(left).await?, if stale_policy { 1 } else { 2 });
     }
     Ok(())
@@ -561,7 +565,10 @@ async fn cross_provider_observation_and_oversize_total_refuse_before_submit() ->
     ));
     assert_eq!(publication.request(), &before);
     assert!(publication.request_mut().is_some());
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -575,11 +582,11 @@ async fn permanent_record_reconciles_without_idempotency_lookup_and_binds_bytes(
     // Discard the reply; permanent recovery reads the predicted record only.
     drop(publish(&store, &path, b"lost-reply", &state(b"accepted"), &mut work).await?);
     let operation = IdempotencyKey::new(OwnedBytes::from_static(b"lost-reply"))?;
-    let before = work.spent().backend_read_operations;
+    let before = work.spent().unwrap().backend_read_operations;
     let receipt = store
         .reconcile_record(path.clone(), 0, &operation, &state(b"accepted"), &mut work)
         .await?;
-    assert_eq!(work.spent().backend_read_operations - before, 1);
+    assert_eq!(work.spent().unwrap().backend_read_operations - before, 1);
     assert_eq!(receipt.sequence, 0);
     assert!(
         store
@@ -633,12 +640,18 @@ async fn prepared_commit_cannot_mix_or_switch_provider_owners() -> TestResult {
         FilesystemCommitOutcome::Unknown { .. }
     ));
     assert_eq!(
-        provider.tail(path.clone()).await,
-        Err(StreamError::NotFound)
+        provider
+            .tail(path.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     assert_eq!(
-        foreign_provider.tail(path).await,
-        Err(StreamError::NotFound)
+        foreign_provider
+            .tail(path)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     Ok(())
 }
@@ -678,7 +691,10 @@ async fn exact_expiry_is_retained_with_the_unknown_request() -> TestResult {
         }
         _ => return Err("expired publication was admitted".into()),
     }
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -754,7 +770,10 @@ async fn canonical_request_keeps_the_earliest_expiry_for_external_and_owned_subm
                     .tail(StreamPath::new(format!("actor/{suffix}"))?)
                     .await;
                 if expired {
-                    assert_eq!(tail, Err(StreamError::NotFound));
+                    assert_eq!(
+                        tail.map_err(|error| error.category()),
+                        Err(StreamCategory::NotFound)
+                    );
                 } else {
                     assert_eq!(tail?, 1);
                 }
@@ -854,7 +873,10 @@ async fn native_submission_keeps_the_canonical_exact_expiry_and_original_request
         }
         _ => return Err("native submission bypassed its exact expiry".into()),
     }
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -878,7 +900,7 @@ fn sealed_request_keeps_original_native_custody_after_preparation_work_drops() -
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut work = AuthorityWork::native(&original, &cancellation);
     let path = StreamPath::new("agent/files/root")?;
     assert!(
@@ -899,16 +921,16 @@ fn sealed_request_keeps_original_native_custody_after_preparation_work_drops() -
         &mut work,
     )?;
     store.seal_observed(&mut publication, &[], None, &mut work)?;
-    let retained = original.live_allocation_bytes();
+    let retained = original.live_allocation_bytes().unwrap();
     assert!(retained > baseline);
     drop(work);
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         retained,
         "sealed request lost its vector funding"
     );
     drop(publication);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -923,7 +945,7 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let collection = Arc::new(crate::collection::Collection::default());
     let hold = collection
         .unswept(&mut crate::kernel::allocation::KernelAccounting::native(
@@ -946,7 +968,7 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     store.seal_observed(&mut publication, &[], Some(u64::MAX), &mut preparation)?;
     let request = publication.request().clone();
     drop(preparation);
-    let retained = original.live_allocation_bytes();
+    let retained = original.live_allocation_bytes().unwrap();
     assert!(retained > baseline);
 
     let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
@@ -1041,7 +1063,7 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     assert_eq!(publication.request(), &request);
     assert_eq!(publication.deadline(), Some(u64::MAX));
     assert_eq!(spy.commit_attempts(), 1, "local refusals must not resubmit");
-    assert_eq!(original.live_allocation_bytes(), retained);
+    assert_eq!(original.live_allocation_bytes().unwrap(), retained);
     assert!(
         futures::poll!(collecting.as_mut()).is_pending(),
         "uncertain closure became collectible"
@@ -1062,7 +1084,7 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     drop(store);
     drop(spy);
     drop(provider);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -1110,8 +1132,11 @@ async fn prepared_state_batches_reconcile_all_roots_and_refs_from_exact_records(
         assert!(publication.request_mut().is_none());
         assert_eq!(publication.request().effects[0].mutations.len(), count + 1);
         assert_eq!(
-            provider.tail(first.clone()).await,
-            Err(StreamError::NotFound)
+            provider
+                .tail(first.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
 
         // Capture a real provider decision, then discard the reply. Recovery
@@ -1131,17 +1156,17 @@ async fn prepared_state_batches_reconcile_all_roots_and_refs_from_exact_records(
             &mut work,
         )
         .await?;
-        let before = work.spent();
+        let before = work.spent().unwrap();
         assert!(
             matches!(store.reconcile_states(publication, &mut work).await,
             StatePublicationOutcome::Recorded(id) if id == recorded_id)
         );
         assert_eq!(
-            work.spent().backend_read_operations - before.backend_read_operations,
+            work.spent().unwrap().backend_read_operations - before.backend_read_operations,
             (count + 1) as u64
         );
         assert_eq!(
-            work.spent().backend_write_operations,
+            work.spent().unwrap().backend_write_operations,
             before.backend_write_operations
         );
         assert_eq!(provider.tail(first).await?, 2);
@@ -1235,7 +1260,7 @@ async fn final_state_fence_refusal_preserves_original_request_and_collection_cus
         &mut work,
     )?;
     let request = publication.request().clone();
-    let before = work.spent();
+    let before = work.spent().unwrap();
     assert!(
         store
             .prepare_records(
@@ -1250,18 +1275,27 @@ async fn final_state_fence_refusal_preserves_original_request_and_collection_cus
     assert_eq!(publication.request(), &request);
     assert!(publication.request_mut().is_some());
     assert_eq!(
-        work.spent().backend_read_operations,
+        work.spent().unwrap().backend_read_operations,
         before.backend_read_operations
     );
     assert_eq!(
-        work.spent().backend_write_operations,
+        work.spent().unwrap().backend_write_operations,
         before.backend_write_operations
     );
     assert_eq!(
-        provider.tail(original_path).await,
-        Err(StreamError::NotFound)
+        provider
+            .tail(original_path)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
-    assert_eq!(provider.tail(staged_path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider
+            .tail(staged_path)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     let mut collecting = Box::pin(collection.begin());
     assert!(futures::poll!(collecting.as_mut()).is_pending());
     // The original owner is the producer of the collection wake. Dropping it
@@ -1449,8 +1483,9 @@ async fn oversized_state_batch_leaves_the_original_request_and_no_published_pref
         assert_eq!(
             provider
                 .tail(StreamPath::new(format!("large/root{index}"))?)
-                .await,
-            Err(StreamError::NotFound)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
     }
     Ok(())
@@ -1513,7 +1548,7 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let collection = Arc::new(crate::collection::Collection::default());
     let hold = collection
         .unswept(&mut crate::kernel::allocation::KernelAccounting::native(
@@ -1536,7 +1571,7 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
     )?;
     let request = publication.request().clone();
     drop(preparation);
-    let retained = original.live_allocation_bytes();
+    let retained = original.live_allocation_bytes().unwrap();
     assert!(retained > baseline);
     let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
     let mut publication = unknown(store.submit(publication, &mut work).await?)?;
@@ -1566,7 +1601,7 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
     };
     assert_eq!(publication.request(), &request);
     assert_eq!(publication.deadline(), Some(u64::MAX));
-    assert_eq!(original.live_allocation_bytes(), retained);
+    assert_eq!(original.live_allocation_bytes().unwrap(), retained);
     assert!(futures::poll!(collecting.as_mut()).is_pending());
     assert!(matches!(
         store.reconcile_states(publication, &mut work).await,
@@ -1579,7 +1614,7 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
     drop(store);
     drop(spy);
     drop(provider);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 

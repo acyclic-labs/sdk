@@ -51,6 +51,13 @@ pub type BoxProviderStream<'a, T> = futures::stream::LocalBoxStream<'a, T>;
 /// Platform ownership boundary for native threads or browser event loops.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait ProviderPlatform: Send + Sync {}
+
+/// Shares a provider within the JavaScript event loop.
+#[cfg(target_arch = "wasm32")]
+pub use std::rc::Rc as ProviderOwner;
+/// Shares a provider using the ownership model of its execution platform.
+#[cfg(not(target_arch = "wasm32"))]
+pub use std::sync::Arc as ProviderOwner;
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send + Sync + ?Sized> ProviderPlatform for T {}
 /// Browser providers may own thread-affine platform handles.

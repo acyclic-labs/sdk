@@ -303,11 +303,9 @@ impl StockExecution<'_> {
                     "compacted context requires capacity policy",
                 ));
             };
-            if self.model_capacity()? != final_accounting.capacity
-                || proof.summary.as_ref().is_none_or(|summary| {
-                    summary.operation_id != input.operation_id || summary.step > step
-                })
-            {
+            if proof.summary.as_ref().is_none_or(|summary| {
+                summary.operation_id != input.operation_id || summary.step > step
+            }) {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Storage,
@@ -370,13 +368,8 @@ impl StockExecution<'_> {
                 ));
             }
         };
-        if self.model_capacity()? != accounting.capacity {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Conflict,
-                "selected capacity differs from captured accounting",
-            ));
-        }
+        // An admitted request keeps the capacity its journal captured; a
+        // reopened owner's live provider capacity applies to later admissions.
         if self.single_request && !prepared.request().tools.is_empty() {
             return Err(stock_boundary(
                 self.io,

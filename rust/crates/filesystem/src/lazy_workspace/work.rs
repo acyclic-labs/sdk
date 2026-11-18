@@ -39,10 +39,9 @@ pub(super) fn accept_receipt<T, E: Into<LazyWorkspaceError>>(
     result: crate::MeasuredResult<OperationReceipt<T>, E>,
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<T, LazyWorkspaceError> {
-    let (result, spent) = match result {
-        Ok(receipt) => (Ok(receipt.value), receipt.work),
-        Err(failure) => (Err(failure.error.into()), *failure.work),
-    };
+    let (result, spent) = ctx.split_receipt(
+        result.map_err(|failure| failure.map_error(|error| -> LazyWorkspaceError { error.into() })),
+    )?;
     let (ledger, work, budget, _) = ctx
         .standalone_parts()
         .ok_or(LazyWorkspaceError::Concurrent)?;

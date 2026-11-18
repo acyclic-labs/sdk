@@ -1,0 +1,13 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "extent",
+    src = "proof.rs",
+    srcs = [
+        "//rust/crates/log-frame:src/recovery/frame_layout.rs",
+        "//rust/proofs/id-codecs:src/frame_extent.rs",
+    ],
+    harness = "full_frame_extents_refuse_overflow_without_clamping",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

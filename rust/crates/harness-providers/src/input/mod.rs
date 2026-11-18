@@ -27,7 +27,7 @@ fn check(ok: bool, rule: &'static str, errors: &mut Vec<&'static str>) {
 
 fn name(value: &Value, maximum: usize, leading_letter: bool, punctuation: &'static [u8]) -> bool {
     value.as_str().is_some_and(|text| {
-        crate::protocol::name::Name {
+        acyclic_harness_provider_protocol::name::Name {
             maximum,
             leading_letter,
             punctuation,

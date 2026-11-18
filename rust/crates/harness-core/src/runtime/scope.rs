@@ -110,7 +110,7 @@ impl RuntimeScope {
             .claim(
                 std::mem::size_of::<Self>() as u64,
                 0,
-                acyclic_fs::WorkCounters::default(),
+                acyclic_fs_work::performance::WorkCounters::default(),
             )
             .map_err(|cause| Error::NativeWork {
                 cause,

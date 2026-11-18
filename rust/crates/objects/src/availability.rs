@@ -1,14 +1,11 @@
 //! Coalesced physical-availability invalidations, scoped by the owning account.
+use crate::error::unavailable;
 use crate::{Digest, Error, wire::ErrorCode};
 use acyclic_stream::{BoxProviderStream, ProviderTask};
 use futures::{Stream, StreamExt, stream};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
-
-fn unavailable() -> Error {
-    ErrorCode::Unavailable.into()
-}
 
 /// One selected key's observation cut. This is neither an Objects revision nor
 /// evidence that bytes exist, have been verified, or have become durable.

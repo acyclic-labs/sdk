@@ -57,7 +57,10 @@ fn protected_text(value: &JsValue) -> Result<Zeroizing<String>, CredentialError>
     }
 }
 
-#[allow(unsafe_code)] // Synchronous JavaScript FFI borrows this fixed backing.
+#[allow(
+    unsafe_code,
+    reason = "synchronous TextEncoder borrows fixed Wasm memory without reentry"
+)]
 fn encode_protected(text: &JsString, bytes: &mut [u8]) -> Result<usize, CredentialError> {
     // SAFETY: the view is used only by the retained native TextEncoder method,
     // which cannot reenter Wasm or grow its memory. No Rust allocation, await or
@@ -111,7 +114,7 @@ impl CredentialSource for Source {
             } else {
                 Some(CredentialBinding {
                     revision: revision(get(&binding, "revision")?)?,
-                    expires_at_unix_seconds: seconds(get(&binding, "expiresAtUnixSeconds")?)?,
+                    expires_at_unix_seconds: seconds(&get(&binding, "expiresAtUnixSeconds")?)?,
                 })
             };
             let token = protected_text(&invoke(&object, "token")?)?;
@@ -143,7 +146,7 @@ impl CredentialSource for Source {
             let validity = get(&owner.0, "validity")?;
             let source_revision = get(&validity, "revision")?;
             let validity = CredentialValidity {
-                now_unix_seconds: seconds(get(&validity, "nowUnixSeconds")?)?,
+                now_unix_seconds: seconds(&get(&validity, "nowUnixSeconds")?)?,
                 revision: if source_revision.is_undefined() {
                     None
                 } else {
@@ -250,10 +253,16 @@ fn revision(value: JsValue) -> Result<CredentialRevision, CredentialError> {
     }
     Ok(CredentialRevision::from(text.iter().collect::<Vec<u16>>()))
 }
-fn seconds(value: JsValue) -> Result<u64, CredentialError> {
+fn seconds(value: &JsValue) -> Result<u64, CredentialError> {
     let value = value.as_f64().ok_or(CredentialError::Invalid)?;
     if !(0.0..=9_007_199_254_740_991.0).contains(&value) || value.fract() != 0.0 {
         return Err(CredentialError::Invalid);
     }
-    Ok(value as u64)
+    if value == 0.0 {
+        return Ok(0);
+    }
+    value
+        .to_string()
+        .parse()
+        .map_err(|_| CredentialError::Invalid)
 }

@@ -381,24 +381,35 @@ impl AgentTool {
                         "this agent has no creation template to spawn from".into(),
                     )));
                 };
-                if let Some(limit) = parent
-                    .topology
-                    .as_ref()
-                    .and_then(|topology| topology.spawn_limit(turn.parent.is_none()))
-                {
-                    let mut pending = BTreeSet::new();
+                let topology = parent.topology.as_ref();
+                let mut pending = BTreeSet::new();
+                if topology.is_some_and(|topology| {
+                    topology.spawn_limit(turn.parent.is_none()).is_some()
+                        || topology.max_children().is_some()
+                }) {
                     for effect in turn.effects.recorded().await? {
                         if let TurnEffect::Spawn { intent, .. } = effect {
                             pending.insert(intent);
                         }
                     }
-                    if !pending.contains(&intent)
-                        && turn.spawned_children.saturating_add(pending.len() as u64) >= limit
-                    {
-                        return Ok(ToolResult {
-                            value: json!({"error": format!("tool execution failed: forced topology permits at most {limit} total spawns")}),
-                        });
-                    }
+                }
+                if let Some(limit) =
+                    topology.and_then(|topology| topology.spawn_limit(turn.parent.is_none()))
+                    && !pending.contains(&intent)
+                    && turn.spawned_children.saturating_add(pending.len() as u64) >= limit
+                {
+                    return Ok(ToolResult {
+                        value: json!({"error": format!("tool execution failed: forced topology permits at most {limit} total spawns")}),
+                    });
+                }
+                if let Some(topology) = topology
+                    && let Some(limit) = topology.max_children()
+                    && !pending.contains(&intent)
+                    && !topology.admits_children(turn.children.len().saturating_add(pending.len()))
+                {
+                    return Ok(ToolResult {
+                        value: json!({"error": format!("tool execution failed: forced topology permits at most {limit} open children")}),
+                    });
                 }
                 let peers = match peer_grants(&turn.agent, input.peers) {
                     Ok(peers) => peers,

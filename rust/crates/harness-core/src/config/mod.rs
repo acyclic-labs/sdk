@@ -44,6 +44,8 @@ pub use types::{
 #[cfg(not(target_arch = "wasm32"))]
 mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use evaluate::visit_module_sources;
+#[cfg(not(target_arch = "wasm32"))]
 pub use evaluate::{
     Composition, Evaluated, Evaluation, LayerInput, LayerState, ModuleCut, ModuleRead, Prepared,
     Surface, Tree, compose, compose_result, compose_with_evidence, evaluate, evaluate_decision,

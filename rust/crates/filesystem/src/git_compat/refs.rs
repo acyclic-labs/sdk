@@ -160,7 +160,7 @@ impl GitCompatState {
     }
 }
 
-uuid_identity!(
+acyclic_fs_format::uuid_identity!(
     GitTransitionId,
     "Stable identity for one prepared compatibility filesystem transition."
 );

@@ -21,12 +21,19 @@ members = [
   "rust/crates/conformance/cloudflare",
   "rust/crates/conformance/hosted-actors",
   "rust/crates/contract-derive",
+  "rust/crates/decimal-u64",
   "rust/crates/differential",
+  "rust/crates/executable-search",
   "rust/crates/filesystem",
   "rust/crates/filesystem-base",
+  "rust/crates/filesystem-format",
   "rust/crates/filesystem-napi",
+  "rust/crates/filesystem-native-contract",
+  "rust/crates/filesystem-native-core-tests",
+  "rust/crates/filesystem-lock-order-tests",
   "rust/crates/filesystem-wasm",
   "rust/crates/filesystem-wire",
+  "rust/crates/filesystem-work",
   "rust/crates/filesystem/fuzz",
   "rust/crates/filesystem/proofs/control-layout",
   "rust/crates/filesystem/proofs/lease-path",
@@ -35,9 +42,20 @@ members = [
   "rust/crates/harness-client",
   "rust/crates/harness-conformance",
   "rust/crates/harness-core",
+  "rust/crates/harness-layout",
+  "rust/crates/harness-modules",
+  "rust/crates/harness-json",
+  "rust/crates/harness-sse",
+  "rust/crates/harness-control",
+  "rust/crates/harness-control-checks",
+  "rust/crates/harness-hosting",
+  "rust/crates/harness-local",
+  "rust/crates/harness-suite",
   "rust/crates/harness-metrics",
   "rust/crates/harness-fuzz",
   "rust/crates/harness-mock-model",
+  "rust/crates/harness-provider-protocol",
+  "rust/crates/harness-provider-response",
   "rust/crates/harness-providers",
   "rust/crates/harness-providers/fuzz",
   "rust/crates/harness-search",
@@ -50,6 +68,7 @@ members = [
   "rust/crates/host-platform",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
+  "rust/crates/log-frame",
   "rust/crates/mcp",
   "rust/crates/machines",
   "rust/crates/machines-daytona",
@@ -61,10 +80,14 @@ members = [
   "rust/crates/markdown/fuzz",
   "rust/crates/markdown-work",
   "rust/crates/napi-progress-test",
+  "rust/crates/native-lines",
   "rust/crates/native-runtime",
+  "rust/crates/native-stdin",
   "rust/crates/objects",
   "rust/crates/objects-wasm",
   "rust/crates/observability",
+  "rust/crates/process-identity",
+  "rust/crates/process-resources",
   "rust/crates/proto-codegen",
   "rust/crates/protobuf-json",
   "rust/crates/sdk-docs",
@@ -74,6 +97,10 @@ members = [
   "rust/crates/sdk-generation/fuzz",
   "rust/crates/source-policies",
   "rust/crates/stream",
+  "rust/crates/stream-body",
+  "rust/crates/stream-rpc-inventory",
+  "rust/crates/stream-trust",
+  "rust/crates/stream-wire",
   "rust/crates/stream-napi",
   "rust/crates/stream/contract-fuzz",
   "rust/crates/stream/fuzz",
@@ -113,40 +140,67 @@ default-members = [
   "rust/crates/conformance/hosted-actors",
   "rust/crates/contract-derive",
   "rust/crates/collections",
+  "rust/crates/decimal-u64",
   "rust/crates/differential",
+  "rust/crates/executable-search",
   "rust/crates/filesystem",
   "rust/crates/filesystem-base",
+  "rust/crates/filesystem-format",
   "rust/crates/filesystem-wire",
+  "rust/crates/filesystem-work",
   "rust/crates/filesystem/fuzz",
   "rust/crates/filesystem-napi",
+  "rust/crates/filesystem-native-contract",
+  "rust/crates/filesystem-native-core-tests",
+  "rust/crates/filesystem-lock-order-tests",
   "rust/crates/filesystem-wasm",
   "rust/crates/grpc-observability",
   "rust/crates/harness",
   "rust/crates/harness-client",
   "rust/crates/harness-core",
+  "rust/crates/harness-layout",
+  "rust/crates/harness-modules",
+  "rust/crates/harness-json",
+  "rust/crates/harness-sse",
+  "rust/crates/harness-control",
+  "rust/crates/harness-control-checks",
+  "rust/crates/harness-hosting",
+  "rust/crates/harness-local",
+  "rust/crates/harness-suite",
   "rust/crates/harness-metrics",
   "rust/crates/host-platform",
   "rust/crates/harness-search",
   "rust/crates/harness-conformance",
   "rust/crates/harness-fuzz",
+  "rust/crates/harness-provider-protocol",
+  "rust/crates/harness-provider-response",
   "rust/crates/harness-providers",
   "rust/crates/harness-mock-model",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
+  "rust/crates/log-frame",
   "rust/crates/mcp",
   "rust/crates/machines",
   "rust/crates/machines-wasm",
   "rust/crates/markdown",
   "rust/crates/markdown-work",
+  "rust/crates/native-lines",
   "rust/crates/native-runtime",
+  "rust/crates/native-stdin",
   "rust/crates/observability",
   "rust/crates/objects",
   "rust/crates/objects-wasm",
+  "rust/crates/process-identity",
+  "rust/crates/process-resources",
   "rust/crates/proto-codegen",
   "rust/crates/protobuf-json",
   "compatibility",
   "rust/crates/source-policies",
   "rust/crates/stream",
+  "rust/crates/stream-body",
+  "rust/crates/stream-rpc-inventory",
+  "rust/crates/stream-trust",
+  "rust/crates/stream-wire",
   "rust/crates/stream-napi",
   "rust/crates/test-runner",
   "rust/crates/test-support",
@@ -209,7 +263,6 @@ ruzstd = "0.9.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 serde_json = "1.0.145"
-sse-stream = "=0.3.0"
 tokio-util = "0.7"
 s3s = "0.17.0"
 schemars = "1"
@@ -256,7 +309,7 @@ web-sys = { version = "0.3.94", features = [
 ] }
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(loom)", "cfg(kani)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(loom)", "cfg(kani)", "cfg(tokio_unstable)"] }
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"
@@ -328,6 +381,11 @@ opt-level = 3
 [profile.dev.package.loom]
 opt-level = 3
 
+# Markdown loads and parses every bundled grammar's syntax data through the
+# vendored syntect, which is otherwise unoptimized in a dev build.
+[profile.dev.package.acyclic-syntect]
+opt-level = 3
+
 [patch.crates-io]
 napi = { path = "rust/vendor/napi-3.15.0" }
 rquickjs-core = { path = "rust/vendor/rquickjs-core-0.14.0" }
@@ -342,8 +400,7 @@ opt-level = 3
 [profile.release]
 incremental = true
 
-# The shipped executable, built by scripts/build-product.mjs. Release stays
-# fast to build for development.
+# Distribution settings for Cargo consumers.
 [profile.dist]
 inherits = "release"
 lto = "fat"

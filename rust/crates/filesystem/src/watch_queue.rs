@@ -168,25 +168,25 @@ mod tests {
             &cancellation,
         )
         .unwrap();
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap();
         let (sender, receiver) = channel(Some(allocation));
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             baseline,
             "idle capacity is not physical storage"
         );
         for value in 0..128u64 {
             sender.try_send(value).unwrap();
         }
-        assert_eq!(work.live_allocation_bytes(), baseline + 1_024);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline + 1_024);
         let refused = sender.try_send(128);
         assert!(
             matches!(refused, Err(TrySendError::Full(128))),
             "queue growth admitted replacement while original backing was still live: {refused:?}"
         );
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             baseline + 1_024,
             "denied growth retained no bytes"
         );
@@ -194,18 +194,18 @@ mod tests {
             assert_eq!(receiver.try_recv(), Ok(value));
         }
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             baseline,
             "drained large backing was released"
         );
         sender.try_send(129).unwrap();
         assert_eq!(receiver.try_recv(), Ok(129));
         assert!(
-            work.live_allocation_bytes() > baseline,
+            work.live_allocation_bytes().unwrap() > baseline,
             "small retained backing stays charged"
         );
         drop(receiver);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         assert!(matches!(
             sender.try_send(130),
             Err(TrySendError::Disconnected(130))
@@ -234,7 +234,7 @@ mod tests {
                 sender.try_send(value)?;
             }
             assert_eq!(receiver.retained_slots(), 4);
-            assert_eq!(work.live_allocation_bytes(), baseline + 4);
+            assert_eq!(work.live_allocation_bytes().unwrap(), baseline + 4);
             let before = work.receipt();
             let mut result = Ok(());
             let physical = acyclic_test_support::measure(|| {
@@ -253,9 +253,12 @@ mod tests {
                 assert_eq!(physical.count_total, 1);
                 assert_eq!(physical.bytes_total, 8);
                 assert_eq!(receiver.retained_slots(), 8);
-                assert_eq!(work.live_allocation_bytes(), baseline + 8);
-                assert_eq!(work.receipt().peak_allocation_bytes, baseline + 12);
-                assert_eq!(work.receipt().bytes_copied, before.bytes_copied + 4);
+                assert_eq!(work.live_allocation_bytes().unwrap(), baseline + 8);
+                assert_eq!(work.receipt().unwrap().peak_allocation_bytes, baseline + 12);
+                assert_eq!(
+                    work.receipt().unwrap().bytes_copied,
+                    before.unwrap().bytes_copied + 4
+                );
             }
             for value in 2..if denied { 6 } else { 7 } {
                 assert_eq!(receiver.try_recv(), Ok(value));
@@ -263,7 +266,7 @@ mod tests {
             sender.try_send(7)?;
             assert_eq!(receiver.try_recv(), Ok(7));
             drop(receiver);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         }
         Ok(())
     }

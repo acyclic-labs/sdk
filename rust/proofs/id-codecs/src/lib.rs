@@ -4,7 +4,8 @@ mod wire_metadata {
     #[kani::proof]
     #[kani::unwind(4)]
     fn scalar_metadata_preserves_all_facts_and_refuses_missing_opaque_bodies() {
-        use acyclic_fs::{WorkspaceMetadata, binding_contract::*, kernel::MetadataField};
+        use acyclic_fs::{WorkspaceMetadata, binding_contract::*};
+        use acyclic_fs_format::metadata::MetadataField;
         let input = WorkspaceMetadata {
             posix_mode: kani::any(),
             posix_uid: kani::any(),
@@ -80,35 +81,14 @@ mod resource_component {
 
 #[cfg(kani)]
 mod journal_prefix {
-    #[kani::proof]
-    fn full_frame_extents_refuse_overflow_without_clamping() {
-        use acyclic_native_runtime::LogFrame;
-        let format = LogFrame {
-            domain: b"extent-proof\0",
-            wide: kani::any(),
-            minimum_body: kani::any(),
-            maximum_body: kani::any(),
-        };
-        let body: u64 = kani::any();
-        let exact =
-            u128::from(body) + format.prefix_bytes() as u128 + LogFrame::CHECKSUM_BYTES as u128;
-        let representable = (format.wide || body <= u64::from(u32::MAX))
-            && exact <= u128::from(u64::MAX)
-            && exact <= usize::MAX as u128;
-        assert_eq!(format.frame_bytes(body).is_some(), representable);
-        if let Some(bytes) = format.frame_bytes(body) {
-            assert_eq!(u128::from(bytes), exact);
-        }
-        assert_eq!(
-            format.maximum_frame_bytes(),
-            format.frame_bytes(format.maximum_body)
-        );
-    }
+    use acyclic_log_frame::LogFrame;
+
+    include!("frame_extent.rs");
 
     #[kani::proof]
     #[kani::unwind(9)]
     fn impossible_declared_frames_refuse_before_body_io() {
-        use acyclic_native_runtime::LogFrame;
+        use acyclic_log_frame::LogFrame;
         use std::io::{self, Read};
 
         struct PrefixOnly<'a> {
@@ -154,7 +134,7 @@ mod journal_prefix {
     #[kani::proof]
     #[kani::unwind(9)]
     fn log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds() {
-        use acyclic_native_runtime::LogFrame;
+        use acyclic_log_frame::LogFrame;
         let wide: bool = kani::any();
         let format = LogFrame {
             domain: b"prefix-proof\0",
@@ -295,7 +275,11 @@ mod version {
 
 #[cfg(kani)]
 mod proofs {
-    use acyclic_fs::{Digest, GenerationId, ObjectId, ObjectKind, ObjectStorage};
+    use {
+        acyclic_fs::GenerationId,
+        acyclic_fs_format::identity::Digest,
+        acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
+    };
 
     fn object() -> ObjectId {
         let tag: u8 = kani::any();
@@ -306,7 +290,7 @@ mod proofs {
             storage: if kani::any() {
                 Some(ObjectStorage {
                     locator: Digest::from_bytes(kani::any()),
-                    root_file_id: acyclic_fs::FileId::from_bytes(kani::any()),
+                    root_file_id: acyclic_fs_format::identity::FileId::from_bytes(kani::any()),
                     origin_generation: Digest::from_bytes(kani::any()),
                 })
             } else {
@@ -420,7 +404,7 @@ mod proofs {
         };
         let storage = ObjectStorage {
             locator: Digest::from_bytes(kani::any()),
-            root_file_id: acyclic_fs::FileId::from_bytes(kani::any()),
+            root_file_id: acyclic_fs_format::identity::FileId::from_bytes(kani::any()),
             origin_generation: Digest::from_bytes(kani::any()),
         };
         root.storage = Some(storage);
@@ -440,7 +424,7 @@ mod proofs {
                 kani::assume(byte < 16);
                 let mut bytes = storage.root_file_id.into_bytes();
                 bytes[usize::from(byte)] ^= 1 << bit;
-                changed.root_file_id = acyclic_fs::FileId::from_bytes(bytes);
+                changed.root_file_id = acyclic_fs_format::identity::FileId::from_bytes(bytes);
             }
             _ => {
                 let mut bytes = *storage.origin_generation.as_bytes();
@@ -476,30 +460,43 @@ mod proofs {
     fn uuid_codecs_preserve_every_bit() {
         let bytes: [u8; 16] = kani::any();
         assert_eq!(
-            acyclic_fs::AuthorityId::from_bytes(bytes).into_bytes(),
+            acyclic_fs_format::identity::AuthorityId::from_bytes(bytes).into_bytes(),
             bytes
         );
         assert_eq!(
-            acyclic_fs::OperationId::from_bytes(bytes).into_bytes(),
+            acyclic_fs_format::identity::OperationId::from_bytes(bytes).into_bytes(),
             bytes
         );
-        assert_eq!(acyclic_fs::VolumeId::from_bytes(bytes).into_bytes(), bytes);
         assert_eq!(
-            acyclic_fs::CheckoutId::from_bytes(bytes).into_bytes(),
+            acyclic_fs_format::identity::VolumeId::from_bytes(bytes).into_bytes(),
             bytes
         );
-        assert_eq!(acyclic_fs::MountId::from_bytes(bytes).into_bytes(), bytes);
-        assert_eq!(acyclic_fs::WatchId::from_bytes(bytes).into_bytes(), bytes);
-        assert_eq!(acyclic_fs::FileId::from_bytes(bytes).into_bytes(), bytes);
+        assert_eq!(
+            acyclic_fs_format::identity::CheckoutId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
+        assert_eq!(
+            acyclic_fs_format::identity::MountId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
+        assert_eq!(
+            acyclic_fs_format::identity::WatchId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
+        assert_eq!(
+            acyclic_fs_format::identity::FileId::from_bytes(bytes).into_bytes(),
+            bytes
+        );
     }
 }
 
 #[cfg(kani)]
 mod framing {
     use acyclic_stream::{
-        StreamCategory, StreamError, wire,
+        StreamCategory, StreamError,
         wire_codec::session::{FrameDecoder, grant_credit},
     };
+    use acyclic_stream_wire::wire;
 
     fn lengths(bytes: &[u8], chunk: usize) -> Result<Vec<usize>, StreamError> {
         let mut decoder = FrameDecoder::with_decoder(usize::MAX, |body| Ok(body.len()));

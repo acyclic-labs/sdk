@@ -1,4 +1,4 @@
-export const rust = [["acyclic-actors", "example", "actors-http-routes"]];
+export const rust = ["//rust/crates/actors:actors-http-routes_example"];
 
 export function render([stdout]) {
   return {

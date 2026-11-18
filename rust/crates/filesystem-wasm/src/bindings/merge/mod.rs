@@ -104,7 +104,7 @@ impl BrowserCheckout {
                 theirs,
                 maximum_changes,
                 maximum_conflicts,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -115,7 +115,7 @@ impl BrowserCheckout {
 
 pub(in crate::bindings) fn encode_generation_diff(
     diff: acyclic_fs::GenerationDiff,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<Ts<BrowserGenerationDiffResult>, JsValue> {
     ts(BrowserGenerationDiffResult {
         files: diff
@@ -144,7 +144,7 @@ pub(in crate::bindings) fn encode_generation_diff(
 
 pub(in crate::bindings) fn encode_merge_preparation(
     preparation: MergePreparation,
-    work: acyclic_fs::WorkCounters,
+    work: acyclic_fs_work::performance::WorkCounters,
 ) -> Result<Ts<BrowserMergePreparationResult>, JsValue> {
     let (status, generation, conflicts, truncated) = match preparation {
         MergePreparation::Prepared { generation_id } => {

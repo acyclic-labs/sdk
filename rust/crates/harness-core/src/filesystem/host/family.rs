@@ -188,7 +188,7 @@ async fn authorize<S: WorkspaceLineageStore>(
         .authorize_descendant(
             owner,
             root,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
@@ -284,8 +284,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_fs::{Digest, MemoryWorkspaceLineageStore, WorkspaceLineageRecord};
     use proptest::prelude::*;
+    use {
+        acyclic_fs::{MemoryWorkspaceLineageStore, WorkspaceLineageRecord},
+        acyclic_fs_format::identity::Digest,
+    };
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
@@ -294,13 +297,17 @@ mod tests {
         let filesystem = acyclic_fs::Fs::memory();
         let cancellation = acyclic_fs::CancellationToken::new();
         let root = filesystem
-            .create_workspace("project", acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .create_workspace(
+                "project",
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?
             .value;
         let unrelated = filesystem
             .create_workspace(
                 "unrelated",
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await?
@@ -312,7 +319,7 @@ mod tests {
         graph
             .register_root(
                 &root,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -320,7 +327,7 @@ mod tests {
         graph
             .register_root(
                 &unrelated,
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
@@ -330,17 +337,23 @@ mod tests {
                 &root,
                 "topic",
                 acyclic_fs::IdempotencyKey::new(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await?
             .value;
         let pinned = child
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?
             .value;
         let unrelated_head = unrelated
-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .head(
+                acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?
             .value;
         let provider =

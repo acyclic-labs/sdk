@@ -3,8 +3,11 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityRoot},
 };
-use acyclic_fs::{CancellationToken, Fs, WorkBudget};
 use futures::TryStreamExt as _;
+use {
+    acyclic_fs::{CancellationToken, Fs},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 #[tokio::test]
 async fn changed_path_queries_suspend_at_each_row_and_keep_the_original_cut() -> Result<()> {
@@ -73,13 +76,13 @@ async fn changed_path_queries_suspend_at_each_row_and_keep_the_original_cut() ->
         let steps = host.diff_private_steps(&roots, (&base, &current), &io, true);
         futures::pin_mut!(steps);
         assert_eq!(
-            io.receipt(),
+            io.receipt()?,
             Default::default(),
             "unpolled query performs no IO"
         );
         let first = steps.try_next().await?.expect("first changed row");
         assert_eq!(first.len(), 1);
-        first_work = io.receipt();
+        first_work = io.receipt()?;
         workspace
             .write_text("/later", "outside the selected cut")
             .await?;
@@ -95,7 +98,7 @@ async fn changed_path_queries_suspend_at_each_row_and_keep_the_original_cut() ->
                 .collect::<Vec<_>>()
         );
     }
-    let complete_work = io.receipt();
+    let complete_work = io.receipt()?;
     assert!(
         complete_work.items_examined > first_work.items_examined,
         "first row must leave the changed suffix unvisited"
@@ -107,7 +110,7 @@ async fn changed_path_queries_suspend_at_each_row_and_keep_the_original_cut() ->
         assert!(steps.try_next().await?.is_some());
     }
     assert!(
-        io.receipt().items_examined < complete_work.items_examined,
+        io.receipt()?.items_examined < complete_work.items_examined,
         "dropping a partially consumed query must not drain its suffix"
     );
     Ok(())

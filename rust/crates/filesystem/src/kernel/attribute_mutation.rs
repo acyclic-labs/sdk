@@ -285,7 +285,7 @@ pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
         cancellation,
     )
     .await
-    .map_err(|error| OperationFailure::new(standalone_error(error), accounting.spent()))
+    .map_err(|error| OperationFailure::observed(standalone_error(error), accounting.spent()))
 }
 
 pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObjectStore>(

@@ -42,6 +42,7 @@ zeroize.workspace = true
 ts-rs = "=12.0.1"
 serde_json.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+tonic = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 napi = { workspace = true, optional = true }
@@ -95,6 +96,13 @@ acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[test]]
+name = "backoff"
+path = "tests/backoff.rs"
+
+[package.metadata.bazel.test-dependencies]
+backoff = ["proptest"]
 
 [[example]]
 name = "issuance_corpus"

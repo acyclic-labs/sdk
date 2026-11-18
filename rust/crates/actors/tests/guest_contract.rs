@@ -112,7 +112,7 @@ fn downstream_host_constructs_context_without_serde() -> Result<(), Box<dyn std:
         "actor".into(),
         u64::MAX,
     )?
-    .with_capability(capability)?;
+    .with_capability(capability);
     let mut actor = ActorRuntime::default();
     actor.alarms = Some(RuntimeHandle::new(2, "alarm-handle".into())?);
     let context = GuestContext::builder((), Box::new(|| 1))

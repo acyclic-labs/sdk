@@ -893,20 +893,23 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         offset: 65530,
         length: 16,
     };
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let read = journal.load_range(&file, range, Some(&io))?;
-    let setup_bytes = work.live_allocation_bytes();
+    let setup_bytes = work.live_allocation_bytes()?;
     let bytes = read.await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
     {
         // Fund the actual ledger and read frame, then leave less credit than
         // the output requires, independently of provider chunks or caching.
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
+            acyclic_fs_work::performance::WorkBudget {
                 peak_allocation_bytes: setup_bytes + range.length - 1,
-                ..acyclic_fs::WorkBudget::UNBOUNDED
+                ..acyclic_fs_work::performance::WorkBudget::UNBOUNDED
             },
             &stop,
         )
@@ -930,7 +933,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         assert!(
             matches!(
                 cause,
-                Some(acyclic_fs::WorkError::BudgetExceeded {
+                Some(acyclic_fs_work::performance::WorkError::BudgetExceeded {
                     counter: "peak_allocation_bytes",
                     ..
                 })
@@ -939,7 +942,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         );
     }
     let length = file.descriptor().byte_length();
-    let receipt = work.receipt();
+    let receipt = work.receipt()?;
     // Authenticate the whole intersecting chunk even when storage lends its
     // backing. Reading the whole payload then slicing must also fail this
     // work bound when shared aliases do not allocate new chunk backing.
@@ -1012,7 +1015,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         journal.load_range(&file, range, None)?.await?.as_ref(),
         bytes.as_ref()
     );
-    let reads = io.receipt().backend_read_operations;
+    let reads = io.receipt()?.backend_read_operations;
     stop.cancel();
     let cancelled = match journal.load_range(&file, range, Some(&io)) {
         Ok(read) => read.await,
@@ -1022,7 +1025,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         cancelled.unwrap_err().code(),
         crate::wire::ErrorCode::Cancelled
     );
-    assert_eq!(io.receipt().backend_read_operations, reads);
+    assert_eq!(io.receipt()?.backend_read_operations, reads);
     // Capture the real journal's committed frames, then omit their original
     // atomic proof publications. Reference replay must refuse rather than
     // reconstruct payload bodies to accept an unproven observation.

@@ -1,20 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
-
-const identity = target => JSON.stringify(target);
-
-// Cargo hard-links every bin and example to one path per [kind, name] and
-// reports only that path, so same-named targets of different packages in one
-// build overwrite each other and every run executes whichever linked last.
-export class ContractTargetCollision extends Error {
-  constructor(output, targets) {
-    super(`STEP_FAILED contract-collision: ${targets.map(identity).join(" and ")} share Cargo output ${output}; recovery: give each Rust contract target a unique [kind, name]`);
-    this.name = "ContractTargetCollision";
-    this.code = "CONTRACT_TARGET_COLLISION";
-    this.output = output;
-    this.targets = targets;
-  }
-}
+import { bazelExecutables } from "./bazel-executables.mjs";
 
 export function parseContractJson(text, context) {
   try { return JSON.parse(text); }
@@ -28,7 +13,7 @@ export function captureContractCommand(root, executable, args, phase) {
     cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"],
   });
   if (result.error || result.status !== 0) {
-    // Cargo diagnostics and exporter refusals share stdout. Keep the original
+    // Exporter refusals reach stdout. Keep the original
     // completion metadata as well as its text, including signal-only exits.
     throw Object.assign(new Error(
       `STEP_FAILED contract-${phase}: ${executable} failed with status ${result.status ?? "unknown"}, signal ${result.signal ?? "none"}${result.error ? `; ${result.error.message}` : ""}; recovery: bun scripts/generate-contracts.mjs check\n${result.stdout ?? ""}`,
@@ -38,12 +23,12 @@ export function captureContractCommand(root, executable, args, phase) {
   return result.stdout;
 }
 
-// Cargo remains the authority for source, toolchain, lockfile and feature
-// freshness. Never discover or execute a binary by guessing its target path.
-/** @param {{ phase?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
-export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_CARGO_BIN || "cargo", report = {}, saveProgress = () => {}, requestedFeatures = []) {
-  if (targets.length === 0) throw new Error("Rust contract target set is empty");
-  const capture = (phase, args, executable = cargo) => {
+// Bazel is the authority for source, toolchain, lockfile and feature freshness: every contract target is a
+// label of the generated BUILD files, built with every feature on, and run as cquery names its executable.
+/** @param {{ phase?: string, build_ms?: number }} report */
+export function buildContractTargets(root, labels, report = {}, saveProgress = () => {}) {
+  if (labels.length === 0) throw new Error("Rust contract target set is empty");
+  return bazelExecutables(root, labels, (phase, executable, args) => {
     report.phase = phase;
     saveProgress();
     const started = performance.now();
@@ -53,63 +38,6 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
       report[`${phase}_ms`] = performance.now() - started;
       saveProgress();
     }
-  };
-  const manifest = ["--manifest-path", join(root, "Cargo.toml"), "--locked"];
-  const metadata = parseContractJson(capture("metadata", ["metadata", ...manifest, "--no-deps", "--format-version=1"]), `contract-metadata: malformed output from ${cargo}`);
-  const packages = new Map(metadata.packages.map(pkg => [pkg.name, pkg]));
-  /** @type {Map<string, string | undefined>} */
-  const requested = new Map();
-  const features = new Set(requestedFeatures);
-  const outputs = new Map();
-  for (const [packageName, kind, name] of targets) {
-    const pkg = packages.get(packageName);
-    if (!["bin", "example"].includes(kind) || !pkg?.targets.some(target => target.name === name && target.kind.includes(kind))) {
-      throw new Error(`unknown Rust contract target: ${identity([packageName, kind, name])}`);
-    }
-    const target = pkg.targets.find(target => target.name === name && target.kind.includes(kind));
-    for (const feature of target["required-features"] ?? []) features.add(`${packageName}/${feature}`);
-    const key = identity([pkg.id, kind, name]);
-    if (requested.has(key)) throw new Error(`duplicate Rust contract target: ${key}`);
-    requested.set(key, undefined);
-    const output = identity([kind, name]);
-    if (outputs.has(output)) throw new ContractTargetCollision(output, [outputs.get(output), [packageName, kind, name]]);
-    outputs.set(output, [packageName, kind, name]);
-  }
-  // Keep the existing shared Cargo cache until configuration-isolation costs
-  // have been measured. This path comes from Cargo, including config/env.
-  report.target_directory = metadata.target_directory;
-  const output = capture("build", [
-    "build", ...manifest, "--quiet", "--no-default-features",
-    ...(features.size ? ["--features", [...features].sort().join(",")] : []),
-    "--target-dir", report.target_directory,
-    "--message-format=json-render-diagnostics",
-    ...[...new Set(targets.map(([name]) => name))].flatMap(name => ["-p", name]),
-    ...targets.flatMap(([, kind, name]) => [`--${kind}`, name]),
-  ]);
-  report.artifacts = [];
-  const owners = new Map();
-  report.phase = "artifact-discovery";
-  saveProgress();
-  for (const line of output.split(/\r?\n/).filter(line => line.startsWith("{"))) {
-    const message = parseContractJson(line, `contract-artifact: malformed output from ${cargo}`);
-    if (message.reason !== "compiler-artifact") continue;
-    const selected = message.target.kind.some(kind => requested.has(identity([message.package_id, kind, message.target.name])));
-    report.artifacts.push({ package_id: message.package_id, name: message.target.name, kinds: message.target.kind, features: message.features, fresh: message.fresh, executable: message.executable, requested: selected });
-    if (!message.executable) continue;
-    for (const kind of message.target.kind) {
-      const key = identity([message.package_id, kind, message.target.name]);
-      if (!requested.has(key)) continue;
-      if (requested.get(key)) throw new Error(`duplicate Rust contract artifact: ${key}`);
-      if (owners.has(message.executable)) throw new ContractTargetCollision(message.executable, [owners.get(message.executable), key].map(item => JSON.parse(item)));
-      owners.set(message.executable, key);
-      requested.set(key, message.executable);
-    }
-  }
-  return targets.map(([packageName, kind, name]) => {
-    const key = identity([packages.get(packageName).id, kind, name]);
-    const executable = requested.get(key);
-    if (!executable) throw new Error(`Rust contract target was not built: ${key}`);
-    return executable;
   });
 }
 
@@ -117,7 +45,7 @@ export function runContractTarget(root, executable) {
   return captureContractCommand(root, executable, [], "run");
 }
 
-// Slots identify executables admitted by the same Cargo build. The selected
+// Slots identify executables admitted by the same Bazel build. The selected
 // consumers own output only until its last use; bundle consumers share one decode.
 export function contractTargetOutputs(root, executables, consumers) {
   const remaining = new Map();

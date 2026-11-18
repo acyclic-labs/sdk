@@ -54,11 +54,13 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
         let (mut work, baseline) = original_frame(WorkBudget::UNBOUNDED, &cancel)?;
         let mut walk = Descendants::new(directory(0, metadata, entries), config, &mut work)?;
         for ordinal in 1..depth {
-            let before = work.spent();
+            let before = work.spent().unwrap();
             walk.push(directory(ordinal, metadata, entries), config, &mut work)?;
-            assert!(work.spent().items_examined - before.items_examined <= membership_bound);
+            assert!(
+                work.spent().unwrap().items_examined - before.items_examined <= membership_bound
+            );
         }
-        let before = work.spent();
+        let before = work.spent().unwrap();
         let live = work
             .standalone_parts()
             .ok_or(FsError::InvalidDiff)?
@@ -68,12 +70,12 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
             walk.push(directory(0, metadata, entries), config, &mut work),
             Err(FsError::InvalidDiff)
         ));
-        assert!(work.spent().items_examined - before.items_examined <= membership_bound);
+        assert!(work.spent().unwrap().items_examined - before.items_examined <= membership_bound);
         assert_eq!(
-            work.spent().allocation_operations,
+            work.spent().unwrap().allocation_operations,
             before.allocation_operations
         );
-        assert_eq!(work.spent().backend_read_operations, 0);
+        assert_eq!(work.spent().unwrap().backend_read_operations, 0);
         assert_eq!(
             work.standalone_parts()
                 .ok_or(FsError::InvalidDiff)?
@@ -98,14 +100,18 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
         }
 
         // A sibling may reuse a departed identity; an active ancestor may not.
-        let before = work.spent();
+        let before = work.spent().unwrap();
         walk.pop(&mut work)?;
-        assert_eq!(work.spent(), before);
+        assert_eq!(work.spent().unwrap(), before);
         walk.push(directory(depth - 1, metadata, entries), config, &mut work)?;
-        let before = work.spent();
+        let before = work.spent().unwrap();
         cancel.cancel();
         walk.retire(&mut work)?;
-        assert_eq!(work.spent(), before, "cleanup admits no fresh work");
+        assert_eq!(
+            work.spent().unwrap(),
+            before,
+            "cleanup admits no fresh work"
+        );
         assert_eq!(
             work.standalone_parts()
                 .ok_or(FsError::InvalidDiff)?
@@ -121,18 +127,18 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
         let cancel = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut work = KernelAccounting::native(&original, &cancel);
         let mut walk = Descendants::new(directory(0, metadata, entries), config, &mut work)?;
         for ordinal in 1..=u128::from(u128::BITS) {
             walk.push(directory(ordinal, metadata, entries), config, &mut work)?;
         }
-        assert!(original.live_allocation_bytes() > baseline);
-        let before = work.spent();
+        assert!(original.live_allocation_bytes().unwrap() > baseline);
+        let before = work.spent().unwrap();
         cancel.cancel();
         walk.retire(&mut work)?;
-        assert_eq!(work.spent(), before);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(work.spent().unwrap(), before);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 
     // Refuse every original allocation during an enter that also grows frames.
@@ -142,9 +148,9 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
     for ordinal in 1..4 {
         walk.push(directory(ordinal, metadata, entries), config, &mut probe)?;
     }
-    let baseline = probe.spent().allocation_operations;
+    let baseline = probe.spent().unwrap().allocation_operations;
     walk.push(directory(4, metadata, entries), config, &mut probe)?;
-    let admitted = probe.spent().allocation_operations - baseline;
+    let admitted = probe.spent().unwrap().allocation_operations - baseline;
     walk.retire(&mut probe)?;
     assert!(admitted > 0);
     for allowance in 0..admitted {

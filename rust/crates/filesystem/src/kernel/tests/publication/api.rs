@@ -145,10 +145,13 @@ async fn invalid_and_foreign_closures_never_mutate_authority() -> TestResult {
                     matches!(failure.error, PublicationError::VolumeMismatch { expected, actual }
                     if expected == volume_id && actual == VolumeId::from_bytes([actual_volume; 16]))
                 );
-                assert!(failure.work.backend_read_operations > 0);
+                assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
             }
         }
-        assert_eq!(failure.work.authority_records_appended, 0);
+        assert_eq!(
+            failure.work.as_deref().unwrap().authority_records_appended,
+            0
+        );
         assert_eq!(read_head(&authority, authority_id).await?, expected);
     }
     Ok(())
@@ -217,7 +220,7 @@ async fn mismatched_authority_and_precancellation_are_inert() -> TestResult {
                 PublicationError::AuthorityMismatch { .. }
             ));
         }
-        assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+        assert_eq!(*failure.work().unwrap(), WorkCounters::UNCHARGED);
     }
     Ok(())
 }

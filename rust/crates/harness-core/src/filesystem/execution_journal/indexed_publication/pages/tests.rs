@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::StreamProviderExt as _;
 
 #[tokio::test]
@@ -179,13 +180,13 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
     let records = [OwnedBytes::from_static(b"index page")];
     for mode in 0..3 {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+        let budget = acyclic_fs_work::performance::work_budget(1_000_000, 4 * 1024 * 1024);
         let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let foreign = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = original.live_allocation_bytes();
-        let foreign_baseline = foreign.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes()?;
+        let foreign_baseline = foreign.live_allocation_bytes()?;
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let store = acyclic_fs::StreamAuthorityStore::new(provider.clone());
         let result = {
@@ -196,7 +197,8 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
             let (request, quota) = crate::distributed::commit_request(key, held, &mut work)?;
             let mut commit = acyclic_fs::FilesystemCommit::new(request);
             let context = if mode == 1 { &foreign } else { &original };
-            let mut existing = context.claim(32, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+            let mut existing =
+                context.claim(32, 0, acyclic_fs_work::performance::WorkCounters::UNCHARGED)?;
             commit
                 .retain_native_custody(&mut existing, context)
                 .map_err(acyclic_fs::FsError::from)?;
@@ -250,7 +252,7 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
         if let Some(commit) = result {
             // Both preparation adapters are gone. The original unsent batch
             // still pays for every journal vector and its pre-existing guard.
-            assert!(original.live_allocation_bytes() > baseline + 32);
+            assert!(original.live_allocation_bytes()? > baseline + 32);
             assert_eq!(commit.request().effects[0].mutations.len(), 3);
             let mut work = acyclic_fs::AuthorityWork::native(&original, &cancellation);
             let outcome = store
@@ -263,14 +265,17 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
             ));
         } else {
             assert_eq!(
-                provider.tail(execution.clone()).await,
-                Err(acyclic_stream::StreamError::NotFound)
+                provider
+                    .tail(execution.clone())
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
         }
         drop(store);
         drop(provider);
-        assert_eq!(original.live_allocation_bytes(), baseline, "mode {mode}");
-        assert_eq!(foreign.live_allocation_bytes(), foreign_baseline);
+        assert_eq!(original.live_allocation_bytes()?, baseline, "mode {mode}");
+        assert_eq!(foreign.live_allocation_bytes()?, foreign_baseline);
     }
     Ok(())
 }
@@ -367,8 +372,10 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     assert_eq!(prepared.0.request().idempotency_key, key);
     let store = acyclic_fs::StreamAuthorityStore::new(provider.clone());
     let cancellation = acyclic_fs::CancellationToken::new();
-    let mut fs_work =
-        acyclic_fs::AuthorityWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation);
+    let mut fs_work = acyclic_fs::AuthorityWork::new(
+        acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
     store
         .seal(&mut prepared.0, &mut fs_work)
         .map_err(|_| invalid(None))?;
@@ -614,12 +621,12 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
     );
     drop(old.1);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+    let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
     #[cfg(not(target_arch = "wasm32"))]
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     #[cfg(not(target_arch = "wasm32"))]
-    let native_baseline = work.live_allocation_bytes();
+    let native_baseline = work.live_allocation_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     let io = if _native {
         PreparationIo::from_native_work(&work)?
@@ -669,7 +676,7 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if _native {
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             native_baseline,
             "snapshot publication retained native custody"
         );

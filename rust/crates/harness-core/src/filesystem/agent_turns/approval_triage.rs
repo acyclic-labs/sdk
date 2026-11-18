@@ -4,9 +4,6 @@ use crate::agent::{Approval, ApprovalSelection, InboxRecord, OpenTriage, Out};
 use crate::approvals::{ApprovalResponder, RuleVerdict};
 use serde::Serialize;
 
-/// Reason an agent that can no longer run gives each ask it refuses.
-const PARENT_ENDED: &str = "approval parent has ended";
-
 /// An agent that completed or was archived runs no turn and reviews nothing,
 /// yet its children's asks still reach it; it refuses each one.
 fn ended(agent: &AgentState) -> bool {
@@ -100,6 +97,18 @@ where
                 at_least: Default::default(),
             })
             .await?;
+        // A committed closed marker means the parent's closing cascade will
+        // archive every open child. Its asks are answered by that archive, so
+        // review must not read or write their approval journals.
+        let closing = if agent.closed {
+            true
+        } else {
+            match self.stream.tail(agent.path.closed()?).await {
+                Ok(_) => true,
+                Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => false,
+                Err(error) => return Err(Error::from(error)),
+            }
+        };
         let parent = agent.path.id();
         let principal = format!("parent:{parent}");
         let mut outs = Vec::new();
@@ -131,15 +140,26 @@ where
             // A page interrupted after this answer was saved, before its wake
             // was published, keeps that answer and only repairs the wake: a
             // second review, or an ended parent's refusal, would contradict it.
+            // This holds even when the parent has since been archived, so the
+            // saved answer is checked before the closing cascade's skip.
             if self
                 .decided_approval(&child, &request.id, &principal)
                 .await?
                 .is_some()
             {
-                outs.push(Out::Send {
-                    to: request.child,
-                    record: InboxRecord::Approval(Approval { id: request.id }),
-                });
+                if !child.closed {
+                    outs.push(Out::Send {
+                        to: request.child,
+                        record: InboxRecord::Approval(Approval { id: request.id }),
+                    });
+                }
+                continue;
+            }
+            // A closing parent answers each new ask with its archive cascade.
+            // Saved answers above still publish their wakes; no new child
+            // journal write is admitted. The committed closed marker covers a
+            // parent whose archive has not yet been admitted to its actor.
+            if closing {
                 continue;
             }
             let (verdict, reason, action) = match (&review, policy) {
@@ -147,7 +167,11 @@ where
                     self.review_child_action(agent, &child, &request.id, journal, policy)
                         .await?
                 }
-                _ => (RuleVerdict::Deny, Some(PARENT_ENDED.to_owned()), Vec::new()),
+                _ => (
+                    RuleVerdict::Deny,
+                    Some(crate::approvals::PARENT_ENDED.to_owned()),
+                    Vec::new(),
+                ),
             };
             let decision = match verdict {
                 RuleVerdict::Allow => Some(crate::interaction::ApprovalVerdict::Approve),
@@ -163,10 +187,14 @@ where
                     reason,
                 )
                 .await?;
-                outs.push(Out::Send {
-                    to: request.child,
-                    record: InboxRecord::Approval(Approval { id: request.id }),
-                });
+                // A child its parent's closing cascade already archived cannot
+                // receive a wake; the retained decision is its answer.
+                if !child.closed {
+                    outs.push(Out::Send {
+                        to: request.child,
+                        record: InboxRecord::Approval(Approval { id: request.id }),
+                    });
+                }
             } else {
                 if summary.is_empty() {
                     summary

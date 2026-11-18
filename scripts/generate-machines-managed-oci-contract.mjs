@@ -1,4 +1,4 @@
-export const rust = [["acyclic-machines", "bin", "machines-managed-oci-contract"]];
+export const rust = ["//rust/crates/machines:machines-managed-oci-contract"];
 
 export function render([stdout]) {
   const contract = JSON.parse(stdout);

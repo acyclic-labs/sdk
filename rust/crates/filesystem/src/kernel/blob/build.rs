@@ -50,7 +50,7 @@ pub async fn build_blob<S: AsyncObjectStore, R: AsyncBlobSource>(
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     build_blob_with_accounting(store, source, options, &mut accounting, cancellation)
         .await
-        .map_err(|error| build_failed(blob_build_error(error), accounting.spent()))
+        .map_err(|error| OperationFailure::observed(blob_build_error(error), accounting.spent()))
 }
 
 pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlobSource>(
@@ -116,7 +116,7 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
         Ok(BlobBuild {
             root,
             logical_bytes,
-            work: accounting.spent(),
+            work: accounting.spent()?,
         })
     }
     .await;
@@ -390,7 +390,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
                 .inner
                 .put_many_hashed(&self.writes.value, &mut work)
                 .await;
-            work.spent().verify(work.budget)?;
+            work.spent()?.verify(work.budget)?;
             result
         };
         result?;

@@ -51,6 +51,9 @@ use std::{collections::BTreeMap, sync::Arc};
 /// platform handles, so it never travels as a cause; [`Error::into_cause`]
 /// keeps the failure but discards custody. Callers that may retry must
 /// extract custody before converting.
+///
+/// With the default boxed publication custody, this type occupies at most
+/// 24 bytes; cold payloads remain behind pointers on the success path.
 #[derive(Debug)]
 pub enum Error<C = Box<PreparedPublish>> {
     /// A shared call journal is malformed or cannot be addressed.
@@ -154,6 +157,8 @@ pub enum Error<C = Box<PreparedPublish>> {
     /// A request contradicts the durable state machine.
     Invalid(&'static str),
 }
+
+const _: () = assert!(std::mem::size_of::<Error>() <= 24);
 
 impl<C> std::fmt::Display for Error<C> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -900,7 +905,7 @@ fn fork_key(
 
 /// One storage mechanism for memory, durable local and hosted Stream providers.
 pub struct Store<P: StreamProvider + ?Sized> {
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
     composer: Option<Arc<dyn Composer>>,
     scheduling_shards: std::num::NonZeroU16,
@@ -921,7 +926,7 @@ pub struct Store<P: StreamProvider + ?Sized> {
 impl<P: StreamProvider + ?Sized> Clone for Store<P> {
     fn clone(&self) -> Self {
         Self {
-            provider: Arc::clone(&self.provider),
+            provider: self.provider.clone(),
             root: self.root.clone(),
             composer: self.composer.clone(),
             scheduling_shards: self.scheduling_shards,
@@ -932,7 +937,7 @@ impl<P: StreamProvider + ?Sized> Clone for Store<P> {
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Retain the caller's admitted provider session. Actor state lives at
     /// `<root>/<encoded actor>`, inside the caller's consistency domain.
-    pub fn new(provider: Arc<P>, root: StreamPath) -> Self {
+    pub fn new(provider: acyclic_stream::ProviderOwner<P>, root: StreamPath) -> Self {
         Self {
             provider,
             root,
@@ -951,7 +956,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     /// The shared provider session.
-    pub fn provider(&self) -> &Arc<P> {
+    pub fn provider(&self) -> &acyclic_stream::ProviderOwner<P> {
         &self.provider
     }
 
@@ -1083,7 +1088,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if matches!(&error, Error::Conflict | Error::Unknown { .. })
                     || matches!(
                         &error,
-                        Error::Stream(source) if source.as_ref() == &StreamError::IdempotencyMismatch
+                        Error::Stream(source) if source.category() == StreamCategory::IdempotencyMismatch
                     ) =>
             {
                 match self.fork_replay(&key, &parent_path, &child_path).await {

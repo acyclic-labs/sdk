@@ -1,8 +1,5 @@
 use crate::*;
 
-mod frame;
-pub use frame::LogFrame;
-
 /// What recovery found after the last valid frame of an append-only log.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogTail {
@@ -88,7 +85,11 @@ pub fn recover_log_tail(
 }
 
 /// Whether an exclusive file-lock failure proves that another owner holds the lock.
+///
+/// [`crate::FileLock`] reports contention as [`io::ErrorKind::WouldBlock`] on
+/// every platform, and its locks never make file I/O fail, so no other error
+/// is contention.
 #[must_use]
 pub fn is_exclusive_lock_contention(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::WouldBlock || cfg!(windows) && error.raw_os_error() == Some(33)
+    error.kind() == io::ErrorKind::WouldBlock
 }

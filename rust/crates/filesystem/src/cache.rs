@@ -94,7 +94,8 @@ pub struct ObjectCacheStats {
 mod pool;
 use pool::{CacheEntry, CacheState, DecodedCacheEntry, Namespace, RecencyKey, Shared};
 mod flights;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 pub(crate) use flights::verify_original_flight_admission_and_retirement;
 
 enum FlightState {

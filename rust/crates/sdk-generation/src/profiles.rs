@@ -290,14 +290,23 @@ fn compile_historical_profiles(
                 "released Cargo package has no native Rustdoc target".into(),
             ));
         }
+        let feature_map = &execution_metadata
+            .packages
+            .iter()
+            .find(|owner| owner.name == package.name)
+            .ok_or_else(|| CliError("profile Cargo owner disappeared".into()))?
+            .features;
+        let manifest = if plan.captured_source.is_some() {
+            package.manifest_path.clone().into_std_path_buf()
+        } else {
+            root.join("Cargo.toml")
+        };
+        let lock = manifest.with_file_name("Cargo.lock");
+        let target_dir = output
+            .join(".profile-build")
+            .join(crate::sha256_bytes(release.package.as_bytes()).trim_start_matches("sha256:"));
         for (target, rustdoc_target) in targets {
             let mut compiled = BTreeMap::new();
-            let feature_map = &execution_metadata
-                .packages
-                .iter()
-                .find(|owner| owner.name == package.name)
-                .ok_or_else(|| CliError("profile Cargo owner disappeared".into()))?
-                .features;
             let profiles = if matches!(rustdoc_target, RustdocTarget::Library) {
                 sdk_docs::rustdoc_profiles::historical_profiles_for_package(
                     execution_metadata,
@@ -337,12 +346,6 @@ fn compile_historical_profiles(
                     release.package.as_str(),
                 )
                 .map_err(CliError)?;
-                let manifest = if plan.captured_source.is_some() {
-                    package.manifest_path.clone().into_std_path_buf()
-                } else {
-                    root.join("Cargo.toml")
-                };
-                let lock = manifest.with_file_name("Cargo.lock");
                 let key = local_feature_configuration(feature_map, &spec);
                 if let Some(previous) = key.as_ref().and_then(|key| compiled.get(key)) {
                     fs::copy(previous, &receipt).map_err(io_error)?;
@@ -352,10 +355,7 @@ fn compile_historical_profiles(
                         execution_metadata,
                         &spec,
                         &available,
-                        output.join(".profile-build").join(
-                            crate::sha256_bytes(release.package.as_bytes())
-                                .trim_start_matches("sha256:"),
-                        ),
+                        &target_dir,
                         &receipt,
                         CargoExecutionContext {
                             cargo_path: Some(cargo),

@@ -1,6 +1,6 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 pub use acyclic_auth::credential::{CredentialError, CredentialProvider};
 use async_trait::async_trait;
@@ -22,8 +22,9 @@ use crate::wire_codec::{
 };
 use crate::{
     AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider,
 };
+use acyclic_stream_wire::wire;
 
 mod client;
 #[cfg(test)]
@@ -143,16 +144,41 @@ pub struct RoutedChannel {
     pub channel: Channel,
 }
 
+/// Pre-dispatch refusals owned by one logical operation, independently of the
+/// shared route's progress. Each member may refuse that operation only once.
+/// Authenticated transport adapters check the actual selected member before
+/// submission; an already-refused member returns its original status locally.
+#[derive(Default)]
+pub struct RefusalSweep(std::collections::HashMap<usize, Status>);
+
+impl RefusalSweep {
+    /// Admit a member that has not refused this operation.
+    pub fn check(&self, member: usize) -> Result<(), Status> {
+        match self.0.get(&member) {
+            Some(status) => Err(status.clone()),
+            None => Ok(()),
+        }
+    }
+
+    /// Retain the member's first explicit refusal before dispatch. Transport
+    /// interruptions are retried by their I/O owner and are not refusals.
+    pub fn record(&mut self, member: usize, status: Status) {
+        self.0.entry(member).or_insert(status);
+    }
+}
+
 /// Caller-owned routing of the home channel across a replicated service's
 /// members. A member that refuses a request before dispatch (for example
 /// because it is not the leader) is reported back, and the same request runs
 /// again on the member the route then selects, within the caller's deadline.
+/// A member that already refused this operation is never dispatched again,
+/// even if another operation changes the shared route's selection.
 pub trait HomeRoute: Send + Sync {
     /// The member the next attempt uses.
     fn current(&self) -> RoutedChannel;
     /// `member` refused `status` before dispatch. Resolves to whether the
-    /// same request may run again on [`Self::current`]; any pacing between
-    /// members is the route's. `false` returns the refusal to the caller.
+    /// same request may run on an untried [`Self::current`] member. `false`
+    /// returns the refusal to the caller. Readiness requires an event, not pacing.
     fn refused<'a>(
         &'a self,
         member: usize,
@@ -444,8 +470,12 @@ impl Client {
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
         let mut backoff = None;
+        let mut refusals = RefusalSweep::default();
         loop {
             let home = self.channel.current();
+            refusals
+                .check(home.member)
+                .map_err(|error| status(&error))?;
             let request = self
                 .request(body.clone())
                 .await
@@ -509,6 +539,7 @@ impl Client {
             if let Home::Routed(route) = &self.channel
                 && route.refused(home.member, &error).await
             {
+                refusals.record(home.member, error);
                 continue;
             }
             if !retryable(&error) {
@@ -518,7 +549,7 @@ impl Client {
             let backoff = backoff.get_or_insert_with(|| {
                 acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
             });
-            let wait = tokio::time::sleep(Duration::from_millis(u64::from(backoff.delay_ms())));
+            let wait = tokio::time::sleep(backoff.delay());
             crate::trace::observe_value(
                 &crate::trace::Request {
                     name: "stream.grpc.retry_backoff",

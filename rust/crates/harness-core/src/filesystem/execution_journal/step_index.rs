@@ -107,7 +107,7 @@ impl Pending {
                 // Preserve the inline value on every failed promotion. New
                 // nodes retain the same original owner's funding throughout.
                 if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters {
+                    io.charge(acyclic_fs_work::performance::WorkCounters {
                         bytes_copied: std::mem::size_of::<Entry>() as u64,
                         ..Default::default()
                     })?;
@@ -402,13 +402,21 @@ pub(super) mod codec_fuzz {
 }
 
 /// The head of this call's observation chain is its current admission state.
-pub(super) async fn tool_state<P: crate::store::JournalProvider + ?Sized>(
+#[derive(Clone, Copy)]
+pub(super) struct ToolEntry {
+    pub(super) sequence: u64,
+    pub(super) retry: [u8; 32],
+    pub(super) digest: [u8; 32],
+    pub(super) settled: bool,
+}
+
+pub(super) async fn tool_entry<P: crate::store::JournalProvider + ?Sized>(
     reader: &Reader<'_, P>,
     root: Option<NodeRef>,
     tail: u64,
     step: u32,
     call: [u8; 32],
-) -> Result<Option<bool>> {
+) -> Result<Option<ToolEntry>> {
     let io = reader.io;
     let Some(node) = reader.get(root, &key(Some(step), Some(call))).await? else {
         return Ok(None);
@@ -428,7 +436,12 @@ pub(super) async fn tool_state<P: crate::store::JournalProvider + ?Sized>(
     {
         return Err(invalid(io));
     }
-    Ok(entry.tool.map(|tool| tool.1))
+    Ok(entry.tool.map(|tool| ToolEntry {
+        sequence: entry.sequence,
+        retry: entry.retry,
+        digest: entry.digest,
+        settled: tool.1,
+    }))
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>

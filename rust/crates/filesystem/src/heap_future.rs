@@ -35,15 +35,13 @@ impl FrameObservation<'_> {
     }
 }
 impl Drop for FrameObservation<'_> {
-    #[allow(
-        clippy::expect_used,
-        reason = "The frame releases exactly the bytes admitted by its observer."
-    )]
     fn drop(&mut self) {
         if let Some(owner) = self.owner.filter(|_| self.bytes != 0) {
-            owner
+            if let Err(error) = owner
                 .record_heap_future_event(crate::heap_future::HeapFutureEvent::Released(self.bytes))
-                .expect("the actual path frame dies before its observation retires");
+            {
+                tracing::error!(?error, "path frame retirement failed during drop");
+            }
         }
     }
 }
@@ -84,6 +82,7 @@ impl<F: Future, A> OwnedFuture<F, A> {
     pub(crate) fn erase_send<'a>(self) -> OwnedFuture<dyn Future<Output = F::Output> + Send + 'a, A>
     where
         F: Send + 'a,
+        A: Send,
     {
         OwnedFuture {
             future: self.future,
@@ -105,6 +104,7 @@ impl<F: Future, A> OwnedFuture<F, A> {
     pub(crate) fn erase_task<'a>(self) -> OwnedFuture<TaskFuture<'a, F::Output>, A>
     where
         F: Send + 'a,
+        A: Send,
     {
         self.erase_send()
     }
@@ -294,8 +294,9 @@ struct HeapFutureRelease<'a> {
 impl Drop for HeapFutureRelease<'_> {
     fn drop(&mut self) {
         if let Some(observer) = self.observer {
-            observer(HeapFutureEvent::Released(self.bytes))
-                .expect("the actual admitted SDK future must release once");
+            if let Err(error) = observer(HeapFutureEvent::Released(self.bytes)) {
+                tracing::error!(?error, "future frame retirement failed during drop");
+            }
         }
     }
 }
@@ -385,7 +386,12 @@ where
         Err(mut failure) => {
             // Ordinary failures already own their receipt. Retain that same
             // allocation and the whole caller error while joining frame work.
-            *failure.work = work.with_backend(*failure.work, bytes).unwrap_or(work);
+            if let Ok(nested) = &mut failure.work {
+                match work.with_backend(**nested, bytes) {
+                    Ok(combined) => **nested = combined,
+                    Err(error) => failure.work = Err(error.into()),
+                }
+            }
             Err(failure)
         }
         Ok(receipt) => {
@@ -490,7 +496,7 @@ mod tests {
         .await
         .expect_err("cold cancellation");
         assert_eq!(failure.error, TestError::Cancelled);
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(failure.work.as_deref(), Ok(&WorkCounters::default()));
 
         let cancellation = CancellationToken::new();
         for budget in [
@@ -522,7 +528,7 @@ mod tests {
                 failure.error,
                 TestError::Work(WorkError::BudgetExceeded { .. })
             ));
-            assert_eq!(*failure.work, WorkCounters::default());
+            assert_eq!(failure.work.as_deref(), Ok(&WorkCounters::default()));
         }
         assert_eq!(created.get(), 0);
     }
@@ -574,11 +580,11 @@ mod tests {
             })
         );
         assert_eq!(
-            *failure.work,
-            WorkCounters {
+            failure.work.as_deref(),
+            Ok(&WorkCounters {
                 bytes_copied: 4,
                 ..copy_budget()
-            }
+            })
         );
     }
 
@@ -650,7 +656,7 @@ mod tests {
         .await
         .expect_err("cache and frame overlap denied");
         assert!(!created.get());
-        assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+        assert_eq!(failure.work.as_deref(), Ok(&WorkCounters::UNCHARGED));
         assert_eq!(admitted.load(std::sync::atomic::Ordering::Acquire), 1);
         assert_eq!(
             released.load(std::sync::atomic::Ordering::Acquire),

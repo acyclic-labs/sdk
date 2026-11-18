@@ -482,7 +482,7 @@ fn sync_rebase_conflict_limit_and_truncation_are_exact() -> Result<(), Box<dyn s
     .err()
     .ok_or("zero conflict limit was accepted")?;
     assert!(matches!(zero.error, RebaseError::ZeroConflictLimit));
-    assert_eq!(*zero.work, WorkCounters::default());
+    assert_eq!(*zero.work().unwrap(), WorkCounters::default());
     assert_eq!(probe.calls.get(), 0);
 
     let receipt = classify_rebase(
@@ -558,7 +558,11 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
     let followed = ledger
         .followed_with_accounting(&settled, Some(&owner), &mut accounting)?
         .ok_or("two settlements expect one state")?;
-    assert_ne!(accounting.spent().bytes_copied, 0, "name data is copied");
+    assert_ne!(
+        accounting.spent().unwrap().bytes_copied,
+        0,
+        "name data is copied"
+    );
     assert_ne!(
         owner.retained_bytes(),
         0,

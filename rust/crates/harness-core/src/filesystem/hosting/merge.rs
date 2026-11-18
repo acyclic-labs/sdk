@@ -187,11 +187,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 #[cfg(not(target_arch = "wasm32"))]
                 checkout: None,
                 author: "agent",
-                authored_at_seconds: i64::try_from(self.clock.now_unix_ms() / 1000)
+                authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                     .unwrap_or(i64::MAX),
                 request: Some(acyclic_fs::GitRequest {
                     merge_source: None,
-                    operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                    operation: acyclic_fs_format::identity::OperationId::from_bytes(
+                        operation.into_bytes(),
+                    ),
                     unanswered: Arc::new(|_| true),
                 }),
             },

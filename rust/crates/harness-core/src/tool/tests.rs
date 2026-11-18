@@ -272,7 +272,7 @@ fn projection_schema_violation_is_the_tools_mistake_on_the_native_path() -> Resu
     };
     let violating = json!({"kind":"json","value":7});
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 4 * 1024 * 1024),
+        acyclic_fs_work::performance::work_budget(100_000, 4 * 1024 * 1024),
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;

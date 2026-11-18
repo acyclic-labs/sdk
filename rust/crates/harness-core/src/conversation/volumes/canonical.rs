@@ -152,13 +152,16 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn restored_owned_volume_hash_exceeds_the_same_copy_allowance() -> Result<()> {
-        use acyclic_fs::{
-            CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
+        use {
+            acyclic_fs::{
+                CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError,
+            },
+            acyclic_fs_work::performance::WorkError,
         };
         for volume in volumes()? {
             let expected = previous_labels(&volume)?[0].clone();
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(10_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(10_000, 1_048_576);
             budget.bytes_copied = expected.len() as u64;
             let positive = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -192,7 +195,7 @@ mod tests {
                 "restored result: {restored_result:?}; receipt: {:?}",
                 restored.receipt()
             );
-            assert_eq!(restored.receipt().bytes_hashed, 0);
+            assert_eq!(restored.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }
@@ -204,7 +207,7 @@ mod tests {
         for volume in volumes()? {
             let expected = previous_labels(&volume)?;
             let cancellation = CancellationToken::new();
-            let mut budget = acyclic_fs::performance::work_budget(10_000, 1_048_576);
+            let mut budget = acyclic_fs_work::performance::work_budget(10_000, 1_048_576);
             budget.bytes_copied = expected.iter().map(|label| label.len() as u64).sum();
             let work = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -212,10 +215,10 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&work)?,
             );
             assert_eq!(labels(&volume, &mut Some(&mut io))?, expected);
-            let bytes = 3 * crate::contract::canonical_json_bytes(&volume)?.len()
+            let bytes = 4 * crate::contract::canonical_json_bytes(&volume)?.len()
                 + crate::contract::canonical_json_bytes(&(&volume, ""))?.len();
-            assert_eq!(work.receipt().bytes_hashed, bytes as u64);
-            assert_eq!(work.receipt().bytes_copied, budget.bytes_copied);
+            assert_eq!(work.receipt()?.bytes_hashed, bytes as u64);
+            assert_eq!(work.receipt()?.bytes_copied, budget.bytes_copied);
             cancellation.cancel();
             assert!(volume.storage_name(&mut Some(&mut io)).is_err());
             assert!(
@@ -257,7 +260,7 @@ mod tests {
                     .capability(VolumeOperation::Write, &mut Some(&mut denied_io))
                     .is_err()
             );
-            assert_eq!(denied.receipt().bytes_hashed, 0);
+            assert_eq!(denied.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }

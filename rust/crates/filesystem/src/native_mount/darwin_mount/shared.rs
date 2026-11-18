@@ -206,7 +206,11 @@ impl ViewRouting {
 impl SharedView {
     /// Unlist before draining callbacks, then forget only this view's handles.
     pub(super) fn retire(&mut self) {
-        if let Some((_, context)) = self.entry.retire_after(|| {}) {
+        let retired = self.entry.retire_after(|| {});
+        if let Err(error) = &retired {
+            tracing::error!(error, "shared view retirement failed");
+        }
+        if let Ok(Some((_, context))) = retired {
             self.views.changed.fetch_add(1, Ordering::Release);
             let files = context.files.read().unwrap_or_else(PoisonError::into_inner);
             let mut handles = self
@@ -254,13 +258,20 @@ impl SharedViews {
         }
     }
 
-    pub(super) fn record_failure(&self, cause: NativeMountError, work: WorkCounters) -> i32 {
+    pub(super) fn record_failure(
+        &self,
+        cause: NativeMountError,
+        work: Result<WorkCounters, crate::WorkObservationError>,
+    ) -> i32 {
         let status = callback_errno(&cause);
-        if fatal(&cause) {
+        if fatal(&cause) || work.is_err() {
             let mut state = self
                 .handler_failure
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            if let Err(error) = work {
+                state.observation_error = Some(error);
+            }
             if state.first_fatal.is_none() {
                 state.first_fatal = Some((Some(cause), work));
             }

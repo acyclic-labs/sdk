@@ -2,12 +2,13 @@
 
 #![cfg(windows)]
 
-use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions, NativeMaterializationWork, WorkBudget,
-};
 use bytes::Bytes;
 use std::collections::HashSet;
 use std::sync::{Arc, Barrier};
+use {
+    acyclic_fs::{CancellationToken, Fs, IdempotencyKey, LocalOptions, NativeMaterializationWork},
+    acyclic_fs_work::performance::WorkBudget,
+};
 
 fn setup_work() -> Result<NativeMaterializationWork, Box<dyn std::error::Error>> {
     acyclic_fs::initialize_native_mount_services()?;

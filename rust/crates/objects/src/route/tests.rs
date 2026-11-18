@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn every_objects_method_has_one_action_and_one_binary_route() {
+    for &method in ObjectsMethod::ALL {
+        assert!(
+            method.action().is_some(),
+            "invalid Objects admission for {method:?}"
+        );
+        assert_eq!(
+            ObjectsMethod::from_http_route(method.http_route()),
+            Some(method)
+        );
+        assert_eq!(
+            ObjectsMethod::from_route(method.authorization().route),
+            Some(method)
+        );
+    }
+    assert_eq!(ObjectsMethod::from_http_route("blobs/unmapped"), None);
+    assert_eq!(
+        ObjectsMethod::from_route("/acyclic.objects.v1.BlobsService/Unmapped"),
+        None
+    );
+}
+
+#[test]
 fn body_decoding_retains_the_owned_wire_buffer() -> Result<(), Box<dyn std::error::Error>> {
     for length in [128, 1024, 1024 * 1024] {
         let body = Bytes::from(vec![37; length]);

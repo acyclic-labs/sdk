@@ -92,9 +92,9 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
             false,
         ),
         (
-            "stream",
+            "stream-wire",
             &["acyclic.stream.v1"],
-            "acyclic_stream::wire",
+            "acyclic_stream_wire::wire",
             false,
         ),
         (
@@ -148,7 +148,7 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
 fn main() {
     if let Err(error) = generate() {
         eprintln!(
-            "codec table generation failed: {error}; recovery: cargo check --manifest-path rust/codec-fuzz/Cargo.toml --all-targets"
+            "codec table generation failed: {error}; recovery: bazel build //rust/codec-fuzz/..."
         );
         std::process::exit(1);
     }

@@ -194,7 +194,7 @@ impl BrowserTransaction {
         let outcome = Box::pin(self.engine.commit(
             None,
             permit,
-            acyclic_fs::WorkBudget::UNBOUNDED,
+            acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
             publication_ready::<acyclic_fs::WorkspaceError>,
         ))

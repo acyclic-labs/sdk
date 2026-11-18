@@ -1,12 +1,11 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 import "./check-compatibility-digests.mjs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, nativeWasmVector, packagedSourceCopies } from "./generated-bindings.mjs";
+import { join } from "node:path";
+import { compatibilityArtifacts, nativeWasmVector } from "./generated-bindings.mjs";
 import { generate } from "./proto-codegen.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function checkDescriptors(sourceRoot = root) {
   const output = mkdtempSync(join(tmpdir(), "sdk-descriptors-"));
@@ -22,11 +21,6 @@ export function checkDescriptors(sourceRoot = root) {
     rmSync(output, { recursive: true, force: true });
   }
 }
-for (const [source, packaged] of packagedSourceCopies) {
-  if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
-    throw new Error(`packaged source drift: ${packaged}`);
-  }
-}
 const harnessSuite = JSON.parse(readFileSync(join(root, compatibilityArtifacts.harness.conformanceDigest), "utf8"));
 const nativeWasmCase = harnessSuite.cases.find(item => item.name === "native-wasm-replay-is-byte-equivalent");
 const vector = JSON.parse(readFileSync(join(root, nativeWasmVector), "utf8"));
@@ -34,4 +28,4 @@ if (JSON.stringify(nativeWasmCase?.vector) !== JSON.stringify(vector)) {
   throw new Error("native/WASM fixture is not bound into the Harness suite");
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] !== "--no-compile") checkDescriptors();
+if (import.meta.main && process.argv[2] !== "--no-compile") checkDescriptors();

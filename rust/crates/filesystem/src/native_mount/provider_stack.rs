@@ -506,12 +506,12 @@ mod tests {
                 })
             ));
             assert_eq!(
-                work.receipt().allocation_operations,
+                work.receipt().unwrap().allocation_operations,
                 1,
                 "only the actual accounting state was allocated"
             );
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 0,
                 "no fiber SDK creation entered"
             );
@@ -545,9 +545,12 @@ mod tests {
             })
             .expect("four exact native control operations admitted");
             assert_eq!(result, 42);
-            assert_eq!(work.receipt().backend_write_operations, 4);
-            assert_eq!(work.receipt().allocation_operations, 2);
-            assert_eq!(work.receipt().peak_allocation_bytes, payload + exchange);
+            assert_eq!(work.receipt().unwrap().backend_write_operations, 4);
+            assert_eq!(work.receipt().unwrap().allocation_operations, 2);
+            assert_eq!(
+                work.receipt().unwrap().peak_allocation_bytes,
+                payload + exchange
+            );
             assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
             assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: the actual conversion cleanup has returned this thread.
@@ -577,7 +580,7 @@ mod tests {
                 })
             ));
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 2,
                 "real create and mandatory delete, no conversion"
             );
@@ -608,7 +611,7 @@ mod tests {
                 "the original token remains active"
             );
             assert_eq!(
-                work.receipt().backend_write_operations,
+                work.receipt().unwrap().backend_write_operations,
                 4,
                 "both actual cleanup calls survived cancellation"
             );
@@ -634,11 +637,11 @@ mod tests {
             let work =
                 crate::NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
                     .expect("accounting state is admitted");
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             super::run_with_meter(Some(&work), || panic!("unadmitted callback ran"))
                 .expect_err("each exchange needs its own admitted custody");
             assert_eq!(
-                work.receipt(),
+                work.receipt().unwrap(),
                 before,
                 "denied exchange performed native work"
             );
@@ -664,7 +667,7 @@ mod resource_scope_tests {
                 })
                 .expect("resource metadata belongs to the original");
             let full = resource.clone();
-            let before = original.receipt();
+            let before = original.receipt().unwrap();
             let failure = super::run_with_meter(Some(&full), || {
                 panic!("denied exchange cannot enter callback")
             })
@@ -677,7 +680,7 @@ mod resource_scope_tests {
                 })
             ));
             assert_eq!(
-                original.receipt(),
+                original.receipt().unwrap(),
                 before,
                 "denied exchange enters neither allocator nor SDK"
             );

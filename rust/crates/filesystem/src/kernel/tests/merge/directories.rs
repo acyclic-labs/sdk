@@ -9,7 +9,7 @@ async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn s
     zero_changes.maximum_changes = Some(0);
     let failure = merge_error(zero_changes, &cancellation).await?;
     assert!(matches!(failure.error, MergeGenerationError::ChangeLimit));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     let mut zero_conflicts = request(valid.clone(), valid.clone(), valid.clone());
     zero_conflicts.maximum_conflicts = Some(0);
@@ -41,7 +41,7 @@ async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn s
     cancelled.cancel();
     let failure = merge_error(request(valid.clone(), valid.clone(), valid), &cancelled).await?;
     assert!(matches!(failure.error, MergeGenerationError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -113,7 +113,7 @@ async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dy
         .err()
         .ok_or_else(|| std::io::Error::other("directory merge accepted a non-directory record"))?;
     assert!(matches!(failure.error, MergeGenerationError::InvalidDiff));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
