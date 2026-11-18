@@ -1,9 +1,6 @@
 //! Platform I/O for the shared session pool, without another session protocol.
+pub(crate) use crate::ProviderOwner as Shared;
 use crate::{BoxProviderFuture, BoxProviderStream, ProviderPlatform, StreamError, wire};
-#[cfg(target_arch = "wasm32")]
-pub(crate) use std::rc::Rc as Shared;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use std::sync::Arc as Shared;
 
 /// Canonical inbound frames, with the owning boundary's error contract.
 pub type Responses<E = StreamError> = BoxProviderStream<'static, Result<super::super::Frame, E>>;
