@@ -92,7 +92,7 @@ type WireRequest =
   | { readonly kind: "head"; readonly path: string }
   | { readonly kind: "tail"; readonly path: string; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
-  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
+  | ({ readonly kind: "read"; readonly path: string; readonly atLeast?: readonly Revision[] } & import("./types.js").ReadOptions)
   | ({ readonly kind: "follow"; readonly path: string } & Omit<import("./types.js").FollowOptions, "signal">)
   | { readonly kind: "children_page"; readonly options: import("./types.js").ChildrenPageRequest };
 
@@ -177,19 +177,21 @@ export function wireRequest(request: WireRequest): Uint8Array {
           ...(request.options?.atTail === undefined ? {} : { atTail: request.options.atTail }),
           ...(request.options?.idempotencyKey === undefined ? {} : { idempotencyKey: request.options.idempotencyKey }),
         }));
-      case "read":
-        requirePathType(request.path);
-        requireSequenceType(request.from);
-        requireLimitType(request.limit);
-        if (request.key !== undefined) {
-          requireBytesType(request.key.key); requireSequenceType(request.key.before);
-          if (request.key.end !== undefined) requireBytesType(request.key.end);
-          if (request.key.order !== undefined && request.key.order !== "ascending" && request.key.order !== "latest_first") throw new StreamError("invalid_argument", "read order is invalid");
+      case "read": {
+        const { path, from, limit, key, atLeast } = request;
+        requirePathType(path);
+        requireSequenceType(from);
+        requireLimitType(limit);
+        if (key !== undefined) {
+          requireBytesType(key.key); requireSequenceType(key.before);
+          if (key.end !== undefined) requireBytesType(key.end);
+          if (key.order !== undefined && key.order !== "ascending" && key.order !== "latest_first") throw new StreamError("invalid_argument", "read order is invalid");
         }
-        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, ...(request.key === undefined ? {} : { key: {
-          key: request.key.key, before: request.key.before, ...(request.key.end === undefined ? {} : { end: request.key.end }),
-          order: request.key.order === "latest_first" ? ReadOrder.LATEST_FIRST : ReadOrder.ASCENDING,
-        } }), atLeast: [...(request.atLeast ?? [])] }));
+        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path, from, limit, ...(key === undefined ? {} : { key: {
+          key: key.key, before: key.before, ...(key.end === undefined ? {} : { end: key.end }),
+          order: key.order === "latest_first" ? ReadOrder.LATEST_FIRST : ReadOrder.ASCENDING,
+        } }), atLeast: [...(atLeast ?? [])] }));
+      }
       case "follow":
         requirePathType(request.path);
         requireSequenceType(request.from);
