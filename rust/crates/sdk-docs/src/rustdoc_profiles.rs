@@ -228,7 +228,7 @@ pub fn profiles_for_package(
     available_targets: &BTreeSet<String>,
 ) -> Result<Vec<ProfileSpec>, ProfileError> {
     current_package_profiles(metadata, package, target, available_targets)
-        .map(|(_, profiles)| profiles)
+        .map(|(_, profiles)| profiles.into_values().collect())
 }
 
 fn current_package_profiles<'a>(
@@ -236,7 +236,7 @@ fn current_package_profiles<'a>(
     package: &str,
     target: &str,
     available_targets: &BTreeSet<String>,
-) -> Result<(&'a Package, Vec<ProfileSpec>), ProfileError> {
+) -> Result<(&'a Package, BTreeMap<ProfileId, ProfileSpec>), ProfileError> {
     if !available_targets.contains(target) {
         return Err(ProfileError::UnsupportedTarget {
             target: target.to_owned(),
@@ -272,7 +272,7 @@ fn current_package_profiles<'a>(
     if !declared.is_empty() {
         add(true, declared);
     }
-    Ok((package_metadata, profiles.into_values().collect()))
+    Ok((package_metadata, profiles))
 }
 
 /// Select the browser profile from Cargo declarations without enabling native
@@ -373,7 +373,7 @@ pub fn historical_profiles_for_package(
 ) -> Result<Vec<ProfileSpec>, ProfileError> {
     let (owner, current) = current_package_profiles(metadata, package, target, available_targets)?;
     let mut profiles = BTreeMap::new();
-    for mut profile in current {
+    for mut profile in current.into_values() {
         profile.default_features = true;
         insert_profile(&mut profiles, profile);
     }
