@@ -10,6 +10,9 @@ use std::sync::Mutex;
 mod fixtures;
 use fixtures::{TestExecutor, generation, tree, workspace};
 
+#[path = "../../../tests/support/transaction.rs"]
+mod transaction;
+
 fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
     let name = WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &CancellationToken::new())
         .expect("workspace name")
@@ -215,24 +218,9 @@ async fn begin_fixture(
 async fn publish_fixture(
     mut transaction: crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
 ) -> Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
-    let outcome = transaction
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    },
-                ))
-            },
-        )
+    let outcome = transaction::commit(&mut transaction)
         .await
-        .expect("publish fixture")
-        .value;
+        .expect("publish fixture");
     let TransactionCommit::Committed(generation) = outcome else {
         panic!("fixture did not commit");
     };
