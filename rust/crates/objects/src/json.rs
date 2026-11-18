@@ -12,26 +12,29 @@ fn pool() -> Result<&'static DescriptorPool, Error> {
 }
 /// Encodes generated binary wire bytes through the canonical descriptor JSON mapping.
 pub fn encode_binary(name: &str, bytes: &[u8], maximum: Option<usize>) -> Result<Vec<u8>, Error> {
-    if maximum.is_some_and(|maximum| bytes.len() > maximum) {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
-    acyclic_protobuf_json::encode(descriptor(name)?, bytes).map_err(|_| invalid())
+    let descriptor = descriptor(name, bytes.len(), maximum)?;
+    acyclic_protobuf_json::encode(descriptor, bytes).map_err(|_| invalid())
 }
 /// Decodes bounded descriptor JSON to generated binary wire bytes.
 pub fn decode_binary(name: &str, bytes: &[u8], maximum: Option<usize>) -> Result<Vec<u8>, Error> {
     Ok(decode_json(name, bytes, maximum)?.encode_to_vec())
 }
 fn decode_json(name: &str, bytes: &[u8], maximum: Option<usize>) -> Result<DynamicMessage, Error> {
-    if maximum.is_some_and(|maximum| bytes.len() > maximum) {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
-    acyclic_protobuf_json::decode_admitted(descriptor(name)?, bytes, |_, _| invalid())
+    let descriptor = descriptor(name, bytes.len(), maximum)?;
+    acyclic_protobuf_json::decode_admitted(descriptor, bytes, |_, _| invalid())
 }
 /// Encodes a canonical message using its generated descriptor, without parallel JSON shapes.
 pub fn encode(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {
     encode_binary(name, &value.encode_to_vec(), None)
 }
-fn descriptor(name: &str) -> Result<MessageDescriptor, Error> {
+fn descriptor(
+    name: &str,
+    length: usize,
+    maximum: Option<usize>,
+) -> Result<MessageDescriptor, Error> {
+    if maximum.is_some_and(|maximum| length > maximum) {
+        return Err(wire::ErrorCode::QuotaExceeded.into());
+    }
     pool()?
         .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
         .ok_or_else(invalid)
