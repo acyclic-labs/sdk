@@ -31,15 +31,15 @@ struct Key {
 }
 
 fn query(command: &Command) -> Option<Key> {
-    let arguments = command.get_args().map(OsString::from).collect::<Vec<_>>();
-    let first = arguments.first()?.to_str()?;
+    let mut arguments = command.get_args();
+    let first = arguments.next()?.to_str()?;
     let program = Path::new(command.get_program()).file_stem()?.to_str()?;
     let git = program == "git";
     let pure = match program {
         "git" => {
             matches!(first, "rev-parse" | "status" | "merge-base")
                 || first == "--no-replace-objects"
-                    && arguments.get(1).is_some_and(|arg| {
+                    && arguments.next().is_some_and(|arg| {
                         matches!(arg.to_str(), Some("rev-parse" | "log" | "ls-tree"))
                     })
         }
@@ -50,7 +50,7 @@ fn query(command: &Command) -> Option<Key> {
     };
     pure.then(|| Key {
         program: command.get_program().to_owned(),
-        arguments,
+        arguments: command.get_args().map(OsString::from).collect(),
         directory: git
             .then(|| command.get_current_dir().map(PathBuf::from))
             .flatten(),
