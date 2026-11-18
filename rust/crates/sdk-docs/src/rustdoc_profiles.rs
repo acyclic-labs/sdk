@@ -380,13 +380,13 @@ pub fn historical_profiles_for_package(
     if let Some(policy) = owner.metadata.get("docs").and_then(|docs| docs.get("rs")) {
         #[derive(Deserialize, Default)]
         #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-        struct DocsRsFeatures {
+        struct DocsRsFeatures<'a> {
             #[serde(default)]
             all_features: bool,
             #[serde(default)]
             no_default_features: bool,
             #[serde(default)]
-            features: Vec<String>,
+            features: Vec<&'a str>,
         }
         let policy = DocsRsFeatures::deserialize(policy).map_err(|error| {
             ProfileError::InvalidRustdoc(format!("invalid historical docs.rs policy: {error}"))
@@ -395,16 +395,16 @@ pub fn historical_profiles_for_package(
         for feature in policy.features {
             if feature.contains('/') {
                 // The existing Cargo invocation validates qualified feature expressions.
-                features.insert(feature);
+                features.insert(feature.to_owned());
                 continue;
             }
-            if !owner.features.contains_key(&feature) {
+            if !owner.features.contains_key(feature) {
                 return Err(ProfileError::InvalidFeature {
                     package: package.to_owned(),
-                    feature,
+                    feature: feature.to_owned(),
                 });
             }
-            features.extend(feature_closure(&owner.features, &feature));
+            features.extend(feature_closure(&owner.features, feature));
         }
         if policy.all_features {
             features.extend(
