@@ -162,10 +162,9 @@ fn feature_profiles_include_both_baselines_and_local_closure() {
     .unwrap();
     assert!(profiles
         .iter()
-        .any(|profile| !profile.default_features && profile.features.is_empty()));
-    assert!(profiles
-        .iter()
-        .any(|profile| profile.default_features && profile.features.is_empty()));
+        .filter(|profile| profile.features.is_empty())
+        .map(|profile| profile.default_features)
+        .eq([false, true]));
     assert!(profiles
         .iter()
         .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()])));
