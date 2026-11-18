@@ -58,13 +58,6 @@ pub struct WebSocketAutoResponse {
     pub response: String,
 }
 
-impl WebSocketAutoResponse {
-    /// Size of the response in the canonical channel encoding, without copying it.
-    pub fn response_frame_len(&self) -> usize {
-        prost::encoding::string::encoded_len(1, &self.response)
-    }
-}
-
 /// One host operation. Send and attachment bytes travel in the packet's binary
 /// body, avoiding JSON/base64 copies and a smaller binary-frame size budget.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
