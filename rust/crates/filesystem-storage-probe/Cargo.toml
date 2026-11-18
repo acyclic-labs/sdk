@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-fs-storage-probe"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Native filesystem storage capability discovery"
+
+[package.metadata.bazel.platform-sources]
+"@platforms//os:linux" = ["src/native_mount/storage_capabilities_linux.rs"]
+"@platforms//os:macos" = ["src/native_mount/storage_capabilities_macos.rs"]
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2.175"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemServices"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

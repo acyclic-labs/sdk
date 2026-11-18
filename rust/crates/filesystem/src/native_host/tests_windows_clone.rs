@@ -498,7 +498,7 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
         let mut required = parent.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         {
-            required |= crate::probe_native_storage_capabilities(directory.path())
+            required |= acyclic_fs_storage_probe::native_mount::storage_capabilities::probe_native_storage_capabilities(directory.path())
                 .map_err(std::io::Error::other)?
                 .block_cloning;
         }

@@ -91,11 +91,6 @@ pub(crate) use materialize::{
 mod publication;
 pub use publication::{seal_checkout, seal_checkout_with_permit};
 
-mod storage_capabilities;
-pub use storage_capabilities::{
-    NativeStorageCapabilities, NativeStorageCapabilityError, probe_native_storage_capabilities,
-};
-
 mod storage_accelerations;
 pub use storage_accelerations::{
     NativeBlockCloneAccelerationEvidence, NativeSparseAccelerationEvidence,
