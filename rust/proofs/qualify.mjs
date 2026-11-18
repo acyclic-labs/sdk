@@ -9,6 +9,9 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const nativeHarness = ["--features", "test-support"];
 const bindingFeatures = ["--features", "test-support"];
 const bindingNextest = ["--profile", "ci", "--retries", "0", "--no-tests=fail", "--no-fail-fast", "--failure-output", "final"];
+const bindingCheckoutCase = "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner";
+const bindingCheckoutRunner = ["bazel", "run", "//rust/crates/harness-local:acyclic_harness_local_test_cases",
+  "--", bindingCheckoutCase, "--exact", "--nocapture"];
 const cleanupTests = [
   "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
   "local::tests::agents::a_shell_call_stages_its_output_on_the_private_volume",
@@ -313,17 +316,17 @@ const claims = {
   ],
   "task-binding-observer": [
     "rust/crates/harness-local/src/local/workspace/bindings.rs", "acyclic-harness-local",
-    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
-    "registered binding observer lost its successful preparation", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
+    bindingCheckoutCase,
+    "registered binding observer lost its successful preparation", [],
+    { runner: bindingCheckoutRunner, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_observer_result.patch", label: "result-loss", diagnostic: "registered binding observer lost its successful preparation" },
     ] },
   ],
   "task-binding-checkout": [
     "rust/crates/harness-local/src/local/workspace/task_views.rs", "acyclic-harness-local",
-    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
-    "binding preparation retains the unrelated checkout owner", bindingFeatures,
-    { nextest: bindingNextest, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
+    bindingCheckoutCase,
+    "binding preparation retains the unrelated checkout owner", [],
+    { runner: bindingCheckoutRunner, oracle: "rust/crates/harness-local/src/local/workspace/task_views/tests.rs", mutations: [
       { patch: "fuzz/mutations/task_binding_checkout_owner.patch", label: "checkout-owner", diagnostic: "binding preparation retains the unrelated checkout owner" },
     ] },
   ],
