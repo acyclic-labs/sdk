@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GENERATED_HEADER as GENERATED, bazelCommand } from "./bazel-executables.mjs";
+import { GENERATED_HEADER as GENERATED, bazelQuery } from "./bazel-executables.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const GLOBAL_INPUTS = [
@@ -91,11 +91,7 @@ export function affectedTargets({ root, changed, query }) {
   let global = false;
   for (const file of changed) {
     const path = relativePath(root, file);
-    if (path === null || path === "") {
-      global = true;
-      continue;
-    }
-    if (isGlobalInput(path)) {
+    if (path === null || path === "" || isGlobalInput(path)) {
       global = true;
       continue;
     }
@@ -139,11 +135,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     ...options.changed,
     ...(options.base ? changedPathsFromGit(options.base, options.head, { cwd: options.root }) : []),
   ];
-  const bazel = bazelCommand();
-  const query = expression => execFileSync(bazel, [
-    "query", "--color=no", "--noshow_progress", "--ui_event_filters=-info", "--output=label", expression,
-  ], { cwd: options.root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "inherit"] });
-  const targets = affectedTargets({ root: options.root, changed, query });
+  const targets = affectedTargets({ root: options.root, changed, query: expression => bazelQuery(options.root, expression) });
   if (options.json) console.log(JSON.stringify(targets));
   else if (options.count) console.log(targets.length);
   else console.log(targets.join("\n"));

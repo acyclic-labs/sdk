@@ -69,6 +69,13 @@ export function bazelExecutables(root, labels, capture = defaultCapture(root)) {
   return executablesFromCquery(requested, answers, executionRoot);
 }
 
+/** One `bazel query` over `root`, its label output as text. */
+export function bazelQuery(root, expression) {
+  return execFileSync(bazelCommand(), ["query", ...FLAGS, "--output=label", expression], {
+    cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"], windowsHide: true,
+  });
+}
+
 function defaultCapture(root) {
   return (phase, executable, args) => execFileSync(executable, args, {
     cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"], windowsHide: true,
