@@ -858,10 +858,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         format!("{}r/{}/", self.state.prefix, Digest::of(root.as_bytes()))
     }
 
-    fn index_prefix(&self, child: &Digest) -> String {
-        format!("{}i/{child}/", self.state.prefix)
-    }
-
     /// Whether any key exists under `prefix`.
     async fn any(&self, prefix: &str) -> Result<bool, Error> {
         Ok(!self
@@ -908,7 +904,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn index_key(&self, child: &Digest, tag: &str) -> String {
-        format!("{}{tag}", self.index_prefix(child))
+        format!("{}i/{child}/{tag}", self.state.prefix)
     }
 
     /// Indexes `references` under `tag`, creates the root batch `key` that
@@ -1181,7 +1177,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             }
             None | Some(_) => {}
         }
-        if self.any(&self.index_prefix(&digest)).await? {
+        if self.any(&self.index_key(&digest, "")).await? {
             // A kept blob outlives a mark its deleter left behind.
             if envelope.dying.is_some() && fence.is_some() {
                 self.revive(observed, envelope).await?;
@@ -1201,7 +1197,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         else {
             return Err(changed());
         };
-        if self.any(&self.index_prefix(&digest)).await? {
+        if self.any(&self.index_key(&digest, "")).await? {
             self.revive(marked, envelope).await?;
             return Ok((Delete::Referenced, Vec::new()));
         }
