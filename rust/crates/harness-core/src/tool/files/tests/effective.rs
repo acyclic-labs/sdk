@@ -419,7 +419,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                 }
             }
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes()?,
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
             );
         }
