@@ -68,7 +68,8 @@ The 2026-10-30 Rust capture used the same compiled descriptor through the
 existing Actors metadata exporter, whose maintained-proto comparison passed:
 
 ```
-cargo run --locked -p acyclic-actors --example actors-http-routes -- target/entry-configuration/routes.json --proto-out target/entry-configuration/proto
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/entry-configuration/routes.json
+cargo run --locked -p acyclic-actors --example actors-render-proto -- target/entry-configuration/proto
 cmp target/entry-configuration/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
 ```
 
@@ -80,7 +81,8 @@ The 2026-10-31 capture removes the unused subscription retry counter while
 retaining every other field's wire identity. The Rust descriptor came from:
 
 ```
-cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-observation/routes.json --proto-out target/actor-observation/proto
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-observation/routes.json
+cargo run --locked -p acyclic-actors --example actors-render-proto -- target/actor-observation/proto
 cmp target/actor-observation/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
 ```
 
@@ -132,7 +134,8 @@ publication upload and deployment envelope fields with the subscription retry
 counter removal. These commands captured the Rust and independent Buf outputs:
 
 ```
-cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-publication-contract/actors-service.ts --proto-out target/actor-publication-contract/proto
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-publication-contract/actors-service.ts
+cargo run --locked -p acyclic-actors --example actors-render-proto -- target/actor-publication-contract/proto
 cmp target/actor-publication-contract/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
 node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o target/actor-publication-contract/actors-buf.bin
 cargo run --locked -p sdk-proto-codegen -- canonicalize actors target/actor-publication-contract/actors-buf.bin target/actor-publication-contract/actors-buf-v1.bin
@@ -159,7 +162,8 @@ and the selected Rust compiler output both have SHA-256
 `c628e85818454161cc061a13073c6e6f1721841bd73b30fc8f9c22cd55dfb4dc`:
 
 ```sh
-cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actors-cause-capture/actors-service.ts --proto-out target/actors-cause-capture/proto
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actors-cause-capture/actors-service.ts
+cargo run --locked -p acyclic-actors --example actors-render-proto -- target/actors-cause-capture/proto
 cmp target/actors-cause-capture/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
 cargo run --locked -p sdk-proto-codegen -- descriptors . target/actors-cause-descriptors actors
 node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-cause-buf-raw.bin

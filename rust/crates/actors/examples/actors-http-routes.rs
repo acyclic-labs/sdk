@@ -4,17 +4,8 @@ use std::{env, fs};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = env::args().skip(1);
     let output = arguments.next();
-    let mut proto_output = None;
-    while let Some(argument) = arguments.next() {
-        match argument.as_str() {
-            "--proto-out" => {
-                proto_output = Some(arguments.next().ok_or("--proto-out requires a directory")?);
-            }
-            other => return Err(format!("unknown argument {other}").into()),
-        }
-    }
-    if let Some(proto_output) = proto_output {
-        acyclic_actors::contract::render_proto_files(proto_output)?;
+    if let Some(argument) = arguments.next() {
+        return Err(format!("unknown argument {argument}").into());
     }
     if let Some(output) = output {
         if let Some(parent) = std::path::Path::new(&output).parent() {
