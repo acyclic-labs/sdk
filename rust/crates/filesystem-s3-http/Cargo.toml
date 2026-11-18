@@ -1,0 +1,36 @@
+[package]
+name = "acyclic-fs-s3-http"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3 HTTP translation over Acyclic filesystem workspaces"
+
+[dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
+acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+async-trait.workspace = true
+base64 = "0.23.1"
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+s3s.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
+hmac = "0.13.0"
+http.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tower = { workspace = true, features = ["util"] }
+
+[features]
+test-support = ["acyclic-fs/test-support"]
+
+[lints]
+workspace = true
