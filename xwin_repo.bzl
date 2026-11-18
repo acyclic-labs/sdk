@@ -29,13 +29,21 @@ def _xwin_repository_impl(ctx):
     for leaf in (_LEAVES if root else []):
         ctx.symlink(root + "/" + leaf, leaf)
     ctx.file("WORKSPACE.bazel", "workspace(name = \"xwin\")\n")
+    # The toolchain compiles against the headers and links against the import libraries, so they are
+    # separate filegroups: a Rust link action reads only the libraries and never the 5000 headers.
+    incompatible = "" if root else '\n    target_compatible_with = ["@platforms//:incompatible"],'
     ctx.file("BUILD.bazel", """package(default_visibility = ["//visibility:public"])
 
 filegroup(
-    name = "sysroot",
-    srcs = glob(["crt/**", "sdk/**"], allow_empty = True),%s
+    name = "includes",
+    srcs = glob(["crt/include/**", "sdk/include/**"], allow_empty = True),%s
 )
-""" % ("" if root else '\n    target_compatible_with = ["@platforms//:incompatible"],'))
+
+filegroup(
+    name = "libs",
+    srcs = glob(["crt/lib/**", "sdk/lib/**"], allow_empty = True),%s
+)
+""" % (incompatible, incompatible))
 
 xwin_repository = repository_rule(
     implementation = _xwin_repository_impl,
