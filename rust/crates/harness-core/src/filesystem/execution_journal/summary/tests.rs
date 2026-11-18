@@ -106,10 +106,10 @@ proptest! {
             prop_assert!(*settled);
             // Replay the accepted production trace through the same map entry
             // point, isolating retained-index copies from encoding and batching.
-            let copied = io.receipt().bytes_copied;
+            let copied = io.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?.bytes_copied;
             rebuilt.insert_digest(digest, *settled, Some(&io))
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
-            prop_assert_eq!(io.receipt().bytes_copied, copied,
+            prop_assert_eq!(io.receipt().map_err(|error| TestCaseError::fail(error.to_string()))?.bytes_copied, copied,
                 "summary insertion copied prior backing");
             prop_assert_eq!(rebuilt.get_digest(&digest, Some(&io)).unwrap(), Some(settled));
         }
