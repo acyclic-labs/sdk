@@ -29,17 +29,17 @@ fn archive_locks_override_foreign_cargo_authority() {
                     (HistoricalAuthority::Lock(&foreign), None),
                     (
                         HistoricalAuthority::CargoHome(&directory),
-                        Some(directory.clone()),
+                        Some(directory.join("config.toml")),
                     ),
                     (
                         HistoricalAuthority::WorkingDirectory(&directory),
-                        Some(directory.join(".cargo")),
+                        Some(directory.join(".cargo/config.toml")),
                     ),
                 ]
-                .map(|(authority, config_directory)| {
-                    if let Some(config_directory) = &config_directory {
-                        fs::create_dir_all(&config_directory).unwrap();
-                        fs::write(config_directory.join("config.toml"), &config).unwrap();
+                .map(|(authority, config_path)| {
+                    if let Some(path) = &config_path {
+                        fs::create_dir_all(path.parent().unwrap()).unwrap();
+                        fs::write(path, &config).unwrap();
                         // Negative control: maintained Cargo really discovers this automatic config.
                         let mut control = Command::new(&*runtime::cargo());
                         runtime::configure(&mut control);
@@ -80,8 +80,7 @@ fn archive_locks_override_foreign_cargo_authority() {
                     assert!(result.status.success(), "{}", output_message(&result));
                     assert_eq!(fs::read(&foreign).unwrap(), foreign_bytes);
                     assert_eq!(fs::read(&archive).unwrap(), original_archive);
-                    if let Some(config_directory) = config_directory {
-                        let path = config_directory.join("config.toml");
+                    if let Some(path) = config_path {
                         assert_eq!(fs::read_to_string(&path).unwrap(), config);
                         fs::remove_file(path).unwrap();
                     }
