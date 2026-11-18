@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { repositoryRoot } from "./policy-core.mjs";
 
-const allowed = new Set(["Apache-2.0", "MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "BlueOak-1.0.0", "0BSD"]);
+const allowed = new Set(["Apache-2.0", "MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "BlueOak-1.0.0", "0BSD", "PSF-2.0"]);
 
 async function optional(operation) {
   try { return await operation(); }

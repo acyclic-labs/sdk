@@ -113,6 +113,7 @@ test("preserves the existing allowlist and private-package exemption", () => {
       name: "@scope/allowed", license: "Apache-2.0",
     });
     linkPackage(root, "node_modules/@scope/allowed", allowed);
+    packageAt(root, "node_modules/psf", { name: "psf", license: "PSF-2.0" });
     packageAt(root, "node_modules/private", { name: "private", private: true });
   });
   expect(result).toEqual({ status: 0, errors: [] });
