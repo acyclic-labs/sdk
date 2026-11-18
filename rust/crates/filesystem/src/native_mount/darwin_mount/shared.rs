@@ -270,7 +270,7 @@ impl SharedViews {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if let Err(error) = work {
-                state.observation_error = Some(error);
+                state.completed_future_request_work.invalidate(error);
             }
             if state.first_fatal.is_none() {
                 state.first_fatal = Some((Some(cause), work));

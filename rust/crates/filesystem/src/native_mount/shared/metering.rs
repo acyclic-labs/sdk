@@ -15,6 +15,39 @@ use std::sync::Arc;
 
 pub(crate) type Guard = Arc<dyn NativeMountCallbackGuard>;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) struct CallbackWork(Result<WorkCounters, crate::WorkObservationError>);
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Default for CallbackWork {
+    fn default() -> Self {
+        Self(Ok(WorkCounters::UNCHARGED))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl CallbackWork {
+    pub(crate) fn total(&self) -> Result<WorkCounters, crate::WorkObservationError> {
+        self.0
+    }
+
+    pub(crate) fn invalidate(&mut self, error: crate::WorkObservationError) {
+        if self.0.is_ok() {
+            self.0 = Err(error);
+        }
+    }
+
+    pub(crate) fn add(&mut self, work: WorkCounters) -> Result<(), crate::WorkError> {
+        if let Ok(total) = &mut self.0
+            && let Err(error) = total.try_add_assign(&work)
+        {
+            self.invalidate(error.into());
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 /// The source's original invocation, which must be `candidate`'s if both
 /// exist, admitted.
 pub(crate) fn source_original(

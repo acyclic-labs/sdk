@@ -183,10 +183,7 @@ impl DarwinMountSession {
             .handler_failure
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        match state.observation_error {
-            Some(error) => Err(error),
-            None => Ok(state.completed_future_request_work),
-        }
+        state.completed_future_request_work.total()
     }
 
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {

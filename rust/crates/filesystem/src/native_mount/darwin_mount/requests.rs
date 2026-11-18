@@ -170,7 +170,7 @@ impl DarwinMountContext {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if let Err(error) = work {
-                state.observation_error = Some(error);
+                state.completed_future_request_work.invalidate(error);
             }
             if state.first_fatal.is_none() {
                 state.first_fatal = Some((Some(cause), work));
@@ -228,18 +228,16 @@ impl DarwinMountContext {
                 return Err(self.record_failure(cause, Err(observation)));
             }
         };
-        if future_request
-            && let Err(overflow) = self
-                .handler_failure
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .completed_future_request_work
-                .try_add_assign(&completed)
-        {
+        let recorded = if future_request {
             self.handler_failure
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .observation_error = Some(overflow.into());
+                .completed_future_request_work
+                .add(completed)
+        } else {
+            Ok(())
+        };
+        if let Err(overflow) = recorded {
             match &result {
                 Ok(_) => return Err(self.record_failure(overflow.into(), Err(overflow.into()))),
                 Err(cause) if !fatal(cause) => {

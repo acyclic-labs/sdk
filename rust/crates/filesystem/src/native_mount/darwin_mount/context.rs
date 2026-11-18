@@ -64,8 +64,7 @@ pub(super) struct DarwinMountContext {
 
 #[derive(Default)]
 pub(super) struct DarwinCallbackState {
-    pub(super) completed_future_request_work: WorkCounters,
-    pub(super) observation_error: Option<crate::WorkObservationError>,
+    pub(super) completed_future_request_work: crate::native_mount::shared::metering::CallbackWork,
     pub(super) first_fatal: Option<(
         Option<NativeMountError>,
         Result<WorkCounters, crate::WorkObservationError>,
