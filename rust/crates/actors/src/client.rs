@@ -187,9 +187,10 @@ impl Error {
             Self::Transport(_) => "unavailable",
             Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
             Self::Semantic(error) => error.code_name(),
-            Self::Cancelled => "cancelled",
+            Self::Cancelled | Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => {
+                "cancelled"
+            }
             Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_exceeded",
-            Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => "cancelled",
             Self::Credential(_) => "unauthenticated",
         }
     }
@@ -265,12 +266,11 @@ async fn request_error(
             Box::new(status),
         ));
     }
-    if status.code() == tonic::Code::Unauthenticated {
-        if let Some(lease) = lease {
-            if let Err(error) = lease.reject().await {
-                return Error::Credential(error);
-            }
-        }
+    if status.code() == tonic::Code::Unauthenticated
+        && let Some(lease) = lease
+        && let Err(error) = lease.reject().await
+    {
+        return Error::Credential(error);
     }
     status.into()
 }

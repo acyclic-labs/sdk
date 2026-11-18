@@ -1741,7 +1741,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
             None,
             &observer.actor,
             crate::local::Creation {
-                subscriptions: subscriptions,
+                subscriptions,
                 checkpoint: Some(Checkpoint {
                     codec: codec(),
                     bytes: serde_json::to_vec(&Ledger {
