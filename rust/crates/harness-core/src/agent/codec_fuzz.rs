@@ -210,7 +210,11 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(restored, effect);
         header(&effect);
     }
-    checkpoint::check_wire(bytes);
+    let checkpoint = checkpoint::check_wire(bytes);
+    assert!(
+        checkpoint.is_ok(),
+        "checkpoint oracle failed: {checkpoint:?}"
+    );
     if let Ok(value) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
         envelope(&value);
     }

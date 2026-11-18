@@ -180,11 +180,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Head, Error> {
 
 /// Shared fuzz checks use the actual wire type to derive malformed inputs.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn check_wire(bytes: &[u8]) {
-    let Ok(state) = decode(bytes) else { return };
-    let canonical = state.encode().expect("admitted checkpoint encodes");
-    assert_eq!(decode(&canonical).expect("checkpoint decodes"), state);
-    let encoded = Encoded::decode(canonical.as_slice()).expect("checkpoint wire writer");
+pub(super) fn check_wire(bytes: &[u8]) -> Result<(), Error> {
+    let Ok(state) = decode(bytes) else {
+        return Ok(());
+    };
+    let canonical = state.encode()?;
+    assert_eq!(decode(&canonical)?, state);
+    let encoded = Encoded::decode(canonical.as_slice())
+        .map_err(|_| Error::Record("admitted checkpoint writer emitted malformed protobuf"))?;
     let refuses = |changed: Encoded, reason| {
         assert!(
             matches!(
@@ -195,7 +198,7 @@ pub(super) fn check_wire(bytes: &[u8]) {
         );
     };
     let rest: AgentState = super::records::decode_payload(&encoded.state)
-        .unwrap_or_else(|_| panic!("checkpoint state writer"));
+        .map_err(|_| Error::Record("admitted checkpoint writer emitted malformed state"))?;
     for field in 0..2 {
         let mut changed = rest.clone();
         let reason = if field == 0 {
@@ -207,7 +210,8 @@ pub(super) fn check_wire(bytes: &[u8]) {
         };
         if changed != rest {
             let mut wire = encoded.clone();
-            wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
+            wire.state = super::records::encode_payload(&changed)
+                .map_err(|_| Error::Record("mutated checkpoint state does not encode"))?;
             refuses(wire, reason);
         }
     }
@@ -217,6 +221,7 @@ pub(super) fn check_wire(bytes: &[u8]) {
         changed.turn_inbox = (!retained_body).then_some(0);
         refuses(changed, "checkpoint admitted an incomplete turn");
     }
+    Ok(())
 }
 
 #[cfg(test)]
