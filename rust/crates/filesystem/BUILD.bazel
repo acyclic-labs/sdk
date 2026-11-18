@@ -2871,7 +2871,6 @@ rust_test(
         "tests/export_codec/kernel/transfer/tests.rs",
         "tests/support/export_manifest.rs",
         "tests/support/generation_objects.rs",
-        "tests/support/memory_objects.rs",
         "tests/support/put_object.rs",
         "tests/support/transfer_manifest.rs",
         "tests/support/tree_objects.rs",
@@ -2938,7 +2937,6 @@ rust_test(
         "tests/extent_clone/kernel/range/tests.rs",
         "tests/support/blob_objects.rs",
         "tests/support/extent_objects.rs",
-        "tests/support/memory_objects.rs",
         "tests/support/put_object.rs",
     ],
     edition = "2024",
@@ -3103,7 +3101,6 @@ rust_test(
     srcs = [
         "tests/support/codec_page_limit.rs",
         "tests/support/codec_properties.rs",
-        "tests/support/memory_objects.rs",
         "tests/support/put_object.rs",
         "tests/support/tree_entries.rs",
         "tests/support/tree_objects.rs",

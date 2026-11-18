@@ -10,7 +10,6 @@ use acyclic_fs_format::{
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
 use super::super::generation_objects::put_generation_root;
-use super::super::memory::memory_objects;
 
 fn table(byte: u8) -> ObjectId {
     ObjectId {
@@ -42,7 +41,7 @@ async fn put_root(
 #[tokio::test]
 async fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let base = put_root(&store, 1, 2, 3).await?;
     let receipt = build_checkpoint(
         &store,
@@ -65,7 +64,7 @@ async fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dy
 #[tokio::test]
 async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let base = put_root(&store, 4, 5, 6).await?;
     let receipt = build_checkpoint(
         &store,
@@ -99,7 +98,7 @@ async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
 #[tokio::test]
 async fn cross_volume_merge_fails_before_any_candidate_write()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let base = put_root(&store, 8, 9, 10).await?;
     let other = put_root(&store, 11, 14, 12).await?;
     let failure = build_checkpoint(
@@ -125,7 +124,7 @@ async fn cross_volume_merge_fails_before_any_candidate_write()
 #[tokio::test]
 async fn pre_cancelled_checkpoint_performs_zero_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let base = put_root(&store, 1, 2, 3).await?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -154,7 +153,7 @@ async fn pre_cancelled_checkpoint_performs_zero_backend_work()
 #[tokio::test]
 async fn checkpoint_request_and_merge_identity_guards_are_total_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let base = put_root(&store, 1, 2, 3).await?;
     let wrong_generation = ObjectId {
         storage: None,
@@ -245,7 +244,7 @@ async fn checkpoint_request_and_merge_identity_guards_are_total_before_publicati
 #[tokio::test]
 async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let base = put_root(&store, 1, 2, 3).await?;
     let merge = put_root(&store, 6, 2, 4).await?;
     let receipt = build_checkpoint(

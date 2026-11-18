@@ -17,13 +17,12 @@ use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 
 use super::super::blob_objects::put_blob_page;
-use super::super::memory::memory_objects;
 use super::super::put_object;
 
 #[tokio::test]
 async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(OwnedBytes::new());
     let built = build_blob(
         &store,
@@ -77,7 +76,7 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
 
 #[tokio::test]
 async fn oversized_source_consumes_only_one_detection_byte_past_bound() {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new([7_u8; 100]);
     let result = build_blob(
         &store,
@@ -105,7 +104,7 @@ async fn oversized_source_consumes_only_one_detection_byte_past_bound() {
 #[tokio::test]
 async fn pre_cancelled_async_blob_build_performs_zero_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(b"abc");
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -132,7 +131,7 @@ async fn pre_cancelled_async_blob_build_performs_zero_work()
 
 #[tokio::test]
 async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let chunk = put_object(
         &store,
         ObjectKind::BlobChunk,
@@ -183,7 +182,7 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
 #[tokio::test]
 async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, second) = adjacent_chunks(&store, 8).await?;
     let read = read_blob_range(
         &store,
@@ -250,7 +249,7 @@ async fn adjacent_chunks(
 
 #[tokio::test]
 async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, _) = adjacent_chunks(&store, 8).await?;
     let result = read_blob_range(
         &store,
@@ -296,7 +295,7 @@ async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn st
 #[tokio::test]
 async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let missing_chunk = ObjectId {
         storage: None,
         kind: ObjectKind::BlobChunk,
@@ -444,7 +443,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
 #[tokio::test]
 async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, _) = adjacent_chunks(&store, 2).await?;
     let limits = DecodeLimits {
         maximum_page_items: 2,
@@ -499,7 +498,7 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
 #[tokio::test]
 async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(b"abcdefghi");
     let built = build_blob(
         &store,
@@ -577,7 +576,7 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
 #[tokio::test]
 async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     for options in [
         BlobBuildOptions {
             chunk_bytes: 0,
@@ -651,7 +650,7 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let mut limited_source = std::io::Cursor::new(b"abcdefgh");
     let failure = build_blob(
-        &memory_objects(),
+        &MemoryObjectStore::default(),
         &mut limited_source,
         options,
         WorkBudget {

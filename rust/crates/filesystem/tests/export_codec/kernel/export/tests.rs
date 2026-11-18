@@ -1,4 +1,5 @@
 use acyclic_fs::CancellationToken;
+use acyclic_fs::MemoryObjectStore;
 use acyclic_fs::kernel::{
     CanonicalDecodeError, GenerationExportManifestError, GenerationTransferError, TransferCursor,
     decode_generation_export_manifest, encode_generation_export_manifest,
@@ -10,8 +11,6 @@ use acyclic_fs_format::{
 };
 
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
-
-use super::super::memory::memory_objects;
 
 #[path = "../../../support/export_manifest.rs"]
 mod fixture;
@@ -134,7 +133,7 @@ async fn manifest_rejects_mismatch_and_missing_root() -> Result<(), Box<dyn std:
     value = manifest();
     value.objects.reverse();
     let Err(failure) = export_generation_batch_async(
-        &memory_objects(),
+        &MemoryObjectStore::default(),
         &value,
         TransferCursor::START,
         1,

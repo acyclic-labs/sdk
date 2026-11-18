@@ -13,7 +13,6 @@ use acyclic_fs_format::{
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
 use super::super::extent_objects::put_extent_page;
-use super::super::memory::memory_objects;
 
 async fn put(
     store: &MemoryObjectStore,
@@ -46,7 +45,7 @@ async fn extents(
 #[tokio::test]
 async fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let blob = ObjectId {
         storage: None,
         kind: ObjectKind::Blob,
@@ -146,7 +145,7 @@ async fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
 #[tokio::test]
 async fn same_file_overlap_plans_source_before_destination_writes()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put(
         &store,
         vec![
@@ -203,7 +202,7 @@ async fn same_file_overlap_plans_source_before_destination_writes()
 #[tokio::test]
 async fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put(
         &store,
         vec![Extent {
@@ -244,7 +243,7 @@ async fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dy
 
 #[tokio::test]
 async fn pre_cancelled_clone_performs_zero_work() -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put(
         &store,
         vec![Extent {
@@ -365,7 +364,7 @@ async fn request_validation_rejects_every_shape_before_work()
         ),
         (valid, ExtentCloneError::InvalidLimits),
     ];
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let case_count = cases.len();
     for (index, (request, expected)) in cases.into_iter().enumerate() {

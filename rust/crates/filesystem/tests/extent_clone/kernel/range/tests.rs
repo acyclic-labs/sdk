@@ -13,12 +13,11 @@ use acyclic_fs_work::performance::{WorkBudget, WorkCounters, WorkError};
 use std::task::{Context, Poll, Waker};
 
 use super::super::extent_objects::put_extent_page;
-use super::super::memory::memory_objects;
 
 #[tokio::test]
 async fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let content = ObjectId {
         storage: None,
         kind: ObjectKind::Blob,
@@ -85,7 +84,7 @@ async fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
 #[tokio::test]
 async fn empty_and_all_hole_files_have_exact_seek_boundaries()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -125,7 +124,7 @@ async fn empty_and_all_hole_files_have_exact_seek_boundaries()
 
 #[tokio::test]
 async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![
@@ -194,7 +193,7 @@ async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -289,7 +288,7 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
 
 #[tokio::test]
 async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, _) = adjacent_extents(&store).await?;
     let request = ExtentRangeRequest {
         root,
@@ -332,7 +331,7 @@ async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let first = put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -442,7 +441,7 @@ async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dy
 #[tokio::test]
 async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let leaf = put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -505,7 +504,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
 #[tokio::test]
 async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let leaf = put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -637,7 +636,7 @@ async fn adjacent_extents(
 #[tokio::test]
 async fn range_plan_exposes_nearest_authenticated_unvisited_page()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, second) = adjacent_extents(&store).await?;
     let limits = DecodeLimits::default();
     let plan = plan_extent_range(
@@ -673,7 +672,7 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
 #[tokio::test]
 async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put_extent_page(
         &store,
         &ExtentPage::Leaf(vec![

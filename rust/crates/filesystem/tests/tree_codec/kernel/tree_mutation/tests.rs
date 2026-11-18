@@ -8,7 +8,6 @@ use acyclic_fs_work::performance::{WorkBudget, WorkError};
 
 use std::collections::BTreeMap;
 
-use super::super::memory::memory_objects;
 use super::super::tree_entries::{entry, name, wide_entry};
 use super::super::tree_objects::put_tree_page;
 
@@ -19,7 +18,7 @@ use pair::{pair_limits, two_leaf_tree};
 #[tokio::test]
 async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put_tree_page(
         &store,
         &TreePage::Leaf(vec![
@@ -61,7 +60,7 @@ async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn
 #[tokio::test]
 async fn every_tree_semantic_failure_is_exact_and_non_mutating()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let existing = entry("m", 2, FileKind::Regular)?;
     let root = put_tree_page(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
     let missing = name("z")?;
@@ -120,7 +119,7 @@ async fn every_tree_semantic_failure_is_exact_and_non_mutating()
 #[tokio::test]
 async fn unordered_sort_work_is_admitted_before_tree_access()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_tree_mutations(
         &store,
@@ -154,7 +153,7 @@ async fn unordered_sort_work_is_admitted_before_tree_access()
 
 #[tokio::test]
 async fn structural_batch_rebuilds_wide_leaf_in_order() -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let initial = (0..1_024_u16)
         .step_by(2)
         .map(|value| wide_entry(value, FileKind::Regular))
@@ -183,7 +182,7 @@ async fn structural_batch_rebuilds_wide_leaf_in_order() -> Result<(), Box<dyn st
 #[tokio::test]
 async fn unordered_batch_is_deterministic_and_preserves_equal_name_order()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let root = put_tree_page(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let first_b = entry("b", 1, FileKind::Regular)?;
     let a = entry("a", 2, FileKind::Regular)?;
@@ -297,7 +296,7 @@ fn next(seed: &mut u64) -> u64 {
 async fn generated_directory_histories_match_independent_ordered_map()
 -> Result<(), Box<dyn std::error::Error>> {
     for history in 0..256_u64 {
-        let store = memory_objects();
+        let store = MemoryObjectStore::default();
         let mut seed = history.saturating_add(1);
         let mut expected = BTreeMap::new();
         for value in 0..24_u8 {
@@ -356,7 +355,7 @@ async fn generated_directory_histories_match_independent_ordered_map()
 #[tokio::test]
 async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let entries = (0..1_024_u16)
         .map(|value| wide_entry(value, FileKind::Regular))
         .collect::<Result<Vec<_>, _>>()?;
@@ -399,7 +398,7 @@ async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
 #[tokio::test]
 async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let existing = wide_entry(1, FileKind::Regular)?;
     let root = put_tree_page(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
     let mutation = TreeMutation::Replace {
@@ -435,7 +434,7 @@ async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn
 
 #[tokio::test]
 async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std::error::Error>> {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let existing = wide_entry(1, FileKind::Regular)?;
     let root = put_tree_page(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
     let mutation = TreeMutation::Replace {
@@ -486,7 +485,7 @@ async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, leaves) = two_leaf_tree(&store).await?;
     let receipt = apply_tree_mutations(
         &store,
@@ -533,7 +532,7 @@ async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn
 #[tokio::test]
 async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, _) = two_leaf_tree(&store).await?;
     let receipt = apply_tree_mutations(
         &store,
@@ -557,7 +556,7 @@ async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn
 #[tokio::test]
 async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn std::error::Error>>
 {
-    let store = memory_objects();
+    let store = MemoryObjectStore::default();
     let (root, _) = two_leaf_tree(&store).await?;
     let failure = apply_tree_mutations(
         &store,
