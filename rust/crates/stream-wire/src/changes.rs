@@ -2,6 +2,21 @@
 
 use crate::headers::MAX_RECORD_KEY_BYTES;
 
+/// Reserved attribute selecting a typed change-record format.
+pub const RECORD_FORMAT_ATTRIBUTE: &str = "acyclic.record";
+/// Marker emitted by the current change producer. Publication must be fenced
+/// until every applied voter advertises this marker in `READER_FORMATS`.
+/// A reader upgrade alone does not authorize a writer upgrade.
+pub const WRITER_FORMAT: &[u8] = b"changes/v2";
+
+/// Exact reserved markers this canonical reader validates and projects.
+/// Persist these capabilities with the applied voter selection; intersect the
+/// voters' supported markers before admitting `WRITER_FORMAT` publication.
+pub const READER_FORMATS: &[&[u8]] = &[V1, WRITER_FORMAT];
+
+/// Original retained protobuf change-record format.
+pub const V1: &[u8] = b"changes/v1";
+
 /// Rejection while decoding a change record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeDecodeError {
@@ -52,8 +67,9 @@ impl<'a> Reader<'a> {
 ///
 /// # Errors
 /// Returns a grammar rejection or a rejection from the visitor.
-pub fn visit_v1<'a>(
+pub fn visit_v1<'a, K: AsRef<[u8]>>(
     bytes: &'a [u8],
+    expected: Option<&[K]>,
     mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), ChangeDecodeError>,
 ) -> Result<&'a [u8], ChangeDecodeError> {
     let mut reader = Reader(bytes);
@@ -66,7 +82,6 @@ pub fn visit_v1<'a>(
         let operation = entry.field(18)?.ok_or(ChangeDecodeError::Invalid)?;
         let operation = std::str::from_utf8(operation).map_err(|_| ChangeDecodeError::Invalid)?;
         let metadata = entry.field(26)?.unwrap_or_default();
-        count += 1;
         if key.len() > MAX_RECORD_KEY_BYTES
             || previous.is_some_and(|previous| previous >= key)
             || operation.chars().any(char::is_control)
@@ -74,10 +89,14 @@ pub fn visit_v1<'a>(
         {
             return Err(ChangeDecodeError::Invalid);
         }
+        if expected.is_some_and(|keys| keys.get(count).map(AsRef::as_ref) != Some(key)) {
+            return Err(ChangeDecodeError::Invalid);
+        }
+        count += 1;
         visit(key, operation, metadata)?;
         previous = Some(key);
     }
-    if count == 0 || !reader.0.is_empty() {
+    if count == 0 || !reader.0.is_empty() || expected.is_some_and(|keys| keys.len() != count) {
         return Err(ChangeDecodeError::Invalid);
     }
     Ok(context)
@@ -163,7 +182,7 @@ pub fn visit_v2<'a, K: AsRef<[u8]>>(
             visit(&reconstructed, operation, metadata)?;
         }
     }
-    if !reader.0.is_empty() {
+    if !reader.0.is_empty() || expected.is_some_and(|keys| keys.len() != count) {
         return Err(ChangeDecodeError::Invalid);
     }
     Ok(context)

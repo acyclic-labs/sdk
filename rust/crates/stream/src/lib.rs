@@ -67,7 +67,6 @@ mod change;
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod http_codec;
-mod http_validation;
 mod interest;
 mod journal;
 #[cfg(not(target_arch = "wasm32"))]
@@ -162,8 +161,8 @@ include!("lib/receipt.rs");
 mod changes;
 mod record_headers;
 pub use changes::{
-    ChangeEntryRef, READER_FORMATS, WRITER_FORMAT, changes_chunk_len, changes_context,
-    changes_encoded_len, decode_changes, is_changes,
+    ChangeEntryRef, changes_chunk_len, changes_context, changes_encoded_len, decode_changes,
+    is_changes,
 };
 pub use record_headers::{RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders};
 

@@ -330,7 +330,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
     let json = crate::http_response::value("heads", &prost::Message::encode_to_vec(&wire))
         .map_err(|_| violated!())?
         .ok_or(violated!())?;
-    crate::http_validation::validate("heads", &json).map_err(|_| violated!())?;
+    acyclic_stream_wire::http_validation::validate("heads", &json).map_err(|_| violated!())?;
     if crate::wire_codec::requests::heads_len(&view) != prost::Message::encoded_len(&wire)
         || crate::wire_codec::heads_from_response(wire)? != view
     {
@@ -378,7 +378,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         if remove_record {
             child.remove("tailRecord");
         }
-        if crate::http_validation::validate("heads", &torn_json).is_ok() {
+        if acyclic_stream_wire::http_validation::validate("heads", &torn_json).is_ok() {
             return Err(violated!());
         }
     }

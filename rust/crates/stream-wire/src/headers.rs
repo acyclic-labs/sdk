@@ -47,6 +47,12 @@ impl<'a> HeaderValidation<'a> {
             .saturating_add(value.len());
     }
 
+    /// Header bytes charged against the record budget.
+    #[must_use]
+    pub const fn payload_bytes(&self) -> usize {
+        self.payload
+    }
+
     /// Validates the accumulated ordering, names and payload size.
     ///
     /// # Errors

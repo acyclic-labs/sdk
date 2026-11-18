@@ -124,7 +124,7 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
 
     for (value, expected) in [
         (None, Ok(false)),
-        (Some(V1), Ok(true)),
+        (Some(acyclic_stream_wire::changes::V1), Ok(true)),
         (Some(FORMAT), Ok(true)),
         (
             Some(b"changes/v0".as_slice()),

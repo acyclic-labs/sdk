@@ -650,7 +650,7 @@ mod http {
     }
 
     pub(super) fn decode(route: &str, value: &Value, followed: Option<&str>) -> Result<JsValue> {
-        crate::http_validation::validate(route, value)?;
+        acyclic_stream_wire::http_validation::validate(route, value)?;
         if let Some(followed) = followed {
             crate::StreamPath::validate(followed).map_err(|_| "invalid followed path")?;
         }
@@ -749,7 +749,7 @@ mod http {
     }
 
     pub(super) fn validate(route: &str, value: &Value) -> Result {
-        crate::http_validation::validate(route, value)
+        acyclic_stream_wire::http_validation::validate(route, value)
     }
 }
 

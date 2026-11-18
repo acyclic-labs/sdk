@@ -842,7 +842,7 @@ mod tests {
         for marker in [
             None,
             Some(b"changes/v1".as_slice()),
-            Some(crate::changes::WRITER_FORMAT),
+            Some(acyclic_stream_wire::changes::WRITER_FORMAT),
             Some(b"changes/v3".as_slice()),
         ] {
             for (padding, prefix) in [(0, "z"), (15, "z"), (15, "a")] {
@@ -861,7 +861,7 @@ mod tests {
                 attributes.sort_by(|left, right| left.name.cmp(&right.name));
                 for fault in 0..3 {
                     let mut record = retained.clone();
-                    if marker == Some(crate::changes::WRITER_FORMAT) {
+                    if marker == Some(acyclic_stream_wire::changes::WRITER_FORMAT) {
                         record.value = current.value.clone();
                     }
                     if fault == 1 {

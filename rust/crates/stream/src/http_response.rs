@@ -1,5 +1,5 @@
 //! Hosted Stream responses shared by native servers and WASM.
-use crate::http_validation::validate;
+use acyclic_stream_wire::http_validation::validate;
 use acyclic_stream_wire::wire;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use prost::Message;

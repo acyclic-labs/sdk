@@ -1,8 +1,13 @@
 //! Pure validation for hosted Stream HTTP response payloads.
 
-use acyclic_stream_wire::http_fields::{
+use crate::http_fields::{
     array, bytes, field, id, key, object, path, string, u64_string, validate_append_result,
     validate_commit_result, validate_fork_receipt, validate_origin, validate_revision,
+};
+use crate::{
+    changes::{RECORD_FORMAT_ATTRIBUTE, V1, WRITER_FORMAT, visit_v1, visit_v2},
+    headers::HeaderValidation,
+    wire::StreamLimit,
 };
 use serde_json::Value;
 
@@ -14,28 +19,56 @@ fn validate_record_body(value: &Value) -> Result {
     let value = bytes(field(item, "value")?)?;
     let keys = array(field(item, "keys")?)?;
     let attributes = array(field(item, "attributes")?)?;
-    let headers = crate::changes::record_headers(
-        &value,
-        keys.iter()
-            .map(|key| bytes(key).map(Into::into))
-            .collect::<Result<Vec<_>>>()?,
-        attributes
-            .iter()
-            .map(|attribute| {
-                let attribute = object(attribute)?;
-                Ok(crate::Attribute {
-                    name: string(field(attribute, "name")?)?.to_owned(),
-                    value: bytes(field(attribute, "value")?)?.into(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?,
-    )
-    .map_err(|_| "invalid record headers")?;
-    if value.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
-        return Err("record payload exceeded");
-    }
+    let keys = keys.iter().map(bytes).collect::<Result<Vec<_>>>()?;
+    let attributes = attributes
+        .iter()
+        .map(|attribute| {
+            let attribute = object(attribute)?;
+            Ok((
+                string(field(attribute, "name")?)?,
+                bytes(field(attribute, "value")?)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    validate_record_payload(&value, &keys, &attributes)?;
     id(field(item, "commitId")?)?;
     u64_string(field(item, "committedAtMicros")?)?;
+    Ok(())
+}
+
+fn validate_record_payload(
+    body: &[u8],
+    keys: &[Vec<u8>],
+    attributes: &[(&str, Vec<u8>)],
+) -> Result {
+    const MAXIMUM: usize = StreamLimit::MaxRecordBytes as usize;
+    const INVALID_HEADERS: &str = "invalid record headers";
+    let mut validation = HeaderValidation::default();
+    for key in keys {
+        validation.key(key).map_err(|_| INVALID_HEADERS)?;
+    }
+    for (name, value) in attributes {
+        validation.attribute(name, value);
+    }
+    let payload = body.len().saturating_add(validation.payload_bytes());
+    validation.finish(MAXIMUM).map_err(|_| INVALID_HEADERS)?;
+    let marker = attributes
+        .iter()
+        .find(|(name, _)| *name == RECORD_FORMAT_ATTRIBUTE)
+        .map(|(_, value)| value.as_slice());
+    match marker {
+        Some(WRITER_FORMAT) if keys.is_empty() => {
+            let remaining = MAXIMUM.checked_sub(payload).ok_or(INVALID_HEADERS)?;
+            visit_v2::<Vec<u8>>(body, None, Some(remaining), |_, _, _| Ok(()))
+                .map_err(|_| INVALID_HEADERS)?;
+        }
+        Some(V1) if payload <= MAXIMUM => {
+            visit_v1(body, Some(keys), |_, _, _| Ok(())).map_err(|_| INVALID_HEADERS)?;
+        }
+        Some(_) => return Err(INVALID_HEADERS),
+        None if payload > MAXIMUM => return Err("record payload exceeded"),
+        None => {}
+    }
     Ok(())
 }
 
@@ -59,7 +92,7 @@ fn validate_children_page(value: &Value) -> Result {
     let scanned = field(item, "scanned")?
         .as_u64()
         .ok_or("invalid scanned count")?;
-    if scanned > crate::MAX_ITEMS as u64 || children.len() as u64 > scanned {
+    if scanned > crate::wire::StreamLimit::MaxItems as u64 || children.len() as u64 > scanned {
         return Err("invalid scanned count");
     }
     let mut previous: Option<&str> = None;
@@ -160,8 +193,12 @@ fn validate_idempotency(value: &Value) -> Result {
     }
 }
 
+/// Validates one hosted response against its declared route.
+///
+/// # Errors
+/// Returns the wire rejection when the response shape or contents are invalid.
 pub fn validate(route: &str, value: &Value) -> Result {
-    match acyclic_stream_wire::HTTP_RESPONSE_CONTRACT
+    match crate::HTTP_RESPONSE_CONTRACT
         .iter()
         .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
     {
@@ -304,6 +341,13 @@ pub fn validate(route: &str, value: &Value) -> Result {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        changes::{
+            ChangeDecodeError, RECORD_FORMAT_ATTRIBUTE, V1, WRITER_FORMAT, visit_v1, visit_v2,
+        },
+        headers::HeaderValidation,
+        wire::StreamLimit,
+    };
     use serde_json::Value;
 
     fn json_fixture(value: &str) -> serde_json::Result<Value> {

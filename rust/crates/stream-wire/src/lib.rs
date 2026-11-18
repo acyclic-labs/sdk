@@ -7,6 +7,8 @@ pub mod changes;
 pub mod headers;
 /// Hosted HTTP field and receipt validation.
 pub mod http_fields;
+/// Validation of hosted HTTP responses.
+pub mod http_validation;
 /// Hosted token operation vocabulary derived from Stream admission.
 pub mod token;
 /// Canonical input grammar for Stream paths and retry identities.
