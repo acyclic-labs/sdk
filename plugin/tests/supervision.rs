@@ -249,23 +249,27 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
     };
     selected.actions.insert(Kind::NoProgress, Action::Pause);
     std::fs::write(&policy, serde_json::to_vec(&selected).unwrap()).unwrap();
-    let run = graphcoder(
-        &fixture,
-        &model.catalog,
-        vec![
-            "--home-file",
-            &plugins,
-            "--host-state-directory",
-            state.to_str().unwrap(),
-            "run",
-            "--goal",
-            goal.to_str().unwrap(),
-            "--policy",
-            policy.to_str().unwrap(),
-        ],
-        "",
-    )
-    .await;
+    let mut owner = graphcoder_command(&fixture);
+    owner
+        .arg("--settings-root")
+        .arg(&fixture.settings)
+        .arg("--catalog")
+        .arg(&model.catalog)
+        .args(["--model", "fixture/tiny"])
+        .arg("--home-file")
+        .arg(&plugins)
+        .arg("--host-state-directory")
+        .arg(&state);
+    let _owner = start_service(owner).await;
+    let mut run = graphcoder_command(&fixture);
+    run.arg("--host-state-directory")
+        .arg(&state)
+        .arg("run")
+        .arg("--goal")
+        .arg(&goal)
+        .arg("--policy")
+        .arg(&policy);
+    let run = capture(run, "").await;
     assert_eq!(
         run.status.code(),
         Some(22),
@@ -443,6 +447,7 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
         3,
         "observer or stop control dispatched model work"
     );
+    drop(_owner);
     model.close().await;
 }
 

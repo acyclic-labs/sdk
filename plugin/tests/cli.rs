@@ -392,11 +392,7 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
             .arg("--settings-root")
             .arg(&fixture.settings)
             .arg("--catalog")
-            .arg(&model.catalog)
-            .args(["--operation", "settings-policy", "-p", "hello"]);
-        if session_client {
-            command.arg("--new-session");
-        }
+            .arg(&model.catalog);
         if matches!(choice, "argument" | "explicit_compaction" | "explicit_both") {
             command.arg("--no-compaction");
         }
@@ -409,8 +405,7 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
                 .unwrap_or_else(|| "fixture/tiny".into());
             command.arg("--model").arg(selected);
         }
-        let output = capture(command, "").await;
-        if matches!(
+        let valid = matches!(
             choice,
             "automatic"
                 | "argument"
@@ -418,7 +413,21 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
                 | "explicit_model"
                 | "explicit_compaction"
                 | "explicit_both"
-        ) {
+        );
+        let (service, mut command) = if valid {
+            (
+                Some(start_service(command).await),
+                graphcoder_command(&fixture),
+            )
+        } else {
+            (None, command)
+        };
+        command.args(["--operation", "settings-policy", "-p", "hello"]);
+        if session_client {
+            command.arg("--new-session");
+        }
+        let output = capture(command, "").await;
+        if valid {
             assert!(
                 output.status.success(),
                 "{choice} session={session_client}: {output:?}"
@@ -480,6 +489,7 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
                 "counted negative control never generates"
             );
         }
+        drop(service);
         model.close().await;
     }
 }
@@ -596,6 +606,29 @@ async fn capture(mut command: Command, stdin: &str) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     capture_configured(command, Some(stdin)).await
+}
+
+/// Own the shipping service across separately captured client process trees.
+async fn start_service(mut command: Command) -> acyclic_native_runtime::ProcessTree {
+    use acyclic_native_runtime::{
+        ProcessPipeReader, ProcessTree, ServiceReadiness, ServiceStartOutcome,
+    };
+    command
+        .args([
+            "--local-service",
+            acyclic_native_runtime::SERVICE_READY_ARGUMENT,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut service = ProcessTree::spawn(&mut command).unwrap();
+    drop(command);
+    let mut readiness = ProcessPipeReader::take_stdout(&mut service).unwrap();
+    assert_eq!(
+        ServiceReadiness::wait_from(&mut readiness).await.unwrap(),
+        ServiceStartOutcome::Ready
+    );
+    service
 }
 
 async fn capture_configured(mut command: Command, stdin: Option<&str>) -> Output {
@@ -786,7 +819,17 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     assert!(std::fs::write(fixture.home.join("must-not-write"), b"refused").is_err());
     let model = model(fixture._directory.path()).await;
     let plugins = task_plugins(&fixture);
-    let run = |operation: &'static str, initialize: bool| {
+    let mut owner = graphcoder_command(&fixture);
+    owner
+        .arg("--catalog")
+        .arg(&model.catalog)
+        .arg("--settings-root")
+        .arg(&fixture.settings)
+        .arg("--home-file")
+        .arg(&plugins)
+        .args(["--model", "fixture/tiny"]);
+    let _owner = start_service(owner).await;
+    let run = |operation: &'static str| {
         let mut command = graphcoder_command(&fixture);
         command.arg("--catalog").arg(&model.catalog).args([
             "--model",
@@ -796,22 +839,16 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             "-p",
             "hello",
         ]);
-        if initialize {
-            command
-                .arg("--settings-root")
-                .arg(&fixture.settings)
-                .args(["--home-file", plugins.as_str()]);
-        }
         capture(command, "")
     };
-    assert_eq!(succeeded(&run("first", true).await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // The same operation names the same message: a second process prints the
     // settled answer without generating again.
-    assert_eq!(succeeded(&run("first", false).await), "fixture answer\n");
+    assert_eq!(succeeded(&run("first").await), "fixture answer\n");
     assert_eq!(model.generated(), 1);
     // Another operation is a new message to the same root agent.
-    assert_eq!(succeeded(&run("second", false).await), "fixture answer\n");
+    assert_eq!(succeeded(&run("second").await), "fixture answer\n");
     assert_eq!(model.generated(), 2);
     // Invalid user settings cannot become an implicit model or tool source in
     // default-config mode. Ordinary MCP loading still rejects these same bytes.
@@ -825,7 +862,20 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let transcripts = explicit._directory.path().join("transcripts");
     let mut previous_transcript = None;
     let explicit_plugins = task_plugins(&explicit);
-    for attempt in 0..2 {
+    let explicit_owner_command = || {
+        let mut owner = graphcoder_command(&explicit);
+        owner
+            .arg("--catalog")
+            .arg(&model.catalog)
+            .args(["--model", "fixture/tiny", "--default-config"])
+            .arg("--settings-root")
+            .arg(&explicit.settings)
+            .arg("--home-file")
+            .arg(&explicit_plugins);
+        owner
+    };
+    let explicit_owner = start_service(explicit_owner_command()).await;
+    for _ in 0..2 {
         let mut command = graphcoder_command(&explicit);
         command
             .arg("--catalog")
@@ -835,13 +885,6 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             .arg("--transcripts")
             .arg(&transcripts)
             .args(["--operation", "explicit-defaults", "-p", "hello"]);
-        if attempt == 0 {
-            command
-                .arg("--default-config")
-                .arg("--settings-root")
-                .arg(&explicit.settings)
-                .args(["--home-file", explicit_plugins.as_str()]);
-        }
         assert_eq!(succeeded(&capture(command, "").await), "fixture answer\n");
         assert_eq!(model.generated(), 3);
         let files = std::fs::read_dir(&transcripts)
@@ -898,6 +941,8 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         assert!(row["agent_path"].as_str().is_some());
         assert!(row["latency_ns"].as_u64().is_some());
     }
+    drop(explicit_owner);
+    let _reopened_owner = start_service(explicit_owner_command()).await;
     let mut command = graphcoder_command(&explicit);
     command.arg("--catalog").arg(&model.catalog).args([
         "--model",
@@ -914,6 +959,8 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     assert_eq!(row["usage"]["completed"], true);
     assert!(String::from_utf8_lossy(&streamed.stderr).contains("fixture answer"));
     assert_eq!(model.generated(), 3);
+    drop(_reopened_owner);
+    drop(_owner);
     model.close().await;
 }
 
@@ -1769,43 +1816,28 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
 
 #[tokio::test]
 async fn selected_agent_queries_use_the_explicit_owner_state() {
-    use acyclic_harness_providers::{Credentials, Registry};
-
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
     let state = fixture._directory.path().join("owner-state");
-    let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
-    registry.load_catalog(&model.catalog).unwrap();
-    let config = registry
-        .graphcoder(&fixture.workspace, Some("fixture/tiny".into()))
-        .unwrap()
-        .without_user_settings()
-        .state_directory(&state)
-        .topology(acyclic_harness::topology::Topology::select("swarm").unwrap())
-        .unwrap()
-        .working_directory(&fixture.workspace)
-        .unwrap();
-    let directory = acyclic_harness::local::service::Directory::for_config(&config).unwrap();
-    let service_owner = directory.own().unwrap();
-    let listener = service_owner.listener().unwrap();
-    let (ready, readiness) = tokio::sync::oneshot::channel();
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        let result = acyclic_harness::server::serve(
-            listener,
-            acyclic_harness::server::ServerConfig::new(config),
-            |endpoint| {
-                let _ = ready.send(service_owner.publish(endpoint));
-            },
-            async {
-                let _ = stopped.await;
-            },
-        )
-        .await;
-        drop(service_owner);
-        result
-    });
-    readiness.await.unwrap().unwrap();
+    let mut command = graphcoder_command(&fixture);
+    command
+        .args([
+            "--default-config",
+            "--workspace-mounting",
+            "physical",
+            "--topology",
+            "swarm",
+            "--model",
+            "fixture/tiny",
+        ])
+        .arg("--catalog")
+        .arg(&model.catalog)
+        .arg("--host-state-directory")
+        .arg(&state);
+    let service = start_service(command).await;
+    let directory =
+        acyclic_harness::local::service::Directory::for_workspace(&fixture.workspace, Some(&state))
+            .unwrap();
     let connection = directory.connect().await.unwrap();
     let agent = connection.root().to_string();
     drop(connection);
@@ -1866,8 +1898,7 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
     }
     assert_eq!(model.generated(), 0, "observation dispatched model work");
     drop((owner, selected, other));
-    stop.send(()).unwrap();
-    server.await.unwrap().unwrap();
+    drop(service);
     model.close().await;
 }
 
