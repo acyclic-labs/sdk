@@ -3003,7 +3003,6 @@ rust_test(
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
         "@sdk_crates//hex-0.4.3",
-        "@sdk_crates//proptest-1.12.0",
     ],
     tags = ["manual"],
 )
@@ -3022,6 +3021,57 @@ isolated_test(
     binary = ":metadata_codec_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::metadata_codec",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "metadata_stamps_cases",
+    crate_root = "tests/metadata_stamps.rs",
+    srcs = [
+        "tests/metadata_stamps.rs",
+        "tests/metadata_stamps/kernel/metadata/mod.rs",
+        "tests/metadata_stamps/kernel/metadata/tests.rs",
+        "tests/metadata_stamps/kernel/mod.rs",
+        "tests/support/portable_metadata.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "//rust/crates/filesystem-format:acyclic_fs_format",
+        "@sdk_crates//proptest-1.12.0",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "metadata_stamps",
+    binary = ":metadata_stamps_cases",
+    id = "acyclic-fs::metadata_stamps",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "metadata_stamps_full-cloud",
+    binary = ":metadata_stamps_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::metadata_stamps",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
