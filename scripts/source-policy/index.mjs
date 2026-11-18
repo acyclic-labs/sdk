@@ -283,17 +283,6 @@ function nativeTokens(source, file) {
    if (end < 0) throw malformed('unterminated raw string');
    emit(end + close.length, 'literal'); continue;
   }
-  const verbatim = csharp && tail.match(/^(?:@|\$@|@\$)"/);
-  if (verbatim) {
-   let end = at + verbatim[0].length;
-   while (end < source.length) {
-    if (source[end] === '"' && source[end + 1] === '"') { end += 2; continue; }
-    if (source[end] === '"') break;
-    end++;
-   }
-   if (end >= source.length) throw malformed('unterminated verbatim string');
-   emit(end + 1, 'literal'); continue;
-  }
   const here = powershell && tail.match(/^@(['"])\r?\n/);
   if (here) {
    const terminator = new RegExp('^' + here[1] + '@', 'gm');
@@ -302,7 +291,7 @@ function nativeTokens(source, file) {
    if (!end) throw malformed('unterminated PowerShell here-string');
    emit(end.index + end[0].length, 'literal'); continue;
   }
-  const verbatim = file.endsWith('.cs') && tail.match(/^@\$?"/);
+  const verbatim = csharp && tail.match(/^(?:@|\$@|@\$)"/);
   const quote = verbatim ? '"' : tail[0];
   if (yaml && !'[]{} ,#&*!|>\'"%@`'.includes(quote) && !/^[-?:](?:[ \t\r\n]|$)/.test(tail)) {
    // Quotes and unseparated hashes inside plain scalars are data. Only YAML
