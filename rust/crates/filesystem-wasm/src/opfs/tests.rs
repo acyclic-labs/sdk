@@ -323,7 +323,11 @@ async fn opfs_batch_retains_live_aliases_and_denies_unfunded_payloads() {
     }
     .err()
     .unwrap_or_else(|| unreachable!("retained carriers escaped admission"));
-    assert!(denied.work.object_bytes_read <= payloads);
+    assert!(
+        denied
+            .work()
+            .is_ok_and(|work| work.object_bytes_read <= payloads)
+    );
     assert!(matches!(denied.error, ObjectStoreError::Work(_)));
 
     // Complete sibling reads after failure to retain their work and allocation peak.
@@ -347,6 +351,13 @@ async fn opfs_batch_retains_live_aliases_and_denies_unfunded_payloads() {
     .err()
     .unwrap_or_else(|| unreachable!("corrupt OPFS body was accepted"));
     assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
-    assert_eq!(corrupt.work.object_bytes_read, 32 * 1_024);
-    assert!(corrupt.work.peak_allocation_bytes >= payloads - 1_024);
+    assert_eq!(
+        corrupt.work().map(|work| work.object_bytes_read),
+        Ok(32 * 1_024)
+    );
+    assert!(
+        corrupt
+            .work()
+            .is_ok_and(|work| work.peak_allocation_bytes >= payloads - 1_024)
+    );
 }
