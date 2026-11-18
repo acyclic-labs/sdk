@@ -241,6 +241,24 @@ pub async fn list_blobs(
     Ok((convert::wire_page(&page), page.revision))
 }
 
+fn retained_reply(retained: crate::Retained) -> Served<wire::RetainResponse> {
+    (
+        wire::RetainResponse {
+            references: retained.references,
+        },
+        retained.revision,
+    )
+}
+
+fn released_reply(released: crate::Released) -> Served<wire::ReleaseResponse> {
+    (
+        wire::ReleaseResponse {
+            existed: released.existed,
+        },
+        released.revision,
+    )
+}
+
 /// Appends a reference batch to a root.
 ///
 /// # Errors
@@ -253,12 +271,7 @@ pub async fn retain(
     let retained = blobs
         .retain(&RootId::new(request.root)?, references)
         .await?;
-    Ok((
-        wire::RetainResponse {
-            references: retained.references,
-        },
-        retained.revision,
-    ))
+    Ok(retained_reply(retained))
 }
 
 /// Releases a root.
@@ -270,12 +283,7 @@ pub async fn release(
     request: wire::ReleaseRequest,
 ) -> Result<Served<wire::ReleaseResponse>, Error> {
     let released = blobs.release(&RootId::new(request.root)?).await?;
-    Ok((
-        wire::ReleaseResponse {
-            existed: released.existed,
-        },
-        released.revision,
-    ))
+    Ok(released_reply(released))
 }
 
 /// Retains one batch at a fenced intent's original generation.
@@ -290,12 +298,7 @@ pub async fn retain_fenced(
             convert::digests(&request.references)?,
         )
         .await?;
-    Ok((
-        wire::RetainResponse {
-            references: retained.references,
-        },
-        retained.revision,
-    ))
+    Ok(retained_reply(retained))
 }
 
 /// Durably closes a fenced intent through its supplied generation.
@@ -306,12 +309,7 @@ pub async fn release_terminal(
     let released = blobs
         .release_terminal(&RootId::new(request.root)?, request.fence)
         .await?;
-    Ok((
-        wire::ReleaseResponse {
-            existed: released.existed,
-        },
-        released.revision,
-    ))
+    Ok(released_reply(released))
 }
 
 /// Runs one mark-and-sweep pass.
