@@ -529,6 +529,7 @@ rust_test(
         "tests/support/native_access.rs",
         "tests/support/provider_receipt.rs",
         "tests/support/selected_budget.rs",
+        "tests/support/join_plan.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/wire_errors.rs",
@@ -1651,6 +1652,7 @@ rust_test(
         "tests/support/workspace.rs",
         "tests/workspace_contracts.rs",
         "tests/workspace_contracts/tests/conditions.rs",
+        "tests/workspace_contracts/tests/discovery.rs",
         "tests/workspace_contracts/tests/generation.rs",
         "tests/workspace_contracts/tests/mod.rs",
         "tests/workspace_contracts/workspace.rs",
@@ -1710,6 +1712,7 @@ rust_test(
     name = "workspace_join_history_cases",
     crate_root = "tests/workspace_join_history.rs",
     srcs = [
+        "tests/support/join_plan.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
@@ -1737,7 +1740,6 @@ rust_test(
     ] + [
         "@sdk_crates//tokio-1.54.1",
         "//rust/crates/filesystem-work:acyclic_fs_work",
-        "//rust/crates/stream:acyclic_stream",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
@@ -1761,6 +1763,69 @@ isolated_test(
     binary = ":workspace_join_history_cases",
     binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::workspace_join_history",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
+rust_test(
+    name = "workspace_rebase_cases",
+    crate_root = "tests/workspace_rebase.rs",
+    srcs = [
+        "tests/support/transaction.rs",
+        "tests/support/unbounded.rs",
+        "tests/support/workspace.rs",
+        "tests/workspace_rebase.rs",
+        "tests/workspace_rebase/workspace/mod.rs",
+        "tests/workspace_rebase/workspace/tests/mod.rs",
+        "tests/workspace_rebase/workspace/tests/rebase.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"browser\", \"conformance\", \"fuzzing\", \"model-checking\", \"napi-types\", \"test-support\", \"tooling\", \"typescript\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":acyclic_fs",
+        ":build_script",
+    ] + [
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//tokio-1.54.1",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/stream:acyclic_stream",
+    ],
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "workspace_rebase",
+    binary = ":workspace_rebase_cases",
+    id = "acyclic-fs::workspace_rebase",
+    exclude = ["::full_cloud::"],
+    limit_seconds = 10,
+    tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "workspace_rebase_full-cloud",
+    binary = ":workspace_rebase_cases",
+    binaries = {"@nodejs//:node":"node"},
+    id = "acyclic-fs::workspace_rebase",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],

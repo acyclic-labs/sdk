@@ -1,13 +1,8 @@
-use acyclic_fs::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, EmbeddedCapabilities,
-    ForkOptions, Fs, IdempotencyKey, JoinOutcome, JoinPlan, MemoryAuthorityStore,
-    MemoryObjectStore, PublicationPermit, TransactionCommit, WorkspaceError,
-};
-use acyclic_fs_work::performance::WorkBudget;
-use acyclic_stream::OwnedBytes;
+use acyclic_fs::{ForkOptions, Fs, IdempotencyKey, JoinOutcome, TransactionCommit, WorkspaceError};
 use std::error::Error;
 
 use crate::fixtures::{commit, fork_workspace};
+use crate::join_plan::apply_planned;
 
 #[tokio::test]
 async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), Box<dyn Error>> {
@@ -137,113 +132,6 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
         Err(WorkspaceError::JoinLimit)
     ));
     Ok(())
-}
-
-async fn apply_planned<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    plan: &JoinPlan<A, O>,
-    idempotency_key: IdempotencyKey,
-) -> Result<JoinOutcome<A, O>, WorkspaceError> {
-    plan.apply(
-        ApplyOptions {
-            if_target: plan.target_head(),
-            idempotency_key,
-        },
-        std::collections::BTreeMap::new(),
-        PublicationPermit::Unrestricted,
-    )
-    .await
-}
-
-/// Joins planned together against one target head, writing disjoint keys,
-/// all apply in that one round when the authority composes independent
-/// publications. Each applied join, composed or not, verifies its witness and
-/// replays from its reconstructed plan as already applied. Without
-/// composition (the negative control) every join after the first goes stale
-/// and leaves the target unchanged.
-async fn disjoint_joins_in_one_round<
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
->(
-    fs: Fs<A, O>,
-    composes: bool,
-) -> Result<(), Box<dyn Error>> {
-    let main = unbounded!(fs, create_workspace("main"))?;
-    let base = unbounded!(main, head())?;
-    let (mut agents, mut plans) = (Vec::new(), Vec::new());
-    for index in 0..4 {
-        let agent = fork_workspace(
-            &main,
-            &format!("agent-{index}"),
-            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-        )
-        .await?;
-        agent
-            .write_text(&format!("/agent-{index}"), "agent")
-            .await?;
-        plans.push(unbounded!(agent.join_into(&main), plan())?);
-        agents.push(agent);
-    }
-    for (index, (agent, plan)) in agents.iter().zip(&plans).enumerate() {
-        let before = unbounded!(main, head())?.id();
-        let key = IdempotencyKey::new();
-        let outcome = apply_planned(plan, key).await?;
-        if composes || index == 0 {
-            let JoinOutcome::Applied(joined) = outcome else {
-                return Err(format!("join {index} did not apply in its planned round").into());
-            };
-            let witness = plan
-                .commit_witness(
-                    &joined,
-                    key,
-                    &WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
-            assert!(unbounded!(main, verify_join_commit(&witness))?);
-            let source = unbounded!(agent, generation(plan.source_head()))?;
-            let target = unbounded!(main, generation(plan.target_head()))?;
-            let replay = unbounded!(
-                agent.join_into(&main),
-                plan_for_replay_at(&source, &target, key)
-            )?;
-            assert!(matches!(
-                apply_planned(&replay, key).await?,
-                JoinOutcome::AlreadyApplied(_)
-            ));
-        } else {
-            assert!(matches!(outcome, JoinOutcome::StaleTarget(_)));
-            assert_eq!(unbounded!(main, head())?.id(), before);
-        }
-    }
-    for index in 0..4 {
-        let read = unbounded!(main, read(&format!("/agent-{index}"), 16));
-        if composes || index == 0 {
-            assert_eq!(read?, OwnedBytes::from_static(b"agent"));
-        } else {
-            assert!(read.is_err());
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn disjoint_joins_apply_in_one_round_over_a_moved_target() -> Result<(), Box<dyn Error>> {
-    disjoint_joins_in_one_round(Fs::memory(), true).await
-}
-
-#[tokio::test]
-async fn negative_control_exact_head_joins_go_stale_over_disjoint_moves()
--> Result<(), Box<dyn Error>> {
-    disjoint_joins_in_one_round(
-        Fs::new(
-            MemoryAuthorityStore::default(),
-            MemoryObjectStore::default(),
-            EmbeddedCapabilities::MEMORY,
-        ),
-        false,
-    )
-    .await
 }
 
 /// The write rule covers the namespace, not only file contents: a join that
