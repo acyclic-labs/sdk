@@ -2632,6 +2632,7 @@ rust_test(
         "tests/checkout_content.rs",
         "tests/checkout_content/facade/mod.rs",
         "tests/checkout_content/facade/tests/content.rs",
+        "tests/checkout_content/facade/tests/detached.rs",
         "tests/checkout_content/facade/tests/identity.rs",
         "tests/checkout_content/facade/tests/mod.rs",
         "tests/support/allow_publication.rs",

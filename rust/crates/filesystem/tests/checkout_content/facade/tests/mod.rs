@@ -7,6 +7,7 @@ mod checkout_fixture;
 #[path = "../../../support/checkout_writable_tracking.rs"]
 mod checkout_writable_tracking;
 mod content;
+mod detached;
 #[path = "../../../support/volume_fixture.rs"]
 mod fixtures;
 mod identity;
