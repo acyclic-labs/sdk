@@ -81,18 +81,14 @@ impl Tree for EntryHashCut<'_> {
         &'a self,
         path: &'a str,
     ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
-        if path.ends_with("/main.ps1") {
-            self.before.store(
-                self.tree
-                    .io
-                    .original_native_work()
-                    .unwrap()
-                    .receipt()
-                    .bytes_hashed,
-                std::sync::atomic::Ordering::SeqCst,
-            );
-        }
-        self.tree.read(path)
+        Box::pin(async move {
+            if path.ends_with("/main.ps1") {
+                let receipt = self.tree.io.receipt()?;
+                self.before
+                    .store(receipt.bytes_hashed, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.tree.read(path).await
+        })
     }
 }
 
@@ -174,7 +170,7 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
         "the original native entry was not read"
     );
     assert!(
-        receiver.receipt().bytes_hashed - before_entry
+        receiver.receipt()?.bytes_hashed - before_entry
             >= files.files["tools/count/main.ps1"].len() as u64,
         "entry hashing escaped the receiving operation"
     );
