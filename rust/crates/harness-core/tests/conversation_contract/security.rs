@@ -2,16 +2,13 @@ use acyclic_harness_core::{
     AgentId, Error, Result,
     conversation::{
         ConversationMessage, ConversationState, FileDescriptor, FileRef, Limits, MessageKind,
-        ReferencedAttachments, VolumeClass, VolumeOwner, VolumeRef,
+        ReferencedAttachments,
     },
-    resources::ProviderRef,
 };
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-#[path = "fixture.rs"]
-mod fixture;
-use fixture::file;
+use super::fixture::file;
 
 #[test]
 fn descriptor_checks_exact_bytes() -> Result<()> {

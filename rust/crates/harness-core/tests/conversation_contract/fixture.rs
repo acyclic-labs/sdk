@@ -1,5 +1,6 @@
 use super::{
-    AgentId, FileDescriptor, FileRef, ProviderRef, Result, VolumeClass, VolumeOwner, VolumeRef,
+    AgentId, BTreeMap, ConversationMessage, FileDescriptor, FileRef, MessageKind, ProviderRef,
+    ReferencedAttachments, Result, Uuid, VolumeClass, VolumeOwner, VolumeRef,
 };
 
 pub(crate) fn file(agent: AgentId, path: &str) -> Result<FileRef> {
@@ -17,4 +18,23 @@ pub(crate) fn file(agent: AgentId, path: &str) -> Result<FileRef> {
         ("text.txt").into(),
         &mut None,
     )
+}
+
+pub(crate) fn message(content: &FileRef, sequence: u64) -> ConversationMessage {
+    ConversationMessage {
+        id: Uuid::from_u128(u128::from(sequence)),
+        sequence,
+        kind: if sequence % 2 == 1 {
+            MessageKind::User
+        } else {
+            MessageKind::Assistant
+        },
+        content: content.clone(),
+        attachments: ReferencedAttachments::Inline { items: Vec::new() },
+        reply_to: sequence
+            .is_multiple_of(2)
+            .then(|| Uuid::from_u128(u128::from(sequence - 1))),
+        tool_call_id: None,
+        extensions: BTreeMap::new(),
+    }
 }
