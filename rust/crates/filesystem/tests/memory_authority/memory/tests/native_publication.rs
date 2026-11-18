@@ -1,10 +1,12 @@
 use acyclic_fs::{
-    AsyncAuthorityStore, AuthorityFailure, AuthorityStoreError, AuthorityWork, CancellationError,
-    CancellationToken, CreateAuthorityOutcome, Epoch, FsError, Head, MemoryAuthorityStore,
-    NativeMaterializationWork, ProposedCommit, ReplayLimit, Sequence,
+    AppendOutcome, AsyncAuthorityStore, AuthorityFailure, AuthorityStoreError, AuthorityWork,
+    CancellationError, CancellationToken, CreateAuthorityOutcome, Epoch, FsError, Head,
+    MemoryAuthorityStore, NativeAuthorityGuard, NativeMaterializationWork, ProposedCommit,
+    PublicationPermit, ReplayLimit, Sequence,
 };
 use acyclic_fs_format::identity::{AuthorityId, Digest, OperationId};
 use acyclic_fs_work::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{error::Error, sync::Arc};
 
 #[path = "../../../support/native_authority_publication.rs"]
@@ -262,5 +264,87 @@ async fn ordinary_first_record_guard_runs_unlocked_on_creation_and_recovery()
         );
     }
     assert_eq!(calls, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_revalidates_fence_permit_and_cancellation_after_owner_callback()
+-> Result<(), Box<dyn Error>> {
+    for cancel_owner in [false, true] {
+        let store = Arc::new(MemoryAuthorityStore::default());
+        let id = AuthorityId::from_bytes([0x97; 16]);
+        provider_receipt!(
+            store,
+            create_authority(id, Epoch::GENESIS),
+            WorkBudget::UNBOUNDED
+        )?;
+        let head = Head::genesis(Epoch::GENESIS);
+        let root = CancellationToken::new();
+        let supplied = CancellationToken::new();
+        let original = NativeMaterializationWork::new(BUDGET, &root).map_err(|(error, _)| error)?;
+        let guard_store = store.clone();
+        let guard_cancel = supplied.clone();
+        let mut guard = NativeAuthorityGuard(move |observed: &NativeMaterializationWork| {
+            let store = guard_store.clone();
+            let cancel = guard_cancel.clone();
+            let work = observed.clone();
+            async move {
+                if cancel_owner {
+                    cancel.cancel();
+                } else {
+                    store
+                        .fence(id, head, &mut AuthorityWork::native(&work, &cancel))
+                        .await?;
+                }
+                Ok::<(), AuthorityStoreError>(())
+            }
+        });
+        let outcome = store
+            .compare_and_append(
+                request(id, head),
+                &mut AuthorityWork::native(&original, &supplied),
+                Some(&mut guard),
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity));
+        if cancel_owner {
+            assert!(matches!(outcome, Err(AuthorityStoreError::Cancelled)));
+        } else {
+            assert!(
+                matches!(outcome, Ok(AppendOutcome::Fenced { actual_epoch }) if actual_epoch.get() == 2)
+            );
+        }
+        let actual = provider_receipt!(store, head(id), WorkBudget::UNBOUNDED)?.value;
+        assert_eq!(actual.sequence, Sequence::GENESIS);
+        if cancel_owner {
+            assert_eq!(actual, head);
+        }
+        let mut foreign = request(id, actual);
+        foreign.permit = PublicationPermit::Reservation {
+            operation_id: foreign.commit.operation_id.into_bytes(),
+            gate_tail: 7,
+            expected: actual,
+        };
+        let owner_called = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&owner_called);
+        let mut forbidden = NativeAuthorityGuard(move |_: &NativeMaterializationWork| {
+            flag.store(true, Ordering::Relaxed);
+            std::future::ready(Ok::<(), AuthorityStoreError>(()))
+        });
+        let active = CancellationToken::new();
+        assert!(matches!(
+            store
+                .compare_and_append(
+                    foreign,
+                    &mut AuthorityWork::native(&original, &active),
+                    Some(&mut forbidden)
+                )
+                .await
+                .map_err(|error| error.into_error(std::convert::identity)),
+            Ok(AppendOutcome::Conflict { actual: observed }) if observed == actual
+        ));
+        assert!(!owner_called.load(Ordering::Relaxed));
+        original.receipt()?.verify(BUDGET)?;
+    }
     Ok(())
 }
