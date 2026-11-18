@@ -217,6 +217,14 @@ struct Inner {
     ledger: Arc<Mutex<ledger::Ledger>>,
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if self.executor.is_some() {
+            crate::workers::finish_seeded_world();
+        }
+    }
+}
+
 impl Inner {
     fn state(&self) -> impl std::ops::DerefMut<Target = State> + '_ {
         lock(&self.state)
@@ -331,6 +339,9 @@ impl Schedule {
             executor,
             progress: host::Progress::new(),
         });
+        if inner.executor.is_some() {
+            crate::workers::start_seeded_world();
+        }
         let controller = Arc::new(Controller(inner.clone()));
         (Self(inner, Some(controller)), receiver)
     }

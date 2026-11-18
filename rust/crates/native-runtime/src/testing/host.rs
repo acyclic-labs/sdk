@@ -128,7 +128,11 @@ impl Host {
     #[cfg(test)]
     #[cfg(loom)]
     pub(super) fn new(threads: usize, progress: Arc<Progress>) -> Arc<Self> {
-        Self::with_pool(Pool::new(threads), progress)
+        let pool = Pool::new(threads);
+        for _ in 0..threads {
+            pool.started();
+        }
+        Self::with_pool(pool, progress)
     }
 
     pub(super) fn for_workers(
