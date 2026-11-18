@@ -25,7 +25,7 @@ async fn check(mode: u8) -> Result<()> {
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         let (key, held) = crate::distributed::digest_key(&[mode; 32], &mut work)?;
         let before_request = original.live_allocation_bytes()?;
-        let before_operations = original.receipt().allocation_operations;
+        let before_operations = original.receipt()?.allocation_operations;
         let mut request = commit_request(key, held, &mut work)?;
         assert_eq!(
             original.live_allocation_bytes()? - before_request,
@@ -34,7 +34,7 @@ async fn check(mode: u8) -> Result<()> {
             "request storage must remain funded before native admission"
         );
         assert_eq!(
-            original.receipt().allocation_operations - before_operations,
+            original.receipt()?.allocation_operations - before_operations,
             1,
             "request construction must account for its one allocation"
         );
@@ -75,7 +75,7 @@ async fn check(mode: u8) -> Result<()> {
     let mut history = Some(io.history_io());
     let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
     let mut quota = CodecQuota::from_retained(&mut work, 0);
-    let before = original.receipt().authority_records_appended;
+    let before = original.receipt()?.authority_records_appended;
     let mut phase = CommitPhase::Unknown;
     let result = pending
         .finish(
@@ -89,7 +89,7 @@ async fn check(mode: u8) -> Result<()> {
             let (outcome, held) = result?;
             assert!(matches!(outcome, CommitOutcome::Committed(_)));
             assert_eq!(phase, CommitPhase::Committed);
-            assert_eq!(original.receipt().authority_records_appended, before + 1);
+            assert_eq!(original.receipt()?.authority_records_appended, before + 1);
             drop(outcome);
             quota.adopt(held)?;
         }

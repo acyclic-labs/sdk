@@ -23,7 +23,7 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let before = work.receipt();
+        let before = work.receipt()?;
         let live = work.live_allocation_bytes()?;
         let owner = RetainedAuthentication::new(
             b"authenticated",
@@ -31,7 +31,7 @@ mod tests {
             &mut Some(&mut io.history_io()),
         )?
         .ok_or_else(|| io.invalid("native observer must transfer custody"))?;
-        assert!(work.receipt().allocation_operations > before.allocation_operations);
+        assert!(work.receipt()?.allocation_operations > before.allocation_operations);
         assert!(work.live_allocation_bytes()? > live);
         assert!(
             owner
