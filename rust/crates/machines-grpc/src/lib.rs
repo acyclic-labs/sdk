@@ -78,14 +78,14 @@ mod guest;
 use guest::*;
 mod codec;
 #[cfg(feature = "test-support")]
-pub use codec::codec_fuzz;
+pub mod codec_fuzz;
 mod duplex;
 mod obs;
 mod files;
 mod input;
 mod provider;
 mod recovery;
-use codec::*;
+use acyclic_machines::codec::*;
 use recovery::*;
 
 // All transports reuse the same original admission and settlement validation.

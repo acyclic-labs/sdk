@@ -84,6 +84,7 @@ pub fn page_limit(requested: u64, chunk: u32) -> Result<u32, ProviderError> {
 /// Default automatic idle suspension delay.
 pub const DEFAULT_IDLE_SUSPEND: Duration = Duration::from_secs(15);
 
+pub mod codec;
 mod contract;
 pub use contract::*;
 mod provider;

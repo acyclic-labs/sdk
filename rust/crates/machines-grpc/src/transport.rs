@@ -88,8 +88,42 @@ pub(super) trait Messages<T>: Stream<Item = Result<T, Status>> + Unpin {
 }
 impl<T, S: Stream<Item = Result<T, Status>> + Unpin> Messages<T> for S {}
 
+/// Native guest deadline with the transport's dispatch observation.
 #[cfg(not(target_arch = "wasm32"))]
-impl Deadline for acyclic_machines::deadline::GuestDeadline {
+pub struct GuestDeadline(acyclic_machines::deadline::GuestDeadline);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl GuestDeadline {
+    /// Opens the original absolute expiry.
+    pub fn absolute(expiry: u64) -> Result<Self, ProviderError> {
+        Ok(Self(acyclic_machines::deadline::GuestDeadline::absolute(
+            expiry,
+        )?))
+    }
+    /// Opens a deadline whose original terminal the test controls.
+    pub fn controlled() -> (
+        Self,
+        impl Fn(Result<(), std::sync::Arc<std::io::Error>>),
+    ) {
+        let (deadline, finish) = acyclic_machines::deadline::GuestDeadline::controlled();
+        (Self(deadline), finish)
+    }
+    /// Remaining original budget for the transport's deadline metadata.
+    pub fn remaining(&self) -> Option<Duration> {
+        self.0.remaining()
+    }
+    /// Stop observation on the original expiry event, retaining admitted uncertainty.
+    pub async fn run<F>(&self, future: F) -> Result<F::Output, DeadlineStop>
+    where
+        F: Future + ProviderTask,
+        F::Output: ProviderTask,
+    {
+        self.0.run(future).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Deadline for GuestDeadline {
     fn remaining(&self) -> Option<Duration> {
         self.remaining()
     }

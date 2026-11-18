@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_machines::deadline::GuestDeadline;
+use crate::transport::GuestDeadline;
 use futures::FutureExt;
 
 #[tokio::test]
