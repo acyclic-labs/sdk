@@ -43,7 +43,7 @@ pub(in crate::local) fn require_available(
     let Some(reason) = capabilities.unavailable_reason else {
         return Ok(());
     };
-    use acyclic_fs::NativeMountKind;
+    use acyclic_fs_native_contract::NativeMountKind;
     Err(Error::MountUnavailable {
         reason,
         device: match capabilities.kind {
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn absent_fuse_device_has_a_typed_tool_admission_error() {
         let error = require_available(acyclic_fs::NativeMountCapabilities {
-            kind: Some(acyclic_fs::NativeMountKind::LinuxFuse),
+            kind: Some(acyclic_fs_native_contract::NativeMountKind::LinuxFuse),
             unavailable_reason: Some("missing device"),
         })
         .unwrap_err();
