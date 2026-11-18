@@ -29,13 +29,7 @@ async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn st
             },
         ]),
     };
-    let bytes = encode_blob_page(
-        &page,
-        8,
-        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?;
-    let root = put(&store, ObjectKind::Blob, OwnedBytes::from(bytes)).await?;
+    let root = put_blob_page(&store, &page, 8).await?;
     let result = read_blob_range(
         &store,
         root,
@@ -96,17 +90,7 @@ async fn owned_blob_pages_and_chunks_preserve_exact_range_results()
             chunk,
         }]),
     };
-    let root = put(
-        &store.inner,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(
-            &page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-    )
-    .await?;
+    let root = put_blob_page(&store.inner, &page, 8).await?;
     let read = (read_blob_range(
         &store,
         root,
@@ -172,17 +156,7 @@ async fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
             },
         ]),
     };
-    let root = put(
-        &store,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(
-            &page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-    )
-    .await?;
+    let root = put_blob_page(&store, &page, 8).await?;
     let read = (read_blob_range(
         &store,
         root,
@@ -293,17 +267,7 @@ async fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission
             chunk,
         }]),
     };
-    let root = put(
-        &store.inner,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(
-            &page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-    )
-    .await?;
+    let root = put_blob_page(&store.inner, &page, 8).await?;
     store
         .reject_decoded_admission
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -347,17 +311,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
             chunk: missing_chunk,
         }]),
     };
-    let missing_root = put(
-        &store,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(
-            &missing_page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-    )
-    .await?;
+    let missing_root = put_blob_page(&store, &missing_page, 8).await?;
     let missing = read_blob_range(
         &store,
         missing_root,
@@ -393,17 +347,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
             chunk: short_chunk,
         }]),
     };
-    let short_root = put(
-        &store,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(
-            &short_page,
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-    )
-    .await?;
+    let short_root = put_blob_page(&store, &short_page, 8).await?;
     let short = read_blob_range(
         &store,
         short_root,
@@ -529,17 +473,7 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
             },
         ]),
     };
-    let root = put(
-        &store,
-        ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(
-            &page,
-            2,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?),
-    )
-    .await?;
+    let root = put_blob_page(&store, &page, 2).await?;
     let limits = DecodeLimits {
         maximum_page_items: 2,
         maximum_page_height: 1,

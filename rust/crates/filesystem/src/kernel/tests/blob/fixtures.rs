@@ -41,7 +41,7 @@ impl AsyncBlobSource for ScriptedSource {
     }
 }
 
-use crate::test_support::put_object as put;
+use crate::test_support::{put_blob_page, put_object as put};
 
 #[cfg(not(target_arch = "wasm32"))]
 struct NativePartialBlobSource {
