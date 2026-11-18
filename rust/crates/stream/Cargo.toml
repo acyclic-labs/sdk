@@ -16,6 +16,34 @@ build = "build.rs"
 
 [package.metadata.bazel]
 build-script-inputs = []
+unit-test-only-sources = [
+    "src/filtered_follow_fixture.rs",
+    "src/grpc/credential_tests.rs",
+    "src/grpc/receipt_tests.rs",
+    "src/grpc/tests.rs",
+    "src/head_tests.rs",
+    "src/http/http_follow_tests.rs",
+    "src/http/session_tests.rs",
+    "src/lib/path_text_tests.rs",
+    "src/local/tests/**",
+    "src/memory/tests/**",
+    "src/owned_bytes/header_tests.rs",
+    "src/owned_bytes/tests.rs",
+    "src/postgres/capability.rs",
+    "src/preparation/tests.rs",
+    "src/query_sync/parity.rs",
+    "src/record_header_tests.rs",
+    "src/session/authority_tests.rs",
+    "src/session/client/tests.rs",
+    "src/session/client/tests/**",
+    "src/session/interest_tests.rs",
+    "src/session/tests.rs",
+    "src/test_meter.rs",
+    "src/test_trace.rs",
+    "src/wire_codec/origin_tests.rs",
+    "src/wire_codec/read_response_tests/**",
+    "src/wire_codec/revision_tests.rs",
+]
 
 [package.metadata.bazel.test-dependencies]
 follow-contracts = ["acyclic_stream", "acyclic_stream_wire", "futures", "tempfile", "tokio"]
