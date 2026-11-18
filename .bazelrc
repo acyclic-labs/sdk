@@ -8,7 +8,7 @@ common --experimental_convenience_symlinks=ignore
 # fails on a stale lockfile instead of rewriting it. Update it with `bazel mod deps --lockfile_mode=update`.
 common --lockfile_mode=error
 # Share action results across both repositories, worktrees and jobs on this host.
-common --disk_cache=/var/tmp/acyclic-bazel-disk
+build --disk_cache=/var/tmp/acyclic-bazel-disk
 build --remote_cache_compression
 build --nobuild_runfile_links
 build --verbose_failures
