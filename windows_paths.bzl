@@ -5,4 +5,4 @@ resolve it from each repository's label.
 """
 
 WINDOWS_LLVM = Label("@llvm_toolchain_llvm//:bin").workspace_root
-WINDOWS_XWIN = Label("@xwin//:sysroot").workspace_root
+WINDOWS_XWIN = Label("@xwin//:libs").workspace_root
