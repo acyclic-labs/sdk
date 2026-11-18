@@ -293,7 +293,9 @@ const claims = {
   "capture-marker-retirement": [
     "rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs", "acyclic-harness-core",
     "filesystem::native_process::capture::tests::interactive_completion_retains_input_producer_and_cleanup",
-    "retired capture retained its unused marker producer", ["--features", "test-support"],
+    "retired capture retained its unused marker producer", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases", "--",
+      "filesystem::native_process::capture::tests::interactive_completion_retains_input_producer_and_cleanup", "--exact", "--nocapture"] },
   ],
   "append-invocation": [
     "rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs", "acyclic-harness-core",
