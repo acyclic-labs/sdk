@@ -22,6 +22,8 @@ const claims = {
     "lineage::tests::persisted_lineage_names_require_exact_canonical_bytes",
     "noncanonical lineage registration was accepted", ["--features", "test-support"],
     { oracle: "rust/crates/filesystem/src/lineage/tests.rs",
+      runner: ["bazel", "run", "//rust/crates/filesystem:acyclic_fs_test_cases", "--",
+        "lineage::tests::persisted_lineage_names_require_exact_canonical_bytes", "--exact", "--nocapture"],
       mutations: [{ patch: "rust/crates/filesystem/fuzz/mutations/lineage_noncanonical_name.patch",
         label: "noncanonical-lineage-name", diagnostic: "noncanonical lineage registration was accepted" }] },
   ],
