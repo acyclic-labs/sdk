@@ -26,6 +26,8 @@ def _rustdoc_fixture_impl(ctx):
     metadata = ctx.actions.declare_file(ctx.label.name + ".fixture.json")
     artifacts = ctx.actions.declare_directory(ctx.label.name + ".artifacts") if ctx.attr.retain_artifacts else None
     toolchain = _declared_toolchain(ctx.attr._rustup)
+    binary_name = ctx.attr.binary_name
+    receipt_name = (binary_name or ctx.attr.library_name or ctx.attr.package).replace("-", "_")
     sources = []
     for file in ctx.files.srcs:
         path = _repository_path(file.short_path)
@@ -45,6 +47,7 @@ def _rustdoc_fixture_impl(ctx):
         "owner_path": ctx.attr.owner_path,
         "selected_lock": ctx.attr.selected_lock,
         "library_name": ctx.attr.library_name or ctx.attr.package.replace("-", "_"),
+        "binary_name": binary_name,
         "proc_macro": ctx.attr.proc_macro,
         "cargo_flags": ctx.attr.cargo_flags,
         "sources": [{"file": _repository_path(file.short_path), "relative": relative} for file, relative in sources],
@@ -59,7 +62,8 @@ def _rustdoc_fixture_impl(ctx):
     args.add(ctx.attr.package)
     args.add(ctx.attr.manifest_path)
     args.add(ctx.attr.selected_lock)
-    args.add(ctx.attr.library_name or ctx.attr.package.replace("-", "_"))
+    args.add(receipt_name)
+    args.add(binary_name)
     args.add("proc-macro" if ctx.attr.proc_macro else "library")
     tool_inputs = [ctx.attr._rustup[DefaultInfo].data_runfiles.files]
     linker_env = {}
@@ -102,6 +106,7 @@ rustdoc_fixture = rule(
         "owner_path": attr.string(),
         "selected_lock": attr.string(),
         "library_name": attr.string(),
+        "binary_name": attr.string(),
         "proc_macro": attr.bool(),
         "needs_linker": attr.bool(),
         "retain_artifacts": attr.bool(),
@@ -112,7 +117,7 @@ rustdoc_fixture = rule(
     },
 )
 
-def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = {}, manifest_path = "Cargo.toml", owner_path = "", selected_lock = "", library_name = "", proc_macro = False, needs_linker = False, retain_artifacts = False):
+def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = {}, manifest_path = "Cargo.toml", owner_path = "", selected_lock = "", library_name = "", proc_macro = False, needs_linker = False, retain_artifacts = False, binary_name = ""):
     for name, flags in profiles.items():
         rustdoc_fixture(
             name = name,
@@ -124,6 +129,7 @@ def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = 
             owner_path = owner_path,
             selected_lock = selected_lock,
             library_name = library_name,
+            binary_name = binary_name,
             proc_macro = proc_macro,
             needs_linker = needs_linker,
             retain_artifacts = retain_artifacts,

@@ -613,11 +613,18 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
 fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims() {
     runtime::time_control();
     let fixture = feature_profile_fixture();
-    fs::write(fixture.root.join("rust/crates/demo/Cargo.toml"),
-        "[package]\nname = 'demo'\nversion = '1.0.0'\nedition = '2021'\n[[bin]]\nname = 'demo-cli'\npath = 'src/main.rs'\n").unwrap();
-    fs::remove_file(fixture.root.join("rust/crates/demo/src/lib.rs")).unwrap();
-    fs::write(fixture.root.join("rust/crates/demo/src/main.rs"),
-        "//! Run the source-owned command guide.\n/// PRIVATE CLI INTERNALS\nfn hidden() {}\nfn main() { hidden(); }\n").unwrap();
+    let package = fixture.root.join("rust/crates/demo");
+    fs::write(
+        package.join("Cargo.toml"),
+        include_str!("../fixtures/feature-profile/rust/crates/demo/binary.toml"),
+    )
+    .unwrap();
+    fs::remove_file(package.join("src/lib.rs")).unwrap();
+    fs::write(
+        package.join("src/main.rs"),
+        include_str!("../fixtures/feature-profile/rust/crates/demo/binary.rs"),
+    )
+    .unwrap();
     git(&fixture.root, &["add", "."]);
     git(
         &fixture.root,

@@ -159,7 +159,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         return Ok(None);
     }
     let args = command.get_args().collect::<Vec<_>>();
-    if !args.iter().any(|arg| *arg == "--lib") {
+    if !args.iter().any(|arg| *arg == "--lib" || *arg == "--bin") {
         return Ok(None);
     }
     let value = |name: &str| {
@@ -228,6 +228,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
+        let binary = metadata["binary_name"].as_str().unwrap_or_default();
         let mut expected_args = vec![
             "rustdoc",
             "--locked",
@@ -235,10 +236,13 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             manifest,
             "--package",
             package,
-            "--lib",
-            "--target",
-            target,
         ];
+        if binary.is_empty() {
+            expected_args.push("--lib");
+        } else {
+            expected_args.extend(["--bin", binary]);
+        }
+        expected_args.extend(["--target", target]);
         expected_args.extend(
             metadata["cargo_flags"]
                 .as_array()
@@ -315,8 +319,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let mut referenced = std::collections::BTreeSet::new();
         let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
         let owner = metadata["owner_path"].as_str().unwrap();
-        let library = Path::new("src/lib.rs");
-        let owner_library = Path::new(owner).join(library);
+        let entrypoint = Path::new(if binary.is_empty() {
+            "src/lib.rs"
+        } else {
+            "src/main.rs"
+        });
+        let owner_entrypoint = Path::new(owner).join(entrypoint);
         rustdoc_paths::visit(&mut json, |kind, path| {
             if let Some(relative) = path.strip_prefix(rustdoc_paths::TARGET_PREFIX) {
                 let relative = PathBuf::from(relative);
@@ -329,7 +337,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 let filename = Path::new(path);
                 if let Some(source) = relative_sources.iter().find(|source| {
                     filename.ends_with(source)
-                        || filename == library && **source == owner_library.as_path()
+                        || filename == entrypoint && **source == owner_entrypoint.as_path()
                 }) {
                     *path = root.join(source).to_string_lossy().into_owned();
                 }
@@ -360,7 +368,11 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         };
         let output = output_dir.join(format!(
             "{}.json",
-            metadata["library_name"].as_str().unwrap()
+            if binary.is_empty() {
+                metadata["library_name"].as_str().unwrap().to_owned()
+            } else {
+                binary.replace("-", "_")
+            }
         ));
         fs::create_dir_all(output.parent().unwrap())?;
         fs::write(output, serde_json::to_vec(&json)?)?;
