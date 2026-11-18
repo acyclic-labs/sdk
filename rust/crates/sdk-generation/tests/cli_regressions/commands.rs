@@ -215,7 +215,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     else {
         return Ok(None);
     };
-    for metadata in rustdoc_fixtures()? {
+    'fixture: for metadata in rustdoc_fixtures()? {
         if metadata["package"].as_str() != Some(package) {
             continue;
         }
@@ -286,14 +286,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let sources = metadata["sources"].as_array().unwrap();
         let artifacts = metadata["artifacts"].as_str().unwrap();
         let mut relative_sources = Vec::new();
-        let mut matches = true;
         for source in sources {
             let relative = source["relative"].as_str().unwrap();
             let source = source["file"].as_str().unwrap();
             let expected = fs::read(acyclic_test_support::source_path(source))?;
             if fs::read(root.join(relative)).ok().as_deref() != Some(expected.as_slice()) {
-                matches = false;
-                break;
+                continue 'fixture;
             }
             if Path::new(relative)
                 .file_name()
@@ -305,16 +303,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                         source["relative"].as_str().map(Path::new) == Some(build.as_path())
                     });
                 if !covered && root.join(&build).exists() {
-                    matches = false;
-                    break;
+                    continue 'fixture;
                 }
             }
             if relative.ends_with(".rs") {
                 relative_sources.push(Path::new(relative));
             }
-        }
-        if !matches {
-            continue;
         }
         let output_path = metadata["output"].as_str().unwrap();
         let mut json: Value =
