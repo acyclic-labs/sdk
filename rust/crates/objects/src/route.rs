@@ -1,7 +1,7 @@
 //! The one wire dispatch over any [`Blobs`]: gRPC and binary adapters serve
 //! each route through these functions, each paired with the revision its
 //! result carries.
-use crate::convert;
+use crate::convert::{self, reply};
 use crate::error::{invalid, unavailable};
 use crate::{Blobs, Digest, Error, ObjectsMethod, RootId, wire};
 use acyclic_auth::action::{Action, ObjectsAction};
@@ -480,9 +480,6 @@ pub async fn invoke_at(
 /// `InvalidArgument` for an unknown route or malformed request, and
 /// `Unavailable` for a reply that is malformed or does not answer it.
 pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
-    fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
-        decode(bytes).map_err(|_| unavailable())
-    }
     match ObjectsMethod::from_http_route(route).ok_or(wire::ErrorCode::InvalidArgument)? {
         ObjectsMethod::PutBlob => {
             let request: wire::PutBlobRequest = decode(input)?;

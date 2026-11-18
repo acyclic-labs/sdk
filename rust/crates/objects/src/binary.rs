@@ -1,5 +1,4 @@
 //! Canonical blob client over the caller's original binary account transport.
-use crate::error::unavailable;
 use crate::{
     Availability, Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object,
     ObjectsMethod, Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
@@ -64,9 +63,7 @@ impl<T: Transport> BinaryObjects<T> {
             .transport
             .invoke(method.http_route(), input.encode_to_vec().into())
             .await?;
-        // Owned decoding retains body fields in the original response allocation.
-        let reply = O::decode(body).map_err(|_| unavailable())?;
-        Ok((reply, revision))
+        Ok((convert::reply(body)?, revision))
     }
 
     async fn publish(

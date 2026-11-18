@@ -8,6 +8,13 @@ use crate::{
 
 use crate::{Released, Retained, Usage};
 use acyclic_stream::Revision;
+use bytes::Bytes;
+use prost::Message;
+
+/// Owned decoding lets protobuf body fields retain their response allocation.
+pub(crate) fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
+    T::decode(bytes).map_err(|_| unavailable())
+}
 
 impl From<Digest> for wire::Digest {
     fn from(digest: Digest) -> Self {
