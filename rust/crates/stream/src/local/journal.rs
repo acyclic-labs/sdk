@@ -56,7 +56,7 @@ impl Journal {
         // A valid recovered header does not prove its name survived the
         // previous owner's crash. Publish the journal and incarnation names
         // together before exposing either recovered or newly written frames.
-        sync_directory(root, LocalDurability::FullFlush)?;
+        sync_parent(root, Durability::Full)?;
         let mut journal = Self {
             #[cfg(test)]
             append_admissions: 0,
@@ -274,7 +274,7 @@ impl Journal {
                     native_durability(LocalDurability::FullFlush),
                 )
             })?,
-            None => sync_directory(&self.root, LocalDurability::FullFlush)?,
+            None => sync_parent(&self.root, Durability::Full)?,
         }
         // Retiring the old journal must preserve every receipt previously
         // issued, including receipts issued before this provider was reopened.
