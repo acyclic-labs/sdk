@@ -58,7 +58,11 @@ cargo_build_script(
 rust_library(
     name = "acyclic_native_runtime",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["src/**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "runner/ancillary.rs",
+        "runner/fuse_protocol.rs",
+        "runner/request.rs",
+    ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
@@ -229,7 +233,7 @@ isolated_test(
 rust_binary(
     name = "acyclic-process-host",
     crate_root = "src/bin/acyclic-process-host.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["src/**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",

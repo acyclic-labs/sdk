@@ -686,8 +686,10 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   const opt = packageOpt(p.name);
   const repoRelative = target => path.relative(root, target.src_path).replaceAll("\\", "/");
   const libUnitTests = lib !== undefined && workspace.has(p.id) && hasUnitTests(dir(p), repoRelative(lib));
-  // Library and binary globs: the package's files outside its test, bench and example trees.
-  const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs";
+  // The package can narrow the Rust glob; discover explicit references outside it.
+  const librarySources = bazel?.["library-sources"] ?? ["**/*.rs"];
+  const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs" &&
+    (!file.endsWith(".rs") || librarySources.some(pattern => path.posix.matchesGlob(file, pattern)));
   const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
   // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
   const libInputs = (target, unitTest = false) => {
@@ -695,7 +697,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     const testOnly = file => !unitTest && testOnlySources.some(pattern => path.posix.matchesGlob(file, pattern));
     return [
       ["srcs", plus(
-        glob(["**/*.rs"], ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
+        glob(librarySources, ["build.rs", ...NOT_LIB, ...platformSourcePatterns, ...(unitTest ? [] : testOnlySources)]),
         list(extra.srcs.filter(file => !platformSourcePatterns.includes(file) && !testOnly(file))),
         configuredSources,
       )],

@@ -13,6 +13,7 @@ keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
 [package.metadata.bazel]
+library-sources = ["src/**/*.rs"]
 build-script-inputs = [
     "runner",
     "src/execution/instruction.rs",
