@@ -80,6 +80,7 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:typescript/packages/actors/test/grpc-conformance.mjs",
         "//:typescript/packages/stream/test/http-provider-conformance.mjs",
+        "//:workspace-metadata.json",
         "//plugin:src/main.rs",
         "//rust/crates/actors:examples/actors-typescript-consumer.rs",
         "//rust/crates/actors:examples/transport-conformance.rs",

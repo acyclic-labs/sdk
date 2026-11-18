@@ -23,9 +23,7 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
     let root = repository_root();
     let metadata = load_workspace_metadata(
         &root,
-        &acyclic_test_support::source_path(
-            "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
-        ),
+        &acyclic_test_support::source_path("workspace-metadata.json"),
     )
     .unwrap();
     let host = host_target();
