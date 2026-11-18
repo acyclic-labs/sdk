@@ -25,7 +25,7 @@ def main():
          "compiled_prefix_matches_original_keys_and_refuses_original_read_credit", "items refused"),
     ]
     recovery = shlex.join(["python3", __file__])
-    command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-collections", "--lib", "-E"]
+    command = ["bazel", "run", "//rust/crates/collections:acyclic_collections_test_cases", "--"]
     step = "source-anchor"
     try:
         for name, anchor, replacement, count, test, expected in controls:
@@ -34,11 +34,12 @@ def main():
                 raise ValueError("original source anchor changed")
             step = name + ":negative"
             path.write_bytes(source.replace(anchor, replacement))
-            result = subprocess.run(command + [f"test({test})"], text=True,
+            name_in_binary = f"tests::compiled_prefix::{test}"
+            result = subprocess.run(command + [name_in_binary, "--exact", "--nocapture"], text=True,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             print(f"{step}: exit={result.returncode}\n{result.stdout}", flush=True)
-            if not (result.returncode == 100 and "0 passed, 1 failed" in result.stdout
-                    and f"test tests::compiled_prefix::{test} ... FAILED" in result.stdout
+            if not (result.returncode != 0 and "0 passed; 1 failed" in result.stdout
+                    and name_in_binary in result.stdout
                     and expected in result.stdout):
                 raise ValueError("unchanged semantic oracle did not reject the defect")
             path.write_bytes(source)
@@ -49,9 +50,10 @@ def main():
     if path.read_bytes() != source:
         raise SystemExit(f"REFUSED step=source-restoration; recovery=git restore -- {path}")
     step = "restored-original"
-    positive = command + ["test(compiled_prefix_)"]
-    result = subprocess.run(positive)
-    if result.returncode:
+    positive = command + ["tests::compiled_prefix::compiled_prefix_"]
+    result = subprocess.run(positive, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(result.stdout, end="", flush=True)
+    if result.returncode or "6 passed; 0 failed" not in result.stdout:
         raise SystemExit(f"REFUSED step={step}; recovery={shlex.join(positive)}")
     print("PASS: three actual defects rejected; exact source restored; original properties passed", flush=True)
 
