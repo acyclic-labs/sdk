@@ -43,6 +43,15 @@ macro_rules! http_routes {
                     $(Self::$stream => $stream_route,)+
                 }
             }
+
+            /// Canonical Protobuf request and response (or stream item) names.
+            #[must_use]
+            pub const fn http_message_types(self) -> (&'static str, &'static str) {
+                match self {
+                    $(Self::$method => (stringify!($input), stringify!($output)),)+
+                    $(Self::$stream => (stringify!($stream_in), stringify!($stream_out)),)+
+                }
+            }
         }
     };
 }

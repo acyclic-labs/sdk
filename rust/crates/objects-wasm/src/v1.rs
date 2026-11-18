@@ -27,12 +27,10 @@ pub fn decode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<
 }
 #[wasm_bindgen]
 pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue> {
-    let (_, input, response) = acyclic_objects::HTTP_ROUTES
-        .iter()
-        .chain(acyclic_objects::HTTP_STREAM_ROUTES)
-        .find(|(name, _, _)| *name == route)
+    let (input, response) = acyclic_objects::ObjectsMethod::from_http_route(route)
+        .map(acyclic_objects::ObjectsMethod::http_message_types)
         .ok_or_else(|| error(&wire::ErrorCode::InvalidArgument.into()))?;
-    Ok(if output { *response } else { *input }.to_owned())
+    Ok(if output { response } else { input }.to_owned())
 }
 
 /// Classifies an HTTP failure without a recognized error detail.
