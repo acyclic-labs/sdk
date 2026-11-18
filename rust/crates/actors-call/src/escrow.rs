@@ -6,7 +6,8 @@ use acyclic_stream::CommitId;
 use bytes::Bytes;
 
 const FORMAT: &[u8] = b"\xffAES\x01";
-pub(crate) const MAX_RECORD_LEN: usize = FORMAT.len() + 2 + 32 + 8;
+#[doc(hidden)]
+pub const MAX_RECORD_LEN: usize = FORMAT.len() + 2 + 32 + 8;
 
 /// The amount this agent can still spend. `None` is explicitly unbounded;
 /// absence of an escrow record is a missing prerequisite, never unbounded.

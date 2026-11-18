@@ -517,14 +517,15 @@ struct Entry {
     _abandon: oneshot::Sender<()>,
 }
 
-type CloseCompletion = futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<Error>>>>;
+#[derive(Clone)]
+struct CloseCompletion(futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<Error>>>>);
 
 impl crate::guest::SocketTerminal for CloseCompletion {
     fn completion(
         self: Arc<Self>,
     ) -> BoxProviderFuture<'static, Result<(), Arc<crate::guest::SocketTerminalError>>> {
         Box::pin(async move {
-            self.as_ref()
+            self.0
                 .clone()
                 .await
                 .map_err(|error| error as Arc<crate::guest::SocketTerminalError>)
@@ -543,7 +544,7 @@ impl Entry {
                 Err(Arc::new(Error::Stream(Box::new(StreamError::Unavailable))))
             })
         });
-        let completion = completion.shared();
+        let completion = CloseCompletion(completion.shared());
         self.completed = Some(completed);
         self.completion = Some(completion.clone());
         completion

@@ -210,7 +210,8 @@ impl Requests {
             .ok_or(GuestError::Revoked)
     }
 
-    pub(crate) fn bind_state(&self, request: RequestId, state: super::ActorStateHost) {
+    #[doc(hidden)]
+    pub fn bind_state(&self, request: RequestId, state: super::ActorStateHost) {
         let mut bindings = self.bindings();
         if let Some(binding) = bindings.live.get_mut(&request.0) {
             binding.state = Some(state);

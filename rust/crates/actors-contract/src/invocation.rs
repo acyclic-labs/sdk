@@ -182,7 +182,8 @@ impl Invocation {
         Ok(Some((path, invocation)))
     }
 
-    pub(crate) fn identity(&self, state_path: &str) -> [u8; 32] {
+    #[doc(hidden)]
+    pub fn identity(&self, state_path: &str) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(b"acyclic.actor.invoke.v1");
         let actor = self.actor.encode();

@@ -359,7 +359,8 @@ impl SocketFrame {
 
 /// One socket event in an actor inbox, before the host appends it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SocketInput {
+#[doc(hidden)]
+pub enum SocketInput {
     Message(SocketPayload),
     Close {
         code: u16,
@@ -369,7 +370,8 @@ pub(crate) enum SocketInput {
 }
 
 /// The open invocation for `connection`: its reply is the actor's verdict.
-pub(crate) fn open_invocation(
+#[doc(hidden)]
+pub fn open_invocation(
     caller: acyclic_stream::StreamPath,
     connection: &str,
     open: &SocketOpen,
@@ -391,7 +393,8 @@ pub(crate) fn open_invocation(
 }
 
 /// One marked inbox record for a socket event after Open.
-pub(crate) fn input_record(
+#[doc(hidden)]
+pub fn input_record(
     connection: &str,
     input: SocketInput,
 ) -> Result<AppendRecord, GuestError> {
