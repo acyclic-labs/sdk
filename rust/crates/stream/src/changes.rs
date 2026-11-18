@@ -15,7 +15,10 @@
 //! Retained v1 records use the original canonical protobuf ChangeRecord and
 //! indexed headers. Reading never rewrites either format or its retry identity.
 use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamCategory, StreamError};
-use acyclic_stream_wire::wire;
+use acyclic_stream_wire::{
+    changes::{ChangeDecodeError, visit_v1, visit_v2},
+    wire,
+};
 
 #[cfg(test)]
 mod golden;
@@ -223,176 +226,24 @@ fn encode_into(buffer: &mut Vec<u8>, context: &[u8], entries: &[ChangeEntryRef<'
     }
 }
 
-struct Reader<'a>(&'a [u8]);
-impl<'a> Reader<'a> {
-    /// A minimally encoded varint; any other encoding would change identity.
-    fn number(&mut self) -> Result<usize, StreamError> {
-        let before = self.0.len();
-        let value = prost::encoding::decode_varint(&mut self.0)
-            .map_err(|_| StreamError::InvalidArgument)?;
-        if prost::encoding::encoded_len_varint(value) != before - self.0.len() {
-            return Err(StreamError::InvalidArgument);
-        }
-        usize::try_from(value).map_err(|_| StreamError::LimitExceeded)
-    }
-    fn bytes(&mut self) -> Result<&'a [u8], StreamError> {
-        let length = self.number()?;
-        let (value, rest) = self
-            .0
-            .split_at_checked(length)
-            .ok_or(StreamError::InvalidArgument)?;
-        self.0 = rest;
-        Ok(value)
-    }
-
-    // The v1 producer used canonical protobuf: ordered length-delimited fields,
-    // minimal lengths and omitted empty scalar fields. Keep the retained bytes.
-    fn field(&mut self, tag: u8) -> Result<Option<&'a [u8]>, StreamError> {
-        if self.0.first() != Some(&tag) {
-            return Ok(None);
-        }
-        self.0 = self.0.get(1..).ok_or(StreamError::InvalidArgument)?;
-        let value = self.bytes()?;
-        if value.is_empty() {
-            return Err(StreamError::InvalidArgument);
-        }
-        Ok(Some(value))
-    }
-}
-
-fn parse_v1<'a>(
-    bytes: &'a [u8],
-    mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
-) -> Result<&'a [u8], StreamError> {
-    #[cfg(test)]
-    PARSED_BYTES.with(|count| count.set(count.get() + bytes.len()));
-    let mut reader = Reader(bytes);
-    let context = reader.field(10)?.unwrap_or_default();
-    let mut previous: Option<&[u8]> = None;
-    let mut count = 0;
-    while let Some(bytes) = reader.field(18)? {
-        let mut entry = Reader(bytes);
-        let key = entry.field(10)?.unwrap_or_default();
-        let operation = entry.field(18)?.ok_or(StreamError::InvalidArgument)?;
-        let operation = std::str::from_utf8(operation).map_err(|_| StreamError::InvalidArgument)?;
-        let metadata = entry.field(26)?.unwrap_or_default();
-        count += 1;
-        if key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES
-            || previous.is_some_and(|previous| previous >= key)
-            || operation.chars().any(char::is_control)
-            || !entry.0.is_empty()
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        visit(key, operation, metadata)?;
-        previous = Some(key);
-    }
-    if count == 0 || !reader.0.is_empty() {
-        return Err(StreamError::InvalidArgument);
-    }
-    Ok(context)
-}
-
 fn parse_record<'a>(
     bytes: &'a [u8],
     format: Option<&[u8]>,
     expected: Option<&[OwnedBytes]>,
     remaining_keys: Option<usize>,
-    visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
-) -> Result<&'a [u8], StreamError> {
-    if format == Some(FORMAT) {
-        parse(bytes, expected, remaining_keys, visit)
-    } else {
-        parse_v1(bytes, visit)
-    }
-}
-
-/// Visits each entry of a canonical value with its full key, rejecting every
-/// noncanonical encoding.
-fn parse<'a>(
-    bytes: &'a [u8],
-    expected: Option<&[OwnedBytes]>,
-    mut remaining_keys: Option<usize>,
-    mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
+    visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), ChangeDecodeError>,
 ) -> Result<&'a [u8], StreamError> {
     #[cfg(test)]
     PARSED_BYTES.with(|count| count.set(count.get() + bytes.len()));
-    let mut reader = Reader(bytes);
-    let context = reader.bytes()?;
-    let count = reader.number()?;
-    if count == 0 {
-        return Err(StreamError::InvalidArgument);
+    if format == Some(FORMAT) {
+        visit_v2(bytes, expected, remaining_keys, visit)
+    } else {
+        visit_v1(bytes, visit)
     }
-    // Native validation already owns the admitted immutable full keys. Compare
-    // their prefix/suffix slices directly, without a second allocation. Owned
-    // decoders reconstruct into their own scratch alongside their owned output.
-    let mut reconstructed = Vec::new();
-    for index in 0..count {
-        let common = reader.number()?;
-        let suffix = reader.bytes()?;
-        let operation = reader.bytes()?;
-        let metadata = reader.bytes()?;
-        let total = common
-            .checked_add(suffix.len())
-            .ok_or(StreamError::InvalidArgument)?;
-        if total > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
-        if let Some(remaining) = &mut remaining_keys {
-            *remaining = remaining
-                .checked_sub(total)
-                .ok_or(StreamError::LimitExceeded)?;
-        }
-        let previous = match expected {
-            Some(keys) if index != 0 => keys
-                .get(index - 1)
-                .ok_or(StreamError::InvalidArgument)?
-                .as_ref(),
-            Some(_) => &[],
-            None => reconstructed.as_slice(),
-        };
-        // The shared length is exactly the common prefix, so the suffix's
-        // first byte must differ from the predecessor's next one; together
-        // with that byte's order this makes keys strictly increasing.
-        let canonical = if index == 0 {
-            common == 0
-        } else {
-            common <= previous.len()
-                && match (
-                    suffix.first(),
-                    previous.get(common..).and_then(<[u8]>::first),
-                ) {
-                    (Some(next), Some(previous)) => next > previous,
-                    (Some(_), None) => true,
-                    (None, _) => false,
-                }
-        };
-        let operation = std::str::from_utf8(operation).map_err(|_| StreamError::InvalidArgument)?;
-        if !canonical || operation.is_empty() || operation.chars().any(char::is_control) {
-            return Err(StreamError::InvalidArgument);
-        }
-        if let Some(keys) = expected {
-            let key = keys
-                .get(index)
-                .ok_or(StreamError::InvalidArgument)?
-                .as_ref();
-            if key.len() != total
-                || key.get(..common) != previous.get(..common)
-                || key.get(common..) != Some(suffix)
-            {
-                return Err(StreamError::InvalidArgument);
-            }
-            visit(key, operation, metadata)?;
-        } else {
-            reconstructed.truncate(common);
-            reconstructed.extend_from_slice(suffix);
-            visit(&reconstructed, operation, metadata)?;
-        }
-    }
-    if !reader.0.is_empty() {
-        return Err(StreamError::InvalidArgument);
-    }
-    Ok(context)
+    .map_err(|error| match error {
+        ChangeDecodeError::Invalid => StreamError::InvalidArgument,
+        ChangeDecodeError::Limit => StreamError::LimitExceeded,
+    })
 }
 
 /// Decodes a canonical change value into its entries with full keys.
@@ -488,7 +339,7 @@ impl<'a> AdmittedRecord<'a> {
                         .next()
                         .is_none_or(|expected| expected.as_ref() != key)
                     {
-                        return Err(StreamError::InvalidArgument);
+                        return Err(ChangeDecodeError::Invalid);
                     }
                     Ok(())
                 },
@@ -557,7 +408,7 @@ pub(crate) fn record_headers(
     let remaining = crate::MAX_RECORD_BYTES
         .checked_sub(overhead)
         .ok_or(StreamError::LimitExceeded)?;
-    parse(value, None, Some(remaining), |key, _, _| {
+    parse_record(value, Some(FORMAT), None, Some(remaining), |key, _, _| {
         let start = owned.len();
         owned.extend_from_slice(key);
         ranges.push(start..owned.len());

@@ -1,6 +1,8 @@
 //! Canonical Stream protobuf messages, services and RPC authorization.
 
 pub mod authorization;
+/// Canonical change-record decoding.
+pub mod changes;
 /// Canonical record header grammar.
 pub mod headers;
 /// Hosted token operation vocabulary derived from Stream admission.
