@@ -41,7 +41,7 @@ impl ActorsDomain {
         let provider = InjectedStream::new(port).map_err(failed)?;
         Ok(Self {
             store: Store::new(
-                Arc::new(Counted::new(provider)),
+                acyclic_stream::ProviderOwner::new(Counted::new(provider)),
                 StreamPath::new("actors/state").map_err(failed)?,
             ),
             clock: SystemClock,

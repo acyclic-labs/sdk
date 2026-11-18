@@ -286,7 +286,7 @@ pub async fn actor_journal(journal: JsValue) -> Result<acyclic_stream::WasmStrea
         .install_commit_admission(acyclic_actors::local::alarm_admission())
         .await
         .map_err(|error| JsValue::from_str(&error.to_string()))?;
-    Ok(acyclic_stream::WasmStream::from_provider(Arc::new(
-        provider,
-    )))
+    Ok(acyclic_stream::WasmStream::from_provider(
+        acyclic_stream::ProviderOwner::new(provider),
+    ))
 }

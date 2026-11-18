@@ -70,7 +70,7 @@ impl Stream for FollowSource {
 pub struct Driver<P: ?Sized> {
     identity: Arc<()>,
     reader: Option<Arc<()>>,
-    provider: Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     ops: FuturesUnordered<LocalBoxFuture<'static, Option<(u64, Outcome)>>>,
     aborts: BTreeMap<u64, AbortHandle>,
     opening: FuturesUnordered<Opening>,
@@ -88,7 +88,7 @@ pub struct Driver<P: ?Sized> {
 
 impl<P: StreamProvider + ?Sized> Driver<P> {
     /// A driver over one provider session.
-    pub fn new(provider: Arc<P>) -> Self {
+    pub fn new(provider: acyclic_stream::ProviderOwner<P>) -> Self {
         Self {
             identity: Arc::new(()),
             reader: None,
@@ -260,7 +260,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         Ok(())
     }
     fn start(&mut self, op: Op, access: super::Access) {
-        let provider = Arc::clone(&self.provider);
+        let provider = self.provider.clone();
         let id = op.id();
         let (abort, registration) = AbortHandle::new_pair();
         self.aborts.insert(id, abort);
@@ -373,7 +373,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             self.pending.insert(path.clone(), (from, abort));
             let anchor = reader.follow_anchor(&path, from);
             let observed = reader.cache().observation(&path);
-            let provider = Arc::clone(&self.provider);
+            let provider = self.provider.clone();
             let access = reader.cache.access.clone();
             let open = async move {
                 let opened = async {

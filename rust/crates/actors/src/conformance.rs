@@ -707,7 +707,7 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
 /// The separate activation root lets this check drive the actual Store without
 /// racing an already-running host's placement of the new actors.
 pub async fn fork_uniform<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     let store = Store::new(provider, root);
@@ -888,7 +888,7 @@ impl Handler for BindsRequests {
 /// A pre-bound capability bridge admits the first delivery, with a distinct
 /// request per attempt, and refuses every request after its attempt finishes.
 pub async fn request_ledger<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     let suite = Isolated::new(provider, root, "request-ledger")?;
@@ -939,7 +939,7 @@ struct Isolated<P: StreamProvider + ?Sized> {
 
 impl<P: StreamProvider + ?Sized> Isolated<P> {
     fn new(
-        provider: std::sync::Arc<P>,
+        provider: acyclic_stream::ProviderOwner<P>,
         root: StreamPath,
         case: &'static str,
     ) -> Result<Self, Failure> {
@@ -1106,7 +1106,7 @@ fn under(root: &StreamPath, leaf: &str) -> Result<StreamPath, Error> {
 /// an explicit per-actor placement command moves an actor's fence, a deposed
 /// node never claims back, and a fork child gets its own first command.
 pub async fn placement<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     let lab = Isolated::new(provider, root, "placement")?;
@@ -1233,7 +1233,7 @@ pub async fn placement<P: StreamProvider + ?Sized>(
 /// the provider's authority time and nothing is published. The same answers
 /// for an alarm the authority holds due are consumed (the positive control).
 pub async fn early_alarm<P: StreamProvider + ?Sized>(
-    provider: std::sync::Arc<P>,
+    provider: acyclic_stream::ProviderOwner<P>,
     root: StreamPath,
 ) -> Result<(), Failure> {
     // The node starts at the Unix epoch, behind any authority, then jumps
@@ -1854,7 +1854,7 @@ async fn reserved<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Fail
         return fixture.violation("grant released a different pool actor".into());
     }
     let another_root = Store::new(
-        std::sync::Arc::clone(target.store().provider()),
+        target.store().provider().clone(),
         StreamPath::new(format!("{}/other-root", target.store().root())).map_err(Error::from)?,
     );
     if first_grant.state_path() != &target.store().path(&fixture.actor)?
