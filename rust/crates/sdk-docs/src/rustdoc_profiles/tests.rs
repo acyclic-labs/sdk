@@ -178,20 +178,21 @@ fn rustdoc_version_must_match_cargo_package_even_without_items() {
 
 #[test]
 fn invalid_requests_fail_before_cargo_runs() {
-    let profile = ProfileSpec {
+    let mut profile = ProfileSpec {
         package: "feature-rich".into(),
         target: "host".into(),
         default_features: false,
-        features: BTreeSet::from(["missing".into()]),
+        features: BTreeSet::new(),
     };
     let directory = tempfile::tempdir().unwrap();
     let target_dir = directory.path().join("target");
-    let execute = |target: RustdocTarget| {
+    let targets = BTreeSet::from([profile.target.clone()]);
+    let execute = |profile: &ProfileSpec, target: RustdocTarget| {
         let error = execute_profile(
             directory.path().join("Cargo.toml"),
             metadata(),
-            &profile,
-            &BTreeSet::from(["host".into()]),
+            profile,
+            &targets,
             &target_dir,
             directory.path().join("output.json"),
             CargoExecutionContext::default(),
@@ -201,10 +202,13 @@ fn invalid_requests_fail_before_cargo_runs() {
         assert!(!target_dir.exists());
         error
     };
-    assert!(matches!(execute(RustdocTarget::Binary("absent".into())),
-        ProfileError::InvalidRustdoc(message) if message.contains("absent from Cargo")));
+    assert!(
+        matches!(execute(&profile, RustdocTarget::Binary("absent".into())),
+        ProfileError::InvalidRustdoc(message) if message.contains("absent from Cargo"))
+    );
+    profile.features.insert("missing".into());
     assert_eq!(
-        execute(RustdocTarget::Library),
+        execute(&profile, RustdocTarget::Library),
         ProfileError::InvalidFeature {
             package: "feature-rich".into(),
             feature: "missing".into(),
