@@ -23,7 +23,7 @@ pub struct TrustSnapshot {
 
 /// Runtime-owned public trust feed. Waiting must be push driven, including
 /// expiry; callers must never implement this with periodic trust polling.
-pub trait AuthorityState: crate::ProviderPlatform {
+pub trait AuthorityState: Send + Sync {
     /// Captures current authenticated public trust and the protected time.
     fn snapshot(&self) -> Result<TrustSnapshot, VerifyError>;
     /// The owner's trust publications. A registered change resolves only
