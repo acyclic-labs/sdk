@@ -1,90 +1,9 @@
 use super::*;
 use crate::Digest;
-use crate::model::Lifecycle;
 
-fn manifest() -> GenerationExportManifest {
-    let root = ObjectId {
-        storage: None,
-        kind: ObjectKind::GenerationRoot,
-        digest: Digest::from_bytes([9; 32]),
-    };
-    GenerationExportManifest {
-        volume_id: VolumeId::from_bytes([3; 16]),
-        config: VolumeConfig::portable(Lifecycle::Ephemeral),
-        generation_root: root,
-        generation_id: GenerationId::from_root(root),
-        objects: vec![
-            ObjectId {
-                storage: None,
-                kind: ObjectKind::BlobChunk,
-                digest: Digest::from_bytes([1; 32]),
-            },
-            root,
-        ],
-        file_count: 1,
-    }
-}
-
-#[test]
-fn manifest_round_trip_is_canonical_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
-    let mut value = manifest();
-    let plain = value.objects[0];
-    for origin in [2, 3] {
-        value.objects.push(ObjectId {
-            storage: Some(crate::ObjectStorage {
-                locator: Digest::from_bytes([origin; 32]),
-                root_file_id: crate::FileId::from_bytes([4; 16]),
-                origin_generation: Digest::from_bytes([origin; 32]),
-            }),
-            ..plain
-        });
-    }
-    let plain_root = value.generation_root;
-    value.generation_root.storage = value.objects.last().unwrap().storage;
-    value.generation_id = GenerationId::from_root(value.generation_root);
-    *value
-        .objects
-        .iter_mut()
-        .find(|id| **id == plain_root)
-        .unwrap() = value.generation_root;
-    let root = value.objects.remove(1);
-    value.objects.push(root);
-    let encoded = encode_generation_export_manifest(&value)?;
-    assert_eq!(
-        decode_generation_export_manifest(
-            &encoded,
-            encoded.len() as u64,
-            value.objects.len() as u64
-        )?,
-        value
-    );
-    assert_eq!(
-        decode_generation_export_manifest(&encoded, None, None)?,
-        value
-    );
-    assert!(matches!(
-        decode_generation_export_manifest(&encoded, encoded.len() as u64, 1),
-        Err(GenerationExportManifestError::TooManyObjects)
-    ));
-    // Old/unknown headers refuse before the removed configuration fields.
-    for version in [0_u16, 1, u16::MAX] {
-        let mut obsolete = encoded[..DOMAIN.len() + 2].to_vec();
-        obsolete[DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
-        assert!(matches!(
-            decode_generation_export_manifest(&obsolete, None, None),
-            Err(GenerationExportManifestError::Decode(CanonicalDecodeError::UnsupportedVersion {
-                found, expected: 2
-            })) if found == version
-        ));
-    }
-    // Equal plaintext with a different locator is a different root reference.
-    value.generation_id = GenerationId::from_root(plain_root);
-    assert!(matches!(
-        encode_generation_export_manifest(&value),
-        Err(GenerationExportManifestError::GenerationMismatch)
-    ));
-    Ok(())
-}
+#[path = "../../../tests/support/export_manifest.rs"]
+mod fixture;
+use fixture::manifest;
 
 #[test]
 fn manifest_rejects_mismatch_and_missing_root() {
@@ -119,19 +38,4 @@ fn manifest_rejects_mismatch_and_missing_root() {
         super::validate_transfer_manifest(&value, u64::MAX),
         Err(GenerationExportManifestError::MissingRoot)
     ));
-}
-
-#[test]
-fn manifest_count_requires_present_identity_bytes() -> Result<(), Box<dyn std::error::Error>> {
-    let value = manifest();
-    let mut encoded = encode_generation_export_manifest(&value)?;
-    let count_offset = encoded.len() - value.objects.len() * 33 - 4;
-    encoded[count_offset..count_offset + 4].copy_from_slice(&1_000_000_u32.to_le_bytes());
-    assert_eq!(
-        decode_generation_export_manifest(&encoded, None, None),
-        Err(GenerationExportManifestError::Decode(
-            CanonicalDecodeError::Truncated
-        )),
-    );
-    Ok(())
 }
