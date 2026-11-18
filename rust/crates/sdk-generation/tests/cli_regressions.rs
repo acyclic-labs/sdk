@@ -840,7 +840,7 @@ fn registry_archive_fixture(
     mutation: Option<&str>,
     publisher_vcs: bool,
 ) -> (Fixture, PathBuf) {
-    registry_archive_fixture_configured(
+    let (fixture, support) = build_registry_archive_fixture(
         dirty,
         published_lock,
         mutation,
@@ -848,10 +848,12 @@ fn registry_archive_fixture(
         "demo",
         None,
         None,
-    )
+    );
+    write_registry_transport(&support);
+    (fixture, support)
 }
 
-fn registry_archive_fixture_configured(
+fn build_registry_archive_fixture(
     dirty: bool,
     published_lock: bool,
     mutation: Option<&str>,
@@ -931,7 +933,6 @@ fn registry_archive_fixture_configured(
     }
     let archive = support.join(format!("registry/{package_name}-1.0.0.crate"));
     archives::pack(&source, &archive);
-    write_registry_transport(&support);
     (fixture, support)
 }
 
