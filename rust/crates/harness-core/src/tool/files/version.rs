@@ -8,13 +8,19 @@ pub fn check_version(input: &[u8]) {
     let Ok(version) = std::str::from_utf8(input) else {
         return;
     };
+    let result = check_admitted_version(version);
+    assert!(result.is_ok(), "version codec check failed: {result:?}");
+}
+
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+fn check_admitted_version(version: &str) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .expect("version control admits its original ledger");
-    let baseline = work.live_allocation_bytes();
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes()?;
     let portable = decode_selection(version, None);
     let native = decode_selection(version, Some(&work));
     match (&portable, &native) {
@@ -25,7 +31,11 @@ pub fn check_version(input: &[u8]) {
             assert_eq!(left, right);
         }
         (Err(_), Err(_)) => {}
-        _ => panic!("version decoding disagrees across original native admission"),
+        _ => {
+            return Err(Error::Invalid(
+                "version decoding disagrees across native admission".into(),
+            ));
+        }
     }
     if let Ok((selected, _)) = &native {
         assert!(decode_version(selected.path(), version, Some(&work)).is_ok());
@@ -34,10 +44,11 @@ pub fn check_version(input: &[u8]) {
         assert!(decode_version(&other_path, version, Some(&work)).is_err());
     }
     drop(native);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     cancellation.cancel();
     assert!(decode_selection(version, Some(&work)).is_err());
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
+    Ok(())
 }
 
 /// A version pins a namespace selection, without inventing file metadata.
