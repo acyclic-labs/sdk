@@ -721,31 +721,3 @@ async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::er
     ));
     Ok(())
 }
-
-#[tokio::test]
-async fn pre_cancelled_async_blob_build_performs_zero_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let mut source = std::io::Cursor::new(b"abc");
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    let failure = (build_blob(
-        &store,
-        &mut source,
-        BlobBuildOptions {
-            chunk_bytes: 2,
-            page_items: 2,
-            page_bytes: 129,
-            maximum_blob_bytes: Some(3),
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await
-    .err()
-    .ok_or("cancelled blob build unexpectedly succeeded")?;
-    assert!(matches!(failure.error, BlobBuildError::Cancelled));
-    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
-    assert_eq!(source.position(), 0);
-    Ok(())
-}

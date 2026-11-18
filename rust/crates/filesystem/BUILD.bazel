@@ -2926,6 +2926,8 @@ rust_test(
     crate_root = "tests/extent_clone.rs",
     srcs = [
         "tests/extent_clone.rs",
+        "tests/extent_clone/kernel/blob/mod.rs",
+        "tests/extent_clone/kernel/blob/tests.rs",
         "tests/extent_clone/kernel/extent_clone/mod.rs",
         "tests/extent_clone/kernel/extent_clone/tests.rs",
         "tests/extent_clone/kernel/file_read/mod.rs",

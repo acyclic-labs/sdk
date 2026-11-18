@@ -1,3 +1,4 @@
+mod blob;
 mod extent_clone;
 mod file_read;
 mod range;
