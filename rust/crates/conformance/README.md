@@ -95,7 +95,7 @@ The report quantile constructor has an independent nearest-rank property over
 generated cohorts, invalid values and signed zeros:
 
 ```sh
-cargo test --locked -p acyclic-sdk-fuzz --no-default-features --features local-hotpath-quantiles --lib local_hotpath_quantiles::
+bazel test //rust/fuzz:acyclic_sdk_fuzz_test --test_filter=local_hotpath_quantiles::
 ```
 
 These are single-operation latency measurements, not throughput or concurrency

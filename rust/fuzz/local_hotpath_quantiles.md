@@ -14,7 +14,7 @@ This validates report arithmetic only; it does not measure a deployed service.
 Run from the repository root:
 
 ```sh
-cargo test --locked -p acyclic-sdk-fuzz --no-default-features --features local-hotpath-quantiles --lib local_hotpath_quantiles::
+bazel test //rust/fuzz:acyclic_sdk_fuzz_test --test_filter=local_hotpath_quantiles::
 ```
 
 The retained `floor-rank.patch` changes the actual constructor from ceiling to
