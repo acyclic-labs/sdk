@@ -127,6 +127,31 @@ fn execute_command(command: &mut Command) -> std::io::Result<Output> {
     command.output()
 }
 
+fn rustdoc_fixtures() -> std::io::Result<&'static [Value]> {
+    static FIXTURES: std::sync::OnceLock<std::io::Result<Vec<Value>>> = std::sync::OnceLock::new();
+    FIXTURES
+        .get_or_init(|| {
+            let directory = acyclic_test_support::source_path("rust/proofs/sdk-rustdoc-fixtures");
+            let Ok(entries) = fs::read_dir(directory) else {
+                return Ok(Vec::new());
+            };
+            let mut fixtures = Vec::new();
+            for entry in entries {
+                let entry = entry?;
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".fixture.json")
+                {
+                    fixtures.push(serde_json::from_slice(&fs::read(entry.path())?)?);
+                }
+            }
+            Ok(fixtures)
+        })
+        .as_deref()
+        .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
+}
+
 // The action's metadata names every source and Cargo flag in its key. Reuse
 // its output only for byte-identical source and the same complete profile.
 fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
@@ -181,20 +206,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     else {
         return Ok(None);
     };
-    let directory = acyclic_test_support::source_path("rust/proofs/sdk-rustdoc-fixtures");
-    let Ok(entries) = fs::read_dir(directory) else {
-        return Ok(None);
-    };
-    for entry in entries {
-        let entry = entry?;
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".fixture.json")
-        {
-            continue;
-        }
-        let metadata: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+    for metadata in rustdoc_fixtures()? {
         if metadata["package"].as_str() != Some(package) {
             continue;
         }
