@@ -24,6 +24,13 @@ path = "tests/dst_cases.rs"
 name = "native_receipt"
 path = "tests/native_receipt.rs"
 
+[[test]]
+name = "plan-markdown"
+path = "tests/plan_markdown_cases.rs"
+
+[package.metadata.bazel.test-dependencies]
+plan-markdown = ["acyclic_harness_client", "acyclic_test_support", "proptest"]
+
 [[bin]]
 name = "acyclic-virtiofsd"
 path = "src/bin/virtiofsd.rs"
