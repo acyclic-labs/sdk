@@ -1,16 +1,13 @@
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { Opened, captureFollow, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
-import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
 import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
-import * as wire from "../generated/proto/stream/v1/stream_pb.js";
+import { fromBinary } from "@bufbuild/protobuf";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { decodeUnaryResponse, decodeTailResponse, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -147,36 +144,35 @@ export class NativeStreamProvider implements StreamProvider {
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const bytes = Buffer.from(wireInspectIdempotencyRequest(key));
     const value = await this.operation("inspect_idempotency", this.request(client => client.inspectIdempotencyResult(bytes)));
-    return this.project("inspect_idempotency", value) as IdempotencyObservation | undefined;
+    return decodeUnaryResponse("inspect_idempotency", value);
   }
 
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
-    const input = await validateWireRequest({ kind: "heads" as const, ...structuredClone(options) });
+    const input = await validateHeadsRequest(options);
     const value = await this.operation("heads", this.request(client => client.headsResult(Buffer.from(input))));
-    return this.project("heads", value) as import("./types.js").Heads;
+    return decodeUnaryResponse("heads", value);
   }
   async head(path: string): Promise<import("./types.js").PathHead> {
     const input = await validateWireRequest({ kind: "head" as const, path });
     const value = await this.operation("head", this.request(client => client.headResult(Buffer.from(input))));
-    return this.project("head", value) as import("./types.js").PathHead;
+    return decodeUnaryResponse("head", value);
   }
   async tail(path: string): Promise<Sequence> {
     const input = await validateWireRequest({ kind: "tail" as const, path });
     const value = await this.operation("tail", this.request(client => client.tailResult(Buffer.from(input))));
-    try { return fromBinary(wire.TailResponseSchema, value).tail; }
-    catch (error) { throw invalidResponse("tail", error); }
+    return decodeTailResponse(value);
   }
 
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
     const input = await validateAppend(path, values, options);
     const value = await this.operation("append", this.request(client => client.appendResult(Buffer.from(input))));
-    return this.project("append", value) as AppendResult;
+    return decodeUnaryResponse("append", value);
   }
 
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
-    const input = await validateWireRequest({ kind: "fork" as const, source, destination, options: structuredClone(options) });
+    const input = await validateForkRequest(source, destination, options);
     const value = await this.operation("fork", this.request(client => client.forkResult(Buffer.from(input))));
-    return this.project("fork", value) as ForkReceipt;
+    return decodeUnaryResponse("fork", value);
   }
 
   read(path: string, options: ReadOptions): Opened {
@@ -191,12 +187,8 @@ export class NativeStreamProvider implements StreamProvider {
   private records(operation: "read" | "follow", path: string, options: ReadOptions | FollowOptions, signal?: AbortSignal): Opened {
     return new Opened(async signal => {
       const input = operation === "read"
-        ? await validateWireRequest({ kind: "read", path, ...(options as ReadOptions) })
-        : (await validateWireRequest({ kind: "follow", path, from: options.from }),
-          toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, { path, from: options.from,
-            whenAbsent: wireWhenAbsent((options as FollowOptions).whenAbsent),
-            ...((options as FollowOptions).filter === undefined ? {} : { filter: (options as FollowOptions).filter }),
-          })));
+        ? await validateReadRequest(path, options as ReadOptions)
+        : await validateFollowRequest(path, options as FollowOptions);
       signal.throwIfAborted();
       const cancellation = new this.module.NativeStreamCancellation();
       let cursor: GeneratedNative.NativeStreamFollow | undefined;
@@ -242,19 +234,19 @@ export class NativeStreamProvider implements StreamProvider {
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const input = await validateChildrenPageRequest(request);
     const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(input))));
-    return this.project("children_page", value) as ChildrenPage;
+    return decodeUnaryResponse("children_page", value);
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
     const bytes = Buffer.from(await normalizeWireCommitBytes(request, options));
     const value = await this.operation("commit", this.request(client => client.commitResult(bytes)));
-    return this.project("commit", value) as CommitResult;
+    return decodeUnaryResponse("commit", value);
   }
 
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
     const bytes = Buffer.from(wireReadCommitRequest(id));
     const value = await this.operation("read_commit", this.request(client => client.readCommitResult(bytes)));
-    return this.project("read_commit", value) as CommittedEnvelope;
+    return decodeUnaryResponse("read_commit", value);
   }
 
   private async operation(operation: string, result: Promise<GeneratedNative.NativeStreamOperationResult>): Promise<Uint8Array> {
@@ -269,13 +261,4 @@ export class NativeStreamProvider implements StreamProvider {
     }
   }
 
-  private project(operation: string, value: Uint8Array): unknown {
-    try { return projectMemoryResponse(operation, value); }
-    catch (error) { throw invalidResponse(operation, error); }
-  }
-}
-
-function invalidResponse(operation: string, error: unknown): StreamError {
-  const message = error instanceof Error ? error.message : String(error);
-  return new StreamError("invalid_response", `invalid ${operation} response${message ? `: ${message}` : ""}`);
 }

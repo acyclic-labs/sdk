@@ -107,20 +107,8 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     ) -> Result<Response<wire::ForkReceipt>, Status> {
         unary("stream.grpc.serve.fork", async {
             check_command_size(&request)?;
-            let request = request.into_inner();
-            let request = ForkRequest {
-                exclude: request
-                    .exclude
-                    .into_iter()
-                    .map(path)
-                    .collect::<Result<_, _>>()
-                    .map_err(|error| Status::from(&error))?,
-                source: path(request.source).map_err(|error| Status::from(&error))?,
-                destination: path(request.destination).map_err(|error| Status::from(&error))?,
-                at_tail: request.at_tail,
-                idempotency_key: IdempotencyKey::new(request.idempotency_key)
-                    .map_err(|error| Status::from(&error))?,
-            };
+            let request = wire_codec::fork_from_wire(request.into_inner())
+                .map_err(|error| Status::from(&error))?;
             let receipt = self
                 .provider
                 .fork(request)

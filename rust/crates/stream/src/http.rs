@@ -1,9 +1,8 @@
 //! Authenticated hosted JSON transport implementing the canonical Stream provider.
-use crate::{http_codec, http_validation, wire_codec, *};
+use crate::{http_codec, http_validation, *};
 pub use acyclic_auth::credential::CredentialProvider;
 use async_trait::async_trait;
 use bytes::Bytes;
-use prost::Message;
 use reqwest::{
     Client, Url,
     header::{AUTHORIZATION, HeaderValue},
@@ -149,16 +148,6 @@ impl HttpStream {
                 .map(|header| (header, None))
                 .ok_or(StreamError::AccessDenied)
         }
-    }
-
-    async fn request<T>(
-        &self,
-        route: &'static str,
-        bytes: Vec<u8>,
-        decode: impl FnOnce(Value) -> Result<T, StreamError> + Send,
-    ) -> Result<T, StreamError> {
-        self.request_json(route, move || http_codec::encode(route, &bytes), decode)
-            .await
     }
 
     async fn request_json<T>(
@@ -401,12 +390,9 @@ impl StreamProvider for HttpStream {
         &self,
         key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.request(
+        self.request_json(
             "idempotency/inspect",
-            wire::InspectIdempotencyRequest {
-                idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
-            }
-            .encode_to_vec(),
+            || http_codec::encode_identity("idempotencyKey", key.as_bytes()),
             |value| self.idempotency_response(&key, &value),
         )
         .await
@@ -440,25 +426,20 @@ impl StreamProvider for HttpStream {
             )),
             crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let source = request.source.clone();
-                    let destination = request.destination.clone();
-                    let wire = wire::ForkRequest {
-                        exclude: request.exclude.iter().map(ToString::to_string).collect(),
-                        source: source.to_string(),
-                        destination: destination.to_string(),
-                        at_tail: request.at_tail,
-                        idempotency_key: bytes::Bytes::copy_from_slice(
-                            request.idempotency_key.as_bytes(),
-                        ),
-                    };
-                    self.request("fork", wire.encode_to_vec(), |value| {
-                        let result = parse_fork(&value)?;
-                        if result.source != source || result.destination != destination {
-                            return Err(StreamError::Unavailable);
-                        }
-                        self.revisions()?.observe(&result.revision);
-                        Ok(result)
-                    })
+                    self.request_json(
+                        "fork",
+                        || http_codec::encode_fork(&request),
+                        |value| {
+                            let result = parse_fork(&value)?;
+                            if result.source != request.source
+                                || result.destination != request.destination
+                            {
+                                return Err(StreamError::Unavailable);
+                            }
+                            self.revisions()?.observe(&result.revision);
+                            Ok(result)
+                        },
+                    )
                     .await
                 },
                 crate::WriteOutcome::Fork,
@@ -468,14 +449,17 @@ impl StreamProvider for HttpStream {
             }
             crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let wire = wire_codec::commit_to_wire(&request);
-                    self.request("commit", wire.encode_to_vec(), |response| {
-                        let outcome = Self::commit_response(&response)?;
-                        if let CommitOutcome::Committed(receipt) = &outcome {
-                            self.revisions()?.observe(&receipt.revision);
-                        }
-                        Ok(outcome)
-                    })
+                    self.request_json(
+                        "commit",
+                        || http_codec::encode_commit(request),
+                        |response| {
+                            let outcome = Self::commit_response(&response)?;
+                            if let CommitOutcome::Committed(receipt) = &outcome {
+                                self.revisions()?.observe(&receipt.revision);
+                            }
+                            Ok(outcome)
+                        },
+                    )
                     .await
                 },
                 crate::WriteOutcome::Commit,
@@ -496,12 +480,9 @@ impl StreamProvider for HttpStream {
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.request(
+        self.request_json(
             "commits/read",
-            wire::ReadCommitRequest {
-                commit_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
-            }
-            .encode_to_vec(),
+            || http_codec::encode_identity("commitId", id.as_bytes()),
             |value| {
                 let envelope = parse_envelope(&value)?;
                 if envelope.commit_id != id {
@@ -530,7 +511,7 @@ include!("http/follow.rs");
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpStream, StreamCategory, wire};
+    use super::{HttpStream, StreamCategory, http_codec, wire};
     use prost::Message;
 
     #[test]
@@ -569,17 +550,20 @@ mod tests {
                         prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
                     }
                     prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
-                    let result = block_on(
-                        provider.request(
-                            "tail",
-                            wire::TailRequest {
-                                path: "valid/path".into(),
-                                ..Default::default()
-                            }
-                            .encode_to_vec(),
-                            Ok,
-                        ),
-                    );
+                    let result = block_on(provider.request_json(
+                        "tail",
+                        || {
+                            http_codec::encode(
+                                "tail",
+                                &wire::TailRequest {
+                                    path: "valid/path".into(),
+                                    ..Default::default()
+                                }
+                                .encode_to_vec(),
+                            )
+                        },
+                        Ok,
+                    ));
                     let error = result
                         .expect_err("exhausted original credential source must refuse dispatch");
                     prop_assert_eq!(error.category(), StreamCategory::AccessDenied);

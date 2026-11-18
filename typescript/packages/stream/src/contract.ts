@@ -2,11 +2,11 @@ import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { wasmSource, wasmSourceSync } from "@acyclic-labs/core/wasm";
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeHttpResponse as decodeHttpResponseWasm, decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { decodeHttpResponse as decodeHttpResponseWasm, decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
-  ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
+  ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema, TailResponseSchema,
   ReadRequestSchema, FollowRequestSchema, HeadRequestSchema, HeadsRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
@@ -92,9 +92,9 @@ type WireRequest =
   | { readonly kind: "head"; readonly path: string }
   | { readonly kind: "tail"; readonly path: string; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
-  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
-  | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
-  | { readonly kind: "children_page"; readonly tailStream?: string | undefined; readonly parent?: string | undefined; readonly after?: string | undefined; readonly offset?: bigint | undefined; readonly hierarchyVersion?: Uint8Array | undefined; readonly limit: number };
+  | ({ readonly kind: "read"; readonly path: string; readonly atLeast?: readonly Revision[] } & import("./types.js").ReadOptions)
+  | ({ readonly kind: "follow"; readonly path: string } & Omit<import("./types.js").FollowOptions, "signal">)
+  | { readonly kind: "children_page"; readonly options: import("./types.js").ChildrenPageRequest };
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
@@ -121,6 +121,24 @@ export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array 
   }
 }
 
+function childrenPageMessage(request: import("./types.js").ChildrenPageRequest) {
+  const { offset, tailStream, parent, after, hierarchyVersion, limit } = request;
+  if (offset !== undefined) requireSequenceType(offset);
+  if (tailStream !== undefined) requirePathType(tailStream);
+  if (parent !== undefined) requirePathType(parent);
+  if (after !== undefined) requirePathType(after);
+  if (hierarchyVersion !== undefined) requireBytesType(hierarchyVersion);
+  requireLimitType(limit);
+  return create(ChildrenPageRequestSchema, {
+    limit,
+    ...(offset === undefined ? {} : { offset }),
+    ...(tailStream === undefined ? {} : { tailStream }),
+    ...(parent === undefined ? {} : { parent }),
+    ...(after === undefined ? {} : { after }),
+    ...(hierarchyVersion === undefined ? {} : { hierarchyVersion }),
+  });
+}
+
 export function wireRequest(request: WireRequest): Uint8Array {
   switch (request.kind) {
       case "heads": {
@@ -140,13 +158,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
           ...(request.durableThrough === undefined ? {} : { durableThrough: request.durableThrough }),
           paths: [...request.paths], limit: request.limit, atLeast: [...(request.atLeast ?? [])],
           retained: [...(request.retained ?? [])],
-          ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", limit: request.children.limit,
-            ...(request.children.offset === undefined ? {} : { offset: request.children.offset }),
-            ...(request.children.parent === undefined ? {} : { parent: request.children.parent }),
-            ...(request.children.tailStream === undefined ? {} : { tailStream: request.children.tailStream }),
-            ...(request.children.after === undefined ? {} : { after: request.children.after }),
-            ...(request.children.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.children.hierarchyVersion }),
-          })) }),
+          ...(request.children === undefined ? {} : { children: childrenPageMessage(request.children) }),
         }));
       }
       case "head":
@@ -165,45 +177,75 @@ export function wireRequest(request: WireRequest): Uint8Array {
           ...(request.options?.atTail === undefined ? {} : { atTail: request.options.atTail }),
           ...(request.options?.idempotencyKey === undefined ? {} : { idempotencyKey: request.options.idempotencyKey }),
         }));
-      case "read":
-        requirePathType(request.path);
-        requireSequenceType(request.from);
-        requireLimitType(request.limit);
-        if (request.key !== undefined) {
-          requireBytesType(request.key.key); requireSequenceType(request.key.before);
-          if (request.key.end !== undefined) requireBytesType(request.key.end);
-          if (request.key.order !== undefined && request.key.order !== "ascending" && request.key.order !== "latest_first") throw new StreamError("invalid_argument", "read order is invalid");
+      case "read": {
+        const { path, from, limit, key, atLeast } = request;
+        requirePathType(path);
+        requireSequenceType(from);
+        requireLimitType(limit);
+        if (key !== undefined) {
+          requireBytesType(key.key); requireSequenceType(key.before);
+          if (key.end !== undefined) requireBytesType(key.end);
+          if (key.order !== undefined && key.order !== "ascending" && key.order !== "latest_first") throw new StreamError("invalid_argument", "read order is invalid");
         }
-        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, ...(request.key === undefined ? {} : { key: {
-          key: request.key.key, before: request.key.before, ...(request.key.end === undefined ? {} : { end: request.key.end }),
-          order: request.key.order === "latest_first" ? ReadOrder.LATEST_FIRST : ReadOrder.ASCENDING,
-        } }), atLeast: [...(request.atLeast ?? [])] }));
+        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path, from, limit, ...(key === undefined ? {} : { key: {
+          key: key.key, before: key.before, ...(key.end === undefined ? {} : { end: key.end }),
+          order: key.order === "latest_first" ? ReadOrder.LATEST_FIRST : ReadOrder.ASCENDING,
+        } }), atLeast: [...(atLeast ?? [])] }));
+      }
       case "follow":
         requirePathType(request.path);
         requireSequenceType(request.from);
-        return toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: request.path, from: request.from }));
-      case "children_page":
-        if (request.offset !== undefined) requireSequenceType(request.offset);
-        if (request.tailStream !== undefined) requirePathType(request.tailStream);
-        if (request.parent !== undefined) requirePathType(request.parent);
-        if (request.after !== undefined) requirePathType(request.after);
-        if (request.hierarchyVersion !== undefined) requireBytesType(request.hierarchyVersion);
-        requireLimitType(request.limit);
-        return toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, {
-          ...(request.offset === undefined ? {} : { offset: request.offset }),
-          limit: request.limit,
-          ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
-          ...(request.parent === undefined ? {} : { parent: request.parent }),
-          ...(request.after === undefined ? {} : { after: request.after }),
-          ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
+        return toBinary(FollowRequestSchema, create(FollowRequestSchema, {
+          path: request.path, from: request.from, whenAbsent: wireWhenAbsent(request.whenAbsent),
+          ...(request.filter === undefined ? {} : { filter: request.filter }),
         }));
+      case "children_page":
+        return toBinary(ChildrenPageRequestSchema, childrenPageMessage(request.options));
       default: throw new StreamError("invalid_argument", "stream request kind is invalid");
   }
 }
 
-export function validateChildrenPageRequest(request: import("./types.js").ChildrenPageRequest): Promise<Uint8Array> {
-  const { offset, tailStream, parent, after, hierarchyVersion, limit } = request;
-  return validateWireRequest({ kind: "children_page", offset, tailStream, parent, after, hierarchyVersion, limit });
+export function validateChildrenPageRequest(options: import("./types.js").ChildrenPageRequest): Promise<Uint8Array> {
+  return validateWireRequest({ kind: "children_page", options });
+}
+
+export function validateHeadsRequest(options: import("./types.js").HeadsRequest): Promise<Uint8Array> {
+  return validateWireRequest({ ...options, kind: "heads" });
+}
+
+function invalidResponse(operation: string, error: unknown): StreamError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new StreamError("invalid_response", `invalid ${operation} response${message ? `: ${message}` : ""}`);
+}
+
+type UnaryRoute = {
+  inspect_idempotency: "idempotency/inspect";
+  read_commit: "commits/read";
+  children_page: "children/page";
+} & { [Route in "head" | "heads" | "append" | "fork" | "commit"]: Route };
+export type UnaryOperation = keyof UnaryRoute;
+export type UnaryResponse<Operation extends UnaryOperation> = HttpResponseFor<UnaryRoute[Operation]>;
+
+export function decodeUnaryResponse<Operation extends UnaryOperation>(operation: Operation, input: Uint8Array): UnaryResponse<Operation> {
+  try { return projectMemoryResponse(operation, input) as UnaryResponse<Operation>; }
+  catch (error) { throw invalidResponse(operation, error); }
+}
+
+export function decodeTailResponse(input: Uint8Array): bigint {
+  try { return fromBinary(TailResponseSchema, input).tail; }
+  catch (error) { throw invalidResponse("tail", error); }
+}
+
+export function validateForkRequest(source: string, destination: string, options: ForkOptions): Promise<Uint8Array> {
+  return validateWireRequest({ kind: "fork", source, destination, options });
+}
+
+export function validateReadRequest(path: string, options: import("./types.js").ReadOptions): Promise<Uint8Array> {
+  return validateWireRequest({ ...options, kind: "read", path });
+}
+
+export function validateFollowRequest(path: string, options: import("./types.js").FollowOptions): Promise<Uint8Array> {
+  return validateWireRequest({ ...options, kind: "follow", path });
 }
 
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {

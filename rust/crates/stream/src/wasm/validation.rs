@@ -133,16 +133,14 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
                 .and_then(|request| wire_codec::path(request.path).map(|_| ())),
             "tail" => wire::TailRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
-                .and_then(|request| wire_codec::path(request.path).map(|_| ())),
+                .and_then(|request| {
+                    wire_codec::path(request.path)?;
+                    wire_codec::cut_from_wire(request.at_least).map(|_| ())
+                }),
             "fork" => wire::ForkRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::fork_from_wire)
-                .and_then(|request| {
-                    if request.source == request.destination {
-                        return Err(StreamError::InvalidArgument);
-                    }
-                    crate::request::validate_fork_size(&request)
-                }),
+                .and_then(|request| crate::request::validate_fork(&request)),
             "read" => wire::ReadRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::read_from_wire)

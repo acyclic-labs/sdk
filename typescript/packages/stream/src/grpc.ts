@@ -15,9 +15,9 @@ import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/c
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
-import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { grpcStatusError } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { decodeUnaryResponse, encodeHttpRequest, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { StreamError, type StreamRefusal } from "./types.js";
 import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
@@ -51,13 +51,14 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const follow: Follow = async function* (request, callOptions) {
     const { signal, timeoutMs } = callOptions ?? {};
     const { path, from, filter, whenAbsent } = create(wire.FollowRequestSchema, structuredClone(request));
-    await validateWireRequest({ kind: "follow", path, from });
+    if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");
+    const authored: FollowOptions = { from, whenAbsent: whenAbsent === wire.WhenAbsent.WAIT ? "wait" : "not_found",
+      ...(filter === undefined ? {} : { filter }) };
+    await validateFollowRequest(path, authored);
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
     const controller = createLinkedAbortController(deadline.signal, signal);
     try {
-      if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");
-      for await (const record of sessions.follow(path, { from, signal: controller.signal, whenAbsent: whenAbsent === wire.WhenAbsent.WAIT ? "wait" : "not_found",
-        ...(filter === undefined ? {} : { filter }) })) {
+      for await (const record of sessions.follow(path, { ...authored, signal: controller.signal })) {
         const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
         yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
       }
@@ -243,15 +244,11 @@ export class GrpcStreamProvider implements StreamProvider {
       throw failure;
     }
   }
-  #project<T>(operation: string, bytes: Uint8Array): T {
-    try { return projectMemoryResponse(operation, bytes) as T; }
-    catch { throw new StreamError("invalid_response", `invalid ${operation} response`); }
-  }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const request = fromBinary(wire.InspectIdempotencyRequestSchema, wireInspectIdempotencyRequest(key));
     const response = await this.#call("inspect_idempotency", () => this.#client.inspectIdempotency(request));
     if (response.observation !== undefined && !sameBytes(response.observation.idempotencyKey, key)) throw new StreamError("invalid_response", "idempotency response names another retry identity");
-    const observation: IdempotencyObservation | undefined = this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
+    const observation: IdempotencyObservation | undefined = decodeUnaryResponse("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
     // A recovered write floors later reads exactly like its lost reply would have.
     this.#sessions.observe(observation?.revision);
     return observation;
@@ -264,11 +261,10 @@ export class GrpcStreamProvider implements StreamProvider {
     const request = { kind: "head" as const, path };
     const input = await validateWireRequest(request);
     const response = await this.#call("head", () => this.#client.head(fromBinary(wire.HeadRequestSchema, input)));
-    return this.#project("head", toBinary(wire.PathHeadSchema, response));
+    return decodeUnaryResponse("head", toBinary(wire.PathHeadSchema, response));
   }
   async tail(path: string): Promise<bigint> {
-    const validated = await validateWireRequest({ kind: "tail", path });
-    const { input, atLeast } = this.#sessions.tailRequest(path, validated);
+    const { input, atLeast } = await this.#sessions.tailRequest(path);
     const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, input)));
     this.#sessions.served(atLeast, response.applied);
     return response.tail;
@@ -277,15 +273,14 @@ export class GrpcStreamProvider implements StreamProvider {
     const input = await validateAppend(path, values, options);
     const request = fromBinary(wire.AppendRequestSchema, input);
     const response = await this.#call("append", () => this.#client.append(request));
-    const result = this.#project<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));
+    const result = decodeUnaryResponse("append", toBinary(wire.AppendResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);
     return result;
   }
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
-    const request = { kind: "fork" as const, source, destination, options: structuredClone(options) };
-    const input = await validateWireRequest(request);
+    const input = await validateForkRequest(source, destination, options);
     const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, input)));
-    const receipt = this.#project<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));
+    const receipt = decodeUnaryResponse("fork", toBinary(wire.ForkReceiptSchema, response));
     this.#sessions.observe(receipt.revision);
     return receipt;
   }
@@ -307,12 +302,12 @@ export class GrpcStreamProvider implements StreamProvider {
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const input = await validateChildrenPageRequest(request);
     const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, input)));
-    return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
+    return decodeUnaryResponse("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
     const input = await normalizeWireCommitBytes(request, options);
     const response = await this.#call("commit", () => this.#client.commit(fromBinary(wire.CommitRequestSchema, input)));
-    const result = this.#project<CommitResult>("commit", toBinary(wire.CommitResponseSchema, response));
+    const result = decodeUnaryResponse("commit", toBinary(wire.CommitResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);
     return result;
   }
@@ -320,7 +315,7 @@ export class GrpcStreamProvider implements StreamProvider {
     const request = fromBinary(wire.ReadCommitRequestSchema, wireReadCommitRequest(id));
     const response = await this.#call("read_commit", () => this.#client.readCommit(request));
     if (!sameBytes(response.commitId, id)) throw new StreamError("invalid_response", "commit response names another commit");
-    return this.#project("read_commit", toBinary(wire.CommittedEnvelopeSchema, response));
+    return decodeUnaryResponse("read_commit", toBinary(wire.CommittedEnvelopeSchema, response));
   }
 }
 

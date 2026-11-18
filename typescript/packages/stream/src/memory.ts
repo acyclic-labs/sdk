@@ -1,15 +1,10 @@
-import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import {
-  TailResponseSchema, FollowRequestSchema,
-} from "../generated/proto/stream/v1/stream_pb.js";
+import { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { decodeUnaryResponse, decodeTailResponse, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, type UnaryOperation, type UnaryResponse } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -39,22 +34,18 @@ class RustStreamProvider implements StreamProvider {
     catch (error) { throw streamError(error, operation); }
   }
 
-  async #project<Result>(operation: string, request: Uint8Array): Promise<Result> {
+  async #project<Operation extends UnaryOperation>(operation: Operation, request: Uint8Array): Promise<UnaryResponse<Operation>> {
     const response = await this.#dispatch(operation, request);
-    try { return projectMemoryResponse(operation, response) as Result; }
-    catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new StreamError("invalid_response", `Rust ${operation} response is invalid: ${message}`);
-    }
+    return decodeUnaryResponse(operation, response);
   }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const request = wireInspectIdempotencyRequest(key);
-    return this.#project<IdempotencyObservation | undefined>("inspect_idempotency", request);
+    return this.#project("inspect_idempotency", request);
   }
 
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
-    const input = await validateWireRequest({ kind: "heads" as const, ...structuredClone(options) });
+    const input = await validateHeadsRequest(options);
     return this.#project("heads", input);
   }
   async head(path: string): Promise<import("./types.js").PathHead> {
@@ -63,17 +54,16 @@ class RustStreamProvider implements StreamProvider {
   }
   async tail(path: string): Promise<Sequence> {
     const input = await validateWireRequest({ kind: "tail" as const, path });
-    return fromBinary(TailResponseSchema, await this.#dispatch("tail", input)).tail;
+    return decodeTailResponse(await this.#dispatch("tail", input));
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
     const request = await validateAppend(path, values, options);
-    return this.#project<AppendResult>("append", request);
+    return this.#project("append", request);
   }
 
   async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
-    const authored = structuredClone(options);
-    const request = await validateWireRequest({ kind: "fork", source, destination, options: authored });
-    return this.#project<ForkReceipt>("fork", request);
+    const request = await validateForkRequest(source, destination, options);
+    return this.#project("fork", request);
   }
 
   read(path: string, options: ReadOptions): Opened {
@@ -89,12 +79,8 @@ class RustStreamProvider implements StreamProvider {
   #records(operation: "read" | "follow", path: string, options: ReadOptions | FollowOptions, signal?: AbortSignal): Opened {
     return wasmRecords(async signal => {
       const input = operation === "read"
-        ? await validateWireRequest({ kind: "read", path, ...(options as ReadOptions) })
-        : (await validateWireRequest({ kind: "follow", path, from: options.from }),
-          toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: options.from,
-            whenAbsent: wireWhenAbsent((options as FollowOptions).whenAbsent),
-            ...((options as FollowOptions).filter === undefined ? {} : { filter: (options as FollowOptions).filter }),
-          })));
+        ? await validateReadRequest(path, options as ReadOptions)
+        : await validateFollowRequest(path, options as FollowOptions);
       const inner = await this.#inner;
       signal.throwIfAborted();
       return operation === "read" ? inner.read(input) : inner.open_follow(input);
@@ -105,18 +91,18 @@ class RustStreamProvider implements StreamProvider {
       throw new StreamError("invalid_argument", "children page request must be an object");
     }
     const input = await validateChildrenPageRequest(request);
-    return this.#project<ChildrenPage>("children_page", input);
+    return this.#project("children_page", input);
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
     idempotencyKey(options.idempotencyKey);
     const input = await normalizeWireCommitBytes(request, options);
-    return this.#project<CommitResult>("commit", input);
+    return this.#project("commit", input);
   }
 
   async readCommit(value: CommitId): Promise<CommittedEnvelope> {
     const request = wireReadCommitRequest(value);
-    return this.#project<CommittedEnvelope>("read_commit", request);
+    return this.#project("read_commit", request);
   }
 
 }

@@ -1,7 +1,7 @@
-import { validateWireRequest, wireRequest, wireWhenAbsent } from "./contract.js";
+import { decodeUnaryResponse, validateHeadsRequest, validateReadRequest, validateWireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
-import { projectMemoryResponse, WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
+import { WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
@@ -61,9 +61,11 @@ export class StreamSessions {
     catch (error) { throw streamError(error, "session"); }
   }
 
-  tailRequest(path: string, validated: Uint8Array): { input: Uint8Array; atLeast: Revision[] } {
+  async tailRequest(path: string): Promise<{ input: Uint8Array; atLeast: Revision[] }> {
+    await ensureStreamWasm();
     const atLeast = this.revisionFloor();
-    return { atLeast, input: atLeast.length === 0 ? validated : wireRequest({ kind: "tail", path, atLeast }) };
+    const input = await validateWireRequest({ kind: "tail", path, atLeast });
+    return { input, atLeast };
   }
 
   /** Raises the floor with a revision a receipt or response served; lower revisions never lower it. */
@@ -80,9 +82,8 @@ export class StreamSessions {
 
   async heads(options: import("./types.js").HeadsRequest, credential = 0): Promise<import("./types.js").Heads> {
     validateCredentialSlot(credential);
-    const request = { kind: "heads" as const, ...structuredClone(options) };
-    const input = await validateWireRequest(request);
-    try { return projectMemoryResponse("heads", await this.#inner.heads(input, credential)) as import("./types.js").Heads; }
+    const input = await validateHeadsRequest(options);
+    try { return decodeUnaryResponse("heads", await this.#inner.heads(input, credential)); }
     catch (error) { throw streamError(error, "heads"); }
   }
 
@@ -96,7 +97,7 @@ export class StreamSessions {
   read(path: string, options: ReadOptions, maximumResponseBytes?: number): Opened {
     const authored = structuredClone(options);
     return wasmRecords(async signal => {
-      const input = await validateWireRequest({ kind: "read", path, ...authored });
+      const input = await validateReadRequest(path, authored);
       signal.throwIfAborted();
       return this.#inner.read(input);
     }, path, "session", authored, undefined, maximumResponseBytes);
