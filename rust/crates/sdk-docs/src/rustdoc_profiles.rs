@@ -238,19 +238,15 @@ pub fn profiles_for_package(
     }
     let package_metadata = package_by_name(metadata, package)
         .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
-    let mut profiles = vec![ProfileSpec {
+    let profile = |default_features, features| ProfileSpec {
         package: package.to_owned(),
         target: target.to_owned(),
-        default_features: true,
-        features: BTreeSet::new(),
-    }];
+        default_features,
+        features,
+    };
+    let mut profiles = vec![profile(true, BTreeSet::new())];
     if !package_metadata.features.is_empty() {
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: false,
-            features: BTreeSet::new(),
-        });
+        profiles.push(profile(false, BTreeSet::new()));
     }
     let declared = package_metadata
         .features
@@ -259,20 +255,13 @@ pub fn profiles_for_package(
         .cloned()
         .collect::<BTreeSet<_>>();
     for feature in &declared {
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: false,
-            features: feature_closure(&package_metadata.features, feature),
-        });
+        profiles.push(profile(
+            false,
+            feature_closure(&package_metadata.features, feature),
+        ));
     }
     if !declared.is_empty() {
-        profiles.push(ProfileSpec {
-            package: package.to_owned(),
-            target: target.to_owned(),
-            default_features: true,
-            features: declared,
-        });
+        profiles.push(profile(true, declared));
     }
     Ok(order_profiles(profiles))
 }
