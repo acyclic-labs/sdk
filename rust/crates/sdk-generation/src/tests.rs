@@ -1,50 +1,6 @@
 #[cfg(windows)]
 use std::process::Command;
 
-#[test]
-fn registry_frontier_cli_requires_paired_authority_inputs() {
-    let base: Vec<String> = [
-        "--root",
-        "root",
-        "--output",
-        "output",
-        "--version",
-        "0.1.1",
-        "--channel",
-        "release",
-        "--execute-profiles",
-        "--historical-archives",
-        "archives",
-        "--historical-source",
-        "registry-archives",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    // Older manifests can still be decoded; new generation must capture closure.
-    assert!(parse_generate(base.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("requires a complete registry corpus"));
-    let mut missing = base.clone();
-    missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(parse_generate(missing)
-        .unwrap_err()
-        .to_string()
-        .contains("requires both"));
-    let mut complete = base;
-    complete.extend([
-        "--registry-frontier-repository".into(),
-        "repository".into(),
-        "--registry-frontier-revisions".into(),
-        "a".repeat(40),
-    ]);
-    let args = parse_generate(complete).unwrap();
-    assert_eq!(
-        args.registry_frontier_revisions,
-        BTreeSet::from(["a".repeat(40)])
-    );
-}
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -237,24 +193,6 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
         );
         fs::write(root.join(relative), original).expect("source fixture should restore");
     }
-}
-
-#[test]
-fn release_generation_requires_executed_profiles() {
-    let error = parse_generate(vec![
-        "--root".into(),
-        "root".into(),
-        "--output".into(),
-        "output".into(),
-        "--rustdoc-dir".into(),
-        "rustdoc".into(),
-        "--version".into(),
-        "1.0.0".into(),
-        "--channel".into(),
-        "release".into(),
-    ])
-    .expect_err("release hand-supplied receipts must be rejected");
-    assert!(error.to_string().contains("requires --execute-profiles"));
 }
 
 #[test]

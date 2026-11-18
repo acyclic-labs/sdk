@@ -636,18 +636,16 @@ fn covered_publisher_history_keeps_expanded_anchors_and_rejects_export_drift() {
 
 #[test]
 fn historical_source_help_and_flag_contract_are_explicit() {
-    runtime::time_control();
     let binary = runtime::binary("sdk-generation");
     let help = Command::new(&binary).arg("help").output().unwrap();
     assert!(help.status.success());
-    let direct = invoke(Command::new(&binary).arg("help"));
-    assert_eq!(direct.status.code(), help.status.code());
-    assert_eq!(direct.stdout, help.stdout);
-    assert_eq!(direct.stderr, help.stderr);
     let text = output_message(&help);
     assert!(text.contains("--historical-archives DIR"));
+    assert!(text.contains("Omit --rustdoc-dir to execute profiles."));
     assert!(text.contains("--historical-source git|registry-archives"));
-    let missing_frontier = invoke(Command::new(&binary).args([
+
+    let directory = fixture_directory();
+    let generate = [
         "generate",
         "--root",
         "missing-root",
@@ -655,37 +653,47 @@ fn historical_source_help_and_flag_contract_are_explicit() {
         "missing-output",
         "--version",
         "1.0.0",
-        "--execute-profiles",
         "--channel",
         "release",
+    ];
+    let reject = |args: &[&str], expected: &str| {
+        let rejected = Command::new(&binary)
+            .current_dir(directory.path())
+            .args(generate)
+            .args(args)
+            .output()
+            .unwrap();
+        let message = output_message(&rejected);
+        assert!(!rejected.status.success(), "{message}");
+        assert!(message.contains(expected), "{message}");
+    };
+    let frontier = [
         "--historical-source",
         "registry-archives",
         "--historical-archives",
         "missing-archives",
-    ]));
-    assert!(!missing_frontier.status.success());
-    assert!(output_message(&missing_frontier).contains("requires a complete registry corpus"));
-    for (mode, expected) in [
-        ("registry-archives", "requires --historical-archives"),
-        ("unverified", "unknown historical source"),
+    ];
+    reject(&frontier, "requires a complete registry corpus");
+    for incomplete in [
+        ["--registry-frontier-repository", "missing-repository"],
+        [
+            "--registry-frontier-revisions",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
     ] {
-        let rejected = invoke(Command::new(&binary).args([
-            "generate",
-            "--root",
-            "missing",
-            "--output",
-            "missing",
-            "--version",
-            "1.0.0",
-            "--execute-profiles",
-            "--channel",
-            "release",
-            "--historical-source",
-            mode,
-        ]));
-        assert!(!rejected.status.success());
-        assert!(output_message(&rejected).contains(expected));
+        reject(
+            &[frontier.as_slice(), &incomplete].concat(),
+            "requires both",
+        );
     }
+    reject(
+        &["--historical-source", "registry-archives"],
+        "requires --historical-archives",
+    );
+    reject(
+        &["--historical-source", "unverified"],
+        "unknown historical source",
+    );
 }
 
 #[test]

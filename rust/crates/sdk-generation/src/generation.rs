@@ -24,25 +24,24 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
             ));
         }
     }
-    let rustdoc_dir = match (&args.rustdoc_dir, args.execute_profiles) {
-        (Some(path), false) => canonical(path)?,
-        (None, true) => output
+    let rustdoc_dir = match &args.rustdoc_dir {
+        Some(path) => canonical(path)?,
+        None => output
             .join(".rustdoc")
             .canonicalize()
             .unwrap_or_else(|_| output.join(".rustdoc")),
-        _ => return Err(CliError("invalid Rustdoc input mode".into())),
     };
     let cargo_path = args
-        .execute_profiles
+        .rustdoc_dir
+        .is_none()
         .then(|| documentation_cargo(&root, args.historical_archives.is_some()))
         .transpose()?;
     let registry_corpus = args
-        .registry_frontier_repository
-        .as_deref()
-        .map(|repository| {
+        .registry_frontier
+        .map(|(repository, revisions)| {
             historical::capture_registry_cohort(
-                repository,
-                args.registry_frontier_revisions.clone(),
+                &repository,
+                revisions,
                 &output.join("registry-frontier"),
                 cargo_path
                     .as_deref()
@@ -233,16 +232,14 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
                 .ok_or_else(|| CliError("historical scope has no pinned docs producer".into()))?,
             plan,
         )?
-    } else if args.execute_profiles {
+    } else if let Some(cargo) = cargo_path.as_deref() {
         execute_default_profiles(
             &root,
             &output,
             &rustdoc_dir,
             &metadata,
             &source_sha256,
-            cargo_path
-                .as_deref()
-                .ok_or_else(|| CliError("profile execution has no pinned Cargo".into()))?,
+            cargo,
         )?
     } else {
         Vec::new()

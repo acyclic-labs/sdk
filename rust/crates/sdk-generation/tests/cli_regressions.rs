@@ -100,10 +100,6 @@ fn init_git(root: &Path, message: &str) {
     git(root, &["commit", "--quiet", "-m", message]);
 }
 
-fn fixture(include_plugin: bool) -> Fixture {
-    copy_fixture(&runtime::fixture(u8::from(include_plugin)))
-}
-
 fn copy_fixture(template: &Fixture) -> Fixture {
     let directory = fixture_directory();
     let root = directory.path().join("source");
@@ -131,7 +127,7 @@ fn copy_fixture(template: &Fixture) -> Fixture {
     }
 }
 
-fn build_fixture(include_plugin: bool) -> Fixture {
+fn fixture(include_plugin: bool) -> Fixture {
     let directory = fixture_directory();
     let root = directory.path().join("source");
     fs::create_dir_all(root.join("rust/crates/demo/src")).unwrap();
@@ -196,7 +192,9 @@ fn build_fixture(include_plugin: bool) -> Fixture {
 /// source and receipt identities; silently dropping it would make the sidecar
 /// claim coverage for an item that no catalog row can represent.
 fn feature_profile_fixture() -> Fixture {
-    copy_fixture(&runtime::fixture(2))
+    let fixture = feature_profile_source();
+    init_git(&fixture.root, "feature profile fixture");
+    fixture
 }
 
 fn feature_profile_source() -> Fixture {

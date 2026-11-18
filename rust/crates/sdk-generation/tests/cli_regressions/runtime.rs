@@ -70,24 +70,6 @@ pub(super) fn path() -> std::ffi::OsString {
     .unwrap()
 }
 
-// Independent leaf slots: constructors do not acquire another fixture slot.
-static FIXTURES: [sync::Mutex<Option<sync::Arc<Fixture>>>; 3] =
-    [const { sync::Mutex::new(None) }; 3];
-
-pub(super) fn fixture(kind: u8) -> sync::Arc<Fixture> {
-    sync::get_or_try_init(&FIXTURES[usize::from(kind)], || {
-        let fixture = if kind == 2 {
-            let fixture = feature_profile_source();
-            init_git(&fixture.root, "feature profile fixture");
-            fixture
-        } else {
-            build_fixture(kind == 1)
-        };
-        Ok::<_, std::convert::Infallible>(fixture)
-    })
-    .unwrap()
-}
-
 pub(super) fn cargo() -> sync::Arc<PathBuf> {
     COMPILER.with(sync::Arc::clone)
 }
