@@ -140,3 +140,39 @@ pub fn valid_environment_name(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
+
+/// Frozen guest ABI version, independent of artifact codec versions.
+pub const GUEST_ABI_VERSION: u32 = 1;
+
+/// Render the portable guest ABI declarations before the host authoring types.
+pub fn typescript(config: &ts_rs::Config) -> String {
+    let mut output = format!(
+        "// Generated from acyclic_actors::guest. Do not edit.\nexport const GUEST_ABI_VERSION = {GUEST_ABI_VERSION} as const;\n"
+    );
+    macro_rules! declarations {
+        ($($ty:ty),+ $(,)?) => {$(
+            output.push_str("export ");
+            output.push_str(&<$ty as TS>::decl(config));
+            output.push('\n');
+        )+};
+    }
+    output.push_str(JAVASCRIPT_FETCH_RESPONSE);
+    declarations!(
+        WebSocketId,
+        WebSocketAutoResponse,
+        SocketCommand,
+        SocketReply,
+        GuestRequest,
+        GuestResponse,
+        SocketPayload,
+        SocketCloseInitiator,
+        SocketTransport,
+        GuestSocketEvent,
+        GuestEvent,
+        GuestEventResult,
+        CodecIdentity,
+        Checkpoint,
+        GuestError,
+    );
+    output
+}

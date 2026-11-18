@@ -1,10 +1,10 @@
 //! Guest ABI v1. Artifacts own their codec; hosts own admission and publication.
 
 pub use acyclic_actors_guest_wire::{
-    Checkpoint, CodecIdentity, GuestBody, GuestError, GuestEvent, GuestEventResult, GuestRequest,
-    GuestResponse, GuestSocketEvent, GuestStreamingRequest, GuestStreamingResponse,
-    SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply, SocketTransport,
-    WebSocketAutoResponse, WebSocketId,
+    Checkpoint, CodecIdentity, GUEST_ABI_VERSION, GuestBody, GuestError, GuestEvent,
+    GuestEventResult, GuestRequest, GuestResponse, GuestSocketEvent, GuestStreamingRequest,
+    GuestStreamingResponse, SocketCloseInitiator, SocketCommand, SocketPayload, SocketReply,
+    SocketTransport, WebSocketAutoResponse, WebSocketId,
 };
 use ts_rs::{Config, TS};
 
@@ -46,8 +46,6 @@ pub const ACTOR_EXPORT: &str = "actor";
 pub const ACTOR_HOOKS: &[&str] = &["restore", "event", "checkpoint"];
 /// HTTP hook on the default export.
 pub const FETCH_EXPORT: &str = "fetch";
-/// Frozen guest ABI version, independent of artifact codec versions.
-pub const GUEST_ABI_VERSION: u32 = 1;
 /// Artifact version handshake export, checked before guest restore or delivery.
 pub const ABI_VERSION_EXPORT: &str = "abiVersion";
 /// Artifact codec export, inspected before attempting an update.
@@ -77,9 +75,7 @@ pub fn retry_key(delivery_id: &str, effect: &str) -> Result<String, GuestError> 
 /// Generate one self-contained authoring contract directly from Rust declarations.
 pub fn typescript() -> String {
     let config = Config::default();
-    let mut output = format!(
-        "// Generated from acyclic_actors::guest. Do not edit.\nexport const GUEST_ABI_VERSION = {GUEST_ABI_VERSION} as const;\n"
-    );
+    let mut output = acyclic_actors_guest_wire::typescript(&config);
     macro_rules! declarations {
         ($($ty:ty),+ $(,)?) => {$(
             output.push_str("export ");
@@ -87,10 +83,7 @@ pub fn typescript() -> String {
             output.push('\n');
         )+};
     }
-    output.push_str(acyclic_actors_guest_wire::JAVASCRIPT_FETCH_RESPONSE);
-    declarations!(WebSocketId, WebSocketAutoResponse, SocketCommand, SocketReply, GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
-        SocketTransport, GuestSocketEvent, GuestEvent, GuestEventResult,
-        CodecIdentity, Checkpoint, GuestError, CheckpointCodec<()>,
+    declarations!(CheckpointCodec<()>,
         CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,
         ActorMetadataWrite, ActorStateAlarm, ActorStateSeed, ActorStateCommit,
         GuestState<()>, GuestContext<()>, ActorDefinition<(), ()>);
