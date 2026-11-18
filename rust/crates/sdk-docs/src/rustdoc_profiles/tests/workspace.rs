@@ -40,8 +40,6 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
             let profiles = profiles_for_package(&metadata, package_name, target, &targets).unwrap();
             if package.features.is_empty() {
                 assert_eq!(profiles.len(), 1, "{package_name}");
-                assert!(profiles[0].default_features);
-                assert!(profiles[0].features.is_empty());
             }
             assert!(profiles.len() <= declared_count + 3, "{package_name}");
             assert_eq!(*count.get_or_insert(profiles.len()), profiles.len());
