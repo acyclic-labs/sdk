@@ -399,7 +399,9 @@ impl Queries {
                 };
                 if let Some((output, artifacts)) = state.outputs.borrow().get(&key) {
                     for (path, bytes) in artifacts {
-                        fs::write(path, bytes)?;
+                        if !fs::read(path).is_ok_and(|existing| &existing == bytes) {
+                            fs::write(path, bytes)?;
+                        }
                     }
                     if !artifacts.is_empty() {
                         state
