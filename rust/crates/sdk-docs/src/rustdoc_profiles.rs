@@ -241,6 +241,16 @@ fn local_feature<'a>(
         })
 }
 
+/// Cargo resolves qualified dependency and workspace feature requests itself.
+fn requested_local_feature<'a>(
+    package: &'a Package,
+    feature: &str,
+) -> Result<Option<LocalFeature<'a>>, ProfileError> {
+    (!feature.contains('/'))
+        .then(|| local_feature(package, feature))
+        .transpose()
+}
+
 fn declared_features(package: &Package) -> impl Iterator<Item = LocalFeature<'_>> {
     package
         .features
@@ -414,16 +424,11 @@ pub fn historical_profiles_for_package(
         })?;
         let mut features = BTreeSet::new();
         for feature in policy.features {
-            if feature.contains('/') {
-                // The existing Cargo invocation validates qualified feature expressions.
+            if let Some(local) = requested_local_feature(owner, feature)? {
+                extend_feature_closure(&owner.features, local, &mut features);
+            } else {
                 features.insert(feature.to_owned());
-                continue;
             }
-            extend_feature_closure(
-                &owner.features,
-                local_feature(owner, feature)?,
-                &mut features,
-            );
         }
         if policy.all_features {
             features.extend(declared_features(owner).map(|(name, _)| name.clone()));
