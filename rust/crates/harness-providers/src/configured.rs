@@ -1,5 +1,6 @@
 use crate::Registry;
-use acyclic_harness::{local::LocalHarnessConfig, preset::Preset};
+use acyclic_harness::local::LocalHarnessConfig;
+use acyclic_harness_core::preset::Preset;
 use std::{path::PathBuf, sync::Arc};
 
 impl Registry {
