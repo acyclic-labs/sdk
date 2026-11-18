@@ -21,6 +21,14 @@ impl CommitId {
     }
 }
 
+impl TryFrom<&[u8]> for CommitId {
+    type Error = std::array::TryFromSliceError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        <[u8; 32]>::try_from(bytes).map(Self)
+    }
+}
+
 /// Account-scoped stable retry identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct IdempotencyKey(pub(crate) Bytes);

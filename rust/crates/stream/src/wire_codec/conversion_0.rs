@@ -199,8 +199,7 @@ pub fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOut
 
 /// Converts a wire commit-id byte sequence into the fixed-width domain id.
 pub fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
-    let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
-    Ok(CommitId::from_bytes(bytes))
+    CommitId::try_from(value).map_err(|_| StreamError::Unavailable)
 }
 
 fn argument_commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
