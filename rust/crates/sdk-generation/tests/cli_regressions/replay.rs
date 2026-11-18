@@ -88,6 +88,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
     });
     let mut changed = sdk_docs::with_rustdoc_cache(|| {
         let mut changed = BTreeMap::new();
+        let mut rebased_bytes = Vec::new();
         for original_file in inventory {
             let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
             let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
@@ -95,7 +96,8 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             let file = relocated.output.join(relative);
             let mut value = std::rc::Rc::unwrap_or_clone(value);
             rebase(&mut value);
-            let rebased_bytes = serde_json::to_vec(&value).unwrap();
+            rebased_bytes.clear();
+            serde_json::to_writer(&mut rebased_bytes, &value).unwrap();
             fs::write(&file, &rebased_bytes).unwrap();
             changed.insert(
                 relative.to_str().unwrap().replace('\\', "/"),
