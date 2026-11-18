@@ -1099,17 +1099,17 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
         .await?;
     assert!(file_hold.as_ref().is_some_and(|hold| hold.bytes() > 0));
     assert!(work.receipt().backend_write_operations > 0);
-    let before_read = work.live_allocation_bytes();
+    let before_read = work.live_allocation_bytes()?;
     let bytes = storage
         .content_verifier
         .read(&file, 1024, None, Some(&io))?
         .await?;
     assert_eq!(bytes.as_ref(), b"original");
     assert!(bytes.matches_meter(&work.runtime_meter()));
-    assert!(work.live_allocation_bytes() > before_read);
-    let with_output = work.live_allocation_bytes();
+    assert!(work.live_allocation_bytes()? > before_read);
+    let with_output = work.live_allocation_bytes()?;
     drop(bytes);
-    assert!(work.live_allocation_bytes() < with_output);
+    assert!(work.live_allocation_bytes()? < with_output);
     assert!(
         storage
             .publisher
@@ -1451,10 +1451,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     ));
     assert_eq!(cancelled_work.receipt(), prefix);
     drop(io);
-    let with_storage = work.live_allocation_bytes();
+    let with_storage = work.live_allocation_bytes()?;
     // Checkout registrations remain on the original ledger until that ledger drops.
     drop(storage);
-    assert!(work.live_allocation_bytes() < with_storage);
+    assert!(work.live_allocation_bytes()? < with_storage);
     Ok(())
 }
 
@@ -1466,11 +1466,11 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let bytes = io.encode(&serde_json::Value::Null, 1024, true)?;
     let held = io.owned_bytes()?;
-    let live_held = work.live_allocation_bytes() - baseline;
+    let live_held = work.live_allocation_bytes()? - baseline;
     let Err(error) = io.into_native_custody(held + work.remaining()?.peak_allocation_bytes + 1)
     else {
         panic!("custody beyond the original remaining quota must fail");
@@ -1483,12 +1483,12 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
             custody: Some(_),
         }
     ));
-    assert_eq!(work.live_allocation_bytes(), baseline + live_held);
+    assert_eq!(work.live_allocation_bytes()?, baseline + live_held);
     let empty_alias = failure.0.slice(0..0);
     drop(failure);
-    assert!(work.live_allocation_bytes() > baseline);
+    assert!(work.live_allocation_bytes()? > baseline);
     drop(empty_alias);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -1501,15 +1501,15 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
     let producing = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &token)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let receiver_io = crate::filesystem::PreparationIo::from_native_work(&receiving)?;
-    let receiver_baseline = receiving.live_allocation_bytes();
-    let producer_baseline = producing.live_allocation_bytes();
+    let receiver_baseline = receiving.live_allocation_bytes()?;
+    let producer_baseline = producing.live_allocation_bytes()?;
     let producer_io = crate::filesystem::PreparationIo::from_native_work(&producing)?;
     let bytes = producer_io.encode(&serde_json::Value::Null, 1024, true)?;
     drop(producer_io);
     let (metadata, incoming) = producing
         .display("source carrier metadata")
         .map_err(Error::from)?;
-    let held = producing.live_allocation_bytes() - producer_baseline;
+    let held = producing.live_allocation_bytes()? - producer_baseline;
     let Err(error) = receiver_io.absorb_native_custody(incoming) else {
         panic!("distinct original allocation ledgers must not merge");
     };
@@ -1521,9 +1521,9 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
             custody: Some(_),
         }
     ));
-    assert_eq!(receiving.live_allocation_bytes(), receiver_baseline);
-    assert_eq!(producing.live_allocation_bytes(), producer_baseline + held);
+    assert_eq!(receiving.live_allocation_bytes()?, receiver_baseline);
+    assert_eq!(producing.live_allocation_bytes()?, producer_baseline + held);
     drop(failure);
-    assert_eq!(producing.live_allocation_bytes(), producer_baseline);
+    assert_eq!(producing.live_allocation_bytes()?, producer_baseline);
     Ok(())
 }
