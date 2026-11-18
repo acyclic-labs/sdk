@@ -163,6 +163,7 @@ filegroup(
         "//rust/crates/host-platform:Cargo.toml",
         "//rust/crates/inference-wasm:Cargo.toml",
         "//rust/crates/inference:Cargo.toml",
+        "//rust/crates/log-frame:Cargo.toml",
         "//rust/crates/machines-daytona:Cargo.toml",
         "//rust/crates/machines-wasm:Cargo.toml",
         "//rust/crates/machines:Cargo.toml",
