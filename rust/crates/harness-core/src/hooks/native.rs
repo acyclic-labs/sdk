@@ -256,7 +256,7 @@ pub(super) fn expand_exec_path<'a>(
     workspace: &Path,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<std::borrow::Cow<'a, std::ffi::OsStr>> {
-    acyclic_native_runtime::expand_environment(value, |reference| {
+    acyclic_host_platform::expansion::expand_environment(value, |reference| {
         let Some(reference) = reference else {
             return Ok(None);
         };

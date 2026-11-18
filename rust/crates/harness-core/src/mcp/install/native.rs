@@ -417,7 +417,7 @@ fn expand<'a>(
     if !enabled || !value.contains("${") {
         return Ok(std::borrow::Cow::Borrowed(value));
     }
-    let expanded = acyclic_native_runtime::expand_environment(value, |reference| {
+    let expanded = acyclic_host_platform::expansion::expand_environment(value, |reference| {
         let reference =
             reference.ok_or_else(|| Error::Invalid("invalid MCP environment reference".into()))?;
         environment(reference.name)
