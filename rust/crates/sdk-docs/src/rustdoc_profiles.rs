@@ -192,11 +192,6 @@ impl ProfileSpec {
     pub fn id(&self) -> ProfileId {
         use crate::digest::push_hex;
 
-        let defaults = if self.default_features {
-            ";d1;f"
-        } else {
-            ";d0;f"
-        };
         let name_bytes = self.package.len()
             + self.target.len()
             + self.features.iter().map(String::len).sum::<usize>();
@@ -206,14 +201,14 @@ impl ProfileSpec {
         push_hex(&mut id, self.package.as_bytes());
         id.push_str(";t");
         push_hex(&mut id, self.target.as_bytes());
-        id.push_str(defaults);
-        let mut features = self.features.iter();
-        if let Some(first) = features.next() {
-            push_hex(&mut id, first.as_bytes());
-            for feature in features {
+        id.push_str(";d");
+        id.push(if self.default_features { '1' } else { '0' });
+        id.push_str(";f");
+        for (index, feature) in self.features.iter().enumerate() {
+            if index != 0 {
                 id.push(',');
-                push_hex(&mut id, feature.as_bytes());
             }
+            push_hex(&mut id, feature.as_bytes());
         }
         ProfileId(id)
     }
