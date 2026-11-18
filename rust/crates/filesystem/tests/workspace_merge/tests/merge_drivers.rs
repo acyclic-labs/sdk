@@ -1,11 +1,213 @@
 use acyclic_fs::{
-    ApplyOptions, ConflictKind, DefaultTextMergeDriver, ForkOptions, Fs, IdempotencyKey,
-    JoinHistory, JoinOutcome, MemoryMergeResolutionCache, MergeDriverRegistry, PublicationPermit,
-    TransactionCommit,
+    ApplyOptions, CancellationToken, ConflictKind, ConflictSide, ConflictValue,
+    DefaultTextMergeDriver, DriverError, ForkOptions, Fs, IdempotencyKey, JoinHistory, JoinOutcome,
+    MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergeResolution,
+    PublicationPermit, TransactionCommit,
 };
+use acyclic_fs_work::performance::WorkBudget;
+use acyclic_stream::OwnedBytes;
 use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 use crate::fixtures::{commit, fork_workspace};
+
+struct SelectTheirsDriver;
+
+impl MergeDriver for SelectTheirsDriver {
+    fn fingerprint(&self) -> &[u8] {
+        b"workspace-select-theirs-v1"
+    }
+
+    fn mode(&self) -> MergeDriverMode {
+        MergeDriverMode::Deterministic
+    }
+
+    fn resolve(&self, conflict: &ConflictView) -> Result<MergeResolution, DriverError> {
+        assert_eq!(conflict.kind, ConflictKind::Text);
+        assert_eq!(conflict.base, ConflictValue::Text("base".into()));
+        assert_eq!(conflict.ours, ConflictValue::Text("main".into()));
+        assert_eq!(conflict.theirs, ConflictValue::Text("agent".into()));
+        Ok(MergeResolution::Select(ConflictSide::Theirs))
+    }
+}
+
+#[tokio::test]
+async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("driver-main"))?;
+    main.write_text("/shared", "base").await?;
+    let agent = fork_workspace(
+        &main,
+        "driver-agent",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    agent.write_text("/shared", "agent").await?;
+    main.write_text("/shared", "main").await?;
+
+    let plan = unbounded!(agent.join_into(&main), plan())?;
+    let mut registry = MergeDriverRegistry::new();
+    registry.register("theirs", Arc::new(SelectTheirsDriver))?;
+    registry.set_default("theirs")?;
+    let mut cache = MemoryMergeResolutionCache::default();
+    let join_key = IdempotencyKey::new();
+    let outcome = plan
+        .apply_with_drivers(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: join_key,
+            },
+            &registry,
+            &mut cache,
+            false,
+            PublicationPermit::Unrestricted,
+        )
+        .await?;
+    let JoinOutcome::Applied(application) = outcome else {
+        return Err("resolved join did not publish".into());
+    };
+    assert!(
+        main.verify_join_commit(
+            &plan
+                .commit_witness(
+                    &application,
+                    join_key,
+                    &WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new()
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?
+    );
+    assert_eq!(
+        unbounded!(main, read("/shared", 16))?,
+        OwnedBytes::from_static(b"agent")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("text-driver-main"))?;
+    main.write_text("/shared", "base\n").await?;
+    let agent = fork_workspace(
+        &main,
+        "text-driver-agent",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    agent.write_text("/shared", "agent\n").await?;
+    main.write_text("/shared", "main\n").await?;
+
+    let plan = unbounded!(agent.join_into(&main), plan())?;
+    let JoinOutcome::Conflicted {
+        conflicts,
+        truncated,
+    } = plan
+        .apply(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            },
+            BTreeMap::new(),
+            PublicationPermit::Unrestricted,
+        )
+        .await?
+    else {
+        return Err("text join did not expose its conflict".into());
+    };
+    let described = plan.describe_conflicts(conflicts, truncated).await?;
+    let [view] = described.conflicts.as_slice() else {
+        return Err("expected one text conflict".into());
+    };
+    assert_eq!(view.path.as_deref(), Some("/shared"));
+    assert_eq!(view.kind, ConflictKind::Text);
+    assert!(matches!(
+        view.ours,
+        ConflictValue::Text(ref text) if text == "main\n"
+    ));
+    let mut registry = MergeDriverRegistry::new();
+    registry.register("text", Arc::new(DefaultTextMergeDriver))?;
+    registry.set_default("text")?;
+    let mut cache = MemoryMergeResolutionCache::default();
+    let outcome = plan
+        .apply_with_drivers(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            },
+            &registry,
+            &mut cache,
+            false,
+            PublicationPermit::Unrestricted,
+        )
+        .await?;
+    assert!(matches!(outcome, JoinOutcome::Applied(_)));
+    let merged = String::from_utf8(unbounded!(main, read("/shared", 1024))?.to_vec())?;
+    assert!(merged.contains("main"));
+    assert!(merged.contains("agent"));
+    // UTF-8 validity alone does not make a file text. The same binary gate
+    // applies to every side before a conflict can reach the text driver.
+    for (label, base, ours, theirs) in [
+        ("base", "base\0\n", "main\n", "agent\n"),
+        ("ours", "base\n", "main\0\n", "agent\n"),
+        ("theirs", "base\n", "main\n", "agent\0\n"),
+    ] {
+        main.write_text("/binary", base).await?;
+        let binary_agent = fork_workspace(
+            &main,
+            &format!("binary-driver-{label}"),
+            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        binary_agent.write_text("/binary", theirs).await?;
+        main.write_text("/binary", ours).await?;
+        let plan = unbounded!(binary_agent.join_into(&main), plan())?;
+        let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = plan
+            .apply(
+                ApplyOptions {
+                    if_target: plan.target_head(),
+                    idempotency_key: IdempotencyKey::new(),
+                },
+                BTreeMap::new(),
+                PublicationPermit::Unrestricted,
+            )
+            .await?
+        else {
+            return Err("binary join did not expose its conflict".into());
+        };
+        let described = plan.describe_conflicts(conflicts, truncated).await?;
+        let [view] = described.conflicts.as_slice() else {
+            return Err("expected one binary conflict".into());
+        };
+        assert_eq!(view.path.as_deref(), Some("/binary"));
+        assert_eq!(view.kind, ConflictKind::Binary);
+        for (value, expected) in [&view.base, &view.ours, &view.theirs]
+            .into_iter()
+            .zip([base, ours, theirs])
+        {
+            let ConflictValue::Binary(bytes) = value else {
+                return Err("binary conflict became marker input".into());
+            };
+            assert_eq!(bytes, expected.as_bytes());
+        }
+        assert_eq!(
+            MergeDriver::resolve(&DefaultTextMergeDriver, view),
+            Err(DriverError::Unsupported)
+        );
+        assert_eq!(unbounded!(main, head())?.id(), plan.target_head());
+        assert_eq!(unbounded!(binary_agent, head())?.id(), plan.source_head());
+    }
+    Ok(())
+}
 
 /// A workspace join (no Git metadata) where one side replaced the file under
 /// its path: the replacement merges with the identity it replaced, the text
@@ -89,9 +291,11 @@ async fn replaced_file_join(history: JoinHistory) -> Result<(), Box<dyn Error>> 
                 truncated,
             } => {
                 let described = plan.describe_conflicts(conflicts, truncated).await?;
-                assert_eq!(described.conflicts.len(), 1);
-                assert_eq!(described.conflicts[0].kind, ConflictKind::Text);
-                assert_eq!(described.conflicts[0].path.as_deref(), Some("/shared"));
+                let [view] = described.conflicts.as_slice() else {
+                    return Err("expected one replacement conflict".into());
+                };
+                assert_eq!(view.kind, ConflictKind::Text);
+                assert_eq!(view.path.as_deref(), Some("/shared"));
                 let mut registry = MergeDriverRegistry::new();
                 registry.register("text", Arc::new(DefaultTextMergeDriver))?;
                 registry.set_default("text")?;
@@ -278,13 +482,14 @@ async fn joins_merge_a_replaced_file_under_a_renamed_directory() -> Result<(), B
             return Err("overlapping whole-file edits must reach the driver".into());
         };
         let described = plan.describe_conflicts(conflicts, truncated).await?;
+        let [view] = described.conflicts.as_slice() else {
+            return Err(format!(
+                "expected one renamed-directory conflict, agent_replaces={agent_replaces}"
+            )
+            .into());
+        };
         assert_eq!(
-            described.conflicts.len(),
-            1,
-            "agent_replaces={agent_replaces}"
-        );
-        assert_eq!(
-            described.conflicts[0].kind,
+            view.kind,
             ConflictKind::Text,
             "agent_replaces={agent_replaces}"
         );
