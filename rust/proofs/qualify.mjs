@@ -303,8 +303,9 @@ const claims = {
   "task-binding-selection": [
     "rust/crates/harness-local/src/local/workspace/bindings.rs", "acyclic-harness-local",
     "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
-    "lost original producer did not finish its observer", bindingFeatures,
-    { nextest: bindingNextest, mutations: [
+    "lost original producer did not finish its observer", [],
+    { runner: ["bazel", "run", "//rust/crates/harness-local:acyclic_harness_local_test_cases", "--",
+      "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit", "--exact", "--nocapture"], mutations: [
       { patch: "fuzz/mutations/task_binding_lost_producer.patch", label: "producer-loss", diagnostic: "lost original producer did not finish its observer" },
       { patch: "fuzz/mutations/task_binding_late_retirement.patch", label: "late-retirement", diagnostic: "late retirement removed the replacement owner" },
       { patch: "fuzz/mutations/task_binding_retained_credit.patch", label: "retained-credit", diagnostic: "retired binding generations retained original allocation credit" },
