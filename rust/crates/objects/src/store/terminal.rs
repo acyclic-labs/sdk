@@ -49,6 +49,11 @@ impl Fence {
     }
 }
 
+fn batch_fence(name: &str) -> Result<u64, Error> {
+    let (encoded, _) = name.split_once('.').unwrap_or((name, ""));
+    u64::from_str_radix(encoded, 16).map_err(|_| corrupt())
+}
+
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn terminal_key(&self, root_hash: &str) -> String {
         format!("{}t/{root_hash}", self.state.prefix)
@@ -116,11 +121,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 let (root, name) = key
-                    .strip_prefix(&format!("{}f/", self.state.prefix))
+                    .strip_prefix(pages.prefix.as_str())
                     .and_then(|key| key.split_once('/'))
                     .ok_or_else(corrupt)?;
-                let encoded = name.split('.').next().ok_or_else(corrupt)?;
-                let fence = u64::from_str_radix(encoded, 16).map_err(|_| corrupt())?;
+                let fence = batch_fence(name)?;
                 let terminal_key = self.terminal_key(root);
                 let terminal = self
                     .medium
@@ -221,9 +225,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 let name = key.rsplit('/').next().ok_or_else(corrupt)?;
-                let encoded_fence = name.split('.').next().ok_or_else(corrupt)?;
-                let batch_fence = u64::from_str_radix(encoded_fence, 16).map_err(|_| corrupt())?;
-                if batch_fence > fence {
+                if batch_fence(name)? > fence {
                     continue;
                 }
                 if let Some(references) = self.batch(&key).await? {
