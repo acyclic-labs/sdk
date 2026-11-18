@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { loomModelPackages } from "./check-test-support.mjs";
+import { bazelCommand } from "./bazel-executables.mjs";
 
 /** @typedef {(command: string, args: string[], options: {
  * encoding: 'utf8', maxBuffer?: number, env?: NodeJS.ProcessEnv
@@ -42,18 +43,22 @@ export function qualificationPlan(args) {
 // cfg(loom) reaches every target of a model package, so each test-enabled target
 // must type-check under it, including those no named model selects.
 export function qualifyLoomBuild(run = runCommand) {
-  const args = ["check", "--locked", "--keep-going", "--tests", "--all-features"];
+  const args = ["build", "--config=check", "--keep_going", "--action_env=ACYCLIC_LOOM=1"];
   if (run === planOnly) return { args, packages: "model-checking", loom: "1" };
-  const metadata = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"],
-    { encoding: "utf8", maxBuffer: 1 << 30 });
-  if (metadata.error) throw metadata.error;
-  if (metadata.status !== 0) throw new Error(`cargo metadata failed: ${metadata.status}
-${metadata.stderr ?? ""}`);
-  const packages = loomModelPackages(JSON.parse(metadata.stdout));
+  const metadata = JSON.parse(readFileSync(new URL("../workspace-metadata.json", import.meta.url), "utf8"));
+  const packages = loomModelPackages(metadata);
   if (packages.length === 0) throw new Error("Loom build requires model packages");
+  const patterns = metadata.packages.filter(pkg => packages.includes(pkg.name))
+    .map(pkg => `//${pkg.manifest_path.slice(0, -"Cargo.toml".length).replace(/\/$/, "")}:all`);
+  const bazel = bazelCommand();
+  const query = run(bazel, ["query", "--output=label", `kind("rust_test", set(${patterns.join(" ")}))`],
+    { encoding: "utf8", maxBuffer: 1 << 30 });
+  if (query.error) throw query.error;
+  if (query.status !== 0) throw new Error(`Bazel Loom target query failed: ${query.status}\n${query.stderr ?? ""}`);
+  const targets = query.stdout.split(/\r?\n/).filter(Boolean);
+  if (targets.length === 0) throw new Error("Loom build requires Rust test targets");
   const started = performance.now();
-  const build = run("cargo", [...args, ...packages.flatMap(name => ["-p", name])],
-    { encoding: "utf8", maxBuffer: 1 << 30, env: loomEnvironment() });
+  const build = run(bazel, [...args, ...targets], { encoding: "utf8", maxBuffer: 1 << 30 });
   console.log("MODEL_CHECK_PHASE " + JSON.stringify({ phase: "loom-build", packages,
     seconds: (performance.now() - started) / 1000, status: build.status === 0 ? "PASS" : "FAIL" }));
   if (build.error) throw build.error;
