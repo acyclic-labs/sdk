@@ -1557,17 +1557,10 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        ":build_script",
-    ] + [
         "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//cap-primitives-4.0.3",
         "@sdk_crates//cap-std-4.0.3",
         "@sdk_crates//thiserror-2.0.21",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
-        "//rust/crates/filesystem:tree/src",
-        "src/lib.rs",
     ],
     tags = ["manual"],
 )

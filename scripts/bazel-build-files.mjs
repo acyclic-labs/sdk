@@ -741,15 +741,22 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // Cases run in the package directory, as under Cargo, and read its files there.
   // What a test of `target` reads at run time beyond its package's non-Rust files: the literal
   // reads of its own closure, of this package's library, and of its first-party dev-dependencies.
+  const directTestDependencies = target => p.metadata?.bazel?.["test-dependencies"]?.[target.name];
+  const standaloneTest = target => {
+    const direct = directTestDependencies(target);
+    return direct !== undefined && !direct.includes(lib && crateName(lib));
+  };
   const runtimeData = target => {
-    const all = [readsOf(dir(p), repoRelative(target)), ...[...(lib ? [p] : []), ...devLibraries(p)].map(other => readsOf(dir(other), repoRelative(libOf(other))))];
+    const standalone = standaloneTest(target);
+    const libraries = standalone ? [] : [...(lib ? [p] : []), ...devLibraries(p)];
+    const all = [readsOf(dir(p), repoRelative(target)), ...libraries.map(other => readsOf(dir(other), repoRelative(libOf(other))))];
     const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
     if (files.has(".cargo/config.toml")) for (const file of cargoConfigInputs) files.add(file);
     const labels = new Set([...dirs].flatMap(treeLabels));
     for (const file of files) {
       const owner = ownerOf(file);
       if (owner !== dir(p)) labels.add(fileLabel(file));
-      else if (file.endsWith(".rs")) labels.add(within(owner, file));
+      else if (standalone || file.endsWith(".rs")) labels.add(within(owner, file));
     }
     return [...labels].sort();
   };
@@ -767,7 +774,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // A suite whose cases each start Cargo runs fewer at once, so they do not contend for the same
   // cores and exceed the per-case limit.
   const workers = p.metadata?.bazel?.["test-workers"];
-  const test = (wanted, attrs, reads, binaries, id) => {
+  const test = (wanted, attrs, reads, binaries, id, standalone = false) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
     reads = [...new Set([...reads, ...testData(p, wanted)])];
     let name = wanted;
@@ -783,7 +790,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       return ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(all).length ? q(all) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     };
     rules.push(
-      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
+      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(standalone ? undefined : glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
       isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
       ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => isolated(`${name}_${profile}`, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined]], ["manual"], wrapper ? { "@nodejs//:node": "node" } : {})),
     );
@@ -893,8 +900,8 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     : [];
   const depVariable = key => `SEPARATE_${key.toUpperCase()}`;
   const separate = target => {
-    const names = p.metadata?.bazel?.["test-dependencies"]?.[target.name];
-    const includeOwn = names?.includes(lib && crateName(lib));
+    const names = directTestDependencies(target);
+    const includeOwn = !standaloneTest(target);
     const crateRoot = local(target.src_path);
     const extra = extras(target, () => false);
     return [
@@ -902,7 +909,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       ["srcs", list(extra.srcs)],
       ["compile_data", list(extra.data)],
       ...common(target),
-      ...(names ? deps([null, "dev"], includeOwn ? [...ownLib, ...ownDeps] : ownDeps,
+      ...(names ? deps([null, "dev"], includeOwn ? [...ownLib, ...ownDeps] : [],
         includeOwn ? ownMacro : [], {}, names)
         : sharedDeps.length ? sharedDeps.map(([key]) => [key, depVariable(key)]) : separateDeps()),
     ];
@@ -916,7 +923,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     const reads = runtimeData(target);
     const consumer = wasm?.testConsumers?.[p.name];
     if (consumer) reads.push(wasmNodeModulesTarget(consumer));
-    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
+    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`, standaloneTest(target));
   }
   for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;
