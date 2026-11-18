@@ -228,6 +228,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             continue;
         }
         let declared_manifest = Path::new(metadata["manifest_path"].as_str().unwrap());
+        if !manifest_path.ends_with(declared_manifest) {
+            continue;
+        }
         let mut root = manifest_path;
         for _ in declared_manifest.components() {
             let Some(parent) = root.parent() else {
@@ -235,9 +238,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             };
             root = parent;
         }
-        if root.join(declared_manifest) != manifest_path {
-            continue;
-        }
+
         let mut expected_args = vec![
             "rustdoc",
             "--locked",
