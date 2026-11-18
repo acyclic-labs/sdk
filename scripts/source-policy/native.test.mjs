@@ -55,3 +55,10 @@ test('shell command substitutions consume heredoc bodies before scanning quotes'
  ].join('\n');
  assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));
 });
+
+test('shell substitution comments do not start heredocs', () => {
+ const source = ['text="$(printf ok # <<EOF', ')"', 'sleep 1'].join('\n');
+ assert.ok(pollingSites('control.sh', source).some(site => site.start === source.lastIndexOf('sleep')));
+ const redirect = ['text="$(printf payload#part <<EOF', "can't start a shell quote", 'EOF', ')"', 'sleep 1'].join('\n');
+ assert.ok(pollingSites('control.sh', redirect).some(site => site.start === redirect.lastIndexOf('sleep')));
+});

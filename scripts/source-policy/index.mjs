@@ -153,9 +153,13 @@ function shellQuoteEnd(source, end, quote, escaped, malformed) {
     if (!scopes.length) return end;
    } else if (scope.escaped && character === '\\') end++;
    else if (scope.quote === '"' && character === '$' && source[end] === '(') {
-    scopes.push({depth: 1, arithmetic: source[end + 1] === '(', hereDocuments: []});
+    scopes.push({depth: 1, arithmetic: source[end + 1] === '(', hereDocuments: [], wordBoundary: true});
     end++;
    }
+  } else if (character === '#' && scope.wordBoundary && !scope.arithmetic) {
+   const newline = source.indexOf('\n', end);
+   end = newline < 0 ? source.length : newline;
+   continue;
   } else if (character === '<' && !scope.arithmetic) {
    if (source.startsWith('<<', end)) { end += 2; continue; }
    const redirect = shellHereRedirect(source, end - 1);
@@ -171,9 +175,12 @@ function shellQuoteEnd(source, end, quote, escaped, malformed) {
    }
   } else if (character === "'" || character === '"')
    scopes.push({quote: character, escaped: character === '"' || source[end - 2] === '$'});
-  else if (character === '\\') end++;
+  else if (character === '\\') {
+   if (source[end++] === '\n') continue;
+  }
   else if (character === '(') scope.depth++;
   else if (character === ')' && --scope.depth === 0) scopes.pop();
+  scope.wordBoundary = /^[ \t\r\n;|&()<>]$/.test(character);
  }
  return source.length + 1;
 }

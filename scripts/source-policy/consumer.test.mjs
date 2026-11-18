@@ -91,3 +91,16 @@ test('unrelated source edits preserve dependencies on immutable literal bindings
  assert.ok(!changes('export const label = "unrelated"; ' + helper).some(site => site.file === consumer));
  assert.ok(changes(helper.replace('ticks = 1', 'ticks = 2')).some(site => site.file === consumer));
 });
+
+test('opaque execution retains module state and initializer dependencies', () => {
+ const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
+ const global = 'globalThis.ready = true; export async function settle() { while (!globalThis.ready) await Bun.sleep(1); }';
+ const caller = "import {settle} from '../lib/helper.js'; settle();";
+ const referenced = new Map([[producer, global], [consumer, caller]]);
+ assert.ok(newProjectPollingSites(referenced, new Map(referenced).set(producer, global.replace('true', 'false')))
+  .some(site => site.file === consumer && site.kind === 'polling-helper-reference'));
+ const indirect = "eval('start()'); function start() { return Bun.sleep(1); }";
+ const imported = new Map([[producer, indirect], [consumer, "import '../lib/helper.js';"]]);
+ assert.ok(newProjectPollingSites(imported, new Map(imported).set(producer, indirect.replace('sleep(1)', 'sleep(2)')))
+  .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
+});

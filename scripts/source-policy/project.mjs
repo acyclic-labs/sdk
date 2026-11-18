@@ -171,9 +171,13 @@ export function projectPollingSites(sources, {historical = false} = {}) {
 
  // A top-level function owns its lexical context, including all local bindings.
  // Compute its token identity once even when many symbols refer into that scope.
+ const opaqueFiles = new Set([...units].filter(([, unit]) => unit.stream.some(token =>
+  token.kind === 'indirection' || (token.kind === 'word'
+   && ['globalThis', 'global', 'window', 'self'].includes(token.value)))).map(([file]) => file));
  const functions = new Map();
  for (const source of program.getSourceFiles()) {
   const file = source.fileName.slice(1), unit = required(units, file), index = required(indices, file);
+  if (opaqueFiles.has(file)) continue;
   for (const node of source.statements) {
    if (!ts.isFunctionDeclaration(node)) continue;
    const start = index.get(node.getStart(source));
@@ -266,7 +270,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
    ts.isFunctionDeclaration(statement) && statement.body
     ? [{start: statement.body.getStart(source), end: statement.body.end}] : []);
   let fingerprint = unit.fingerprint;
-  if (bodies.length) {
+  if (bodies.length && !opaqueFiles.has(file)) {
    // Initialization calls carry function bodies through their dependency edges.
    let body = 0;
    const initialized = unit.stream.filter(token => {
