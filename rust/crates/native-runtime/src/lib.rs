@@ -150,8 +150,6 @@ pub mod execution;
 mod service;
 mod shell;
 pub use command::ExecutableSearch;
-mod expansion;
-pub use expansion::{EnvironmentReference, expand_environment};
 pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
     process_output, process_status, spawn_service_process, take_service_ready_signal,
