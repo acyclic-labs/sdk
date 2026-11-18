@@ -18,10 +18,21 @@ categories = ["filesystem", "data-structures"]
 mounts-fuse = true
 share-separate-deps = true
 unit-test-only-sources = [
+    "src/core_state/group/tests/**",
+    "src/core_state/tests/**",
+    "src/distributed/composition/append/tests/**",
+    "src/distributed/tests/**",
     "src/git_compat/tests/**",
+    "src/kernel/rebase/tests/**",
     "src/kernel/tests/**",
+    "src/lazy_workspace/tests/**",
     "src/multi_root/tests/**",
+    "src/native_mount/adapter/tests/**",
     "src/native_mount/fixture_access.rs",
+    "src/native_mount/lazy/tests/**",
+    "src/native_mount/materialize/tests/**",
+    "src/native_mount/tests/**",
+    "src/operation_window/tests/**",
     "src/speculation/tests/**",
     "src/staged_objects/tests/**",
     "src/tests/**",
