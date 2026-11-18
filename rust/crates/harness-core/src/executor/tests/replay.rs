@@ -426,6 +426,100 @@ async fn prefix_replay_accepts_unbounded_counts() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_full_step_with_a_prompt_fits_the_selected_record_bound() -> Result<()> {
+    let mut executor = uncompacted_executor(
+        Model::new("example".into(), "model".into(), "1".into())?,
+        Arc::new(scripted_model()),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    executor.limits.model_events_per_step = std::num::NonZeroUsize::new(1);
+    let journal = Journal::default();
+    let operation = OperationId::from_bytes([28; 16]);
+    let projection = journal
+        .stage_source(
+            operation,
+            "projection".into(),
+            acyclic_stream::OwnedBytes::copy_from_slice(b"{}"),
+            "application/json",
+        )
+        .await?;
+    let compaction = journal
+        .stage_source(
+            operation,
+            "compaction".into(),
+            acyclic_stream::OwnedBytes::copy_from_slice(b"{}"),
+            "application/json",
+        )
+        .await?;
+    journal
+        .append(
+            operation,
+            "execution:started",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    for (key, event) in [
+        (
+            "context:0:prepared",
+            ExecutionEvent::ContextPrepared {
+                step: 0,
+                projection: projection.clone(),
+                configuration: None,
+                steering: None,
+            },
+        ),
+        (
+            "prompt:0",
+            ExecutionEvent::Prompt {
+                step: 0,
+                projection: projection.clone(),
+            },
+        ),
+        (
+            "context:0:compacted",
+            ExecutionEvent::ContextCompacted {
+                step: 0,
+                projection: projection.clone(),
+                compaction,
+            },
+        ),
+        (
+            "model:0:started",
+            ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Response,
+                request_digest: [2; 32],
+                request: projection.clone(),
+                context: None,
+            },
+        ),
+        (
+            "model:0:event",
+            ExecutionEvent::ModelInline {
+                step: 0,
+                purpose: ModelPurpose::Response,
+                event: r#"{"kind":"content","delta":"x"}"#.into(),
+                usage: None,
+            },
+        ),
+    ] {
+        journal.append(operation, key, &event, None)?.await?;
+    }
+    let execution = StockExecution::ordinary(&executor);
+    let prefix = execution.prefix_records(&journal, operation, 0).await?;
+    assert_eq!(prefix.len(), 6);
+    let (_, model) = execution
+        .model_records(&journal, operation, 0, ModelPurpose::Response)
+        .await?;
+    assert_eq!(model.len(), 5);
+    Ok(())
+}
+
 #[test]
 fn independently_selected_event_budget_still_rejects_excess_observations() -> Result<()> {
     let limits = Limits {

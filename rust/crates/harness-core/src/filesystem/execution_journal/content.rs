@@ -374,9 +374,8 @@ where
                     envelope: projection,
                     ..
                 }
-                | ExecutionEvent::ContextPrepared { projection, .. } => {
-                    [Some(projection), None, None]
-                }
+                | ExecutionEvent::ContextPrepared { projection, .. }
+                | ExecutionEvent::Prompt { projection, .. } => [Some(projection), None, None],
                 ExecutionEvent::ContextCompacted {
                     projection,
                     compaction,

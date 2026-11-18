@@ -343,23 +343,19 @@ async fn truncated_responses_preserve_transport_cause_on_both_provider_paths() -
             let (request, dispatch) = request(&provider)?;
             let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
             let baseline = work.live_allocation_bytes();
-            // A truncated exchange recovers indefinitely. Observe its cause
-            // before the fixture's held timer, then cancel by dropping the stream.
+            // A truncated exchange recovers indefinitely. Observe the cause on
+            // its first wait event, then cancel by dropping the stream before
+            // the fixture's held timer.
             let event = if native {
                 let mut stream = provider
                     .generate_with_native_work(&request, dispatch, &work)?
                     .await?;
-                let (restarted, hold) = stream.next().await.expect("restart event")?;
-                assert!(matches!(restarted, ModelEvent::Restarted), "{restarted:?}");
-                drop(hold);
-                let (event, hold) = stream.next().await.expect("recovery event")?;
+                let (event, hold) = stream.next().await.expect("recovery wait")?;
                 drop(hold);
                 event
             } else {
                 let mut stream = provider.generate(&request, dispatch);
-                let restarted = stream.next().await.expect("restart event")?;
-                assert!(matches!(restarted, ModelEvent::Restarted), "{restarted:?}");
-                stream.next().await.expect("recovery event")?
+                stream.next().await.expect("recovery wait")?
             };
             assert!(
                 matches!(

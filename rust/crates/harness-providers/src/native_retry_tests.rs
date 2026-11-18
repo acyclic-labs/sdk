@@ -152,7 +152,15 @@ proptest! {
                         provider.counted_with_native_work(&request, 0, &work)?.await.map(drop)
                     } else {
                         let mut stream = provider.generate_with_native_work(&request, dispatch, &work)?.await?;
-                        while let Some(event) = stream.next().await { drop(event?); }
+                        let mut restarted = 0;
+                        while let Some(event) = stream.next().await {
+                            if matches!(event?, (acyclic_harness_core::model::ModelEvent::Restarted, _)) {
+                                restarted += 1;
+                            }
+                        }
+                        if !cancelled {
+                            assert_eq!(restarted, failures, "every retry restarts the generation");
+                        }
                         Ok(())
                     }
                 };

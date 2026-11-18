@@ -272,11 +272,6 @@ pub(crate) fn generate<'a>(
                     }
                     attempt.held = None;
                     let Some(error) = failure else {break;};
-                    if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable {
-                        let event = ModelEvent::Restarted;
-                        let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
-                        yield (event, custody);
-                    }
                     {
                         let recovery = attempt.recover(provider, &mut auth, error, retry_after, Some(&mut auth_custody), Some(work));
                         let mut recovery = core::pin::pin!(recovery);

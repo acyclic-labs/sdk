@@ -34,6 +34,7 @@ pub(super) const GENERATORS: &[&Generator] = &[
     &super::configuration::GENERATOR,
     &super::records::GENERATOR,
     &super::determinism::GENERATOR,
+    &super::observability::GENERATOR,
 ];
 
 impl Generator {

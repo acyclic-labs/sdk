@@ -49,6 +49,48 @@ impl Input {
     }
 }
 
+/// Every committed execution record of `agent`, in journal order, with the
+/// input that owns it. Pages from the agent's own fork cut; a short page
+/// advances to the next input.
+async fn execution_records(
+    connection: &Connection,
+    agent: &AgentPath,
+) -> Result<Vec<(u64, ExecutionRecord)>> {
+    let (mut input, mut after) = (0, 0);
+    let mut records = Vec::new();
+    loop {
+        let AgentReply::Events {
+            input: admitted,
+            page,
+            ..
+        } = connection
+            .execute(&AgentCommand::Events {
+                agent: agent.clone(),
+                input,
+                after,
+                wait: false,
+            })
+            .await?
+        else {
+            return Err(unexpected());
+        };
+        input = admitted;
+        let Some(page) = page else {
+            break;
+        };
+        records.extend(page.items.into_iter().map(|record| (input, record)));
+        if let Some(next) = page.next {
+            after = next;
+        } else {
+            input = input
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("recording input continuation overflows".into()))?;
+            after = 0;
+        }
+    }
+    Ok(records)
+}
+
 async fn record_agent(
     connection: &Connection,
     agent: &AgentPath,
@@ -72,6 +114,8 @@ async fn record_agent(
         else {
             return Err(unexpected());
         };
+        // A page is observed and released before the next one is read, so a
+        // long journal costs one page beside the recording, never its whole.
         if admitted != input {
             calls.flush(recording);
         }
@@ -180,6 +224,19 @@ async fn observe(
 }
 
 impl Conversation {
+    /// Every committed execution record of this conversation's agent, in
+    /// journal order. Call after the source run settles.
+    ///
+    /// # Errors
+    /// Original session, journal or encoding failure.
+    pub async fn execution_records(&self) -> Result<Vec<ExecutionRecord>> {
+        Ok(execution_records(&self.connection, self.agent())
+            .await?
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect())
+    }
+
     /// Every completed model call of this tree's settled turns, as a
     /// [`Recording`] for [`crate::model::RecordedModel`]. Each agent's journal
     /// is paged once, from its own fork cut; payloads are read for each

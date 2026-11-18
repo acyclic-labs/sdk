@@ -86,7 +86,6 @@ pub(crate) fn generate_encoded<'a>(
             }
             attempt.held = None;
             let Some(error) = failure else {break;};
-            if error.code() == acyclic_harness_core::wire::ErrorCode::Unavailable { yield ModelEvent::Restarted; }
             {
                 let recovery = attempt.recover(provider, &mut auth, error, retry_after,
                     #[cfg(not(target_arch = "wasm32"))] None, None);
@@ -401,6 +400,8 @@ impl GenerationAttempt {
                 .bearer(provider.transport.as_ref(), auth.0.as_deref(), custody)
                 .await?;
             *auth = (Some(Cow::Owned(key)), account);
+            // A refreshed credential starts a new transport attempt.
+            yield ModelEvent::Restarted;
             return;
         }
         let _ = auth;
@@ -408,6 +409,9 @@ impl GenerationAttempt {
             let events = crate::retry::events(provider.transport.as_ref(), error, wait, retry_after.is_some(), work);
             let mut events = core::pin::pin!(events);
             while let Some(event) = events.next().await { yield event?; }
+            // The next send is a new transport attempt. The restart event is
+            // the one place usage counts the attempt this send abandoned.
+            yield ModelEvent::Restarted;
             return;
         }
         Err(error)?;

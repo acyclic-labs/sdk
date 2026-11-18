@@ -158,7 +158,15 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
                     | acyclic_harness_core::model::ModelEvent::Wait(_)
             ))
             .count(),
-        2
+        3
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, acyclic_harness_core::model::ModelEvent::Restarted))
+            .count(),
+        1,
+        "the refreshed credential starts one new attempt"
     );
     let requests = server
         .requests
