@@ -163,7 +163,7 @@ struct FixtureMetadata {
     toolchain: String,
     manifest_path: PathBuf,
     owner_path: PathBuf,
-    selected_lock: String,
+    selected_lock: Option<PathBuf>,
     receipt_name: String,
     target_args: Vec<String>,
     entrypoint: PathBuf,
@@ -275,10 +275,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         else {
             return Ok(None);
         };
-        let selected_lock = &metadata.selected_lock;
-        let config = if selected_lock.is_empty() {
-            None
-        } else {
+        let config = if let Some(selected_lock) = &metadata.selected_lock {
             let Some(lock) = optional_io(root.join(selected_lock).canonicalize())? else {
                 continue;
             };
@@ -286,6 +283,8 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 "resolver.lockfile-path={}",
                 serde_json::to_string(lock.to_str().unwrap())?
             ))
+        } else {
+            None
         };
         let suffix = config
             .as_deref()
