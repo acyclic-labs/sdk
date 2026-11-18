@@ -4,17 +4,17 @@ use acyclic_objects::{Blobs, Digest, MemoryObjects, json, wire};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
-/// Accepts a JavaScript byte limit as a number: wasm-bindgen would silently wrap a `usize` argument above 2^32, so reject non-integers and saturate.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the value is a non-negative integer and `as` saturates at usize::MAX"
-)]
+/// Accepts a JavaScript byte limit and saturates at the wasm32 address bound.
 fn byte_limit(value: f64) -> Result<usize, JsValue> {
-    if value.is_nan() || value < 0.0 || value.fract() != 0.0 {
-        return Err(error(&wire::ErrorCode::InvalidArgument.into()));
+    if value == 0.0 {
+        return Ok(0);
     }
-    Ok(value as usize)
+    if value > f64::from(u32::MAX) && value.fract() == 0.0 {
+        return Ok(usize::MAX);
+    }
+    acyclic_stream::wasm_unsigned_integer(value)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| error(&wire::ErrorCode::InvalidArgument.into()))
 }
 
 #[wasm_bindgen]

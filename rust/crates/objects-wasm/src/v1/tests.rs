@@ -5,6 +5,15 @@ use acyclic_objects::{
 };
 use acyclic_stream::OwnedBytes;
 
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn json_byte_limits_preserve_wasm_address_bounds() {
+    assert_eq!(byte_limit(-0.0).unwrap(), 0);
+    assert_eq!(byte_limit(4_294_967_296.0).unwrap(), usize::MAX);
+    for invalid in [-1.0, 4_294_967_296.5, f64::INFINITY, f64::NAN] {
+        assert!(byte_limit(invalid).is_err());
+    }
+}
+
 // Only fault selection and ownership counters wrap the actual public memory
 // binding. Every reply and mutation is produced by the original Rust account.
 #[wasm_bindgen(inline_js = "
