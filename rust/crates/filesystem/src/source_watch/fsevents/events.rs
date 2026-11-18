@@ -7,21 +7,17 @@ impl Shared {
         work: &mut W,
     ) -> Result<(), DemandError> {
         let count = events.len() as u64;
+        let items = crate::materializer::NativeResourceCredit::Items;
         work.check()?;
         work.admit(WorkCounters {
             items_examined: count,
             ..WorkCounters::UNCHARGED
         })?;
-        work.with_original_leaf(|work| {
-            work.reserve(crate::materializer::NativeResourceCredit::Items.delta(count))
-        })?;
+        work.with_original_leaf(|work| work.reserve(items.delta(count)))?;
         let (mut changes, slots) = match buffer::<HostChange, _>(events.len(), work) {
             Ok(buffer) => buffer,
             Err(error) => {
-                work.with_original_leaf(|work| {
-                    work.refund(crate::materializer::NativeResourceCredit::Items.delta(count))
-                        .expect("balanced cleanup reservation")
-                });
+                work.with_original_leaf(|work| work.refund(items.delta(count)))?;
                 return Err(error);
             }
         };
@@ -57,17 +53,10 @@ impl Shared {
         while let Some(change) = changes.pop() {
             remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| {
-                work.complete(
-                    crate::materializer::NativeResourceCredit::Items.delta(1),
-                    crate::materializer::NativeResourceCredit::Items.delta(1),
-                )
-            }));
+            cleaned = cleaned
+                .and(work.with_original_leaf(|work| work.complete(items.delta(1), items.delta(1))));
         }
-        work.with_original_leaf(|work| {
-            work.refund(crate::materializer::NativeResourceCredit::Items.delta(remaining))
-                .expect("balanced cleanup reservation")
-        });
+        cleaned = cleaned.and(work.with_original_leaf(|work| work.refund(items.delta(remaining))));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)
