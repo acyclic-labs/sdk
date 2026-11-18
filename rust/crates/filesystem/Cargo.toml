@@ -56,6 +56,7 @@ acyclic-fs-work = "observations"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
+checkout_cancellation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_content = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_live = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
 checkout_merge = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "tokio"]
@@ -202,6 +203,10 @@ path = "tests/checkout_read.rs"
 [[test]]
 name = "checkout_profiles"
 path = "tests/checkout_profiles.rs"
+
+[[test]]
+name = "checkout_cancellation"
+path = "tests/checkout_cancellation.rs"
 
 [[test]]
 name = "checkout_content"
