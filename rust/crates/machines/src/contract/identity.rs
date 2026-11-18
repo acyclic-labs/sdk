@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
+pub fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
     if value.is_nil() {
         return Err(IdentityError);
     }

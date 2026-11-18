@@ -107,7 +107,6 @@ pub mod http_codec;
 pub mod results;
 
 
-mod obs;
 
 #[cfg(test)]
 mod admission_tests {
