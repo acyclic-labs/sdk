@@ -705,17 +705,11 @@ mod prepared_leaf_tests {
             &NativeOpenOptions::Read,
             &mut &preparation,
         )?;
-        let after = preparation.receipt();
-        assert_eq!(after.unwrap().bytes_encoded, before.unwrap().bytes_encoded);
-        assert_eq!(
-            after.unwrap().allocation_operations,
-            before.unwrap().allocation_operations
-        );
-        assert_eq!(
-            after.unwrap().peak_allocation_bytes,
-            before.unwrap().peak_allocation_bytes
-        );
-        assert_eq!(preparation.live_allocation_bytes(), live);
+        let after = preparation.receipt()?;
+        assert_eq!(after.bytes_encoded, before.bytes_encoded);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(preparation.live_allocation_bytes()?, live);
         drop(file);
         remove_ascii_leaf(&root.directory(), &name, &mut work)?;
         assert_eq!(work.work.items_examined, 0);

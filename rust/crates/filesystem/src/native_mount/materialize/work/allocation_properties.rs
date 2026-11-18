@@ -97,15 +97,10 @@ fn generation_index_move_denial_preserves_entries_and_live_custody()
             [(2, 6)]
         );
         assert!(index.valid());
-        assert_eq!(work.live_allocation_bytes(), live);
-        assert_eq!(
-            work.receipt().unwrap().bytes_copied,
-            before.unwrap().bytes_copied
-        );
-        assert_eq!(
-            work.receipt().unwrap().allocation_operations,
-            before.unwrap().allocation_operations
-        );
+        assert_eq!(work.live_allocation_bytes()?, live);
+        let after = work.receipt()?;
+        assert_eq!(after.bytes_copied, before.bytes_copied);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
     }
     drop(index);
     drop(receipt);
