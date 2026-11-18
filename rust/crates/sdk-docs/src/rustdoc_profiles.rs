@@ -214,6 +214,19 @@ impl ProfileSpec {
     }
 }
 
+fn validate_profile_target(
+    target: &str,
+    available_targets: &BTreeSet<String>,
+) -> Result<(), ProfileError> {
+    if available_targets.contains(target) {
+        Ok(())
+    } else {
+        Err(ProfileError::UnsupportedTarget {
+            target: target.to_owned(),
+        })
+    }
+}
+
 fn declared_features(package: &Package) -> impl Iterator<Item = &String> {
     package
         .features
@@ -244,11 +257,7 @@ fn current_package_profiles<'a>(
     target: &str,
     available_targets: &BTreeSet<String>,
 ) -> Result<(&'a Package, BTreeMap<ProfileId, ProfileSpec>), ProfileError> {
-    if !available_targets.contains(target) {
-        return Err(ProfileError::UnsupportedTarget {
-            target: target.to_owned(),
-        });
-    }
+    validate_profile_target(target, available_targets)?;
     let package_metadata = package_by_name(metadata, package)
         .ok_or_else(|| ProfileError::UnknownPackage(package.to_owned()))?;
     let mut profiles = BTreeMap::new();
@@ -329,11 +338,7 @@ pub fn browser_profile_for_package(
         return Ok(None);
     }
     let target = "wasm32-unknown-unknown";
-    if !available_targets.contains(target) {
-        return Err(ProfileError::UnsupportedTarget {
-            target: target.into(),
-        });
-    }
+    validate_profile_target(target, available_targets)?;
     Ok(Some(ProfileSpec {
         package: package.name.to_string(),
         target: target.into(),
