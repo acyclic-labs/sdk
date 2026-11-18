@@ -2006,6 +2006,7 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-work:acyclic_fs_work",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//tokio-1.54.1",

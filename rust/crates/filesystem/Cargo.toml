@@ -202,7 +202,7 @@ workspace_merge = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acycl
 workspace_materialization = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "tempfile", "tokio"]
 workspace_simulation = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_native_runtime", "tempfile", "tokio"]
 workspace_fork_selection = ["acyclic_fs", "acyclic_fs_work", "bytes", "futures", "proptest", "tokio"]
-workspace_rebase = ["acyclic_fs", "acyclic_fs_work", "acyclic_stream", "bytes", "tokio"]
+workspace_rebase = ["acyclic_fs", "acyclic_fs_work", "acyclic_native_runtime", "acyclic_stream", "bytes", "tokio"]
 workspace_restore = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_merge", "acyclic_fs_work", "acyclic_stream", "tokio"]
 workspace_transactions = ["acyclic_fs", "acyclic_fs_format", "acyclic_fs_work", "acyclic_stream", "thiserror", "tokio"]
 
