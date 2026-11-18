@@ -410,7 +410,8 @@ mod tests {
                     acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
                     &cancel,
                 ).map_err(|(cause, _)| cause).unwrap();
-                let baseline = work.live_allocation_bytes();
+                let baseline = work.live_allocation_bytes()
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let (producer, receiver) = futures::channel::oneshot::channel::<Result<Bytes, SourceFailure>>();
                 let chunks = input.as_bytes().chunks(width).map(Bytes::copy_from_slice)
                     .map(Ok).collect::<Vec<_>>();
@@ -423,21 +424,22 @@ mod tests {
                     let frame = events.next().await.unwrap().unwrap();
                     assert_eq!(frame.data(), expected);
                     // The old line+event decoder retains an extra line allocation here.
-                    assert_eq!(work.live_allocation_bytes() - baseline, frame.data.capacity() as u64);
+                    assert_eq!(work.live_allocation_bytes(), Ok(baseline + frame.data.capacity() as u64));
                     drop(frame);
-                    assert_eq!(work.live_allocation_bytes(), baseline);
+                    assert_eq!(work.live_allocation_bytes(), Ok(baseline));
                     assert!(events.next().now_or_never().is_none());
                     drop(producer);
                     assert!(matches!(events.next().await, Some(Err(SourceFailure::Cut(operation))) if operation == [7; 16]));
                     assert!(events.next().await.is_none());
                 });
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes(), Ok(baseline));
             }
             let work = NativeMaterializationWork::new(
                 acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
             ).map_err(|(cause, _)| cause).unwrap();
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
             // Malformed generated framing never exposes a partial event.
             for input in [b"data: \xff\n\n".as_slice(), b": \xff\n", b"data: unfinished"] {
                 futures::executor::block_on(async {
@@ -448,7 +450,7 @@ mod tests {
                         Some(Err(SourceFailure::Syntax(Error::Input { native: true, .. } | Error::Interrupted { native: true })))));
                     assert!(events.next().await.is_none());
                 });
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes(), Ok(baseline));
             }
         }
     }
