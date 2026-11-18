@@ -89,8 +89,7 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc cargo build --locked -p acyclic-
 For isolated identity or filesystem protocol changes, validate the owning crate:
 
 ```sh
-cargo test --locked -p acyclic-plugin-identity
-cargo test --locked -p acyclic-fs-wire
+bazel test //plugin/identity:all //rust/crates/filesystem-wire:all
 ```
 
 Identity's unit tests and main-thread entry contract live in the identity crate;
@@ -142,8 +141,8 @@ Other tools remain explicitly selected with `-p PACKAGE`. `--workspace` also
 includes compiler-negative fixtures, so use it only for that intended scope.
 Documentation and generation packages, their file-identity helper and both fuzz
 packages are workspace members using the root lock. They stay outside
-`default-members`; select them with `cargo test --locked -p sdk-docs` or
-`cargo test --locked -p sdk-generation`. Cargo-fuzz supports parent workspace
+`default-members`. Test documentation with `bazel test //rust/crates/sdk-docs:all`
+and generation with `bazel test //rust/crates/sdk-generation:all`. Cargo-fuzz supports parent workspace
 membership; run sanitizer fuzzing with `cargo +nightly fuzz` from the fuzzer
 directory using the same root lockfile.
 The captured proof-policy workspace under `scripts/tests/fixtures` is test data
@@ -165,12 +164,12 @@ artifacts. The model drivers import the sources directly and never generate
 substitutes.
 
 Rust-only workspace tests also need the ignored Actors authoring contracts.
-Generate them with the existing locked Rust producer before running Cargo tests;
+Generate them with the existing Bazel producer before running the Actors tests;
 no Bun installation is needed for this prerequisite:
 
 ```sh
-cargo run --locked -p acyclic-actors --example actors-http-routes -- typescript/packages/actors/src/generated/actors-service.ts
-cargo test --locked -p acyclic-actors --test main guest_contract::generated_authoring_contract_has_no_drift -- --exact
+bazel run //rust/crates/actors:actors-http-routes_example -- "$PWD/typescript/packages/actors/src/generated/actors-service.ts"
+bazel test //rust/crates/actors:main
 ```
 
 The producer uses the output path's parent for `guest.ts` and service metadata.
@@ -239,10 +238,10 @@ not need these adapters.
 
 ## Before opening a PR
 
-Run `node scripts/qualify-rustfmt.mjs`, `cargo clippy --workspace --all-targets --all-features
---locked -- -D warnings`, and `cargo test --workspace --all-features --locked`
-locally for the affected crates; full release qualification enforces the broader
-suites. Write formatting with `node scripts/qualify-rustfmt.mjs --write`, the
+Run `node scripts/qualify-rustfmt.mjs` and use Bazel to build and test the
+affected packages. Pass `--@rules_rust//rust/settings:extra_rustc_flag=-Dwarnings`
+to deny warnings. Full release qualification covers the broader suites.
+Write formatting with `node scripts/qualify-rustfmt.mjs --write`, the
 same mechanism the check uses. Every PR should get review and approval from a
 code owner (`.github/CODEOWNERS`) before it merges; branch protection does not yet
 require this, so treat it as a norm until it's enforced (not yet tracked in a
