@@ -1,0 +1,26 @@
+[package]
+name = "acyclic-fs-darwin-bridge"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Vendored C transport for the macOS filesystem adapter"
+
+[package.metadata.bazel]
+build-script-inputs = [
+    "src/native_mount/darwin_mount_bridge.c",
+    "src/native_mount/darwin_mount_retirement.c",
+    "src/native_mount/darwin_mount/tests/retirement_model.c",
+    "vendor/darwinfuse",
+]
+
+[build-dependencies]
+cc = "1.2.56"
+
+[features]
+test-support = []
+
+[lints]
+workspace = true

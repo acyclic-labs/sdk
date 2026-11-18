@@ -387,6 +387,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-collections",
  "acyclic-fs-base",
+ "acyclic-fs-darwin-bridge",
  "acyclic-fs-format",
  "acyclic-fs-merge",
  "acyclic-fs-native-contract",
@@ -409,7 +410,6 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
- "cc",
  "dirs",
  "divan",
  "ed25519-dalek",
@@ -476,6 +476,13 @@ dependencies = [
 [[package]]
 name = "acyclic-fs-control-layout-proof"
 version = "0.0.0"
+
+[[package]]
+name = "acyclic-fs-darwin-bridge"
+version = "0.2.0"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "acyclic-fs-format"

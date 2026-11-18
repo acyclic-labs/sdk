@@ -5,6 +5,8 @@
     reason = "drives the embedded C NFSv4 transport through FFI"
 )]
 
+use acyclic_fs_darwin_bridge as _;
+
 use super::view_ledger::{copy_work, scan_work};
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MountAttributeWriteMode, MountFilesystem,

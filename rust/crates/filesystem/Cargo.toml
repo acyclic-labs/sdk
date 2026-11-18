@@ -71,12 +71,7 @@ unit-test-only-sources = [
     "src/workspace/retention_accounting_tests.rs",
     "tests/support/**",
 ]
-build-script-inputs = [
-    "src/native_mount/darwin_mount_bridge.c",
-    "src/native_mount/darwin_mount_retirement.c",
-    "src/native_mount/darwin_mount/tests/retirement_model.c",
-    "vendor/darwinfuse",
-]
+build-script-inputs = []
 
 test-build-script = ["operation_claim_model"]
 test-without-build-script = [
@@ -510,7 +505,6 @@ vhost = { version = "0.18.0", features = ["vhost-user-frontend"] }
 
 [build-dependencies]
 icu_casemap.workspace = true
-cc = "1.2.56"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
@@ -528,10 +522,8 @@ virtio-queue = "0.18.0"
 vm-memory = { version = "=0.18.0", features = ["backend-mmap"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+acyclic-fs-darwin-bridge = { version = "=0.2.0", path = "../filesystem-darwin-bridge" }
 rustix = { workspace = true, features = ["fs"] }
-
-[target.'cfg(target_os = "macos")'.build-dependencies]
-cc = "1.2.56"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser builds always run shared publication groups on the event-loop executor.
@@ -584,7 +576,7 @@ windows = { version = "0.62.2", features = [
 [features]
 tooling = []
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance"]
-test-support = ["acyclic-auth/test-support", "acyclic-fs-format/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects/test-support", "bytes/serde"]
+test-support = ["acyclic-auth/test-support", "acyclic-fs-darwin-bridge/test-support", "acyclic-fs-format/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects/test-support", "bytes/serde"]
 fuzzing = ["acyclic-native-runtime/test-support"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
 browser = ["acyclic-stream/wasm", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
