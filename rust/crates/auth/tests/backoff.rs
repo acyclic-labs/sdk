@@ -4,6 +4,15 @@ mod backoff;
 use backoff::Backoff;
 use proptest::prelude::*;
 
+fn finite_milliseconds() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        Just(0.0),
+        Just(f64::from_bits(1)),
+        Just(f64::MAX),
+        (0..=f64::MAX.to_bits()).prop_map(f64::from_bits),
+    ]
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
@@ -40,17 +49,15 @@ proptest! {
 
     #[test]
     fn fractional_projection_preserves_javascript_spacing(
-        base in 0.0_f64..1.0e12,
-        maximum in 0.0_f64..1.0e16,
-        doublings in 0..=65_i32,
+        base in finite_milliseconds(),
+        maximum in finite_milliseconds(),
+        doublings in prop_oneof![0..=65_u32, any::<u32>()],
         draw in 0.0_f64..=1.0,
     ) {
-        let upper = (base * 2.0_f64.powi(doublings.min(52))).min(maximum);
-        let expected = (upper * (0.5 + draw / 2.0)).ceil();
-        prop_assert_eq!(
-            Backoff::fractional_delay_ms_at(base, maximum, doublings.unsigned_abs(), draw),
-            expected,
-        );
+        let upper = (base * 2.0_f64.powi(i32::try_from(doublings.min(52)).unwrap())).min(maximum);
+        let actual = Backoff::fractional_delay_ms_at(base, maximum, doublings, draw);
+        prop_assert_eq!(actual, (upper * (0.5 + draw / 2.0)).ceil());
+        prop_assert!((upper * 0.5).ceil() <= actual && actual <= upper.ceil());
     }
 
     #[test]
