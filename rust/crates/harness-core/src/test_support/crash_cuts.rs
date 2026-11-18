@@ -16,7 +16,9 @@
 //! dropped, an independent provider reopens the directory, and `recover`
 //! observes it. A crash the provider could not simulate faithfully fails
 //! the enumeration.
-use acyclic_stream::{CutSimulationError, LocalStream, LocalStreamLimits, PersistenceCut};
+use acyclic_stream::{
+    CutSimulationError, LocalStream, LocalStreamLimits, PersistenceCut, StreamError,
+};
 use std::{
     future::Future,
     path::Path,
@@ -82,11 +84,10 @@ impl PersistenceCut for Cutter {
     }
 
     fn crashed(&self, simulation: Result<(), CutSimulationError>) {
-        if let Err(error) = simulation {
-            self.unfaithful
-                .lock()
-                .expect("simulation failure slot")
-                .get_or_insert(error);
+        if let Err(error) = simulation
+            && let Ok(mut first_failure) = self.unfaithful.lock()
+        {
+            first_failure.get_or_insert(error);
         }
     }
 }
@@ -107,12 +108,18 @@ pub struct CrashCuts<O, T = ()> {
     pub cut_results: Vec<(Cut, T)>,
 }
 
-async fn open(root: &Path, limits: LocalStreamLimits) -> Arc<LocalStream> {
-    Arc::new(
-        LocalStream::open(root, limits)
-            .await
-            .expect("crash-cut provider opens; every prior handle must be dropped"),
-    )
+fn setup_error(error: impl acyclic_auth::failure::Source) -> CutSimulationError {
+    CutSimulationError::Install(StreamError::Unavailable.with_source(error))
+}
+
+async fn open(
+    root: &Path,
+    limits: LocalStreamLimits,
+) -> Result<Arc<LocalStream>, CutSimulationError> {
+    LocalStream::open(root, limits)
+        .await
+        .map(Arc::new)
+        .map_err(setup_error)
 }
 
 async fn once<O, T, S, SF, R, RF, V, VF>(
@@ -130,8 +137,8 @@ where
     V: Fn(Arc<LocalStream>) -> VF,
     VF: Future<Output = O>,
 {
-    let directory = tempfile::tempdir().expect("crash-cut directory");
-    let stream = open(directory.path(), limits).await;
+    let directory = tempfile::tempdir().map_err(setup_error)?;
+    let stream = open(directory.path(), limits).await?;
     setup(stream.clone()).await;
     let cutter = Arc::new(Cutter {
         cut,
@@ -147,16 +154,19 @@ where
         .await
         .map_err(CutSimulationError::Install)?;
     let result = run(stream.clone()).await;
-    let unfaithful = cutter.unfaithful.lock().expect("simulation slot").take();
+    let unfaithful = cutter
+        .unfaithful
+        .lock()
+        .map_err(|_| CutSimulationError::Lock)?
+        .take();
     if let Some(error) = unfaithful {
         return Err(error);
     }
     let writes = cutter.landed.load(Ordering::SeqCst);
-    let Ok(stream) = Arc::try_unwrap(stream) else {
-        panic!("operation retained the crashed provider");
-    };
-    drop(stream);
-    let observed = recover(open(directory.path(), limits).await).await;
+    let retired = Arc::try_unwrap(stream);
+    assert!(retired.is_ok(), "operation retained the crashed provider");
+    drop(retired);
+    let observed = recover(open(directory.path(), limits).await?).await;
     Ok((writes, result, observed))
 }
 
