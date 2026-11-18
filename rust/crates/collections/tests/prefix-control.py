@@ -25,7 +25,7 @@ def main():
          "compiled_prefix_matches_original_keys_and_refuses_original_read_credit", "items refused"),
     ]
     recovery = shlex.join(["python3", __file__])
-    command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-collections", "--lib", "-E"]
+    command = ["bazel", "run", "//rust/crates/collections:acyclic_collections_test_cases", "--"]
     step = "source-anchor"
     try:
         for name, anchor, replacement, count, test, expected in controls:
@@ -34,10 +34,10 @@ def main():
                 raise ValueError("original source anchor changed")
             step = name + ":negative"
             path.write_bytes(source.replace(anchor, replacement))
-            result = subprocess.run(command + [f"test({test})"], text=True,
+            result = subprocess.run(command + [f"tests::compiled_prefix::{test}", "--exact"], text=True,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             print(f"{step}: exit={result.returncode}\n{result.stdout}", flush=True)
-            if not (result.returncode == 100 and "0 passed, 1 failed" in result.stdout
+            if not (result.returncode == 101 and "test result: FAILED. 0 passed; 1 failed;" in result.stdout
                     and f"test tests::compiled_prefix::{test} ... FAILED" in result.stdout
                     and expected in result.stdout):
                 raise ValueError("unchanged semantic oracle did not reject the defect")
@@ -49,7 +49,7 @@ def main():
     if path.read_bytes() != source:
         raise SystemExit(f"REFUSED step=source-restoration; recovery=git restore -- {path}")
     step = "restored-original"
-    positive = command + ["test(compiled_prefix_)"]
+    positive = command + ["compiled_prefix_"]
     result = subprocess.run(positive)
     if result.returncode:
         raise SystemExit(f"REFUSED step={step}; recovery={shlex.join(positive)}")
