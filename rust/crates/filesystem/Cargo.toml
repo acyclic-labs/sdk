@@ -18,7 +18,6 @@ categories = ["filesystem", "data-structures"]
 mounts-fuse = true
 share-separate-deps = true
 unit-test-only-sources = [
-    "src/access/fixtures.rs",
     "src/access/trie/shared/tests.rs",
     "src/async_storage/work/frame/tests.rs",
     "src/collection/tests.rs",

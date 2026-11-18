@@ -19,7 +19,11 @@ pub trait StreamBackedAuthority: AsyncAuthorityStore {
     /// Exact Stream implementation used by this deployment.
     type Stream: acyclic_stream::StreamProvider;
 
-    /// Returns the shared provider; no shadow log or multipart catalog is created.
+    /// Returns the shared provider for the filesystem's multipart storage.
+    ///
+    /// This method lets authority implementations supply the provider behind
+    /// the shared storage API. HTTP handlers use workspace operations and
+    /// have no provider accessor on the workspace.
     fn stream_provider(&self) -> Arc<Self::Stream>;
 }
 

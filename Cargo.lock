@@ -593,8 +593,10 @@ dependencies = [
  "acyclic-fs",
  "acyclic-fs-format",
  "acyclic-fs-s3-http",
+ "acyclic-fs-work",
  "async-trait",
  "axum",
+ "hex",
  "s3s",
  "tokio",
 ]

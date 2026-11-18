@@ -29,13 +29,15 @@ pub struct S3MultipartRetentionLimits {
     /// Largest number of durable upload registry entries examined.
     pub maximum_uploads: Option<u64>,
     /// Largest number of distinct staged immutable objects retained.
+    /// Checked after each complete object closure is collected.
     pub maximum_objects: Option<u64>,
     /// Largest cumulative canonical bytes authenticated while tracing roots.
+    /// Checked after each closure walk, which is bounded by the caller's work budget.
     pub maximum_object_bytes: Option<u64>,
 }
 
 impl S3MultipartRetentionLimits {
-    /// Rejects zero limits and inconsistent multipart bounds.
+    /// Rejects zero retention limits.
     ///
     /// # Errors
     ///
