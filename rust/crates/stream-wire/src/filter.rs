@@ -4,6 +4,16 @@ use prost::Message as _;
 
 use crate::{headers::MAX_RECORD_KEY_BYTES, wire};
 
+/// Tests a key against sorted, disjoint ranges produced by canonicalization.
+#[must_use]
+pub fn contains_key(ranges: &[wire::KeyRange], key: &[u8]) -> bool {
+    ranges
+        .partition_point(|range| range.start.as_ref() <= key)
+        .checked_sub(1)
+        .and_then(|index| ranges.get(index))
+        .is_some_and(|range| range.end.is_empty() || key < range.end.as_ref())
+}
+
 /// A filter cannot be represented by the wire contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilterError {
