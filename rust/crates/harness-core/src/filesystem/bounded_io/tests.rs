@@ -53,7 +53,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         assert_eq!(actual_capability.layers.len(), 1);
         assert!(physical.count_total > 0, "allocation observer is active");
         assert!(
-            physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+            physical.bytes_max <= native.receipt()?.peak_allocation_bytes - baseline,
             "physical={physical:?}; receipt={:?}",
             native.receipt()
         );
@@ -114,7 +114,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
                 "native diagnostic must retain its physical storage: prefix={length}; physical={physical:?}; custody={retained}"
             );
             assert!(
-                physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+                physical.bytes_max <= native.receipt()?.peak_allocation_bytes - baseline,
                 "prefix={length}; physical={physical:?}; receipt={:?}",
                 native.receipt()
             );
