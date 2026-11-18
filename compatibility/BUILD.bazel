@@ -115,6 +115,7 @@ rust_test(
         "//rust/crates/collections:tree",
         "//rust/crates/conformance/agent-host:tree",
         "//rust/crates/conformance/cloudflare:tree",
+        "//rust/crates/conformance/filesystem:tree",
         "//rust/crates/conformance/hosted-actors:tree",
         "//rust/crates/conformance:tree",
         "//rust/crates/contract-derive:tree",

@@ -6,8 +6,6 @@ pub use acyclic_agent_host_conformance as agent_host;
 /// Production actor-client cases shared by local and hosted session adapters.
 #[cfg(all(feature = "client-session", not(target_arch = "wasm32")))]
 pub mod client;
-/// Complete filesystem workload taxonomy, selectors, and portable vectors.
-pub mod filesystem;
 /// Provider-neutral inference assertions over the public streaming model seam.
 pub mod inference;
 /// Machine-readable cross-language conformance reports and qualification receipts.

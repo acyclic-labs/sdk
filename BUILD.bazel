@@ -119,6 +119,7 @@ filegroup(
         "//rust/crates/conformance:Cargo.toml",
         "//rust/crates/conformance/agent-host:Cargo.toml",
         "//rust/crates/conformance/cloudflare:Cargo.toml",
+        "//rust/crates/conformance/filesystem:Cargo.toml",
         "//rust/crates/conformance/hosted-actors:Cargo.toml",
         "//rust/crates/contract-derive:Cargo.toml",
         "//rust/crates/decimal-u64:Cargo.toml",
