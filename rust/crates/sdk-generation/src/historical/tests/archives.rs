@@ -482,11 +482,11 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
         assert!(files.contains_key(name));
         let path = fixture.path().join(name);
         fs::write(&path, b"changed source input").unwrap();
+        let error =
+            verify_archive(&metadata, fixture.path(), &revision, &release, &archive).unwrap_err();
         assert!(
-            verify_archive(&metadata, fixture.path(), &revision, &release, &archive)
-                .unwrap_err()
-                .contains("source bytes differ"),
-            "{name}"
+            error.contains("source bytes differ") && error.ends_with(name),
+            "{name}: {error}"
         );
         fs::write(path, original).unwrap();
     }
