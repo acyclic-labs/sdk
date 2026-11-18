@@ -60,17 +60,13 @@ impl Ephemeral {
         if self.owned.is_empty() {
             return Ok(Vec::new());
         }
-        let lower = format!("{}/", path.as_str());
-        let upper = format!("{}0", path.as_str());
+        let descendants = path.descendants();
         self.owned
-            .range::<str, _>((
-                std::ops::Bound::Included(lower.as_str()),
-                std::ops::Bound::Excluded(upper.as_str()),
-            ))
+            .range(descendants.bounds())
             .map(|(top, _)| {
                 StreamPath::new(
                     top.as_str()
-                        .strip_prefix(lower.as_str())
+                        .strip_prefix(descendants.prefix.as_str())
                         .ok_or(StreamError::InvalidPath)?,
                 )
             })
@@ -318,12 +314,7 @@ impl MemoryStream {
                 continue;
             }
             next.remove(top, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
-            let lower = format!("{}/", top.as_str());
-            let upper = format!("{}0", top.as_str());
-            gone.extend(state.signals.keys_in::<str, _>((
-                std::ops::Bound::Included(lower.as_str()),
-                std::ops::Bound::Excluded(upper.as_str()),
-            ))?);
+            gone.extend(state.signals.keys_in(top.descendants().bounds())?);
             gone.push(top.clone());
         }
         let (mut notify, _notification_claim) = self.vector(gone.len())?;

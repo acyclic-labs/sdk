@@ -108,16 +108,11 @@ impl Before {
             // A fork can create a followed descendant without appending to it.
             // Consult active subscriptions, never enumerate the forked subtree.
             if fork {
-                let lower = format!("{}/", path.as_str());
-                let upper = format!("{}0", path.as_str());
-                let range = (
-                    std::ops::Bound::Included(lower.as_str()),
-                    std::ops::Bound::Excluded(upper.as_str()),
-                );
-                for Key::Records(path) in publications.interests.keys_in::<str, _>(range)? {
+                let descendants = path.descendants();
+                for Key::Records(path) in publications.interests.keys_in(descendants.bounds())? {
                     paths.insert(path);
                 }
-                paths.extend(publications.follows.keys_in::<str, _>(range)?);
+                paths.extend(publications.follows.keys_in(descendants.bounds())?);
             }
             let mut next = Some(path);
             while let Some(path) = next {

@@ -247,6 +247,26 @@ impl StreamPath {
     pub(crate) fn ancestors_including_self(&self) -> impl Iterator<Item = &str> {
         std::iter::successors(Some(self.as_str()), |&path| Self::parent_text(path))
     }
+
+    pub(crate) fn descendants(&self) -> Descendants {
+        // ASCII '0' immediately follows '/', so this interval selects only descendants.
+        Descendants {
+            prefix: format!("{self}/"),
+            end: format!("{self}0"),
+        }
+    }
+}
+
+pub(crate) struct Descendants {
+    pub(crate) prefix: String,
+    end: String,
+}
+
+impl Descendants {
+    pub(crate) fn bounds(&self) -> impl std::ops::RangeBounds<str> + '_ {
+        use std::ops::Bound::{Excluded, Included};
+        (Included(self.prefix.as_str()), Excluded(self.end.as_str()))
+    }
 }
 
 // Borrow canonical path components without allocating another path or matcher.

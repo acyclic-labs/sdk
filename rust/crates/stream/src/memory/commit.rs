@@ -1121,12 +1121,7 @@ fn install_namespace(
             }
         }
         if matches!(fact, CommittedMutation::Fork(_)) {
-            let prefix = format!("{}/", path.as_str());
-            let upper = format!("{}0", path.as_str());
-            let created = state.signals.keys_in::<str, _>((
-                std::ops::Bound::Included(prefix.as_str()),
-                std::ops::Bound::Excluded(upper.as_str()),
-            ))?;
+            let created = state.signals.keys_in(path.descendants().bounds())?;
             for path in created {
                 if state.paths.get(&path).is_none() {
                     continue;
