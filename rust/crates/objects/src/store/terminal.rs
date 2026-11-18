@@ -224,7 +224,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let mut existed = false;
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
-                let name = key.rsplit('/').next().ok_or_else(corrupt)?;
+                let name = key
+                    .strip_prefix(pages.prefix.as_str())
+                    .ok_or_else(corrupt)?;
                 if batch_fence(name)? > fence {
                     continue;
                 }
