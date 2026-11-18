@@ -1,0 +1,13 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "exact_u32",
+    src = "proof.rs",
+    srcs = [
+        "//rust/crates/filesystem-base:src/numeric.rs",
+        "//rust/crates/filesystem:src/kani_proofs.rs",
+    ],
+    harness = "production::exact_u32_from_f64_all_bits",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

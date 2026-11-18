@@ -1,0 +1,60 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+_SRCS = [
+    "//rust/crates/harness-control:src/epochs/kernel.rs",
+    "//rust/crates/harness-control:src/epochs/protocol.rs",
+]
+
+kani_test(
+    name = "cuts",
+    src = "//rust/proofs/model-epochs:src/lib.rs",
+    srcs = _SRCS,
+    harness = "proofs::cuts_only_advance_at_complete_contiguous_exchanges",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "token_arithmetic",
+    src = "//rust/proofs/model-epochs:src/lib.rs",
+    srcs = _SRCS,
+    harness = "proofs::token_arithmetic_never_wraps_or_underestimates",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "output_reservation",
+    src = "//rust/proofs/model-epochs:src/lib.rs",
+    srcs = _SRCS,
+    harness = "proofs::output_reservation_and_fork_coverage_are_exact",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "preparation_and_completion",
+    src = "//rust/proofs/model-epochs:src/lib.rs",
+    srcs = _SRCS,
+    harness = "proofs::preparation_and_completion_preserve_the_current_intent",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "restore_and_swap",
+    src = "//rust/proofs/model-epochs:src/lib.rs",
+    srcs = _SRCS,
+    harness = "proofs::restore_and_swap_preserve_the_exact_prepared_identity",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "fanout",
+    src = "//rust/proofs/model-epochs:src/lib.rs",
+    srcs = _SRCS,
+    harness = "proofs::fanout_preserves_settled_coverage_and_pending_identity",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

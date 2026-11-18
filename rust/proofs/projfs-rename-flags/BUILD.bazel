@@ -1,0 +1,10 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "rename_flags",
+    src = "//rust/crates/filesystem:tests/projfs_rename_flags_proof.rs",
+    srcs = ["//rust/crates/filesystem:src/native_mount/projfs/rename_flags.rs"],
+    harness = "readonly_replacement_preserves_base_flags_and_adds_only_the_required_attribute_flag",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

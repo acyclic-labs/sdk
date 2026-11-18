@@ -1,0 +1,19 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "complete_arc_layout",
+    src = "//rust/crates/filesystem/proofs/control-layout:lib.rs",
+    srcs = ["//rust/crates/filesystem:src/arc_layout.rs"],
+    harness = "complete_arc_layout",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "missing_weak_counter",
+    src = "//rust/crates/filesystem/proofs/control-layout:lib.rs",
+    srcs = ["//rust/crates/filesystem:src/arc_layout.rs"],
+    harness = "missing_weak_counter_is_detected",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

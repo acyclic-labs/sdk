@@ -1,0 +1,30 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "accepted_capture",
+    src = "//rust/crates/harness-core:tests/formal/native_capture_bounds.rs",
+    srcs = ["//rust/crates/harness-core:src/filesystem/native_capture_bounds.rs"],
+    harness = "accepted_capture_has_finite_control_and_complete_result_allowance",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "zero_capture_timeout_is_accepted",
+    src = "//rust/crates/harness-core:tests/formal/native_capture_bounds_negative.rs",
+    srcs = ["//rust/crates/harness-core:src/filesystem/native_capture_bounds.rs"],
+    harness = "zero_capture_timeout_is_accepted",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "maximum_output_fits_small_result",
+    src = "//rust/crates/harness-core:tests/formal/native_capture_bounds_negative.rs",
+    srcs = ["//rust/crates/harness-core:src/filesystem/native_capture_bounds.rs"],
+    harness = "maximum_output_fits_small_result",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

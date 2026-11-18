@@ -1,0 +1,10 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "constant_callbacks",
+    src = "//rust/crates/filesystem:tests/projfs_constant_callbacks.rs",
+    srcs = ["//rust/crates/filesystem:src/native_mount/projfs/constant_callbacks.rs"],
+    harness = "all_callback_arguments_are_ignored_and_each_status_is_constant",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
