@@ -724,10 +724,13 @@ fn write_registry_transport(support: &Path) {
         ]
     }).collect::<Vec<_>>();
     responses.sort();
-    let records = responses
-        .iter()
-        .map(|(suffix, response)| format!("{suffix}\n{response}\n"))
-        .collect::<String>();
+    let mut records = String::new();
+    for (suffix, response) in responses {
+        records.push_str(&suffix);
+        records.push('\n');
+        records.push_str(&response);
+        records.push('\n');
+    }
     fs::write(support.join("registry-responses.txt"), records).unwrap();
     let destination = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
     let source = runtime::binary("registry-transport-fixture");
