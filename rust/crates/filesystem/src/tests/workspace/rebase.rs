@@ -88,6 +88,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
                 ..
             }))
         ));
+        let spent = spent?;
         assert_eq!(spent.backend_read_operations, reads);
         assert_eq!(
             live, baseline,
@@ -114,6 +115,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     let WorkspaceRebase::Rebased(first) = result? else {
         return Err("first live rebase did not publish".into());
     };
+    let spent = spent?;
     assert!(spent.backend_read_operations > 2);
     assert!(spent.backend_write_operations > 0);
     assert!(spent.authority_records_appended > 0);

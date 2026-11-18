@@ -293,6 +293,7 @@ async fn reservation_preserves_original_live_peak_and_refuses_before_publication
         let (result, spent, live, baseline) = workspace
             .reserve_publication(operation, &source, &cancellation)
             .await;
+        let spent = spent?;
         spent.verify(source.budget)?;
         if writes == 0 {
             // The authority call spends the caller's original frame (#2111),

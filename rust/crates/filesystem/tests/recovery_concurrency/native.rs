@@ -72,7 +72,8 @@ async fn native_prepared_packet(
 }
 
 #[tokio::test]
-async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_prefixes() {
+async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_prefixes()
+-> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services().expect("actual native I/O services");
     for after_write in [false, true] {
         for cancel_after_action in [false, true] {
@@ -195,10 +196,12 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
             );
         }
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_packet() {
+async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_packet()
+-> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services().expect("actual native I/O services");
     let directory = tempfile::tempdir().expect("real native conflict fixture");
     let budget = finite_native_budget();
@@ -261,4 +264,5 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
         .unwrap()
         .verify(budget)
         .expect("actual whole conflict prefix");
+    Ok(())
 }

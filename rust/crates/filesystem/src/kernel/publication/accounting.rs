@@ -5,11 +5,13 @@ pub(super) struct PublicationStepFailure<E> {
     pub(super) work: Result<Option<WorkCounters>, crate::WorkObservationError>,
 }
 
-pub(super) fn accept_backend(
-    accounting: &mut KernelAccounting<'_>,
-    more: WorkCounters,
-) -> Result<(), crate::FsError> {
-    accounting.accept_backend(more)
+impl<E> From<OperationFailure<E>> for PublicationStepFailure<E> {
+    fn from(failure: OperationFailure<E>) -> Self {
+        Self {
+            cause: failure.error,
+            work: failure.work.map(|work| Some(*work)),
+        }
+    }
 }
 
 pub(super) fn accept_step<T, E: From<crate::FsError>>(
@@ -19,13 +21,13 @@ pub(super) fn accept_step<T, E: From<crate::FsError>>(
     match result {
         Ok((value, work)) => {
             if let Some(work) = work {
-                accept_backend(accounting, work).map_err(E::from)?;
+                accounting.accept_backend(work).map_err(E::from)?;
             }
             Ok(value)
         }
         Err(failure) => {
             match failure.work {
-                Ok(Some(work)) => accept_backend(accounting, work).map_err(E::from)?,
+                Ok(Some(work)) => accounting.accept_backend(work).map_err(E::from)?,
                 Ok(None) => {}
                 Err(observation) => accounting.invalidate_receipt(observation),
             }

@@ -4,6 +4,20 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn poisoned_work_refuses_receipt_and_live_allocation_observations() {
+    let cancellation = CancellationToken::new();
+    let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert_eq!(work.receipt(), Ok(WorkCounters::UNCHARGED));
+    assert_eq!(work.live_allocation_bytes(), Ok(0));
+    work.poison_native_original_work();
+    assert_eq!(work.receipt(), Err(crate::WorkObservationError::Poisoned));
+    assert_eq!(
+        work.live_allocation_bytes(),
+        Err(crate::WorkObservationError::Poisoned)
+    );
+}
+
 async fn source_reference<D: DemandSource>(source: &D) -> Result<SourceReference, Box<dyn Error>> {
     let cancellation = CancellationToken::new();
     Ok(source

@@ -699,7 +699,7 @@ async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
         fixture.work.clone(),
     )
     .await
-    .map_err(|(cause, _)| cause)?
+    .map_err(|failure| failure.into_error())?
     .value
     .ok_or("prepared journal is absent")?;
     assert!(
@@ -724,7 +724,7 @@ async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
         detached.clone(),
     )
     .await
-    .map_err(|(cause, _)| cause)?
+    .map_err(|failure| failure.into_error())?
     .value;
     assert!(
         journal

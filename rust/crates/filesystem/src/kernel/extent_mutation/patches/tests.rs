@@ -6,7 +6,10 @@ fn observe(
     raw: &[Patch],
     final_size: u64,
     sort: impl FnOnce(&mut Owned<Vec<u64>>, &mut KernelAccounting<'_>) -> Result<(), FsError>,
-) -> (Result<Vec<Patch>, String>, WorkCounters) {
+) -> (
+    Result<Vec<Patch>, String>,
+    Result<WorkCounters, crate::WorkObservationError>,
+) {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let result = normalize_raw_patches(raw, final_size, &mut accounting, sort)
@@ -24,8 +27,10 @@ fn compare(
     final_size: u64,
     sort: impl FnOnce(&mut Owned<Vec<u64>>, &mut KernelAccounting<'_>) -> Result<(), FsError>,
 ) -> TestCaseResult {
-    let (actual, mut receipt) = observe(raw, final_size, sort);
+    let (actual, receipt) = observe(raw, final_size, sort);
     let (expected, old) = observe(raw, final_size, sort_all_coordinates);
+    let mut receipt = receipt.map_err(|error| TestCaseError::fail(error.to_string()))?;
+    let old = old.map_err(|error| TestCaseError::fail(error.to_string()))?;
     prop_assert_eq!(actual, expected);
     let active = raw
         .iter()

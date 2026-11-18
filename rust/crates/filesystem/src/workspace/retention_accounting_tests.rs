@@ -35,6 +35,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
             completion: None,
         });
         let (result, spent, live, baseline) = generation.pin("exact", &source, &cancellation).await;
+        let spent = spent?;
         spent.verify(source.budget)?;
         assert!(authority.observation.lock().unwrap().is_none());
         if reads == 0 {
@@ -69,6 +70,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
         .retain_if_unpublished("exact", &source, &cancellation)
         .await;
     result?;
+    let spent = spent?;
     spent.verify(budget)?;
     assert!(authority.observation.lock().unwrap().is_none());
     assert!(spent.backend_read_operations > 0);

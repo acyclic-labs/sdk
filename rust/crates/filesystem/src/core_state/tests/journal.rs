@@ -101,7 +101,8 @@ async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_saf
 }
 
 #[tokio::test]
-async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
+async fn previous_only_materialization_journal_is_discoverable_and_recovered()
+-> Result<(), crate::WorkObservationError> {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
     let namespace = store.namespace().unwrap();
@@ -179,10 +180,12 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
         assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(work.receipt().unwrap(), prefix);
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn accepted_materialization_completion_survives_cancellation_and_restart() {
+async fn accepted_materialization_completion_survives_cancellation_and_restart()
+-> Result<(), crate::WorkObservationError> {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("checkout");
     std::fs::create_dir(&root).unwrap();
@@ -268,6 +271,7 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
     assert_eq!(recovered.root_identity, root_identity);
     assert_eq!(recovered.work, prefix);
     assert_eq!(std::fs::read(effect).unwrap(), b"aftere");
+    Ok(())
 }
 
 #[derive(Default)]
@@ -328,7 +332,8 @@ fn ordinary_record_flush_failures_are_reported() {
 }
 
 #[test]
-fn checkpoint_records_coalesce_tokens_on_ordinary_and_native_paths() {
+fn checkpoint_records_coalesce_tokens_on_ordinary_and_native_paths()
+-> Result<(), crate::WorkObservationError> {
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceContextId::from_bytes([0x4a; 16]);
     let values = [
@@ -375,6 +380,7 @@ fn checkpoint_records_coalesce_tokens_on_ordinary_and_native_paths() {
             }
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -404,8 +410,12 @@ fn checkpoint_record_buffer_failures_are_reported_before_the_barrier() {
 }
 
 #[test]
-fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
-    fn checkpoint(children: ContextChildren, native: bool) -> (u64, u64, u64, usize) {
+fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once()
+-> Result<(), crate::WorkObservationError> {
+    fn checkpoint(
+        children: ContextChildren,
+        native: bool,
+    ) -> Result<(u64, u64, u64, usize), crate::WorkObservationError> {
         let directory = tempfile::tempdir().unwrap();
         let cancellation = crate::CancellationToken::new();
         let work =
@@ -455,15 +465,15 @@ fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
             .unwrap()
             .verify(super::native::finite_budget())
             .unwrap();
-        (
+        Ok((
             after.bytes_encoded - before.bytes_encoded,
             after.object_bytes_written - before.object_bytes_written,
             after.backend_write_operations - before.backend_write_operations,
             expected.len(),
-        )
+        ))
     }
     for native in [false, true] {
-        let empty = checkpoint(ContextChildren::default(), native);
+        let empty = checkpoint(ContextChildren::default(), native)?;
         let populated = checkpoint(
             ContextChildren(
                 [1_u8, 2, 3, 4]
@@ -471,7 +481,7 @@ fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
                     .into(),
             ),
             native,
-        );
+        )?;
         assert!(populated.3 > empty.3);
         if native {
             let growth = (populated.3 - empty.3) as u64;
@@ -491,10 +501,12 @@ fn checkpoint_native_accounting_tracks_encoded_and_written_bytes_once() {
             );
         }
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
+async fn journal_progress_reads_and_writes_only_the_appended_preimage()
+-> Result<(), crate::WorkObservationError> {
     let mut first_history = None;
     for count in [8, 64, 512] {
         let directory = tempfile::tempdir().unwrap();
@@ -618,6 +630,7 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .is_none()
         );
     }
+    Ok(())
 }
 
 #[tokio::test]

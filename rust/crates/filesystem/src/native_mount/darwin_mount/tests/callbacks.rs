@@ -19,7 +19,7 @@ fn namespace_failure_keeps_its_darwin_failure_and_work_prefix() -> TestResult {
         context.run::<()>(false, |_| panic!("terminal callback ran again")),
         Err(libc::ECANCELED)
     );
-    let (cause, prefix) = callback_failure(&context);
+    let (cause, prefix) = callback_failure(&context)?;
     assert!(matches!(
         cause,
         NativeMountError::Source(MountSourceError::NamespacePath(
@@ -51,7 +51,7 @@ fn failed_completion_keeps_its_darwin_failure_and_work_prefix() -> TestResult {
         context.run::<()>(false, |_| panic!("terminal callback ran again")),
         Err(libc::ENOENT)
     );
-    let (cause, prefix) = callback_failure(&context);
+    let (cause, prefix) = callback_failure(&context)?;
     assert!(matches!(
         cause,
         NativeMountError::Source(MountSourceError::MutationFinalization { .. })
@@ -90,7 +90,7 @@ fn callback_panic_survives_context_retirement_and_stays_fatal() -> TestResult {
         }),
         Err(libc::EIO)
     );
-    let (failure, completed) = callback_failure(&context);
+    let (failure, completed) = callback_failure(&context)?;
     assert_eq!(
         context.run::<()>(false, |_| panic!("fatal callback ran again")),
         Err(libc::EIO)
@@ -144,7 +144,7 @@ fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> Te
             assert_eq!(getattr(&context, c"/"), 0);
             assert_eq!(create(&context, c"/guarded"), (-libc::EACCES, 0));
         }
-        let failure = callback_failure(&context);
+        let failure = callback_failure(&context)?;
         assert!(matches!(failure.0, NativeMountError::CallbackDenied { .. }));
         assert_eq!(failure.1, original.receipt().unwrap());
         assert_eq!(
@@ -206,7 +206,7 @@ fn rejected_allocations_and_copies_leave_source_contents_unchanged() -> TestResu
             assert_eq!(create(&context, c"/limited"), (-libc::EIO, 0));
             assert!(source.lookup(&path)?.is_none());
         }
-        let failure = callback_failure(&context);
+        let failure = callback_failure(&context)?;
         assert!(matches!(
             failure.0,
             NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
@@ -234,7 +234,7 @@ fn absence_probes_remain_usable_until_original_cancellation() -> TestResult {
     assert_eq!(getattr(&context, c"/later"), 0);
     cancellation.cancel();
     assert_eq!(getattr(&context, c"/later"), -libc::ECANCELED);
-    let failure = callback_failure(&context);
+    let failure = callback_failure(&context)?;
     assert!(matches!(
         failure.0,
         NativeMountError::Demand(crate::DemandError::Cancelled)
@@ -357,13 +357,16 @@ fn authored_guard_context(
     Ok((context, guard, original))
 }
 
-fn callback_failure(context: &DarwinMountContext) -> (NativeMountError, WorkCounters) {
-    context
+fn callback_failure(
+    context: &DarwinMountContext,
+) -> Result<(NativeMountError, WorkCounters), crate::WorkObservationError> {
+    let (error, work) = context
         .handler_failure
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take_failure()
-        .expect("callback failed")
+        .expect("callback failed");
+    Ok((error, work?))
 }
 
 fn getattr(context: &Arc<DarwinMountContext>, path: &CStr) -> c_int {

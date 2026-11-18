@@ -193,7 +193,7 @@ mod tests {
                     })
                 ),
                 "restored result: {restored_result:?}; receipt: {:?}",
-                restored.receipt()
+                restored.receipt()?
             );
             assert_eq!(restored.receipt()?.bytes_hashed, 0);
         }

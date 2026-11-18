@@ -127,7 +127,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
         let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -267,7 +267,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             "unmarked opaque results are not decoded as feedback"
         );
         if native {
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
         let mut finite = budget;
         finite.backend_read_operations = 0;

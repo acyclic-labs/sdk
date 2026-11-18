@@ -337,7 +337,7 @@ impl FuseSession {
                 )
                 .map_err(|error| {
                     core.take_handler_failure()
-                        .map_or(error, |failure| failure.0)
+                        .map_or(error, crate::native_mount::shared::outcome::observed_error)
                 })?;
             operation.set("open FUSE mountpoint after INIT");
             let (directory, identity) =

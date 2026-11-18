@@ -128,8 +128,10 @@ impl DarwinMountSession {
                 }
             })
             .map_err(|status| {
-                self.take_callback_failure()
-                    .map_or_else(|| driver_errno(status), |(cause, _)| cause)
+                self.take_callback_failure().map_or_else(
+                    || driver_errno(status),
+                    crate::native_mount::shared::outcome::observed_error,
+                )
             })
     }
 

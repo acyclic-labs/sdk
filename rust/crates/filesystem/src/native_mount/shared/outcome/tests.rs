@@ -1,6 +1,22 @@
 use super::*;
 use crate::native_mount::{MountSourceError, NativeMountError};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn callback_projection_reports_an_unobservable_receipt() {
+    let cause = || NativeMountError::Source(MountSourceError::NotFound);
+    assert!(matches!(
+        observed_error((cause(), Ok(crate::WorkCounters::UNCHARGED))),
+        NativeMountError::Source(MountSourceError::NotFound)
+    ));
+    assert!(matches!(
+        observed_error((cause(), Err(crate::WorkObservationError::Poisoned))),
+        NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::OriginalWorkPoisoned
+        )
+    ));
+}
+
 fn check_callback(error: &NativeMountError, expected: CallbackFailure) {
     assert_eq!(callback_failure(error), expected, "{error:?}");
     #[cfg(any(target_os = "linux", target_os = "macos"))]

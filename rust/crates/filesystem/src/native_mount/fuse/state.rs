@@ -641,7 +641,6 @@ impl ProjectionState {
     pub(super) fn attr(&self, inode: u64, lookup: &MountLookup) -> Result<FileAttr, i32> {
         let node = lookup.node;
         let kind = file_type(node.kind)?;
-        let default_mode = if self.writable { 0o755 } else { 0o555 };
         Ok(FileAttr {
             ino: INodeNo(inode),
             size: node.logical_bytes,
@@ -651,8 +650,7 @@ impl ProjectionState {
             ctime: metadata_time(lookup.metadata.changed_ns),
             crtime: metadata_time(lookup.metadata.created_ns),
             kind,
-            perm: u16::try_from(metadata_or(lookup.metadata.posix_mode, default_mode) & 0o7777)
-                .unwrap_or(0o7777),
+            perm: crate::native_mount::posix_permissions(lookup.metadata.posix_mode, self.writable),
             nlink: u32::try_from(node.link_count).unwrap_or(u32::MAX),
             uid: metadata_or(lookup.metadata.posix_uid, self.mount_uid),
             gid: metadata_or(lookup.metadata.posix_gid, self.mount_gid),

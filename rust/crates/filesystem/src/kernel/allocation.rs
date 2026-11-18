@@ -13,7 +13,6 @@ pub(crate) type SharedAllocationState = crate::sync::InlineMutex<SharedAllocatio
 #[derive(Debug, Default)]
 pub struct AllocationLedger {
     state: LedgerState,
-    retirement_failed: bool,
     observation_error: Option<crate::WorkObservationError>,
 }
 
@@ -346,7 +345,7 @@ impl AllocationLedger {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<u64, AllocationError> {
-        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(..)) {
+        if self.observation_error.is_some() || matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.claim_elements::<T>(count, work, budget))
@@ -358,7 +357,7 @@ impl AllocationLedger {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
-        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(..)) {
+        if self.observation_error.is_some() || matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.claim_bytes(bytes, operations, work, budget))
@@ -370,7 +369,7 @@ impl AllocationLedger {
         work: &WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
-        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(..)) {
+        if self.observation_error.is_some() || matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.reserve_allocation(bytes, work, budget))
@@ -385,7 +384,7 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
-        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(..)) {
+        if self.observation_error.is_some() || matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.record_reserved_allocation(bytes, work))
@@ -399,7 +398,7 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
-        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(..)) {
+        if self.observation_error.is_some() || matches!(self.state, LedgerState::Suspended(..)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.record_owned_bytes(bytes, work))
@@ -461,7 +460,8 @@ impl AllocationLedger {
             return;
         }
         if self.release_scratch_to(baseline).is_err() {
-            self.retirement_failed = true;
+            self.observation_error
+                .get_or_insert(crate::WorkObservationError::Poisoned);
         }
     }
 
@@ -520,9 +520,6 @@ impl AllocationLedger {
         if let Some(error) = self.observation_error {
             return Err(error.into());
         }
-        if self.retirement_failed {
-            return Err(WorkError::Overflow.into());
-        }
         if matches!(self.state, LedgerState::Suspended(..)) {
             return Err(crate::FsError::AccountingHandoffActive);
         }
@@ -540,7 +537,6 @@ impl AllocationLedger {
         };
         let owned = Self {
             state: LedgerState::Shared(std::sync::Arc::clone(state)),
-            retirement_failed: false,
             observation_error: self.observation_error,
         };
         self.state = match std::mem::take(&mut self.state) {

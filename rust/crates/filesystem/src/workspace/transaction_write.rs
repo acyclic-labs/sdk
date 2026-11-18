@@ -371,7 +371,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     /// Creates missing directory prefixes, checking each new prefix before
     /// staging it. Existing directories need no creation authority. All checks
     /// use the transaction's own observations, including earlier staged work.
-    pub async fn create_dir_all_checked<W: crate::facade::FsWork, E: From<WorkspaceError>>(
+    pub async fn create_dir_all_checked<
+        W: crate::facade::FsWork,
+        E: From<WorkspaceError> + From<crate::FsError>,
+    >(
         &mut self,
         path: &str,
         work: W,

@@ -292,7 +292,9 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                                             failure.error
                                         );
                                         prop_assert_eq!(checkout.root(), baseline.root());
-                                        *failure.work
+                                        *failure.work.map_err(|error| {
+                                            TestCaseError::fail(error.to_string())
+                                        })?
                                     }
                                 };
                                 prop_assert!(

@@ -55,7 +55,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
         assert!(
             physical.bytes_max <= native.receipt()?.peak_allocation_bytes - baseline,
             "physical={physical:?}; receipt={:?}",
-            native.receipt()
+            native.receipt()?
         );
         assert!(
             physical.bytes_current.cast_unsigned()
@@ -116,7 +116,7 @@ fn preparation_records_share_the_native_budget_and_cover_physical_storage() -> R
             assert!(
                 physical.bytes_max <= native.receipt()?.peak_allocation_bytes - baseline,
                 "prefix={length}; physical={physical:?}; receipt={:?}",
-                native.receipt()
+                native.receipt()?
             );
             drop(io);
             assert_eq!(native.live_allocation_bytes()?, baseline + retained);

@@ -697,8 +697,8 @@ mod prepared_leaf_tests {
         drop(file);
         // A shared original ledger owns an Arc before the operation starts.
         // Its adapter must likewise add no name allocation or encoding work.
-        let before = preparation.receipt();
-        let live = preparation.live_allocation_bytes();
+        let before = preparation.receipt()?;
+        let live = preparation.live_allocation_bytes()?;
         let file = open_ascii_leaf(
             &root.directory(),
             &name,

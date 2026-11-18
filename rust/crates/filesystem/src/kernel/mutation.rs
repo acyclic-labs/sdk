@@ -712,7 +712,7 @@ mod original_controls {
             ..WorkBudget::UNBOUNDED
         })?;
         let mut accounting = KernelAccounting::native(&limited, &cancellation);
-        let before = original.receipt();
+        let before = original.receipt()?;
         let error = MutationPlan::compile_with_accounting(operations, &mut accounting)
             .err()
             .ok_or("planner created an unaccounted path index")?;
@@ -722,7 +722,7 @@ mod original_controls {
                 WorkError::BudgetExceeded { .. }
             ))
         ));
-        assert_eq!(original.receipt(), before);
+        assert_eq!(original.receipt()?, before);
         drop(error);
         drop(input_guard);
         drop(limited);

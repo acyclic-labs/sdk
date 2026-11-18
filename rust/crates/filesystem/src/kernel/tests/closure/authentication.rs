@@ -127,7 +127,7 @@ async fn original_single_read_custody<S: crate::AsyncObjectStore>(
     require_owned: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = work.cancellation;
-    let baseline = original_live(work);
+    let baseline = original_live(work)?;
     let (read, bytes) = crate::kernel::read_object_with_accounting(
         store,
         generation,
@@ -144,12 +144,12 @@ async fn original_single_read_custody<S: crate::AsyncObjectStore>(
         );
     }
     assert!(
-        original_live(work) >= baseline + bytes,
+        original_live(work)? >= baseline + bytes,
         "single owned output funding retired at scope exit"
     );
     drop(read);
     crate::kernel::file_read::release_standalone_read_bytes(bytes, &mut work.accounting())?;
-    assert_eq!(original_live(work), baseline);
+    assert_eq!(original_live(work)?, baseline);
     Ok(())
 }
 
@@ -171,7 +171,7 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
         object_id: generation,
         maximum_bytes: limits().decode.maximum_object_bytes,
     }];
-    let batch_baseline = original_live(work);
+    let batch_baseline = original_live(work)?;
     let batch = crate::kernel::read_objects_with_accounting(
         store,
         &requests,
@@ -185,7 +185,7 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
         batch.value.capacity(),
     )?;
     assert!(
-        original_live(work) >= batch_baseline + retained,
+        original_live(work)? >= batch_baseline + retained,
         "batch output funding retired at scope exit"
     );
     drop(batch.value);
@@ -221,25 +221,25 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
         7 * (proof.work.object_probes - before.object_probes)
     );
     let retained = guard.retained_bytes();
-    let funded = original_live(work);
+    let funded = original_live(work)?;
     assert!(funded >= retained + 73);
     work.cancellation.cancel();
     assert!(work.check().is_err());
     drop(proof);
     drop(guard);
-    assert_eq!(original_live(work), funded - retained);
+    assert_eq!(original_live(work)?, funded - retained);
     drop(independent);
-    assert_eq!(original_live(work), funded - retained - 73);
+    assert_eq!(original_live(work)?, funded - retained - 73);
     Ok(())
 }
 
-fn original_live(work: &mut crate::AuthorityWork<'_>) -> u64 {
+fn original_live(work: &mut crate::AuthorityWork<'_>) -> Result<u64, crate::WorkObservationError> {
     let mut accounting = work.accounting();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
         return original.live_allocation_bytes().unwrap();
     }
-    accounting.standalone_parts().unwrap().0.live_bytes()
+    Ok(accounting.standalone_parts().unwrap().0.live_bytes())
 }
 
 #[tokio::test]

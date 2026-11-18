@@ -64,6 +64,12 @@ fn stream_state_code<C>(error: &crate::StreamStateStoreError<C>) -> Code {
     }
 }
 
+fn observation_code(error: &crate::WorkObservationError) -> Code {
+    match error {
+        crate::WorkObservationError::Poisoned => Code::Internal,
+        crate::WorkObservationError::Work(_) => Code::ResourceExhausted,
+    }
+}
 fn filesystem_code(error: &FsError) -> Code {
     use FsError as E;
     match error {

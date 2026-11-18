@@ -126,7 +126,8 @@ async fn original_mutation_phase_allows_new_sdk_readers_but_not_later_writers() 
 }
 
 #[tokio::test]
-async fn shared_original_read_and_write_gate_preserve_custody_and_tokens() {
+async fn shared_original_read_and_write_gate_preserve_custody_and_tokens()
+-> Result<(), Box<dyn std::error::Error>> {
     let gate = Arc::new(ViewGate::new());
     let cancellation = CancellationToken::new();
     let meter =
@@ -194,4 +195,5 @@ async fn shared_original_read_and_write_gate_preserve_custody_and_tokens() {
     assert!(gate.state.lock().expect("original gate").writer);
     drop(writer);
     assert!(!gate.state.lock().expect("original gate").writer);
+    Ok(())
 }

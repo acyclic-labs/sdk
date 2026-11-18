@@ -129,6 +129,12 @@ fn metadata_or<T>(field: MetadataField<T>, unavailable: T) -> T {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn posix_permissions(field: MetadataField<u32>, writable: bool) -> u16 {
+    u16::try_from(metadata_or(field, if writable { 0o755 } else { 0o555 }) & 0o7777)
+        .unwrap_or(0o7777)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
     match value.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_nanos()).map_err(|_| libc::EOVERFLOW),

@@ -1,6 +1,20 @@
 //! One semantic classification for every native namespace adapter.
 use crate::native_mount::{MountSourceError, NativeMountError};
 
+/// Retains an observation failure when a callback error leaves its receipt boundary.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn observed_error(
+    (cause, work): (
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    ),
+) -> NativeMountError {
+    match work {
+        Ok(_) => cause,
+        Err(error) => error.into(),
+    }
+}
+
 mod retention;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CallbackFailure {

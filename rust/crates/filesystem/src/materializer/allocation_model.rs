@@ -24,6 +24,7 @@ fn model<const BROKEN: bool>(resources: bool, cancelled: bool) {
             parent.clone()
         };
         let baseline = root.live_allocation_bytes();
+        assert!(baseline.is_ok());
         let parent_credit = parent
             .resource
             .as_ref()
@@ -36,6 +37,7 @@ fn model<const BROKEN: bool>(resources: bool, cancelled: bool) {
         let mut retiring = work.claim(4, 1, WorkCounters::UNCHARGED).unwrap();
         let mut empty = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
         let receipt = root.receipt();
+        assert!(receipt.is_ok());
         // Context owners remain live through join. Every state lock exercised
         // below is the production crate::sync leaf or resource mutex.
         let worker = loom::thread::spawn(move || {
@@ -59,7 +61,7 @@ fn model<const BROKEN: bool>(resources: bool, cancelled: bool) {
             nested.is_ok(),
             "empty retirement must not reacquire the original leaf"
         );
-        assert_eq!(root.live_allocation_bytes(), baseline + 4);
+        assert_eq!(root.live_allocation_bytes(), baseline.map(|live| live + 4));
         assert_eq!(root.receipt(), receipt);
         drop(empty);
         drop(retained);

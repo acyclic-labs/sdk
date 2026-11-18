@@ -68,8 +68,9 @@ fn context(
 }
 
 #[tokio::test]
-async fn stock_native_lineage_preserves_original_resource_and_durable_restart() {
-    native_lineage_cancellation_owns_physical_completion().await;
+async fn stock_native_lineage_preserves_original_resource_and_durable_restart()
+-> Result<(), crate::WorkObservationError> {
+    native_lineage_cancellation_owns_physical_completion().await?;
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xd2; 16]);
     let cxl = crate::CancellationToken::new();
@@ -102,7 +103,8 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
     work.receipt().unwrap().verify(finite_budget()).unwrap();
 }
 
-async fn native_lineage_cancellation_owns_physical_completion() {
+async fn native_lineage_cancellation_owns_physical_completion()
+-> Result<(), crate::WorkObservationError> {
     use std::task::Poll;
 
     // Each cancellation source, before execution and after durable completion.
@@ -213,10 +215,12 @@ async fn native_lineage_cancellation_owns_physical_completion() {
             );
         }
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
+async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange()
+-> Result<(), crate::WorkObservationError> {
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xd3; 16]);
     let cxl = crate::CancellationToken::new();
@@ -261,10 +265,12 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     ));
     assert_eq!(work.receipt().unwrap(), before);
     assert!(!store.root().exists());
+    Ok(())
 }
 
 #[tokio::test]
-async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_limit() {
+async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_limit()
+-> Result<(), crate::WorkObservationError> {
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceContextId::from_bytes([0xd4; 16]);
     let value = context(id, None, directory.path());

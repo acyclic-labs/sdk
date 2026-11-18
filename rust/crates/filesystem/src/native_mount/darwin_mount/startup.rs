@@ -327,8 +327,10 @@ impl DarwinMountSession {
                 .unwrap_or_else(PoisonError::into_inner);
         }
         original.admit(WorkCounters::UNCHARGED)?;
-        if let Some((error, _)) = self.take_callback_failure() {
-            return Err(error);
+        if let Some(failure) = self.take_callback_failure() {
+            return Err(crate::native_mount::shared::outcome::observed_error(
+                failure,
+            ));
         }
         if !state.mounted {
             return Err(driver_errno(libc::EIO));

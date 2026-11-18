@@ -8,7 +8,7 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
         let budget = acyclic_fs_work::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -100,7 +100,7 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
         drop(pending);
         scope.finish(0)?;
         assert_eq!(io.owned_bytes()?, 0);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
