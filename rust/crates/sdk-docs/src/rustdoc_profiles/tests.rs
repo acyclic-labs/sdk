@@ -64,12 +64,11 @@ fn browser_profiles_follow_cargo_features_and_binding_policy() {
     );
     package.metadata = serde_json::json!({"napi":{
         "wasm-package":"feature-rich", "wasm-features":["codec"]}});
-    let requested_features = BTreeSet::from(["codec".into()]);
     for disabled in [false, true] {
         package.metadata["napi"]["wasm-no-default-features"] = disabled.into();
         let profile = plan(&package, true).unwrap().unwrap();
         assert_eq!(profile.default_features, !disabled);
-        assert_eq!(profile.features, requested_features);
+        assert!(profile.features.iter().map(String::as_str).eq(["codec"]));
     }
     package.metadata["napi"]["wasm-features"] = serde_json::json!("wasm");
     let invalid_policy = plan(&package, true).unwrap_err();
