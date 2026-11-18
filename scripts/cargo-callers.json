@@ -55,10 +55,5 @@
   "scripts/test-build-stream-native.mjs",
   "scripts/test-provider-catalog-targets.py",
   "scripts/windows-rust-setup.ps1",
-  "scripts/workspace-defaults.mjs",
-  "typescript/packages/actors/test/browser-http-conformance.mjs",
-  "typescript/packages/actors/test/grpc-conformance.mjs",
-  "typescript/packages/objects/test/v1-grpc-conformance.mjs",
-  "typescript/packages/stream/test/grpc-provider-conformance.mjs",
-  "typescript/packages/stream/test/http-provider-conformance.mjs"
+  "scripts/workspace-defaults.mjs"
 ]

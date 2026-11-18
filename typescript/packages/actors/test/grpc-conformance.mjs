@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createSecureServer } from "node:http2";
 import { createServer } from "node:http";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { actorsHttpRoutes, conformanceCertificate } from "../../../../scripts/rust-conformance-fixtures.mjs";
+import { bazelExecutable } from "../../../../scripts/bazel-executables.mjs";
 import { fileURLToPath } from "node:url";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
@@ -25,13 +27,7 @@ async function actorsClient(options) {
   return await client.transport === "grpc" ? client : new ActorsClient({ ...configuration, endpoint: options.actorsWasmEndpoint ?? options.endpoint });
 }
 
-function rustRoutes(packageName, example) {
-  const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", packageName, "--example", example], { cwd: root, encoding: "utf8" });
-  assert.equal(generated.status, 0, generated.stderr);
-  return Object.fromEntries(JSON.parse(generated.stdout));
-}
-
-const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
+const actorRoutes = actorsHttpRoutes(root);
 
 function responseInitializer(method) {
   if (["DeployNamespace", "DeployWorker", "UpdateNamespace"].includes(method.name)) return { deployment: {name: "example", codeSha256: new Uint8Array(32).fill(1), revision: 1n} };
@@ -150,9 +146,7 @@ if (process.argv.includes("--client")) {
   process.exit(0);
 }
 
-const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
-assert.equal(generated.status, 0, generated.stderr);
-const identity = JSON.parse(generated.stdout);
+const identity = conformanceCertificate(root);
 const seen = new Map();
 const httpSeen = new Map();
 const httpServer = createServer(async (request, response) => {
@@ -246,7 +240,8 @@ try {
     });
   }
   await new Promise((resolve, reject) => {
-    const child = spawn("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "transport-conformance"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
+    const binary = bazelExecutable(root, "//rust/crates/actors:transport-conformance_example");
+    const child = spawn(binary, [], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(JSON.stringify(options));
     child.on("error", reject);
     child.on("exit", code => code === 0 ? resolve() : reject(new Error(`Rust conformance exited ${code}`)));
