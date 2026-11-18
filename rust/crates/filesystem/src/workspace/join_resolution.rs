@@ -396,8 +396,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<Owned<acyclic_fs_merge::merge_driver::ConflictView>>, WorkspaceError> {
-        if records[1].is_none()
-            || records[2].is_none()
+        let [base, ours, theirs] = records;
+        if ours.is_none()
+            || theirs.is_none()
             || records
                 .iter()
                 .flatten()
@@ -414,20 +415,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let mut texts: [Option<&str>; 3] = [None; 3];
         let reference = || {
             let mut view = record_conflict_view(self, file_id, None, ConflictKind::Binary);
-            [view.base, view.ours, view.theirs] =
-                std::array::from_fn(|index| match records[index] {
-                    Some(record) => ConflictValue::Record {
-                        generation: [self.base.id, self.target_head.id, self.source_head.id][index],
-                        file_id: record.file_id,
-                    },
-                    None => ConflictValue::Absent,
-                });
+            [view.base, view.ours, view.theirs] = [
+                (base, self.base.id),
+                (ours, self.target_head.id),
+                (theirs, self.source_head.id),
+            ]
+            .map(|(record, generation)| match record {
+                Some(record) => ConflictValue::Record {
+                    generation,
+                    file_id: record.file_id,
+                },
+                None => ConflictValue::Absent,
+            });
             view
         };
         let limits = acyclic_fs_base::text_merge::ByteMergeLimits { max_bytes: None };
-        for (index, (record, body)) in records.into_iter().zip(&mut bodies).enumerate() {
+        for ((record, body), text) in records.into_iter().zip(&mut bodies).zip(&mut texts) {
             let Some(record) = record else {
-                texts[index] = Some("");
+                *text = Some("");
                 continue;
             };
             let Some(bytes) = self
@@ -446,8 +451,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 return scalar_conflict_view(reference(), accounting).map(Some);
             };
             let bytes = body.insert(bytes);
-            texts[index] = acyclic_fs_base::text_merge::text_from_bytes(&bytes.bytes, limits).ok();
-            if contents == ConflictContents::Files && texts[index].is_none() {
+            *text = acyclic_fs_base::text_merge::text_from_bytes(&bytes.bytes, limits).ok();
+            if contents == ConflictContents::Files && text.is_none() {
                 return scalar_conflict_view(reference(), accounting).map(Some);
             }
         }
@@ -460,9 +465,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         match texts {
             [Some(base), Some(ours), Some(theirs)] => {
                 view.value.kind = ConflictKind::Text;
-                for (index, (slot, text)) in values.iter_mut().zip([base, ours, theirs]).enumerate()
+                for ((slot, text), record) in
+                    values.iter_mut().zip([base, ours, theirs]).zip(records)
                 {
-                    if records[index].is_none() {
+                    if record.is_none() {
                         continue;
                     }
                     let text = Owned::<String>::copy_from_str(text, accounting)?;
