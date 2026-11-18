@@ -82,7 +82,7 @@ impl Drop for Dispatch {
     }
 }
 
-pub(super) struct Before(BTreeMap<StreamPath, Option<u64>>);
+pub(super) struct Before(Vec<(StreamPath, Option<u64>)>);
 impl Before {
     pub(super) async fn capture(
         provider: &MemoryStream,
@@ -119,10 +119,11 @@ impl Before {
                 }
             }
         }
-        let mut before = BTreeMap::new();
+        // The input set has already deduplicated and ordered these paths.
+        let mut before = Vec::with_capacity(paths.len());
         for path in paths {
             let tail = provider.publication_tail(&path).await?;
-            before.insert(path, tail);
+            before.push((path, tail));
         }
         Ok(Self(before))
     }
