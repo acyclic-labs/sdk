@@ -33,13 +33,52 @@ index b57cf29b2..8f3620aa2 100644
      if out_dir != None:
          # Hand `OUT_DIR` to `process_wrapper` as an explicit
 diff --git a/util/process_wrapper/options.rs b/util/process_wrapper/options.rs
-index 29467a62a..58bdd0d88 100644
 --- a/util/process_wrapper/options.rs
 +++ b/util/process_wrapper/options.rs
-@@ -161,22 +161,44 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+@@ -51,6 +51,38 @@ pub(crate) struct Options {
+     pub(crate) rustc_output_format: Option<rustc::ErrorFormat>,
+ }
+
++fn bazel_output_base(workspace: &std::path::Path) -> Option<&std::path::Path> {
++    // Both Bazel execroots end in execroot/<workspace>. A sandbox allocates that
++    // same layout under <output_base>/sandbox/<strategy>/<id>.
++    let base = workspace
++        .parent()
++        .filter(|dir| dir.file_name().is_some_and(|name| name == "execroot"))?
++        .parent()?;
++    let in_sandbox = base
++        .file_name()
++        .and_then(|name| name.to_str())
++        .is_some_and(|id| id.bytes().all(|byte| byte.is_ascii_digit()));
++    Some(
++        base.parent()
++            .and_then(|strategy| strategy.parent())
++            .filter(|sandbox| in_sandbox && sandbox.file_name().is_some_and(|name| name == "sandbox"))
++            .and_then(|sandbox| sandbox.parent())
++            .unwrap_or(base),
++    )
++}
++
++#[cfg(test)]
++#[test]
++fn sandbox_and_plain_execroots_share_the_output_base() {
++    use std::path::Path;
++    let output = Path::new("work/target/bazel");
++    let plain = output.join("execroot/_main");
++    let sandbox = output.join("sandbox/linux-sandbox/19/execroot/_main");
++    assert_eq!(bazel_output_base(&plain), Some(output));
++    assert_eq!(bazel_output_base(&sandbox), Some(output));
++    assert_eq!(bazel_output_base(Path::new("work/src")), None);
++}
++
+ pub(crate) fn options() -> Result<Options, OptionError> {
+     // Process argument list until -- is encountered.
+     // Everything after is sent to the child process.
+@@ -160,31 +192,13 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+         .to_str()
          .ok_or_else(|| OptionError::Generic("current directory not utf-8".to_owned()))?
          .to_owned();
-     let output_base = {
+-    let output_base = {
 -        let external = std::path::Path::new(&current_dir).join("external");
 -        match std::fs::canonicalize(external) {
 -            Ok(canonical) => canonical
@@ -48,51 +87,32 @@ index 29467a62a..58bdd0d88 100644
 -                .unwrap_or(&current_dir)
 -                .to_owned(),
 -            Err(_) => match std::fs::canonicalize(&current_dir) {
-+        // A sandboxed action runs in a per-action copy of the execroot, but its `bazel-out` is a
-+        // symlink to the real output tree. Resolve that link so ${exec_root} names the files the
-+        // action reads, not the sandbox copy: paths derived from it stay identical across the
-+        // metadata and rlib actions that must produce the same crate hash. A non-sandboxed action
-+        // has a real `bazel-out` directory, so it keeps the existing fallback.
-+        let bazel_out = std::path::Path::new(&current_dir).join("bazel-out");
-+        let from_bazel_out = std::fs::symlink_metadata(&bazel_out)
-+            .ok()
-+            .filter(|metadata| metadata.file_type().is_symlink())
-+            .and_then(|_| std::fs::canonicalize(&bazel_out).ok())
-+            .and_then(|canonical| {
-+                canonical
-+                    .ancestors()
-+                    .find(|path| path.file_name().is_some_and(|name| name == "execroot"))
-+                    .and_then(|path| path.parent())
-+                    .and_then(|path| path.to_str())
-+                    .map(str::to_owned)
-+            });
-+        if let Some(base) = from_bazel_out {
-+            base
-+        } else {
-+            let external = std::path::Path::new(&current_dir).join("external");
-+            match std::fs::canonicalize(external) {
-                 Ok(canonical) => canonical
-                     .parent()
+-                Ok(canonical) => canonical
+-                    .parent()
 -                    .and_then(|p| p.parent())
-                     .and_then(|p| p.to_str())
-                     .unwrap_or(&current_dir)
-                     .to_owned(),
+-                    .and_then(|p| p.to_str())
+-                    .unwrap_or(&current_dir)
+-                    .to_owned(),
 -                Err(_) => current_dir.clone(),
 -            },
-+                Err(_) => match std::fs::canonicalize(&current_dir) {
-+                    Ok(canonical) => canonical
-+                        .parent()
-+                        .and_then(|p| p.parent())
-+                        .and_then(|p| p.to_str())
-+                        .unwrap_or(&current_dir)
-+                        .to_owned(),
-+                    Err(_) => current_dir.clone(),
-+                },
-+            }
-         }
+-        }
+-    };
+-
++    let workspace = std::path::Path::new(&current_dir);
++    let output_base = bazel_output_base(workspace)
++        .and_then(|base| base.to_str())
++        .unwrap_or(&current_dir)
++        .to_owned();
+     let exec_root = {
+-        let workspace_name = std::path::Path::new(&current_dir)
+-            .file_name()
+-            .and_then(|n| n.to_str())
+-            .unwrap_or("_main");
++        let workspace_name = workspace.file_name().and_then(|n| n.to_str()).unwrap_or("_main");
+         format!("{}/execroot/{}", output_base, workspace_name)
      };
- 
-@@ -237,10 +259,11 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+
+@@ -237,10 +251,11 @@ pub(crate) fn options() -> Result<Options, OptionError> {
          //
          // Inserting into `environment_file_block` (which subsequently
          // overrides the inherited process env) makes this take precedence
