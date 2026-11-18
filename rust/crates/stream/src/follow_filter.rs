@@ -1,5 +1,5 @@
 use crate::{RecordHeaders, StreamError};
-use acyclic_stream_wire::filter::{FilterError, canonical, exclusive_key_end};
+use acyclic_stream_wire::filter::{FilterError, canonical, contains_key, exclusive_key_end};
 use acyclic_stream_wire::wire;
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -332,23 +332,10 @@ impl FollowFilter {
 
 impl Clause {
     fn contains(&self, key: &[u8]) -> bool {
-        if self
-            .projection
+        self.projection
             .as_ref()
             .is_some_and(|range| range.start.as_ref() == key)
-        {
-            return true;
-        }
-        let index = self
-            .filter
-            .keys
-            .partition_point(|range| range.start.as_ref() <= key);
-        index.checked_sub(1).is_some_and(|index| {
-            self.filter
-                .keys
-                .get(index)
-                .is_some_and(|range| range.end.is_empty() || key < range.end.as_ref())
-        })
+            || contains_key(&self.filter.keys, key)
     }
 
     fn matches_attributes(&self, headers: &RecordHeaders) -> bool {
