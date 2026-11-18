@@ -1,4 +1,4 @@
-//! `ACYCLIC_LOOM=1 cargo test -p acyclic-native-runtime --test wake_loom --features model-checking`
+//! `bazel test --@rules_rust//rust/settings:per_crate_rustc_flag=//rust/crates/native-runtime:@--cfg=loom //rust/crates/native-runtime:wake_loom`
 #![cfg(loom)]
 #[path = "../src/sync/locks.rs"]
 pub mod sync;
