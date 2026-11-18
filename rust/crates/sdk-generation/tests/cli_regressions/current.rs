@@ -464,22 +464,21 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
     let availability: sdk_docs::rustdoc_profiles::ProfileAvailability =
         serde_json::from_slice(&availability_bytes).unwrap();
     let entries = &availability.entries;
-    for (path, expected) in [
-        ("demo::FeatureOnly", 2),
-        ("demo::base_only", 3),
-        ("demo::default_only", 2),
+    let entry_at = |path: &str| entries.iter().find(|entry| entry.path == path).unwrap();
+    let feature_entry = entry_at(&feature_item.path);
+    assert_eq!(feature_entry.item_id, feature_item.id);
+    for (entry, expected) in [
+        (feature_entry, 2),
+        (entry_at("demo::base_only"), 3),
+        (entry_at("demo::default_only"), 2),
     ] {
-        let entry = entries.iter().find(|entry| entry.path == path).unwrap();
         assert_eq!(
             entry.profiles.len(),
             expected,
-            "the compilation reuse key must preserve every cfg feature: {path}"
+            "the compilation reuse key must preserve every cfg feature: {}",
+            entry.path
         );
     }
-    let feature_entry = entries
-        .iter()
-        .find(|entry| entry.item_id == feature_item.id)
-        .expect("feature-only catalog item must have a matching sidecar entry");
     let feature_profile = feature_entry
         .profiles
         .iter()
