@@ -23,7 +23,11 @@ def main():
         fence,
         b"        recorded?;\n        if let Ok(status) = waited { *retained = status; }\n        match waited {",
     )
-    command = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--all-features", "--lib", "process_tree::tests::cleanup_recording_failure_retains_the_observed_terminal", "--", "--exact", "--nocapture"]
+    command = [
+        "bazel", "run", "//rust/crates/native-runtime:acyclic_native_runtime_test_cases", "--",
+        "process_tree::tests::cleanup_recording_failure_retains_the_observed_terminal",
+        "--exact", "--nocapture",
+    ]
     oracle = root / "rust/crates/native-runtime/src/process_tree/tests.rs"
     oracle_hash = hashlib.sha256(oracle.read_bytes()).hexdigest()
     report = {"source_sha256": hashlib.sha256(original).hexdigest(), "mutant_sha256": hashlib.sha256(mutant).hexdigest(), "oracle_sha256": oracle_hash, "commands": []}
