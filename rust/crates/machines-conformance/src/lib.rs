@@ -390,6 +390,9 @@ async fn workload(
 }
 
 /// Runs this same public suite with an async factory returning a fresh Backend.
+///
+/// The calling crate needs a Tokio dev-dependency with the `macros` and `rt`
+/// features to compile the generated `#[tokio::test]`.
 #[macro_export]
 macro_rules! suite {
     ($factory:path) => {

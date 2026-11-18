@@ -119,6 +119,7 @@ Run the shared lifecycle and protocol checks with:
 
 ```sh
 cargo test --locked -p acyclic-machines-conformance --lib
+cargo test --locked -p acyclic-machines --lib grpc::
 cargo check --locked -p acyclic-machines --no-default-features --features javascript --target wasm32-unknown-unknown
 cargo test --locked -p acyclic-harness-core --lib --no-run
 ```
