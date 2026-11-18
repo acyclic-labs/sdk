@@ -1474,11 +1474,11 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
 #[test]
 fn stalled_streaming_input_preserves_deadline_and_cleanup() -> io::Result<()> {
     use super::clock::tests::{HOUR, seeded, unscoped};
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = tempfile::tempdir()?;
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
-    let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
-    stderr_ready(&mut tree).expect("original stalled input readiness event");
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    stderr_ready(&mut tree)?;
     let (reached, second) = tokio::sync::oneshot::channel();
     let (advanced, resume) = std::sync::mpsc::channel();
     let (tree, checks, failure) = seeded(async move |schedule: &crate::testing::Schedule| {

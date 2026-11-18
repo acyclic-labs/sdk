@@ -399,10 +399,8 @@ fn linux_boundary_probes(path: &Path, confined: bool, seed: bool) {
         io::Error::last_os_error()
     );
     let mut pthread_policy = -1;
-    let mut pthread_parameters = libc::sched_param {
-        sched_priority: -1,
-        ..parameters
-    };
+    let mut pthread_parameters = parameters;
+    pthread_parameters.sched_priority = -1;
     // SAFETY: pthread_self is a live pthread handle; both outputs are writable.
     let result = unsafe {
         libc::pthread_getschedparam(

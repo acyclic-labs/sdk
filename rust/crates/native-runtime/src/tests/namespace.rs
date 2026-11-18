@@ -168,3 +168,21 @@ fn no_replace_preserves_both_entries() -> io::Result<()> {
     assert_eq!(std::fs::read(destination)?, b"destination");
     Ok(())
 }
+
+#[test]
+fn directory_barrier_rejects_a_regular_file_as_parent() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let parent = directory.path().join("regular-file");
+    std::fs::write(&parent, b"contents")?;
+    assert_eq!(
+        sync_parent(&parent, Durability::Full).unwrap_err().kind(),
+        io::ErrorKind::NotADirectory
+    );
+    assert_eq!(
+        sync_parent(&directory.path().join("missing"), Durability::Full)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    Ok(())
+}
