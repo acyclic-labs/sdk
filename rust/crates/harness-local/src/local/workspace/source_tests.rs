@@ -22,6 +22,7 @@ async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() 
     std::fs::create_dir(path.join(&name)).map_err(storage)?;
     std::fs::write(path.join(&name).join("authored"), b"retained").map_err(storage)?;
     let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+    let entropy = acyclic_fs::demand::native::os_source_entropy();
     let prefix = acyclic_fs::kernel::NamespacePath::from_text_in_profile(
         &format!("/{name}"),
         config.profile,
@@ -34,7 +35,7 @@ async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() 
         None,
         &work,
         &cancellation,
-        acyclic_fs::demand::native::os_source_entropy(),
+        entropy.clone(),
     )
     .await?;
     let mut ctx = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
@@ -53,16 +54,9 @@ async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() 
     std::fs::create_dir(&path).map_err(storage)?;
     assert_ne!(work.root_identity(&path)?, identity);
     assert!(
-        held_source(
-            held,
-            config,
-            None,
-            &work,
-            &cancellation,
-            acyclic_fs::demand::native::os_source_entropy(),
-        )
-        .await
-        .is_err()
+        held_source(held, config, None, &work, &cancellation, entropy)
+            .await
+            .is_err()
     );
     assert_eq!(
         std::fs::read(retained.join(&name).join("authored")).map_err(storage)?,
