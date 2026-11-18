@@ -262,14 +262,6 @@ mod format_recovery_tests {
     }
 }
 
-/// Why a root batch did not commit.
-enum Commit {
-    /// Publication or durability is unconfirmed, so its keys stay for repair.
-    Unknown(Error),
-    /// It did not: its keys are removed.
-    Failed(Error),
-}
-
 /// What a put found when its envelope already existed.
 enum Adopted {
     /// A live envelope of the same bytes, which the put shares.
@@ -942,47 +934,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         format!("{}i/{child}/{tag}", self.state.prefix)
     }
 
-    /// Indexes `references` under `tag`, creates the root batch `key` that
-    /// commits them, then flushes the closure, its index keys and the batch
-    /// in one round, acknowledged only once all are durable. A crash inside
-    /// the round may keep the batch without its closure; it was never
-    /// acknowledged, and [`Self::repair`] discards it. `Failed` leaves the
-    /// keys for the caller to remove; `Unknown` may have committed.
-    async fn commit_batch(
-        &self,
-        references: &[Digest],
-        tag: &str,
-        key: &str,
-        batch: Vec<u8>,
-    ) -> Result<(), Commit> {
-        let mut keys = self
-            .medium
-            .volatile()
-            .then(|| Vec::with_capacity(references.len() + 1));
-        let classify = |error: Error| {
-            if error.code == ErrorCode::OutcomeUnknown {
-                Commit::Unknown(error)
-            } else {
-                Commit::Failed(error)
-            }
-        };
-        self.reference(references, tag, keys.as_mut())
-            .await
-            .map_err(classify)?;
-        self.medium
-            .create(key, batch.into())
-            .await
-            .map_err(moved)
-            .map_err(classify)?;
-        let Some(mut keys) = keys else {
-            return Ok(());
-        };
-        keys.push(key.to_owned());
-        self.flush_blobs(Some(references), keys)
-            .await
-            .map_err(Commit::Unknown)
-    }
-
     /// Admit and publish one batch, retaining unknown outcomes for recovery.
     async fn commit_retention(
         &self,
@@ -1010,14 +961,28 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         self.medium
             .reserve_writes(2 * references.len() as u64 + 2 + extra_writes)
             .map_err(medium)?;
-        match self.commit_batch(references, &tag, &key, batch).await {
-            Ok(()) => Ok((key, name)),
-            Err(Commit::Unknown(error)) => Err(error),
-            Err(Commit::Failed(error)) => {
-                self.unreference(references, &tag, None).await?;
-                Err(error)
-            }
+        let mut keys = self
+            .medium
+            .volatile()
+            .then(|| Vec::with_capacity(references.len() + 1));
+        let publication = async {
+            self.reference(references, &tag, keys.as_mut()).await?;
+            self.medium.create(&key, batch.into()).await.map_err(moved)
         }
+        .await;
+        if let Err(error) = publication {
+            if error.code != ErrorCode::OutcomeUnknown {
+                self.unreference(references, &tag, None).await?;
+            }
+            return Err(error);
+        }
+        // The batch, its index keys and the referenced closure become durable
+        // in one round. Repair discards any incomplete batch left by a crash.
+        if let Some(mut keys) = keys {
+            keys.push(key.clone());
+            self.flush_blobs(Some(references), keys).await?;
+        }
+        Ok((key, name))
     }
 
     /// Removes the holder's index keys, optionally retaining them for a batched flush.
