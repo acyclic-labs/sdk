@@ -158,7 +158,7 @@ mod performance;
 mod record_store;
 pub mod s3;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod s3_http;
+pub mod s3_multipart;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod simulation;
 #[cfg(not(target_arch = "wasm32"))]
@@ -376,11 +376,6 @@ use performance::{
 pub use s3::{
     S3Error, S3List, S3ListCursor, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object,
     S3ObjectHead, S3Workspace,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use s3_http::{
-    FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Limits, FilesystemS3Principal,
-    FilesystemS3Resolver, S3MultipartRetentionLimits, active_s3_multipart_objects,
 };
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub use simulation::{SimulatedStore, Simulation, SimulationFault};

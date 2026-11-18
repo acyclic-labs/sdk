@@ -1,4 +1,4 @@
-fn encode_multipart_created(
+pub fn encode_multipart_created(
     key: &str,
     maximum_parts: Option<u32>,
     maximum_part_bytes: Option<u64>,
@@ -15,7 +15,7 @@ fn encode_multipart_created(
     Ok(Bytes::from(output))
 }
 
-fn encode_multipart_part(
+pub fn encode_multipart_part(
     part_number: u32,
     staged: StagedContent,
     operation: IdempotencyKey,
@@ -36,7 +36,7 @@ fn encode_multipart_part(
     Bytes::from(output)
 }
 
-fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageResult<Bytes> {
+pub fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageResult<Bytes> {
     let count = u32::try_from(parts.len()).map_err(|_| MultipartStorageError::TooManyParts)?;
     let mut output = Vec::with_capacity(6 + parts.len().saturating_mul(36));
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 3]);
@@ -51,18 +51,18 @@ fn encode_multipart_completing(parts: &[(u32, String)]) -> MultipartStorageResul
     Ok(Bytes::from(output))
 }
 
-fn encode_multipart_completed(generation: crate::GenerationId) -> Bytes {
+pub fn encode_multipart_completed(generation: crate::GenerationId) -> Bytes {
     let mut output = Vec::with_capacity(2 + generation.object_id().encoded_len());
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 4]);
     output.extend_from_slice(&generation.to_bytes());
     Bytes::from(output)
 }
 
-fn encode_multipart_aborted() -> Bytes {
+pub fn encode_multipart_aborted() -> Bytes {
     Bytes::from_static(&[MULTIPART_RECORD_VERSION, 5])
 }
 
-async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
+pub async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     provider: &P,
     path: acyclic_stream::StreamPath,
     limits: FilesystemS3Limits,
@@ -162,10 +162,10 @@ pub enum MultipartStorageError {
     InconsistentStream,
 }
 
-type MultipartStorageResult<T = ()> = Result<T, MultipartStorageError>;
+pub type MultipartStorageResult<T = ()> = Result<T, MultipartStorageError>;
 
 /// Decodes and validates the leading `created` record of a multipart record stream, returning the upload's key and its negotiated part bounds.
-fn decode_multipart_header(
+pub fn decode_multipart_header(
     created: &acyclic_stream::OwnedBytes,
     limits: FilesystemS3Limits,
 ) -> MultipartStorageResult<(String, Option<u32>, Option<u64>, u64)> {
@@ -317,7 +317,7 @@ impl MultipartReplay {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn decode_multipart(
+pub fn decode_multipart(
     records: Vec<acyclic_stream::OwnedBytes>,
     tail: u64,
     limits: FilesystemS3Limits,
@@ -331,13 +331,13 @@ fn decode_multipart(
     Ok(replay.snapshot)
 }
 
-struct RecordCursor<'a> {
+pub struct RecordCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
 impl<'a> RecordCursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
@@ -400,7 +400,7 @@ impl<'a> RecordCursor<'a> {
             .map_err(|_| MultipartStorageError::Malformed)
     }
 
-    fn any_header(&mut self) -> MultipartStorageResult<u8> {
+    pub fn any_header(&mut self) -> MultipartStorageResult<u8> {
         let version = self
             .bytes
             .get(self.offset)

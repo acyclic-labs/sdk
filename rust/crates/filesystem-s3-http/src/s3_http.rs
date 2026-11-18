@@ -7,6 +7,7 @@
 use crate::WorkBudget;
 use crate::kernel::{AsyncBlobSource, ClosureLimits, DecodeLimits};
 use crate::model::FilesystemProfile;
+use crate::s3_multipart::*;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, ObjectId,
     S3Error, S3ListCursor, S3ListOptions, StagedContent, StreamAuthorityStore, Workspace,
@@ -42,7 +43,6 @@ const IDEMPOTENCY_HEADER: &str = "x-acyclic-idempotency-key";
 const SDK_INVOCATION_HEADER: &str = "amz-sdk-invocation-id";
 const SESSION_TOKEN_HEADER: &str = "x-amz-security-token";
 const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
-const MULTIPART_RECORD_VERSION: u8 = 1;
 
 /// Authority adapter that retains filesystem state in the canonical public hierarchical Stream provider.
 pub trait StreamBackedAuthority: AsyncAuthorityStore {
@@ -260,7 +260,6 @@ fn request_session_token<T>(request: &S3Request<T>) -> Option<&str> {
 }
 
 include!("s3_http/multipart.rs");
-include!("s3_http/multipart_retention.rs");
 
 #[async_trait]
 impl<R, A, O> S3 for FilesystemS3Adapter<R, A, O>
@@ -413,7 +412,6 @@ where
 include!("s3_http/operations_0.rs");
 include!("s3_http/operations_1.rs");
 include!("s3_http/body.rs");
-include!("s3_http/multipart_record.rs");
 include!("s3_http/helpers.rs");
 
 #[cfg(feature = "test-support")]

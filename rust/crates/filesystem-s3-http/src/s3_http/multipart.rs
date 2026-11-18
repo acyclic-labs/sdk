@@ -1,35 +1,9 @@
-#[derive(Clone, Debug)]
-struct MultipartPart {
-    staged: StagedContent,
-    etag: String,
-}
-
-#[derive(Clone, Debug)]
-enum MultipartTerminal {
-    Completing(Vec<(u32, String)>),
-    Completed(acyclic_fs_format::object_reference::GenerationId),
-    Aborted,
-}
-
 /// Outcome of driving one multipart upload toward its completion intent.
 enum MultipartCompletionIntent {
     /// The upload is admitted at the requested part set and ready to commit.
     Admitted(Box<MultipartSnapshot>),
     /// The upload was already completed at this exact generation.
     AlreadyCompleted(acyclic_fs_format::object_reference::GenerationId),
-}
-
-#[derive(Clone, Debug)]
-struct MultipartSnapshot {
-    key: String,
-    tail: u64,
-    minimum_part_bytes: u64,
-    maximum_parts: Option<u32>,
-    maximum_part_bytes: Option<u64>,
-    parts: BTreeMap<u32, MultipartPart>,
-    operations: BTreeMap<[u8; 16], (u32, String)>,
-    terminal: Option<MultipartTerminal>,
-    work: crate::WorkCounters,
 }
 
 impl<R, A, O> FilesystemS3Adapter<R, A, O>
