@@ -2,7 +2,9 @@
 // authority. Reading them never resolves, downloads or builds a Cargo workspace.
 import fs from 'node:fs';
 import path from 'node:path';
-import {toml, tomlFiles} from './policy-core.mjs';
+import {createHash} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
+import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, lockDependencyIndex, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -43,56 +45,136 @@ export function versionMatches(version, requirement) {
   });
 }
 
-export function workspacePackages(root) {
+function lockedEdges(resolve, item) {
+  return (item.dependencies ?? []).map(reference => {
+    const candidates = resolve(reference);
+    if (candidates.length !== 1) throw Error(`ambiguous or missing Cargo.lock dependency ${reference}`);
+    return candidates[0];
+  });
+}
+
+export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFile} = {}) {
   root = path.resolve(root);
+  sourceRoot = path.resolve(sourceRoot);
+  const withinSource = directory => {
+    const relative = path.relative(sourceRoot, directory);
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  if (!withinSource(root)) throw Error('workspace escapes source root');
   const rootManifest = toml(root, 'Cargo.toml');
+  const patches = [];
+  const addPatches = (table, base) => {
+    for (const [alias, entry] of Object.entries(table ?? {})) {
+      if (!entry.path) continue;
+      const directory = path.resolve(base, entry.path);
+      if (!withinSource(directory)) throw Error(`workspace patch escapes source root: ${directory}`);
+      patches.push({name: entry.package ?? alias, directory});
+    }
+  };
+  addPatches(rootManifest.patch?.['crates-io'], root);
+  if (patchConfig) {
+    const config = path.resolve(sourceRoot, patchConfig);
+    if (!withinSource(config)) throw Error('workspace patch config escapes source root');
+    addPatches(toml(sourceRoot, patchConfig).patch?.['crates-io'], path.dirname(path.dirname(config)));
+  }
+  if (lockFile && !withinSource(path.resolve(sourceRoot, lockFile))) throw Error('workspace lock escapes source root');
+  const lock = lockFile ? toml(sourceRoot, lockFile) : null;
+  const resolveLocked = lockDependencyIndex(lock?.package ?? []);
   const manifests = new Set();
   const expand = pattern => fs.globSync(pattern.replace(/\/$/, '') + '/Cargo.toml', {cwd: root});
-  for (const member of rootManifest.workspace?.members ?? []) for (const file of expand(member)) manifests.add(slash(file));
+  const excluded = file => {
+    let directory = slash(path.dirname(file));
+    while (directory !== '.' && directory !== '..' && !directory.startsWith('../')) {
+      if ((rootManifest.workspace?.exclude ?? []).some(pattern => path.matchesGlob(directory, pattern.replace(/\/$/, '')))) return true;
+      directory = slash(path.dirname(directory));
+    }
+    return false;
+  };
+  for (const member of rootManifest.workspace?.members ?? []) for (const file of expand(member)) if (!excluded(slash(file))) manifests.add(slash(file));
   if (rootManifest.package) manifests.add('Cargo.toml');
   const members = new Set(manifests);
-  for (const patch of Object.values(rootManifest.patch?.['crates-io'] ?? {}))
-    if (patch.path) manifests.add(slash(path.join(patch.path, 'Cargo.toml')));
-  const packages = [];
+  // The root Bazel graph also renders patch crates that are not currently
+  // reached. Retained producer graphs instead use their selected lockfile.
+  if (!patchConfig && !lockFile) for (const patch of patches)
+    manifests.add(slash(path.relative(root, path.join(patch.directory, 'Cargo.toml'))));
+  const packages = new Map();
   const pending = [...manifests];
+  const enqueueLockedPatches = (name, version) => {
+    if (!lock) return;
+    const selected = (lock.package ?? []).filter(item => item.name === name && item.version === version && !item.source);
+    if (selected.length !== 1) throw Error(`Cargo.lock lacks local package ${name}@${version}`);
+    reachable(selected, item => {
+      if (!item.source) for (const patch of patches.filter(candidate => candidate.name === item.name)) {
+        const file = slash(path.relative(root, path.join(patch.directory, 'Cargo.toml')));
+        if (toml(root, file).package?.version !== item.version) continue;
+        if (!manifests.has(file)) {manifests.add(file); pending.push(file);}
+      }
+      return lockedEdges(resolveLocked, item);
+    });
+  };
+  for (const file of pending) if (!withinSource(path.dirname(path.resolve(root, file)))) throw Error(`workspace dependency escapes source root: ${file}`);
   tomlFiles(root, pending);
   while (pending.length) {
     const file = pending.shift(), manifest = toml(root, file), directory = path.dirname(path.resolve(root, file));
+    if (!withinSource(directory)) throw Error(`workspace dependency escapes source root: ${file}`);
     if (!manifest.package) throw Error(`${file}: missing package`);
     let workspaceDirectory = directory;
-    if (manifest.package.workspace) workspaceDirectory = path.resolve(directory, manifest.package.workspace);
-    else while (workspaceDirectory !== root && !(exists(path.join(workspaceDirectory, 'Cargo.toml')) && toml(root, slash(path.relative(root, path.join(workspaceDirectory, 'Cargo.toml')))).workspace))
-      workspaceDirectory = path.dirname(workspaceDirectory);
+    if (manifest.package.workspace) {
+      workspaceDirectory = path.resolve(directory, manifest.package.workspace);
+      if (!withinSource(workspaceDirectory)) throw Error(`${file}: workspace escapes source root`);
+    }
+    else {
+      let cursor = directory;
+      while (true) {
+        const candidate = path.join(cursor, 'Cargo.toml');
+        if (exists(candidate) && toml(root, slash(path.relative(root, candidate))).workspace) {workspaceDirectory = cursor; break;}
+        if (cursor === sourceRoot) break;
+        cursor = path.dirname(cursor);
+      }
+    }
     const workspace = toml(root, slash(path.relative(root, path.join(workspaceDirectory, 'Cargo.toml')))).workspace ?? {};
     const own = Object.fromEntries(Object.entries(manifest.package).map(([key, value]) =>
       [key, value?.workspace === true ? workspace.package?.[key] : value]));
+    enqueueLockedPatches(own.name, own.version);
     const dependencies = [];
-    const declarations = (tables, target = null) => {
-      for (const [table, kind] of [['dependencies', null], ['dev-dependencies', 'dev'], ['build-dependencies', 'build']])
-        for (const [alias, value] of Object.entries(tables[table] ?? {})) {
-          let declaration = typeof value === 'string' ? {version: value} : value;
-          let base = directory;
-          if (declaration.workspace) {
-            const inherited = workspace.dependencies?.[alias];
-            if (!inherited) throw Error(`${file}: missing workspace dependency ${alias}`);
-            const entry = typeof inherited === 'string' ? {version: inherited} : inherited;
-            declaration = {...entry, ...declaration, features: [...(entry.features ?? []), ...(declaration.features ?? [])]};
-            base = workspaceDirectory;
+    for (const {target, kind, alias, value} of manifestDependencies(manifest)) {
+      let declaration = typeof value === 'string' ? {version: value} : value;
+      let base = directory;
+      if (declaration.workspace) {
+        const inherited = workspace.dependencies?.[alias];
+        if (!inherited) throw Error(`${file}: missing workspace dependency ${alias}`);
+        const entry = typeof inherited === 'string' ? {version: inherited} : inherited;
+        declaration = {...entry, ...declaration, features: [...(entry.features ?? []), ...(declaration.features ?? [])]};
+        base = workspaceDirectory;
+      }
+      const patched = declaration.path ? [] : patches.filter(patch => {
+        if (patch.name !== (declaration.package ?? alias)) return false;
+        const packageManifest = toml(root, slash(path.relative(root, path.join(patch.directory, 'Cargo.toml')))).package;
+        if (!packageManifest || typeof packageManifest.version !== 'string') throw Error(`patch ${patch.name} lacks an explicit version`);
+        if (!versionMatches(packageManifest.version, requirement(declaration.version))) return false;
+        return !lock || (lock.package ?? []).some(item => item.name === patch.name && item.version === packageManifest.version && !item.source);
+      });
+      if (patched.length > 1) throw Error(`${file}: ambiguous local patch for ${declaration.package ?? alias}`);
+      const local = declaration.path ? path.resolve(base, declaration.path) : patched[0]?.directory ?? null;
+      if (local) {
+        const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
+        if (!withinSource(local)) throw Error(`workspace dependency escapes source root: ${next}`);
+        const selected = kind !== 'dev' || members.has(file);
+        if (selected && !manifests.has(next)) {manifests.add(next); pending.push(next);}
+        if (selected && declaration.path && rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
+          const dependency = toml(root, next);
+          const explicitWorkspace = dependency.package?.workspace && path.resolve(local, dependency.package.workspace);
+          if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root) && !members.has(next)) {
+            members.add(next);
+            if (packages.has(next)) pending.push(next);
           }
-          const patched = rootManifest.patch?.['crates-io']?.[declaration.package ?? alias];
-          const local = declaration.path ? path.resolve(base, declaration.path) : patched?.path ? path.resolve(root, patched.path) : null;
-          if (local) {
-            const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
-            if (!manifests.has(next)) {manifests.add(next); pending.push(next);}
-          }
-          dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
-            req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
-            uses_default_features: declaration['default-features'] ?? true, features: declaration.features ?? [],
-            source: declaration.path ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {resolved_path: local} : {}), ...(declaration.path ? {path: local} : {})});
         }
-    };
-    declarations(manifest);
-    for (const [target, tables] of Object.entries(manifest.target ?? {})) declarations(tables, target);
+      }
+      dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
+        req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
+        uses_default_features: declaration['default-features'] ?? true, features: declaration.features ?? [],
+        source: declaration.path ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {resolved_path: local} : {}), ...(declaration.path ? {path: local} : {})});
+    }
     const features = {...manifest.features};
     const explicit = new Set(Object.values(features).flat().filter(value => value.startsWith('dep:')).map(value => value.slice(4)));
     for (const dep of dependencies) {
@@ -125,15 +207,66 @@ export function workspacePackages(root) {
     if (own.build !== false) target('custom-build', {}, typeof own.build === 'string' ? own.build : 'build.rs', 'build-script-build');
     const rank = t => t.kind.includes('custom-build') ? 5 : t.kind.includes('bench') ? 4 : t.kind.includes('test') ? 3 : t.kind.includes('example') ? 2 : t.kind.includes('bin') ? 1 : 0;
     targets.sort((a, b) => rank(a) - rank(b) || (a.kind.includes('test') && own.autotests === false || a.kind.includes('bin') && own.autobins === false ? 0 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    const p = {name: own.name, version: own.version, id: `path+file://${slash(directory)}#${path.basename(directory) === own.name ? own.version : `${own.name}@${own.version}`}`,
+    const p = {name: own.name, version: own.version, id: `path+${pathToFileURL(directory).href}#${path.basename(directory) === own.name ? own.version : `${own.name}@${own.version}`}`,
       source: null, dependencies, targets, features, manifest_path: path.join(directory, 'Cargo.toml'), workspace_member: members.has(file),
       publish: own.publish === false ? [] : own.publish === true ? null : own.publish ?? null, metadata: own.metadata ?? null, authors: own.authors ?? [], categories: own.categories ?? [], keywords: own.keywords ?? []};
     for (const key of ['license', 'license-file', 'description', 'repository', 'homepage', 'documentation', 'links', 'default-run', 'rust-version']) p[key.replaceAll('-', '_')] = own[key] ?? null;
     p.edition = own.edition ?? '2015';
     p.readme = own.readme === false ? null : own.readme ?? ['README.md', 'README.txt', 'README'].find(name => exists(path.join(directory, name))) ?? null;
-    packages.push(p);
+    packages.set(file, p);
   }
-  return packages.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+  for (const p of packages.values()) p.workspace_member = members.has(slash(path.relative(root, p.manifest_path)));
+  return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name, 'en'));
+}
+
+function defaultWorkspaceMembers(root, local) {
+  const members = local.filter(p => p.workspace_member);
+  const patterns = toml(root, 'Cargo.toml').workspace?.['default-members'] ?? members.map(p => slash(path.relative(root, path.dirname(p.manifest_path))));
+  return members.filter(p => patterns.some(pattern => path.matchesGlob(slash(path.relative(root, path.dirname(p.manifest_path))), pattern))).map(p => p.id);
+}
+
+// A relocatable Cargo-metadata-shaped graph for profile planning. Keep all
+// local path owners, including excluded dependencies, and their real targets.
+export function workspaceProfileMetadata(root, {workspaceOnly = false, sourceRoot = root, additionalInputs = [], patchConfig, lockFile, universeFile} = {}) {
+  root = path.resolve(root);
+  sourceRoot = path.resolve(sourceRoot);
+  const selectedLock = lockFile ?? slash(path.relative(sourceRoot, path.join(root, 'Cargo.lock')));
+  const packages = workspacePackages(root, {sourceRoot, patchConfig, lockFile: workspaceOnly ? lockFile : selectedLock});
+  const members = packages.filter(p => p.workspace_member);
+  const manifest = slash(path.relative(sourceRoot, path.join(root, 'Cargo.toml')));
+  const inputs = new Set([manifest, ...additionalInputs, ...packages.map(p => slash(path.relative(sourceRoot, p.manifest_path)))]);
+  if (exists(path.join(root, 'Cargo.lock'))) inputs.add(slash(path.relative(sourceRoot, path.join(root, 'Cargo.lock'))));
+  if (patchConfig) inputs.add(slash(patchConfig));
+  if (lockFile) inputs.add(slash(lockFile));
+  if (!workspaceOnly && universeFile) inputs.add(slash(universeFile));
+  const digests = Object.fromEntries([...inputs].sort().map(file => {
+    if (path.isAbsolute(file) || file.split('/').some(part => !part || part === '.' || part === '..') || file.includes('\\')) throw Error(`workspace graph input escapes root: ${file}`);
+    return [file, `sha256:${createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, file))).digest('hex')}`];
+  }));
+  const metadata = toml(root, 'Cargo.toml').workspace?.metadata ?? {};
+  if (Object.hasOwn(metadata, 'acyclic_profile_inputs_v1')) throw Error('workspace metadata uses the reserved profile input key');
+  if (Object.hasOwn(metadata, 'acyclic_profile_manifest_v1')) throw Error('workspace metadata uses the reserved profile manifest key');
+  if (Object.hasOwn(metadata, 'acyclic_profile_local_resolution_v1')) throw Error('workspace metadata uses the reserved profile resolution key');
+  if (Object.hasOwn(metadata, 'acyclic_profile_selection_v1')) throw Error('workspace metadata uses the reserved profile selection key');
+  // Cargo.lock is the all-platform resolution. Bazel's target-specific pins
+  // omit registry dependencies that aren't compiled in that configuration.
+  const lock = workspaceOnly ? null : toml(sourceRoot, selectedLock);
+  const reached = lock && reachable(members.map(p => lockedOwner(lock, p)),
+    lockedEdges.bind(null, lockDependencyIndex(lock.package)));
+  return {
+    packages: packages.filter(p => !workspaceOnly || p.workspace_member)
+      .map(({workspace_member, ...p}) => p),
+    workspace_members: members.map(p => p.id),
+    workspace_default_members: defaultWorkspaceMembers(root, packages),
+    workspace_root: sourceRoot,
+    target_directory: path.join(root, 'target'),
+    version: 1,
+    metadata: {...metadata, acyclic_profile_inputs_v1: digests, acyclic_profile_manifest_v1: manifest,
+      acyclic_profile_selection_v1: {patch_config: patchConfig ? slash(patchConfig) : null,
+        lock_file: slash(selectedLock)},
+      ...(lock && reached ? {acyclic_profile_local_resolution_v1: packages.filter(p => reached.has(lockedOwner(lock, p))).map(p => p.id)} : {})},
+    resolve: null,
+  };
 }
 
 function targetMatches(cfg, triple) {
@@ -144,29 +277,41 @@ function targetMatches(cfg, triple) {
     `target_env=${JSON.stringify(wasm ? '' : triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(wasm ? 'wasm' : triple.includes('windows') ? 'windows' : 'unix')}`,
     `target_vendor=${JSON.stringify(triple.includes('darwin') ? 'apple' : triple.includes('windows') ? 'pc' : 'unknown')}`,
   ]);
-  const matches = cfg => {
-    if (!cfg || cfg === triple) return true;
-    if (!cfg.startsWith('cfg(')) return false;
-    const tokens = cfg.slice(4, -1).match(/"[^"\\]*(?:\\.[^"\\]*)*"|\w+|[(),=]/g) ?? [];
-    let at = 0;
-    const parse = () => {
-      const name = tokens[at++];
-      if (tokens[at] === '=') {at++; return platform.has(`${name}=${tokens[at++]}`);}
-      if (tokens[at] !== '(') return platform.has(name);
-      at++;
-      const values = [];
-      while (tokens[at] !== ')' && at < tokens.length) {values.push(parse()); if (tokens[at] === ',') at++;}
-      if (tokens[at++] !== ')') throw Error(`invalid target condition ${cfg}`);
-      if (name === 'all') return values.every(Boolean);
-      if (name === 'any') return values.some(Boolean);
-      if (name === 'not' && values.length === 1) return !values[0];
-      throw Error(`unknown target condition ${cfg}`);
-    };
-    const result = parse();
-    if (at !== tokens.length) throw Error(`invalid target condition ${cfg}`);
-    return result;
-  };
-  return matches(cfg);
+  if (!cfg || cfg === triple) return true;
+  if (!cfg.startsWith('cfg(')) return false;
+  if (!cfg.endsWith(')')) throw Error(`invalid target condition ${cfg}`);
+  return evaluateCfg(cfg.slice(4, -1), (name, value, children) => {
+    if (children) throw Error(`unknown target condition ${cfg}`);
+    return platform.has(value === undefined ? name : `${name}="${value}"`);
+  });
+}
+
+function lockedOwner(lock, {name, version}) {
+  const owner = (lock.package ?? []).find(pkg => pkg.name === name && pkg.version === version && !pkg.source);
+  if (!owner) throw Error(`Cargo.lock lacks local package ${name}@${version}`);
+  return owner;
+}
+
+function lockedCandidates(resolve, declaration, owner) {
+  return [...new Set((owner.dependencies ?? []).flatMap(ref => resolve(ref, declaration.name)))]
+    .filter(pkg => versionMatches(pkg.version, declaration.req));
+}
+
+function uniqueDependency(owner, declaration, matches) {
+  if (matches.length !== 1) throw Error(`${owner.name}: ambiguous or missing locked dependency ${declaration.name}`);
+  return matches[0];
+}
+
+function applyRequests(add, enabled, dependency, declaration, features) {
+  for (const feature of declaration.features) add(enabled, feature);
+  if (declaration.uses_default_features && Object.hasOwn(dependency.features, 'default')) add(enabled, 'default');
+  for (const feature of forwardedFeatures(features, declaration.rename ?? declaration.name)) add(enabled, feature);
+}
+
+function recordRegistryRequests(input, declaration, features) {
+  for (const feature of declaration.features) input.features.add(feature);
+  for (const feature of forwardedFeatures(features, declaration.rename ?? declaration.name)) input.features.add(feature);
+  input.defaultFeatures ||= declaration.uses_default_features;
 }
 
 // Inputs to crate_universe come from the current Cargo lock and declarations.
@@ -177,47 +322,32 @@ export function registryInputs(root) {
   const candidates = (lock.package ?? []).filter(p => p.source?.startsWith('registry+')).map(p => ({
     ...p, features: new Set(), defaultFeatures: false,
   }));
+  const resolve = lockDependencyIndex(candidates);
   const inputs = new Set();
   for (const triple of ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
     const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : [])]));
     const reachable = new Set(local.filter(p => p.workspace_member).map(p => p.id));
-    let changed = true;
-    while (changed) {
-      changed = false;
-      const add = (set, value) => { if (!set.has(value)) {set.add(value); changed = true;} };
+    growSets(add => {
       for (const p of local.filter(p => reachable.has(p.id))) {
         const features = enabled.get(p.id);
         for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
-        const locked = (lock.package ?? []).find(x => x.name === p.name && x.version === p.version && !x.source);
-        if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
+        const locked = lockedOwner(lock, p);
         for (const d of p.dependencies) {
-          const alias = d.rename ?? d.name;
           if ((d.kind === 'dev' && !p.workspace_member) || !targetMatches(d.target, triple) ||
-              (d.optional && !features.has(`dep:${alias}`) && ![...features].some(f => f.startsWith(`${alias}/`)))) continue;
-          const requested = [...d.features];
-          for (const feature of features) {
-            const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-            if (match?.[1] === alias) requested.push(match[2]);
-          }
+              !dependencyEnabled(features, d)) continue;
           if (d.resolved_path) {
             const dep = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
             if (!dep) throw Error(`${p.name}: missing path dependency ${d.name}`);
             add(reachable, dep.id);
-            const target = enabled.get(dep.id);
-            for (const feature of requested) add(target, feature);
-            if (d.uses_default_features && Object.hasOwn(dep.features, 'default')) add(target, 'default');
+            applyRequests(add, enabled.get(dep.id), dep, d, features);
           } else {
-            const matches = candidates.filter(x => x.name === d.name && versionMatches(x.version, d.req) &&
-              (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
-            if (matches.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
-            const input = matches[0];
+            const input = uniqueDependency(p, d, lockedCandidates(resolve, d, locked));
             inputs.add(input);
-            for (const feature of requested) input.features.add(feature);
-            input.defaultFeatures ||= d.uses_default_features;
+            recordRegistryRequests(input, d, features);
           }
         }
       }
-    }
+    });
   }
   return {inputs: [...inputs], universe};
 }
@@ -234,6 +364,23 @@ export function assertRegistryPinsCurrent(root) {
   }
 }
 
+function registryPackages(lock, universe, triple) {
+  return (lock.package ?? []).filter(p => p.source).map(p => {
+    const pinned = universe.crates[`${p.name} ${p.version}`];
+    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
+    const target = lib?.Library ?? lib?.ProcMacro;
+    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
+      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
+      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
+  });
+}
+
+function* pinnedEdges(pinned, universe, triple) {
+  for (const [attributes, kind] of [[pinned?.common_attrs, null], [pinned?.build_script_attrs, 'build']])
+    for (const entry of [...selectedEntries(attributes?.deps, universe, triple), ...selectedEntries(attributes?.proc_macro_deps, universe, triple)])
+      yield {entry, kind};
+}
+
 // Browser builds start from the published packages, rather than the native
 // all-workspace, all-features test graph. Registry edges and resolved features
 // come from the browser crate-universe lock; local features come from manifests.
@@ -242,15 +389,10 @@ export function workspaceBrowserGraph(root, selections) {
   const triple = 'wasm32-unknown-unknown';
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-wasm-bazel-lock.json'), 'utf8'));
-  const registry = (lock.package ?? []).filter(p => p.source).map(p => {
-    const pinned = universe.crates[`${p.name} ${p.version}`];
-    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
-    const target = lib?.Library ?? lib?.ProcMacro;
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
-      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
-  });
+  const registry = registryPackages(lock, universe, triple);
+  const resolve = lockDependencyIndex(registry);
   const packages = [...local, ...registry], byId = new Map(packages.map(p => [p.id, p]));
+  const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
   const byPath = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
   const enabled = new Map(local.map(p => [p.id, new Set()]));
   const reachable = new Set();
@@ -265,18 +407,10 @@ export function workspaceBrowserGraph(root, selections) {
   }
   const localDependency = (pkg, d) => {
     if (d.resolved_path) return byPath.get(d.resolved_path);
-    const locked = lock.package.find(p => p.name === pkg.name && p.version === pkg.version && !p.source);
-    if (!locked) throw Error(`Cargo.lock lacks local package ${pkg.name}@${pkg.version}`);
-    const candidates = registry.filter(p => p.name === d.name && versionMatches(p.version, d.req) &&
-      (locked.dependencies ?? []).some(key => key === p.name || key === `${p.name} ${p.version}` || key.startsWith(`${p.name} ${p.version} (`)));
-    if (candidates.length !== 1) throw Error(`${pkg.name}: ambiguous or missing locked dependency ${d.name}`);
-    return candidates[0];
+    return uniqueDependency(pkg, d, lockedCandidates(resolve, d, lockedOwner(lock, pkg)));
   };
   const nodes = new Map();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const add = (set, value) => {if (!set.has(value)) {set.add(value); changed = true;}};
+  growSets(add => {
     for (const pkg of packages.filter(p => reachable.has(p.id))) {
       const deps = new Map();
       const addEdge = (name, dep, kind, target = null) => {
@@ -288,117 +422,92 @@ export function workspaceBrowserGraph(root, selections) {
       if (pkg.source) {
         const pinned = universe.crates[`${pkg.name} ${pkg.version}`];
         if (!pinned) throw Error(`browser Bazel lock lacks ${pkg.name}@${pkg.version}`);
-        for (const [attrs, kind] of [[pinned.common_attrs, null], [pinned.build_script_attrs, 'build']])
-          for (const entry of [...selectedEntries(attrs?.deps, universe, triple), ...selectedEntries(attrs?.proc_macro_deps, universe, triple)]) {
-            const matches = packages.filter(p => `${p.name} ${p.version}` === entry.id);
-            if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous browser lock edge ${entry.id}`);
-            const dep = matches[0];
-            addEdge(entry.alias ?? entry.target, dep, kind);
-            if (kind === null) add(reachable, dep.id);
-          }
+        for (const {entry, kind} of pinnedEdges(pinned, universe, triple)) {
+          const matches = byPin.get(entry.id) ?? [];
+          if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous browser lock edge ${entry.id}`);
+          const dep = matches[0];
+          addEdge(entry.alias ?? entry.target, dep, kind);
+          if (kind === null) add(reachable, dep.id);
+        }
       } else {
         const features = enabled.get(pkg.id);
         for (const feature of features) for (const next of pkg.features[feature] ?? []) add(features, next);
         for (const d of pkg.dependencies) {
           const alias = d.rename ?? d.name;
           if (d.kind === 'dev' || !targetMatches(d.target, triple) ||
-              (d.optional && !features.has(`dep:${alias}`) && ![...features].some(f => f.startsWith(`${alias}/`)))) continue;
+              !dependencyEnabled(features, d)) continue;
           const dep = localDependency(pkg, d);
           addEdge(alias.replaceAll('-', '_'), dep, d.kind, d.target);
           if (d.kind !== null) continue;
           add(reachable, dep.id);
-          const requestedFeatures = [...d.features];
-          for (const feature of features) {
-            const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-            if (match?.[1] === alias) requestedFeatures.push(match[2]);
-          }
           if (dep.source) {
             const input = registryInputs.get(dep.id) ?? {features:new Set(), defaultFeatures:false};
-            for (const feature of requestedFeatures) input.features.add(feature);
-            input.defaultFeatures ||= d.uses_default_features;
+            recordRegistryRequests(input, d, features);
             registryInputs.set(dep.id, input);
           } else {
-            const requested = enabled.get(dep.id);
-            for (const feature of requestedFeatures) add(requested, feature);
-            if (d.uses_default_features && Object.hasOwn(dep.features, 'default')) add(requested, 'default');
+            applyRequests(add, enabled.get(dep.id), dep, d, features);
           }
         }
       }
       nodes.set(pkg.id, {id:pkg.id, deps:[...deps.values()], features:pkg.source ? Object.keys(pkg.features).sort() :
         Object.keys(pkg.features).filter(feature => enabled.get(pkg.id).has(feature)).sort()});
     }
-  }
+  });
   return {packages:[...byId.values()].filter(p => !p.source || reachable.has(p.id)), workspace_members:local.filter(p => p.workspace_member).map(p => p.id),
     workspace_root:root, registry_inputs:registryInputs, resolve:{nodes:[...nodes.values()]}};
 }
 
-export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
+export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile} = {}) {
   const allPlatforms = triple === null;
   triple ??= 'x86_64-unknown-linux-gnu';
   root = path.resolve(root);
-  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
-  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
-  const registry = (lock.package ?? []).filter(p => p.source).map(p => {
-    const pinned = universe.crates[`${p.name} ${p.version}`];
-    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
-    const target = lib?.Library ?? lib?.ProcMacro;
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, allPlatforms ? null : triple).map(f => [f, []])),
-      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
-  });
-  const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
+  const local = workspacePackages(root, {sourceRoot, patchConfig, lockFile}), lock = lockFile ? toml(sourceRoot, lockFile) : toml(root, 'Cargo.lock');
+  const universePath = universeFile ? path.resolve(sourceRoot, universeFile) : path.join(root, 'cargo-bazel-lock.json');
+  const universeRelative = path.relative(path.resolve(sourceRoot), universePath);
+  if (universeRelative === '..' || universeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(universeRelative)) throw Error('workspace universe escapes source root');
+  const universe = JSON.parse(fs.readFileSync(universePath, 'utf8'));
+  const registry = registryPackages(lock, universe, allPlatforms ? null : triple);
+  const packages = [...local, ...registry];
+  const resolve = lockDependencyIndex(packages);
+  const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
-  const active = (p, d) => !d.optional || [...enabled.get(p.id)].some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`));
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const add = (set, value) => {if (!set.has(value)) {set.add(value); changed = true;}};
+  const active = (p, d) => dependencyEnabled(enabled.get(p.id), d);
+  growSets(add => {
     for (const p of local) {
       const features = enabled.get(p.id);
       for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
       for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d) && d.resolved_path)) {
         const dependency = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
-        const target = enabled.get(dependency.id), alias = d.rename ?? d.name;
-        for (const feature of d.features) add(target, feature);
-        if (d.uses_default_features && Object.hasOwn(dependency.features, 'default')) add(target, 'default');
-        for (const feature of features) {
-          const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-          if (match?.[1] === alias) add(target, match[2]);
-        }
+        applyRequests(add, enabled.get(dependency.id), dependency, d, features);
       }
     }
-  }
+  });
   const nodes = local.map(p => {
-    const locked = lock.package.find(x => x.name === p.name && x.version === p.version && !x.source);
-    if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
+    const locked = lockedOwner(lock, p);
     const deps = new Map();
     for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d))) {
-      const candidates = d.resolved_path ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : byName(d.name).filter(x => versionMatches(x.version, d.req) &&
-        (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
-      if (candidates.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
-      const dependency = candidates[0], name = (d.rename ?? d.name).replaceAll('-', '_');
+      const dependency = uniqueDependency(p, d, d.resolved_path
+        ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : lockedCandidates(resolve, d, locked));
+      const name = (d.rename ?? d.name).replaceAll('-', '_');
       const key = `${name}:${dependency.id}`;
       if (!deps.has(key)) deps.set(key, {name, pkg: dependency.id, dep_kinds: []});
       deps.get(key).dep_kinds.push({kind: d.kind, target: d.target});
     }
     return {id: p.id, deps: [...deps.values()], features: Object.keys(p.features).filter(f => enabled.get(p.id).has(f)).sort()};
   });
-  const selected = value => selectedEntries(value, universe, allPlatforms ? null : triple);
   nodes.push(...registry.map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const deps = [];
-    for (const [attributes, kind] of [[pinned?.common_attrs, null], [pinned?.build_script_attrs, 'build']])
-      for (const entry of [...selected(attributes?.deps), ...selected(attributes?.proc_macro_deps)]) {
-        // Registry-internal edges remain Bazel's graph. Only overlays on local
-        // patched crates enter this declaration model.
-        const dependency = local.find(x => `${x.name} ${x.version}` === entry.id);
-        if (!dependency) continue;
-        deps.push({name: entry.alias ?? entry.target, pkg: dependency.id, dep_kinds: [{kind, target: null}]});
-      }
-    return {id: p.id, deps, features: Object.keys(p.features)};
+    let incomplete = !pinned;
+    for (const {entry, kind} of pinnedEdges(pinned, universe, allPlatforms ? null : triple)) {
+      const candidates = byPin.get(entry.id) ?? [];
+      if (candidates.length !== 1) {incomplete = true; continue;}
+      deps.push({name: entry.alias ?? entry.target, pkg: candidates[0].id, dep_kinds: [{kind, target: null}]});
+    }
+    return {id: p.id, deps, features: Object.keys(p.features), incomplete};
   }));
   return {packages, workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
-    workspace_default_members: local.filter(p => p.workspace_member && (toml(root, 'Cargo.toml').workspace?.['default-members'] ?? local.filter(p => p.workspace_member).map(p => slash(path.relative(root,path.dirname(p.manifest_path))))).some(pattern=>path.matchesGlob(slash(path.relative(root,path.dirname(p.manifest_path))),pattern))).map(p=>p.id), version: 1,
+    workspace_default_members: defaultWorkspaceMembers(root, local), version: 1,
     metadata: toml(root, 'Cargo.toml').workspace?.metadata ?? null, resolve: {nodes}};
 }

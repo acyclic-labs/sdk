@@ -5,6 +5,7 @@ import { repositoryRoot as root } from "./policy-core.mjs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { workspaceDefaults } from "./workspace-defaults.mjs";
+import { workspaceProfileMetadata } from "./workspace-model.mjs";
 import { runCommand } from "./run-command.mjs";
 
 
@@ -38,8 +39,7 @@ export async function checkCrateTests(packages, workers, target, run, selection 
 }
 
 if (import.meta.main) {
-  const metadata = JSON.parse(execFileSync("cargo",
-    ["metadata", "--locked", "--no-deps", "--format-version", "1"], { encoding: "utf8" }));
+  const metadata = workspaceProfileMetadata(root, {workspaceOnly: true});
   const packages = workspacePackages(metadata);
   const wasm = wasmPackages(metadata);
   const target = process.env.CARGO_TARGET_DIR ?? "target";

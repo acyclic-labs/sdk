@@ -1,10 +1,12 @@
-import {toml} from './policy-core.mjs';
+import {lockDependencyIndex, toml} from './policy-core.mjs';
 import {workspacePackages, compareVersions, versionMatches} from './workspace-model.mjs';
 
 export function checkLock(root) {
   const lock = toml(root, 'Cargo.lock');
   if (lock.version !== 4 || !Array.isArray(lock.package)) throw Error('expected a version 4 package lock');
   const identities = new Set();
+  const resolved = new Map();
+  const resolve = lockDependencyIndex(lock.package);
   let previous;
   for (const pkg of lock.package) {
     const identity = `${pkg.name} ${pkg.version} ${pkg.source ?? ''}`;
@@ -16,11 +18,11 @@ export function checkLock(root) {
     const dependencies = pkg.dependencies ?? [];
     if (new Set(dependencies).size !== dependencies.length || dependencies.some((d, n) => n && d < dependencies[n - 1]))
       throw Error(`dependency ordering or duplicate in ${identity}`);
-    for (const dep of dependencies) {
-      const [name, version, source] = dep.split(' ');
-      const candidates = lock.package.filter(p => p.name === name && (!version || p.version === version) && (!source || `(${p.source})` === source));
+    resolved.set(pkg, dependencies.map(dep => {
+      const candidates = resolve(dep);
       if (candidates.length !== 1) throw Error(`ambiguous or missing dependency ${dep} in ${identity}`);
-    }
+      return {ref: dep, package: candidates[0]};
+    }));
   }
   for (const pkg of workspacePackages(root)) {
     const locked = lock.package.find(p => !p.source && p.name === pkg.name && p.version === pkg.version);
@@ -29,16 +31,11 @@ export function checkLock(root) {
     // A patched dependency outside the workspace may have optional features
     // no workspace member selected, so its lock need not contain those edges.
     for (const dep of declared.filter(dep => pkg.workspace_member || !dep.optional)) {
-      const present = (locked.dependencies ?? []).some(ref => {
-        const [name, version, source] = ref.split(' ');
-        if (name !== dep.name) return false;
-        return lock.package.some(candidate => candidate.name === name && (!version || candidate.version === version)
-          && (!source || `(${candidate.source})` === source) && versionMatches(candidate.version, dep.req));
-      });
+      const present = resolved.get(locked).some(({package: candidate}) => candidate.name === dep.name && versionMatches(candidate.version, dep.req));
       if (!present) throw Error(`missing locked dependency ${pkg.name} -> ${dep.name} ${dep.req}`);
     }
-    for (const ref of locked.dependencies ?? [])
-      if (!declared.some(dep => dep.name === ref.split(' ')[0])) throw Error(`undeclared locked dependency ${pkg.name} -> ${ref}`);
+    for (const {ref, package: candidate} of resolved.get(locked))
+      if (!declared.some(dep => dep.name === candidate.name)) throw Error(`undeclared locked dependency ${pkg.name} -> ${ref}`);
   }
   // Parsing and checking never rewrites the lockfile or acquires a package-cache lock.
   return lock.package.length;

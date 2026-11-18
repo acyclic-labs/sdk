@@ -2,9 +2,7 @@
 // Cargo.toml and, for each, its package name and the path dependencies it declares, of every kind and for every
 // target. A TOML file is parsed by a real TOML parser (Python's tomllib), so values keep their exact form.
 import path from "node:path";
-import { toml } from "./policy-core.mjs";
-
-const KINDS = [["dependencies", "normal"], ["dev-dependencies", "dev"], ["build-dependencies", "build"]];
+import { manifestDependencies, toml, tomlFiles } from "./policy-core.mjs";
 
 /**
  * Every workspace member by repository-relative directory: its package name and its path dependencies on other
@@ -15,16 +13,17 @@ const KINDS = [["dependencies", "normal"], ["dev-dependencies", "dev"], ["build-
 export function workspaceMembers(root) {
   const workspace = toml(root, "Cargo.toml").workspace ?? {};
   const crates = new Map();
-  for (const directory of workspace.members ?? []) {
-    const manifest = toml(root, `${directory}/Cargo.toml`);
-    const tables = [manifest, ...Object.values(manifest.target ?? {})];
+  for (const [file, manifest] of Object.entries(tomlFiles(root, (workspace.members ?? []).map(directory => `${directory}/Cargo.toml`)))) {
+    const directory = file.slice(0, -"/Cargo.toml".length);
     // An inherited dependency's path is relative to the workspace root.
     const located = (name, spec) => spec?.workspace === true
       ? typeof workspace.dependencies?.[name]?.path === "string" ? path.posix.normalize(workspace.dependencies[name].path) : undefined
       : typeof spec?.path === "string" ? path.posix.normalize(path.posix.join(directory, spec.path)) : undefined;
-    const dependencies = tables.flatMap(table => KINDS.flatMap(([section, kind]) => Object.entries(table[section] ?? {})
-      .map(([name, spec]) => ({ directory: located(name, spec), kind }))
-      .filter(dependency => dependency.directory !== undefined)));
+    const dependencies = [];
+    for (const {alias, value, kind} of manifestDependencies(manifest)) {
+      const directory = located(alias, value);
+      if (directory !== undefined) dependencies.push({directory, kind: kind ?? "normal"});
+    }
     crates.set(directory, { name: manifest.package.name, dependencies });
   }
   // A path dependency outside the members is vendored source (rust/vendor), which the root manifest excludes

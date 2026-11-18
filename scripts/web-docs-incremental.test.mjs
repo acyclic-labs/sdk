@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -59,4 +59,25 @@ test("project builds reject changed dependency types and restore missing emitted
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(readFileSync(output, "utf8"), /result/);
   console.log("WEB_DOCS_COMPILER_RESULT " + JSON.stringify({ status: "PASS", measurements }));
+});
+test("project admission failures retain a structured result from the real build CLI", t => {
+  const root = mkdtempSync(join(tmpdir(), "sdk-admission-"));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  mkdirSync(join(root, "scripts"));
+  mkdirSync(join(root, "typescript/packages/missing"), {recursive: true});
+  writeFileSync(join(root, "typescript/packages/missing/tsconfig.json"), "{}");
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({references: []}));
+  for (const name of ["policy-core.mjs", "package-closure.mjs", "release-build.mjs"])
+    symlinkSync(new URL(name, import.meta.url), join(root, "scripts", name), "file");
+  const script = join(root, "scripts/web-docs-build.mjs");
+  writeFileSync(script, readFileSync(new URL("web-docs-build.mjs", import.meta.url)));
+  const result = spawnSync(process.execPath, [script, "typescript"], {cwd: root, encoding: "utf8"});
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /reference every package/);
+  const records = result.stdout.split(/\r?\n/).filter(line => line.startsWith("SDK_WEB_DOCS_RESULT "));
+  assert.equal(records.length, 1, result.stdout);
+  const record = JSON.parse(records[0].slice("SDK_WEB_DOCS_RESULT ".length));
+  assert.equal(record.phase, "typescript");
+  assert.equal(record.status, "FAIL");
+  assert.ok(record.seconds >= 0);
 });

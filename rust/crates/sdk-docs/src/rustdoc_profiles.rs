@@ -19,7 +19,7 @@ pub(crate) use execution::RustdocProducer;
 mod receipts;
 pub use execution::{
     execute_profile, load_metadata, load_workspace_metadata, rustdoc_host, rustdoc_platform_cfgs,
-    rustdoc_targets, CargoExecutionContext, LockSelection, RustdocTarget,
+    rustdoc_targets, workspace_metadata_bytes, CargoExecutionContext, LockSelection, RustdocTarget,
 };
 pub use receipts::{
     extract_owned_api, observe_binary_rustdoc, observe_rustdoc, validate_rustdoc_version,

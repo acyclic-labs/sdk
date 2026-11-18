@@ -1,12 +1,39 @@
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
+import {readFile} from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 
 export const repositoryUrl = new URL('../', import.meta.url).href;
 export const repositoryRoot = resolve(fileURLToPath(repositoryUrl));
+
+export function* manifestDependencies(manifest) {
+  for (const [target, tables] of [[null, manifest], ...Object.entries(manifest.target ?? {})])
+    for (const [table, kind] of Object.entries({dependencies: null, 'dev-dependencies': 'dev', 'build-dependencies': 'build'}))
+      for (const [alias, value] of Object.entries(tables[table] ?? {}))
+        yield {target, kind, alias, value};
+}
+
+export function lockDependencyIndex(packages) {
+  const byName = Map.groupBy(packages, pkg => pkg.name);
+  return (reference, requiredName) => {
+    const match = /^(\S+)(?: ([^\s()]+)(?: \(([^\s]+)\))?)?$/.exec(reference);
+    if (!match) throw Error(`invalid Cargo.lock dependency ${reference}`);
+    const [, name, version, source] = match;
+    return requiredName !== undefined && name !== requiredName ? [] : (byName.get(name) ?? [])
+      .filter(pkg => (!version || pkg.version === version) && (!source || pkg.source === source));
+  };
+}
+
+export function selectionWorker(name, flags, workers) {
+  return createHash('sha256').update([name, ...flags].join('\0')).digest().readUInt32LE(0) % workers;
+}
+export function workerEnv(index, env = process.env) {
+  return index === 0 ? {...env} : {...env, CARGO_TARGET_DIR: `${env.CARGO_TARGET_DIR ?? join(repositoryRoot, 'target')}-features-${index}`};
+}
 
 const utf8 = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
 export function readUtf8(file) {
@@ -21,6 +48,15 @@ export function readUtf8(file) {
 export function trackedFiles(root = process.cwd(), paths = [], {untracked = false, ...options} = {}) {
   return execFileSync('git', ['ls-files', '-z', ...(untracked ? ['--cached', '--others', '--exclude-standard'] : []), '--', ...paths],
     {...options, cwd: root, encoding: 'utf8', maxBuffer: Infinity}).split('\0').filter(Boolean);
+}
+
+// Read ordered pages of the working tree, releasing descriptors between pages.
+export async function readSources(root, files) {
+  const pageSize = 64, sources = [];
+  for (let start = 0; start < files.length; start += pageSize)
+    sources.push(...await Promise.all(files.slice(start, start + pageSize).map(async file =>
+      [file, await readFile(resolve(root, file), 'utf8')])));
+  return sources;
 }
 
 const manifests = new Map();
@@ -90,11 +126,59 @@ export function checkFileCopies(root, copies) {
     throw new Error(`packaged source drift: ${copy}`);
 }
 
+// Set iteration visits newly reached features once, including cycles and
+// implicit dependency names that have no declared feature table entry.
+export function reachable(roots, edges) {
+  const reached = new Set(roots);
+  for (const item of reached) for (const next of edges(item)) reached.add(next);
+  return reached;
+}
+
+export function growSets(step) {
+  let grew;
+  do {
+    grew = false;
+    step((set, value) => { if (!set.has(value)) { set.add(value); grew = true; } });
+  } while (grew);
+}
+
+export const isCratesIoPackage = item => item.source === null && (item.publish === null || item.publish.includes('crates-io'));
+
+export function featureClosure(features = {}, roots) {
+  return reachable(roots, feature => Object.hasOwn(features, feature) ? features[feature] : []);
+}
+
+export function dependencyEnabled(features, dependency) {
+  if (!dependency.optional) return true;
+  const alias = dependency.rename ?? dependency.name;
+  for (const feature of features)
+    if (feature === `dep:${alias}` || feature.startsWith(`${alias}/`)) return true;
+  return false;
+}
+
+export function* forwardedFeatures(features, alias) {
+  for (const feature of features) {
+    const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
+    if (match && match[1] === alias) yield match[2];
+  }
+}
+
+// Every package with a compiler configuration belongs to the root build.
+export function checkTypeScriptReferences(root, required = []) {
+  const packages = readdirSync(join(root, 'typescript/packages'))
+    .filter(name => existsSync(join(root, 'typescript/packages', name, 'tsconfig.json')))
+    .map(name => `./typescript/packages/${name}`).sort();
+  const referenced = parseJson(readUtf8(join(root, 'tsconfig.json'))).references.map(({path}) => path).sort();
+  if (required.some(name => !packages.includes(`./typescript/packages/${name}`)) || JSON.stringify(packages) !== JSON.stringify(referenced))
+    throw new Error(`STEP typescript failed: tsconfig.json references ${JSON.stringify(referenced)}, packages are ${JSON.stringify(packages)}; recovery: reference every package in tsconfig.json`);
+}
+
 // One cfg grammar, with unknown atoms retained for partial platform knowledge.
 export function evaluateCfg(gate, atom, positiveFeatures = false) {
-  const tokens = gate.match(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]/g) ?? [];
-  let at = 0;
   const invalid = () => { throw new Error(`unsupported cfg gate: ${gate}`); };
+  const tokens = Array.from(gate.matchAll(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]|(\S)/g),
+    ([token, unsupported]) => unsupported ? invalid() : token);
+  let at = 0;
   const parse = () => {
     const name = tokens[at++];
     if (!/^[A-Za-z_][A-Za-z_0-9]*$/.test(name ?? '')) invalid();
@@ -116,10 +200,11 @@ export function evaluateCfg(gate, atom, positiveFeatures = false) {
     const feature = name === 'feature' || Boolean(children?.some(child => child.feature));
     if (positiveFeatures && name === 'not' && feature) throw new Error('negated feature gate cannot be represented by required-features; move this gate inside the test target');
     if (['all', 'any', 'not'].includes(name) && !children) invalid();
+    if (name === 'not' && children.length !== 1) invalid();
     const decisive = name === 'any';
     return {feature, enabled: ['all', 'any'].includes(name)
       ? children.some(child => child.enabled === decisive) ? decisive : children.some(child => child.enabled === undefined) ? undefined : !decisive
-      : name === 'not' ? positiveFeatures ? true : children[0]?.enabled === undefined ? undefined : !children[0].enabled : atom(name, value)};
+      : name === 'not' ? positiveFeatures ? true : children[0].enabled === undefined ? undefined : !children[0].enabled : atom(name, value, children)};
   };
   const result = parse();
   if (at !== tokens.length) invalid();
@@ -158,13 +243,7 @@ export function testFeatureFindings(root) {
       }
       for (const [path, target] of targets) {
         const source = join(directory, path), text = readUtf8(source);
-        const enabled = new Set(target['required-features'] ?? []), pending = [...enabled];
-        while (pending.length) {
-          const next = pending.pop();
-          for (const feature of data.features?.[next] ?? []) {
-            if (!enabled.has(feature)) { enabled.add(feature); pending.push(feature); }
-          }
-        }
+        const enabled = featureClosure(data.features, target['required-features']);
         for (const [, gate] of text.matchAll(/#!\[cfg\((.*?)\)\]/gs)) {
           try {
             if (!testGateEnabled(gate, enabled)) errors.push(`${source}: add required-features satisfying (${gate}) to its [[test]] in ${manifest}`);

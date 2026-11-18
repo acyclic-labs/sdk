@@ -69,9 +69,13 @@ node_test(
 node_test(
     name = "workspace_model_test",
     srcs = [
+        "//:scripts/check-crate-tests.mjs",
         "//:scripts/policy-core.mjs",
+        "//:scripts/run-command.mjs",
+        "//:scripts/workspace-defaults.mjs",
         "//:scripts/workspace-model.mjs",
         "//:scripts/workspace-model.test.mjs",
+        "//:scripts/workspace-profile-metadata.mjs",
     ],
     entry = "scripts/workspace-model.test.mjs",
 )
@@ -100,6 +104,19 @@ node_test(
         "//:scripts/check-test-features.test.mjs",
     ],
     entry = "scripts/check-test-features.test.mjs",
+)
+
+node_test(
+    name = "test_support_test",
+    srcs = [
+        "//:scripts/check-test-support.mjs",
+        "//:scripts/check-test-support.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+        "//rust/crates/mcp:build.rs",
+    ],
+    entry = "scripts/check-test-support.test.mjs",
+    name_pattern = "missing forwarding fails",
 )
 
 node_test(
@@ -144,8 +161,10 @@ node_test(
     srcs = [
         "core.test.mjs",
         "//:scripts/check-cargo-callers.mjs",
+        "//:scripts/check-incremental.mjs",
         "//:scripts/fixtures/cargo-callers/recorded-log.txt",
         "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-manifests.mjs",
         "//:scripts/check-js-licenses.mjs",
         "//:scripts/check-js-licenses.fuzz.mjs",
         "//:scripts/test-support/license-graphs.mjs",

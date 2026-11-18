@@ -174,7 +174,7 @@ const workspaceTargetName = name => `workspace_${name.replaceAll("@", "").replac
 const starlarkDict = entries => `{\n${entries.map(([key, value]) => `        ${q(key)}: ${q(value)},\n`).join("")}    }`;
 // Workspace TypeScript packages by npm name, from their package.json files.
 const workspacePackages = new Map();
-for (const file of execFileSync("git", ["ls-files", "typescript/packages/*/package.json", "typescript/packages/@acyclic/*/package.json"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
+for (const file of trackedFiles(root, ["typescript/packages/*/package.json", "typescript/packages/@acyclic/*/package.json"])) {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
   if (pkg.name) workspacePackages.set(pkg.name, path.dirname(file).replaceAll("\\", "/"));
 }

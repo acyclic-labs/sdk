@@ -6,6 +6,7 @@ import { dirname, join, relative } from "node:path";
 import { contractModules, loadContractModules } from "./generate-contracts.mjs";
 import { memberDirectory, workspaceMembers } from "./workspace-manifests.mjs";
 import { writeChanged } from "./generated-bindings.mjs";
+import { reachable } from "./policy-core.mjs";
 
 // `generate.mjs` in write mode is one action: its outputs are a function of the files below, the toolchain and the
 // selection. An entry records every file the action projected (`writeChanged`) and every directory it pruned, so a hit
@@ -66,24 +67,17 @@ async function rustCrates(root, inputs, { label, roots: rootNames }) {
   const cache = join(generationStore(), "crates", `${sha256(`${digestOf(inputs)}\0${label}`)}.json`);
   try { return JSON.parse(readFileSync(cache, "utf8")); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  const rootDirs = [...new Set(await rootNames(root))];
+  const rootDirs = new Set(await rootNames(root));
   // Declared path dependencies, optional ones included, need no registry resolution; vendored crates are inputs whole.
   const local = workspaceMembers(root);
-  const unknown = rootDirs.filter(directory => !local.has(directory));
+  const unknown = [...rootDirs].filter(directory => !local.has(directory));
   if (unknown.length) throw new Error(`STEP_FAILED generation-inputs: ${unknown.join(", ")} is not a workspace member`);
   // A generator's examples and tests build its dev-dependencies; its dependencies build only theirs.
-  const seen = new Set(), pending = [...rootDirs];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    if (seen.has(directory)) continue;
-    seen.add(directory);
+  const crates = [...reachable(rootDirs, directory => {
     const pkg = local.get(directory);
     if (!pkg) throw new Error(`STEP_FAILED generation-inputs: ${directory} is not a workspace member`);
-    for (const dep of pkg.dependencies) {
-      if (rootDirs.includes(directory) || dep.kind !== "dev") pending.push(dep.directory);
-    }
-  }
-  const crates = [...seen].sort();
+    return pkg.dependencies.filter(dep => rootDirs.has(directory) || dep.kind !== "dev").map(dep => dep.directory);
+  })].sort();
   mkdirSync(dirname(cache), { recursive: true });
   const partial = `${cache}.${process.pid}.partial`;
   writeFileSync(partial, JSON.stringify(crates));

@@ -206,7 +206,7 @@ test("runner rejects stale source and substituted package inputs before qualific
     };
     mkdirSync(join(root, "scripts"));
     symlinkSync(resolve("node_modules"), join(root, "node_modules"), "junction");
-    for (const name of ["run-harness-conformance.mjs", "harness-conformance-cases.mjs", "harness-conformance-evidence.mjs", "generated-bindings.mjs", "harness-package-closure.mjs", "harness-provider-evidence.mjs"]) {
+    for (const name of ["run-harness-conformance.mjs", "harness-conformance-cases.mjs", "harness-conformance-evidence.mjs", "generated-bindings.mjs", "harness-package-closure.mjs", "harness-provider-evidence.mjs", "policy-core.mjs", "workspace-model.mjs"]) {
       copyFileSync(new URL(`./${name}`, import.meta.url), join(root, "scripts", name));
     }
     mkdirSync(dirname(join(root, compatibilityArtifacts.harness.conformanceDigest)), { recursive: true });

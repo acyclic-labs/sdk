@@ -63,7 +63,8 @@ test('bounded cfg model: direct evaluation agrees with the former independent DN
       assert.equal(testGateEnabled(node.source, enabled), expected, node.source + ':' + bits);
     }
   }
-  for (const gate of ['', 'all(', 'any(feature="local") trailing', 'not(feature="local")', 'any(target_os="linux",not(feature="local"))']) {
+  for (const gate of ['', 'all(', 'any(feature="local") trailing', 'not(feature="local")', 'any(target_os="linux",not(feature="local"))',
+    'any(loom,!target_os="linux")', 'feature="', 'feature=="local"']) {
     assert.throws(() => testGateEnabled(gate, new Set(['local'])));
   }
   for (const [gate, expected] of [['all(test,unknown)', undefined], ['all(feature="test-support",unknown)', false],
