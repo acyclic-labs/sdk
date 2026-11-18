@@ -199,6 +199,28 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
             )?,
         )?;
     }
+    let historical_scenarios = if let Some(plan) = &historical_plan {
+        let owners = plan
+            .released_packages
+            .iter()
+            .map(|release| release.package.clone())
+            .collect::<BTreeSet<_>>();
+        let examples = historical::examples(&metadata, &root, &owners).map_err(CliError)?;
+        let executions = historical::execute_examples(
+            &root,
+            cargo_path
+                .as_deref()
+                .ok_or_else(|| CliError("historical examples lack pinned docs Cargo".into()))?,
+            &output.join(".profile-build"),
+            &examples,
+            (!plan.owner_metadata.is_empty()).then_some(&plan.owner_metadata),
+            plan.captured_source.as_ref(),
+        )
+        .map_err(CliError)?;
+        Some((examples, executions))
+    } else {
+        None
+    };
     let executed_profiles = if let Some(plan) = &historical_plan {
         execute_historical_profiles(
             &root,
@@ -580,28 +602,7 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
     write_immutable(&receipts_path, &json_bytes(&receipt_rows)?)?;
     let scenario_path = output.join("sdk-docs-scenarios.v1.json");
     let mut scenario_artifacts = Vec::new();
-    let scenario_sources = if let Some(plan) = &historical_plan {
-        let owners = plan
-            .released_packages
-            .iter()
-            .map(|release| release.package.clone())
-            .collect::<BTreeSet<_>>();
-        let examples = historical::examples(&metadata, &root, &owners).map_err(CliError)?;
-        let executions = historical::execute_examples(
-            &root,
-            cargo_path
-                .as_deref()
-                .ok_or_else(|| CliError("historical examples lack pinned docs Cargo".into()))?,
-            &output.join(".profile-build"),
-            &examples,
-            if plan.owner_metadata.is_empty() {
-                None
-            } else {
-                Some(&plan.owner_metadata)
-            },
-            plan.captured_source.as_ref(),
-        )
-        .map_err(CliError)?;
+    let scenario_sources = if let Some((examples, executions)) = historical_scenarios {
         write_immutable(&scenario_path, &json_bytes(&examples)?)?;
         write_immutable(
             &output.join("sdk-docs-scenario-executions.v1.json"),

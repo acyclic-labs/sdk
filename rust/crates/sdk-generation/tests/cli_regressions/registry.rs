@@ -694,6 +694,7 @@ fn archive_example_mutation_cannot_admit_its_native_release_catalog() {
         .unwrap(),
         b"changed imported input"
     );
+    assert!(!fixture.output.join("releases/1.0.0/.rustdoc").exists());
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
 }
 
