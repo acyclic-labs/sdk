@@ -9,6 +9,7 @@ mod checkout_tracking;
 #[path = "../../../support/volume_fixture.rs"]
 mod fixtures;
 mod profiles;
+mod special;
 #[path = "../../../support/volume_commit.rs"]
 mod volume_commit;
 
