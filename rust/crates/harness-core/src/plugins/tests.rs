@@ -195,7 +195,7 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let tree = Metered {
         io: &io,
@@ -224,10 +224,10 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
     let wrapper_bytes =
         acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<Enabled>()?
             - std::mem::size_of::<EnabledData>() as u64;
-    let before_empty_share = work.live_allocation_bytes();
+    let before_empty_share = work.live_allocation_bytes()?;
     let empty = empty.into_shared()?;
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         before_empty_share + wrapper_bytes
     );
     drop(empty);
@@ -252,23 +252,23 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
         Surface::Data,
     )
     .await?;
-    assert!(work.live_allocation_bytes() >= baseline + 131072);
-    let before_share = work.live_allocation_bytes();
+    assert!(work.live_allocation_bytes()? >= baseline + 131072);
+    let before_share = work.live_allocation_bytes()?;
     let admitted = admitted.into_shared()?;
-    assert_eq!(work.live_allocation_bytes(), before_share + wrapper_bytes);
+    assert_eq!(work.live_allocation_bytes()?, before_share + wrapper_bytes);
     let shared = std::sync::Arc::clone(&admitted);
     drop(admitted);
-    assert_eq!(work.live_allocation_bytes(), before_share + wrapper_bytes);
+    assert_eq!(work.live_allocation_bytes()?, before_share + wrapper_bytes);
     assert_eq!(shared.after[0].settlement().next().unwrap().len(), 65536);
     drop(shared);
-    assert!(work.live_allocation_bytes() >= baseline + 65536);
+    assert!(work.live_allocation_bytes()? >= baseline + 65536);
     drop(after);
     assert!(
-        work.live_allocation_bytes() > baseline,
+        work.live_allocation_bytes()? > baseline,
         "shared executable rules retain their admission"
     );
     drop(rules);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -367,7 +367,7 @@ async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<(
         &cancel,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     assert!(matches!(
         read_hook(
@@ -379,7 +379,7 @@ async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<(
         .await,
         Err(LoadFailure::Operational(Error::NativeWork { .. }))
     ));
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     assert_eq!(tree.0.len(), 65536, "refusal preserves the original source");
     Ok(())
 }
@@ -437,7 +437,7 @@ async fn native_plugin_retains_only_settings_used_by_installed_rules() -> Result
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     for has_hook in [false, true] {
         let mut previous = None;
         for (selector, manifest, payload) in [
@@ -475,7 +475,7 @@ async fn native_plugin_retains_only_settings_used_by_installed_rules() -> Result
                 Surface::Data,
             )
             .await?;
-            let retained = work.live_allocation_bytes();
+            let retained = work.live_allocation_bytes()?;
             if let Some(previous) = previous {
                 assert_eq!(
                     retained - previous,
@@ -485,7 +485,7 @@ async fn native_plugin_retains_only_settings_used_by_installed_rules() -> Result
             }
             previous = Some(retained);
             drop(admitted);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
     Ok(())

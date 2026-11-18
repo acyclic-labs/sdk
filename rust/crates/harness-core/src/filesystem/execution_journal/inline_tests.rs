@@ -942,7 +942,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         );
     }
     let length = file.descriptor().byte_length();
-    let receipt = work.receipt();
+    let receipt = work.receipt()?;
     // Authenticate the whole intersecting chunk even when storage lends its
     // backing. Reading the whole payload then slicing must also fail this
     // work bound when shared aliases do not allocate new chunk backing.
@@ -1015,7 +1015,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         journal.load_range(&file, range, None)?.await?.as_ref(),
         bytes.as_ref()
     );
-    let reads = io.receipt().backend_read_operations;
+    let reads = io.receipt()?.backend_read_operations;
     stop.cancel();
     let cancelled = match journal.load_range(&file, range, Some(&io)) {
         Ok(read) => read.await,
@@ -1025,7 +1025,7 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         cancelled.unwrap_err().code(),
         crate::wire::ErrorCode::Cancelled
     );
-    assert_eq!(io.receipt().backend_read_operations, reads);
+    assert_eq!(io.receipt()?.backend_read_operations, reads);
     // Capture the real journal's committed frames, then omit their original
     // atomic proof publications. Reference replay must refuse rather than
     // reconstruct payload bodies to accept an unproven observation.

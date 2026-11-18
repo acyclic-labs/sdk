@@ -133,7 +133,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                 &acyclic_fs::CancellationToken::new(),
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let before = work.receipt();
+            let before = work.receipt()?;
             assert_eq!(
                 write()?
                     .executor
@@ -156,7 +156,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     .code(),
                 crate::wire::ErrorCode::Invalid,
             );
-            let after = work.receipt();
+            let after = work.receipt()?;
             assert_eq!(
                 after.backend_write_operations,
                 before.backend_write_operations
@@ -391,7 +391,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                         .is_none()
                 );
             }
-            let work_before = work.receipt();
+            let work_before = work.receipt()?;
             let (recovered, _custody) = write()?
                 .executor
                 .reconcile_with_native_context(&restarted, &invocation, &work)?
@@ -404,7 +404,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     error
                 })?;
             assert_eq!(recovered, Some(expected), "{path}");
-            let work_after = work.receipt();
+            let work_after = work.receipt()?;
             assert_eq!(
                 work_after.backend_write_operations,
                 work_before.backend_write_operations

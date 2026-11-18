@@ -150,13 +150,13 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
 
     pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
         if let Ok(value) = decode(bytes, None) {
-            let result = check_admitted(bytes, value);
+            let result = check_admitted(bytes, value.as_ref());
             assert!(result.is_ok(), "model cell round trip failed: {result:?}");
         }
     }
 
-    fn check_admitted(bytes: &[u8], value: Option<ModelEventAdmission>) -> Result<()> {
-        let encoded = encode(value.as_ref(), None)?;
+    fn check_admitted(bytes: &[u8], value: Option<&ModelEventAdmission>) -> Result<()> {
+        let encoded = encode(value, None)?;
         assert_eq!(encoded.as_ref(), bytes);
         let restored = decode(&encoded, None)?;
         assert_eq!(encode(restored.as_ref(), None)?, encoded);

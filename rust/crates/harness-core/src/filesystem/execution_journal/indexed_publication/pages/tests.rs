@@ -185,8 +185,8 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let foreign = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = original.live_allocation_bytes();
-        let foreign_baseline = foreign.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes()?;
+        let foreign_baseline = foreign.live_allocation_bytes()?;
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let store = acyclic_fs::StreamAuthorityStore::new(provider.clone());
         let result = {
@@ -252,7 +252,7 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
         if let Some(commit) = result {
             // Both preparation adapters are gone. The original unsent batch
             // still pays for every journal vector and its pre-existing guard.
-            assert!(original.live_allocation_bytes() > baseline + 32);
+            assert!(original.live_allocation_bytes()? > baseline + 32);
             assert_eq!(commit.request().effects[0].mutations.len(), 3);
             let mut work = acyclic_fs::AuthorityWork::native(&original, &cancellation);
             let outcome = store
@@ -274,8 +274,8 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
         }
         drop(store);
         drop(provider);
-        assert_eq!(original.live_allocation_bytes(), baseline, "mode {mode}");
-        assert_eq!(foreign.live_allocation_bytes(), foreign_baseline);
+        assert_eq!(original.live_allocation_bytes()?, baseline, "mode {mode}");
+        assert_eq!(foreign.live_allocation_bytes()?, foreign_baseline);
     }
     Ok(())
 }
@@ -626,7 +626,7 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     #[cfg(not(target_arch = "wasm32"))]
-    let native_baseline = work.live_allocation_bytes();
+    let native_baseline = work.live_allocation_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     let io = if _native {
         PreparationIo::from_native_work(&work)?
@@ -676,7 +676,7 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if _native {
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             native_baseline,
             "snapshot publication retained native custody"
         );

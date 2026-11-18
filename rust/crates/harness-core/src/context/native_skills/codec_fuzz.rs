@@ -4,6 +4,14 @@ use std::collections::BTreeMap;
 
 /// Check retained records and the shared typed-generation admission contract.
 pub fn check(bytes: &[u8]) {
+    let result = check_retained(bytes);
+    assert!(
+        result.is_ok(),
+        "native skill codec check failed: {result:?}"
+    );
+}
+
+fn check_retained(bytes: &[u8]) -> serde_json::Result<()> {
     let resource = serde_json::from_slice::<crate::resources::ResourceRef>(bytes);
     let admitted = serde_json::from_slice::<crate::resources::GenerationRef>(bytes);
     assert_eq!(
@@ -15,12 +23,15 @@ pub fn check(bytes: &[u8]) {
     );
     if let (Ok(admitted), Ok(resource)) = (admitted, resource) {
         assert_eq!(admitted.as_resource(), &resource, "skill receipt identity");
-        let mut wrong = serde_json::to_value(resource).unwrap();
-        wrong["kind"] = "workspace".into();
+        let mut wrong = serde_json::to_value(resource)?;
+        let kind = wrong.get_mut("kind").ok_or_else(|| {
+            <serde_json::Error as serde::ser::Error>::custom("resource writer omitted its kind")
+        })?;
+        *kind = "workspace".into();
         assert!(
             matches!(
                 serde_json::from_slice::<crate::resources::GenerationRef>(
-                    &serde_json::to_vec(&wrong).unwrap()
+                    &serde_json::to_vec(&wrong)?
                 ),
                 Err(error) if error.to_string().contains("typed resource kind mismatch")
             ),
@@ -31,7 +42,7 @@ pub fn check(bytes: &[u8]) {
     let reference = match serde_json::from_slice::<RetainedSource>(bytes) {
         Ok(RetainedSource::Batch(records)) => records,
         Ok(record) => BTreeMap::from([(
-            blake3::hash(&serde_json::to_vec(&record).unwrap()).to_string(),
+            blake3::hash(&serde_json::to_vec(&record)?).to_string(),
             record,
         )]),
         Err(_) => {
@@ -42,26 +53,26 @@ pub fn check(bytes: &[u8]) {
                 ),
                 "malformed skill record admitted or refusal changed"
             );
-            return;
+            return Ok(());
         }
     };
     let selected = reference.keys().min().map(String::as_str).unwrap_or("");
-    check_selection(bytes, selected, &reference);
-    check_selection(bytes, "absent", &reference);
+    check_selection(bytes, selected, &reference)?;
+    check_selection(bytes, "absent", &reference)?;
     // The indexed storage envelope versions the same source identity codec.
     let mut envelope = serde_json::json!({
         "version": 1,
-        "sources": serde_json::from_slice::<serde_json::Value>(bytes).unwrap(),
+        "sources": serde_json::from_slice::<serde_json::Value>(bytes)?,
     });
     assert_eq!(
-        retained::decode_stream_records(&serde_json::to_vec(&envelope).unwrap(), selected).is_ok(),
+        retained::decode_stream_records(&serde_json::to_vec(&envelope)?, selected).is_ok(),
         retained::decode_records(bytes, selected).is_ok(),
         "indexed skill records changed source admission",
     );
     envelope["version"] = 2.into();
     assert!(
         matches!(
-            retained::decode_stream_records(&serde_json::to_vec(&envelope).unwrap(), selected),
+            retained::decode_stream_records(&serde_json::to_vec(&envelope)?, selected),
             Err(Error::Unsupported(_)),
         ),
         "foreign skill record format admitted"
@@ -72,13 +83,13 @@ pub fn check(bytes: &[u8]) {
     if let Some(record) = reference.get(selected)
         && !matches!(record, RetainedSource::Batch(_))
     {
-        let single = serde_json::to_vec(record).unwrap();
+        let single = serde_json::to_vec(record)?;
         let selected = blake3::hash(&single).to_string();
         check_selection(
             &single,
             &selected,
             &BTreeMap::from([(selected.clone(), record)]),
-        );
+        )?;
         // Build one defect at a time from an admitted original record. A fuzzed
         // bundle may have several unrelated defects with unordered diagnostics.
         let changed = serde_json::json!({ "Batch": {
@@ -87,7 +98,7 @@ pub fn check(bytes: &[u8]) {
         } });
         assert!(
             matches!(
-                retained::decode_records(&serde_json::to_vec(&changed).unwrap(), &selected),
+                retained::decode_records(&serde_json::to_vec(&changed)?, &selected),
                 Err(Error::Conflict(reason)) if reason == "retained skill source changed"
             ),
             "changed skill sibling admitted or refusal changed"
@@ -95,7 +106,7 @@ pub fn check(bytes: &[u8]) {
         let absent = serde_json::json!({ "Batch": {} });
         assert!(
             matches!(
-                retained::decode_records(&serde_json::to_vec(&absent).unwrap(), &selected),
+                retained::decode_records(&serde_json::to_vec(&absent)?, &selected),
                 Err(Error::Conflict(reason)) if reason == "retained skill source is absent"
             ),
             "missing skill source admitted or refusal changed"
@@ -103,34 +114,36 @@ pub fn check(bytes: &[u8]) {
         let nested = serde_json::json!({ "Batch": { (&selected): { "Batch": {} } } });
         assert!(
             matches!(
-                retained::decode_records(&serde_json::to_vec(&nested).unwrap(), &selected),
+                retained::decode_records(&serde_json::to_vec(&nested)?, &selected),
                 Err(Error::Invalid(reason)) if reason == "nested retained skill batch"
             ),
             "nested skill batch admitted or refusal changed"
         );
     }
+    Ok(())
 }
 
 fn check_selection<T: std::borrow::Borrow<RetainedSource> + serde::Serialize>(
     bytes: &[u8],
     selected: &str,
     reference: &BTreeMap<String, T>,
-) {
-    let expected = reference.contains_key(selected)
-        && reference.iter().all(|(key, record)| {
-            !matches!(record.borrow(), RetainedSource::Batch(_))
-                && blake3::hash(&serde_json::to_vec(record).unwrap())
-                    .to_hex()
-                    .as_str()
-                    == key
-        });
+) -> serde_json::Result<()> {
+    let mut expected = reference.contains_key(selected);
+    for (key, record) in reference {
+        if !expected {
+            break;
+        }
+        expected = !matches!(record.borrow(), RetainedSource::Batch(_))
+            && blake3::hash(&serde_json::to_vec(record)?).to_hex().as_str() == key;
+    }
     let admitted = retained::decode_records(bytes, selected);
     assert_eq!(admitted.is_ok(), expected, "skill batch admission");
     if let Ok(admitted) = admitted {
         assert_eq!(
-            serde_json::to_value(admitted).unwrap(),
-            serde_json::to_value(reference).unwrap(),
+            serde_json::to_value(admitted)?,
+            serde_json::to_value(reference)?,
             "skill batch identity"
         );
     }
+    Ok(())
 }

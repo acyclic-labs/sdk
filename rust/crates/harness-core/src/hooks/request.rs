@@ -165,15 +165,22 @@ pub fn check_native_patch_paths(input: &[u8]) {
     let Ok(patch) = std::str::from_utf8(input) else {
         return;
     };
-    static REGISTRY: std::sync::OnceLock<ToolRegistry> = std::sync::OnceLock::new();
+    let result = check_patch(patch);
+    assert!(result.is_ok(), "patch hook oracle failed: {result:?}");
+}
+
+#[cfg(feature = "test-support")]
+fn check_patch(patch: &str) -> Result<()> {
+    static REGISTRY: std::sync::OnceLock<Result<ToolRegistry>> = std::sync::OnceLock::new();
     let registry = REGISTRY.get_or_init(|| {
-        let mut registry = crate::tools::defaults().unwrap();
-        crate::tools::native::NativeTools::new(crate::model::NativeToolProfile::Openai)
-            .unwrap()
-            .bind(&mut registry)
-            .unwrap();
-        registry
+        let mut registry = crate::tools::defaults()?;
+        crate::tools::native::NativeTools::new(crate::model::NativeToolProfile::Openai)?
+            .bind(&mut registry)?;
+        Ok(registry)
     });
+    let registry = registry
+        .as_ref()
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
     let call = crate::tool::ToolInvocation {
         operation_id: crate::OperationId::from_bytes([7; 16]),
         call_id: "original-patch".into(),
@@ -214,8 +221,7 @@ pub fn check_native_patch_paths(input: &[u8]) {
                     command: None,
                 },
                 None,
-            )
-            .unwrap();
+            )?;
             assert_eq!(
                 guard.matches(&actual),
                 expected.iter().any(|path| path.starts_with("private/")),
@@ -224,9 +230,12 @@ pub fn check_native_patch_paths(input: &[u8]) {
         }
         (Err(_), Err(_)) => {}
         (expected, actual) => {
-            panic!("patch decoder/hook admission differ: {expected:?} / {actual:?}")
+            return Err(crate::Error::Invalid(format!(
+                "patch decoder/hook admission differ: {expected:?} / {actual:?}"
+            )));
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

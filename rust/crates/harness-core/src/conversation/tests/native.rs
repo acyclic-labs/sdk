@@ -68,7 +68,7 @@ fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> R
             custody: None,
         })
     ));
-    assert_eq!(denied.receipt().bytes_hashed, 0);
+    assert_eq!(denied.receipt()?.bytes_hashed, 0);
     Ok(())
 }
 
@@ -155,7 +155,7 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
             custody: None,
         })
     ));
-    assert_eq!(denied.receipt().bytes_hashed, 0);
+    assert_eq!(denied.receipt()?.bytes_hashed, 0);
     drop(io);
     assert_eq!(state.history_digest(), head);
     assert_eq!(state.messages.len(), 4);
@@ -169,7 +169,7 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
         &mut Some(&mut probe_io),
     )?;
     denied_budget = budget;
-    denied_budget.allocation_operations = probe.receipt().allocation_operations;
+    denied_budget.allocation_operations = probe.receipt()?.allocation_operations;
     drop(probe_io);
     let denied = original_work(denied_budget, &cancellation)?;
     let mut io = crate::store::HistoryWork::new(
@@ -186,7 +186,7 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
         })
     ));
     assert!(
-        denied.receipt().bytes_hashed > 0,
+        denied.receipt()?.bytes_hashed > 0,
         "the original message hash completed before growth"
     );
     drop(io);

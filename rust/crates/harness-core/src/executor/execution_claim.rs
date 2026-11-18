@@ -169,7 +169,7 @@ mod tests {
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes()?;
         let claims = ExecutionClaims::default();
         let io = PreparationIo::from_native_work(&native)?;
         let first = claims
@@ -179,11 +179,11 @@ mod tests {
             .acquire([1; 32], OperationId::from_bytes([2; 16]), Some(&io))?
             .into_owner(Some(&io))?;
         drop(io);
-        assert!(native.live_allocation_bytes() > baseline);
+        assert!(native.live_allocation_bytes()? > baseline);
         drop(first);
-        assert!(native.live_allocation_bytes() > baseline);
+        assert!(native.live_allocation_bytes()? > baseline);
         drop(second);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
         Ok(())
     }
 }

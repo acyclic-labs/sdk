@@ -144,7 +144,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
         let key = tool_settlement_key(0, "call", None)?;
         drop(journal.append(turn, &key, &event, None)?);
         assert_eq!(journal.tool_settlement(query, Some(&io))?.await?, None);
-        let before = io.receipt();
+        let before = io.receipt()?;
         let foreign = ToolSettlementQuery {
             effect: OperationId::new(),
             ..query
@@ -155,7 +155,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             .expect_err("foreign effect accepted");
         assert_eq!(error.code(), crate::wire::ErrorCode::Conflict);
         assert_eq!(
-            io.receipt().authority_records_read,
+            io.receipt()?.authority_records_read,
             before.authority_records_read
         );
         for step in 0..64 {
@@ -176,7 +176,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                     io: None,
                 },
             )?;
-            let before = io.receipt();
+            let before = io.receipt()?;
             let owned = io.owned_bytes()?;
             let settled = reopened.tool_settlement(query, Some(&io))?.await?;
             assert_eq!(
@@ -187,7 +187,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                     outcome: ToolTerminalOutcome::Failed
                 })
             );
-            let reads = io.receipt().authority_records_read - before.authority_records_read;
+            let reads = io.receipt()?.authority_records_read - before.authority_records_read;
             assert!(
                 reads <= 518,
                 "terminal lookup exceeded two fixed-depth paths: {reads}"
@@ -280,8 +280,8 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             denied.is_err(),
             "finite read refusal became an absent result"
         );
-        assert_eq!(finite_io.receipt().backend_read_operations, 0);
-        assert_eq!(finite_io.receipt().authority_records_read, 0);
+        assert_eq!(finite_io.receipt()?.backend_read_operations, 0);
+        assert_eq!(finite_io.receipt()?.authority_records_read, 0);
         assert_eq!(finite_io.owned_bytes()?, 0);
         let cancelled = acyclic_fs::CancellationToken::new();
         let cancelled_io = PreparationIo::from_budget(budget, &cancelled)?;
@@ -296,7 +296,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                 .code(),
             crate::wire::ErrorCode::Cancelled
         );
-        assert_eq!(cancelled_io.receipt().authority_records_read, 0);
+        assert_eq!(cancelled_io.receipt()?.authority_records_read, 0);
     }
     Ok(())
 }

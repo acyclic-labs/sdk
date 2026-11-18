@@ -117,20 +117,20 @@ fn native_cache_custody_survives_temporary_io_and_returns_to_the_original_ledger
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let mut cache = SummaryCache::default();
     let operation = OperationId::new();
     {
         let io = PreparationIo::from_native_work(&work)?;
         seed(&mut cache, operation, &io)?;
     }
-    assert!(work.live_allocation_bytes() > baseline);
+    assert!(work.live_allocation_bytes()? > baseline);
     let io = PreparationIo::from_native_work(&work)?;
     cache.bind(operation, Some(&io))?;
     assert_eq!(cache.summary().tail, 1);
     assert_eq!(io.owned_bytes()?, 0);
     drop(cache);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 

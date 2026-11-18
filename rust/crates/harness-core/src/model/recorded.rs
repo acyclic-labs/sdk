@@ -224,6 +224,14 @@ pub trait DivergenceSink: acyclic_stream::ProviderPlatform {
     fn diverged(&self, divergence: Divergence);
 }
 
+#[cfg(any(test, all(feature = "test-support", not(target_arch = "wasm32"))))]
+pub(crate) struct IgnoreDivergence;
+
+#[cfg(any(test, all(feature = "test-support", not(target_arch = "wasm32"))))]
+impl DivergenceSink for IgnoreDivergence {
+    fn diverged(&self, _: Divergence) {}
+}
+
 #[derive(Default)]
 struct Replay {
     cursor: Cursor,
@@ -720,10 +728,6 @@ mod tests {
         }
         Ok(())
     }
-    struct Quiet;
-    impl DivergenceSink for Quiet {
-        fn diverged(&self, _: Divergence) {}
-    }
 
     proptest! {
         #[test]
@@ -777,7 +781,7 @@ mod tests {
     fn trial_admission_shares_source_without_copying_its_population() {
         let live: Arc<dyn ModelProvider> =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-        let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
+        let sink: Arc<dyn DivergenceSink> = Arc::new(IgnoreDivergence);
         for size in [1u64, 2048] {
             let mut source = Recording::default();
             for key in 0..size {
@@ -918,7 +922,7 @@ mod tests {
         budget.items_examined = 0;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let retained = work.live_allocation_bytes();
+        let retained = work.live_allocation_bytes()?;
         let mut cursor = Cursor::default();
         assert!(matches!(
             cursor.take(&source, [0; 32], &mut NativeIndexWork(Some(&work))),
@@ -930,7 +934,7 @@ mod tests {
             })
         ));
         assert_eq!(cursor.used, 0);
-        assert_eq!(work.live_allocation_bytes(), retained);
+        assert_eq!(work.live_allocation_bytes()?, retained);
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs_work::performance::BOUNDARY_BUDGET,
             &cancellation,
@@ -965,7 +969,7 @@ mod tests {
             &cancellation,
         )
         .map_err(|(error, _)| error)?;
-        let retained = work.live_allocation_bytes();
+        let retained = work.live_allocation_bytes()?;
         let mut funded = Cursor::default();
         assert_eq!(
             funded
@@ -975,13 +979,13 @@ mod tests {
             0
         );
         assert!(
-            work.receipt().items_examined > 0,
+            work.receipt()?.items_examined > 0,
             "cursor lookup must spend the original work credit"
         );
-        assert!(work.live_allocation_bytes() > retained);
+        assert!(work.live_allocation_bytes()? > retained);
         drop(funded);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes()?,
             retained,
             "the original ledger retains and refunds cursor storage"
         );
@@ -1031,9 +1035,10 @@ mod tests {
             let live = Arc::new(RecordedModel::new(
                 Arc::new(crate::test_support::ScriptedModelProvider::new([])),
                 Arc::new(source),
-                Arc::new(Quiet),
+                Arc::new(IgnoreDivergence),
             ));
-            let trial = RecordedModel::new(live.clone(), Arc::default(), Arc::new(Quiet));
+            let trial =
+                RecordedModel::new(live.clone(), Arc::default(), Arc::new(IgnoreDivergence));
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
             budget.allocation_operations = 1;
@@ -1058,7 +1063,7 @@ mod tests {
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
-            let retained = funded.live_allocation_bytes();
+            let retained = funded.live_allocation_bytes()?;
             // Concurrent admissions of one turn share its funded slot. Dropping
             // either registration cannot invalidate the surviving producer.
             let other = ModelDispatch {
@@ -1088,7 +1093,7 @@ mod tests {
                     step: 2,
                     ..dispatch(operation)
                 };
-                let before = funded.receipt();
+                let before = funded.receipt()?;
                 let mut preparation = None;
                 let physical = acyclic_test_support::measure(|| {
                     preparation = Some(trial.prepare(&request, current, Some(&funded), |_| Ok(())));
@@ -1096,7 +1101,7 @@ mod tests {
                 let ReplayPreparation::Live(admission) = preparation.unwrap()? else {
                     return Err(Error::Invalid("empty recording selected an answer".into()));
                 };
-                let prepared = funded.receipt();
+                let prepared = funded.receipt()?;
                 assert!(
                     physical.count_total
                         <= prepared.allocation_operations - before.allocation_operations,
@@ -1112,9 +1117,9 @@ mod tests {
                     0,
                     "live acceptance allocated after admission"
                 );
-                assert_eq!(funded.receipt(), prepared, "acceptance spent new work");
+                assert_eq!(funded.receipt()?, prepared, "acceptance spent new work");
             }
-            assert!(funded.live_allocation_bytes() > retained);
+            assert!(funded.live_allocation_bytes()? > retained);
             assert_eq!(
                 live.unused(),
                 1,
@@ -1133,7 +1138,7 @@ mod tests {
             drop(trial);
             // The independently retained downstream adapter owns its nodes.
             drop(live);
-            assert_eq!(funded.live_allocation_bytes(), retained);
+            assert_eq!(funded.live_allocation_bytes()?, retained);
         }
         Ok(())
     }
@@ -1197,7 +1202,7 @@ mod tests {
             RecordedModel::new(
                 Arc::new(crate::test_support::ScriptedModelProvider::new([])),
                 Arc::clone(&source),
-                Arc::new(Quiet),
+                Arc::new(IgnoreDivergence),
             )
         };
         // Measure every returned-object allocation through the actual public entry.
@@ -1209,18 +1214,18 @@ mod tests {
         )
         .map_err(|(error, _)| error)?;
         let probe_trial = trial();
-        let before = probe.receipt();
+        let before = probe.receipt()?;
         let mut prepared = None;
         let physical = acyclic_test_support::measure(|| {
             prepared = Some(probe_trial.generate_with_native_work(&request, dispatch, &probe));
         });
-        let admitted = probe.receipt().allocation_operations - before.allocation_operations;
+        let admitted = probe.receipt()?.allocation_operations - before.allocation_operations;
         assert!(
             physical.count_total <= admitted,
             "replay admission allocated without original funding: physical={physical:?}, admitted={admitted}"
         );
         let stream = prepared.unwrap()?.await?;
-        let complete_allocations = probe.receipt().allocation_operations;
+        let complete_allocations = probe.receipt()?.allocation_operations;
         drop(stream);
         assert!(complete_allocations > 1);
         for allocations in 1..complete_allocations {
@@ -1229,7 +1234,7 @@ mod tests {
             let refused = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
             let trial = trial();
-            let retained = refused.live_allocation_bytes();
+            let retained = refused.live_allocation_bytes()?;
             assert!(
                 matches!(
                     trial.generate_with_native_work(&request, dispatch, &refused),
@@ -1238,7 +1243,7 @@ mod tests {
                 "returned-object admission must refuse synchronously at allocation {allocations}",
             );
             assert_eq!(
-                refused.live_allocation_bytes(),
+                refused.live_allocation_bytes()?,
                 retained,
                 "refused returned-object admission retained index funding"
             );
@@ -1366,9 +1371,9 @@ mod tests {
         .map_err(|(error, _)| error)?;
         let hash_items = {
             let io = crate::filesystem::PreparationIo::from_native_work(&hash_work)?;
-            let before = hash_work.receipt().items_examined;
+            let before = hash_work.receipt()?.items_examined;
             tool_key(dispatch.operation_id, "original-0", Some(&io))?;
-            hash_work.receipt().items_examined - before
+            hash_work.receipt()?.items_examined - before
         };
         let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
         budget.items_examined = hash_items + 48 + "original-0".len() as u64 + 2;
@@ -1445,13 +1450,13 @@ mod tests {
             .await?;
         assert_eq!(reconciled, Some(vec![events[0].clone()]));
         drop(custody);
-        let retained = funded.live_allocation_bytes();
+        let retained = funded.live_allocation_bytes()?;
         let (reconciled, custody) = trial
             .reconcile_with_native_work(dispatch, &events[..1], &funded)?
             .await?;
         assert_eq!(reconciled, Some(vec![]));
         assert_eq!(
-            funded.live_allocation_bytes(),
+            funded.live_allocation_bytes()?,
             retained,
             "observed replay prefix retained discarded storage funding"
         );
@@ -1519,7 +1524,7 @@ mod tests {
             Arc::new(Recording::default()),
             divergences.clone(),
         );
-        let retained = funded.live_allocation_bytes();
+        let retained = funded.live_allocation_bytes()?;
         for step in 0..3 {
             let refused_dispatch = ModelDispatch { step, ..dispatch };
             assert!(matches!(
@@ -1527,7 +1532,7 @@ mod tests {
                 Err(Error::NativeBoundary { .. })
             ));
             assert_eq!(
-                funded.live_allocation_bytes(),
+                funded.live_allocation_bytes()?,
                 retained,
                 "refused live builder retained index funding"
             );
@@ -1622,7 +1627,7 @@ mod tests {
     fn tool_copy_uses_original_work_and_refusal_keeps_the_settlement() -> Result<()> {
         let live: Arc<dyn ModelProvider> =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-        let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
+        let sink: Arc<dyn DivergenceSink> = Arc::new(IgnoreDivergence);
         let operation = OperationId::new();
         let call_id = "0";
         let request = PreparedModelRequest::prepare(
@@ -1689,7 +1694,7 @@ mod tests {
                 budget.bytes_copied = 0;
                 let refused = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(error, _)| error)?;
-                let baseline = refused.live_allocation_bytes();
+                let baseline = refused.live_allocation_bytes()?;
                 let denial = trial.recorded_tool_result(operation, call_id, Some(&refused));
                 let cause = match &denial {
                     Err(Error::NativeWork { cause, .. }) => Some(cause),
@@ -1707,7 +1712,7 @@ mod tests {
                     ),
                     "original copy denial was {denial:?}"
                 );
-                assert_eq!(refused.live_allocation_bytes(), baseline);
+                assert_eq!(refused.live_allocation_bytes()?, baseline);
 
                 let work = acyclic_fs::NativeMaterializationWork::new(
                     acyclic_fs_work::performance::BOUNDARY_BUDGET,
@@ -1729,19 +1734,19 @@ mod tests {
                     &cancellation,
                 )
                 .map_err(|(error, _)| error)?;
-                let baseline = work.live_allocation_bytes();
-                let before = work.receipt();
+                let baseline = work.live_allocation_bytes()?;
+                let before = work.receipt()?;
                 let copied = trial
                     .recorded_tool_result(operation, call_id, Some(&work))?
                     .unwrap();
                 assert_eq!(copied.0, original);
                 assert!(copied.1.as_ref().unwrap().work().shares_ledger(&work));
                 assert_eq!(
-                    work.receipt().bytes_copied - before.bytes_copied,
+                    work.receipt()?.bytes_copied - before.bytes_copied,
                     size as u64,
                     "one payload copy, with no lookup or document copy"
                 );
-                assert!(work.live_allocation_bytes() > baseline);
+                assert!(work.live_allocation_bytes()? > baseline);
                 assert!(
                     trial
                         .recorded_tool_result(operation, call_id, None)?
@@ -1749,10 +1754,10 @@ mod tests {
                 );
                 assert_eq!(source.calls[&key][0].tools[0].1, original);
                 drop(copied);
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes()?, baseline);
 
                 let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-                let retained = work.live_allocation_bytes();
+                let retained = work.live_allocation_bytes()?;
                 let foreign = acyclic_fs::NativeMaterializationWork::new(
                     acyclic_fs_work::performance::BOUNDARY_BUDGET,
                     &cancellation,
@@ -1779,7 +1784,7 @@ mod tests {
                         ..
                     })
                 ));
-                assert_eq!(work.live_allocation_bytes(), retained);
+                assert_eq!(work.live_allocation_bytes()?, retained);
                 for _ in 0..2 {
                     register();
                     let (outcome, custody) = trial
@@ -1787,10 +1792,10 @@ mod tests {
                         .unwrap();
                     let receipt = (outcome, io.hold_native_custody(custody.unwrap())?);
                     assert_eq!(receipt.0, original);
-                    assert!(work.live_allocation_bytes() > retained);
+                    assert!(work.live_allocation_bytes()? > retained);
                     drop(receipt);
                     assert_eq!(
-                        work.live_allocation_bytes(),
+                        work.live_allocation_bytes()?,
                         retained,
                         "result custody refunds while the preparation remains alive"
                     );
@@ -1804,18 +1809,18 @@ mod tests {
                     .unwrap();
                 io.absorb_native_custody(custody.unwrap())?;
                 drop(outcome);
-                assert!(work.live_allocation_bytes() > retained);
+                assert!(work.live_allocation_bytes()? > retained);
                 drop(io);
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes()?, baseline);
 
                 // A plain clone allocates but charges none of the original
                 // work: this detects the previous unaccounted-copy path.
-                let before = work.receipt();
+                let before = work.receipt()?;
                 let unaccounted = acyclic_test_support::measure(|| {
                     std::hint::black_box(original.clone());
                 });
                 assert!(unaccounted.count_total > 0);
-                assert_eq!(work.receipt(), before);
+                assert_eq!(work.receipt()?, before);
             }
         }
         Ok(())

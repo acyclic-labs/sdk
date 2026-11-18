@@ -394,11 +394,11 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
                 ToolRegistry::default(),
             ))
         };
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes()?;
         let bound = configuration()?.into_step_binding(Some(&io))?;
-        assert!(work.live_allocation_bytes() > before);
+        assert!(work.live_allocation_bytes()? > before);
         drop(bound);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         let occupied = work.claim(
             work.remaining()?.peak_allocation_bytes,
             1,
@@ -418,13 +418,13 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             })
         ));
         drop(occupied);
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
         cancel.cancel();
         let refused = configuration()?.into_step_binding(Some(&io));
         assert!(
             matches!(refused, Err(ref error) if error.code() == crate::wire::ErrorCode::Cancelled)
         );
-        assert_eq!(work.live_allocation_bytes(), before);
+        assert_eq!(work.live_allocation_bytes()?, before);
     }
     Ok(())
 }

@@ -1,11 +1,6 @@
 use super::*;
 use futures::FutureExt as _;
 
-struct IgnoreDivergence;
-impl crate::model::DivergenceSink for IgnoreDivergence {
-    fn diverged(&self, _: crate::model::Divergence) {}
-}
-
 fn original_metadata(events: &[ModelEvent]) -> &Value {
     events
         .iter()
@@ -200,7 +195,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
         let recorded = Arc::new(crate::model::RecordedModel::new(
             provider.clone(),
             Arc::new(crate::model::Recording::default()),
-            Arc::new(IgnoreDivergence),
+            Arc::new(crate::model::IgnoreDivergence),
         ));
         let selected = StockExecutor::from_binding(
             Arc::new(crate::model::ResolvedModel::new((

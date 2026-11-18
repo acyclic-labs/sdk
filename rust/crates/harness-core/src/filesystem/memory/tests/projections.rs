@@ -22,7 +22,7 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     #[cfg(not(target_arch = "wasm32"))]
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     let native_work = work.clone();
     run_admitted_file_case(&storage, Limits::default(), move |task| {
@@ -80,10 +80,10 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
                         .await?
                         .ok_or_else(|| Error::NotFound("notebook publication receipt".into()))?;
                     assert_eq!(native.value, result.value);
-                    let held = work.live_allocation_bytes();
+                    let held = work.live_allocation_bytes()?;
                     drop(native);
                     drop(custody);
-                    assert!(work.live_allocation_bytes() < held);
+                    assert!(work.live_allocation_bytes()? < held);
                     Some(result)
                 } else {
                     None
@@ -154,7 +154,7 @@ async fn native_notebook_insert_ids_follow_operations_through_publication_and_re
         // Published immutable pages keep their original custody in the shared
         // object cache until its final owner is released.
         drop(storage);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
@@ -323,7 +323,7 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         {
             let _hold;
             let (native, hold) = runtime.block_on(tool.executor.execute_with_native_context(
@@ -335,11 +335,11 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
             assert_eq!(native.value, result.value);
             let _projection = tool.projection.project(&invocation, &native, Some(&work))?;
             work.remaining()?;
-            assert!(work.live_allocation_bytes() > baseline);
+            assert!(work.live_allocation_bytes()? > baseline);
         }
         // The original ledger reconciles checkout retirement at admission.
         work.remaining()?;
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         cancellation.cancel();
         let cancelled =
             match tool
@@ -643,7 +643,7 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let custody;
         let (native, retained) = runtime.block_on(tool.executor.execute_with_native_context(
             &context,
@@ -653,12 +653,12 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         custody = retained;
         assert_eq!(native.value["text"], result.value["text"]);
         work.remaining()?;
-        let held = work.live_allocation_bytes();
+        let held = work.live_allocation_bytes()?;
         assert!(held > baseline);
         drop(native);
         drop(custody);
         work.remaining()?;
-        assert!(work.live_allocation_bytes() < held);
+        assert!(work.live_allocation_bytes()? < held);
         cancellation.cancel();
         let cancelled =
             match tool
@@ -719,7 +719,7 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         drop(storage);
         drop(private);
         let (work, baseline) = native_retirement;
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }

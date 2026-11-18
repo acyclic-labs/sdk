@@ -68,11 +68,11 @@ async fn content_admission_rechecks_only_new_text_and_keeps_scope_binding() -> R
                 Some(&io),
             )?;
             let mut prepared = continuation.finish(stock.limits, Some(&io))?;
-            let before = io.receipt();
+            let before = io.receipt()?;
             execution
                 .verify_model_request_content(journal.as_ref(), &mut prepared)
                 .await?;
-            let after = io.receipt();
+            let after = io.receipt()?;
             let incremental = (
                 after.items_examined - before.items_examined,
                 after.backend_read_operations - before.backend_read_operations,
@@ -92,11 +92,11 @@ async fn content_admission_rechecks_only_new_text_and_keeps_scope_binding() -> R
                 io: Some(&io),
                 ..StockExecution::ordinary(&stock)
             };
-            let before = io.receipt();
+            let before = io.receipt()?;
             rebound
                 .verify_model_request_content(journal.as_ref(), &mut prepared)
                 .await?;
-            let full = io.receipt().items_examined - before.items_examined;
+            let full = io.receipt()?.items_examined - before.items_examined;
             full_work.push(full);
             eprintln!(
                 "CONTINUATION_CONTENT native={native} messages={count} incremental={incremental:?} rebound_items={full}"
