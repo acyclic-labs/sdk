@@ -3,7 +3,6 @@ use crate::Digest;
 use crate::kernel::allocation::KernelAccounting;
 use crate::model::Lifecycle;
 use crate::{CancellationToken, WorkBudget, WorkError};
-use acyclic_fs_format::object_reference::GenerationId;
 
 #[test]
 fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,7 +51,6 @@ fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::
             })) if found == version
         ));
     }
-    let _ = GenerationId::from_root(value.generation_root);
     Ok(())
 }
 
@@ -79,22 +77,6 @@ fn malformed_retention_fails_closed() {
         ),
         Err(RetentionCreatedError::InvalidLabel)
     ));
-}
-
-#[test]
-fn workspace_deletion_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
-    let volume_id = VolumeId::from_bytes([8; 16]);
-    let encoded = encode_workspace_deleted(
-        volume_id,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )?;
-    assert_eq!(decode_workspace_deleted(&encoded, 1024)?, volume_id);
-    assert!(decode_workspace_deleted(&encoded, 1).is_err());
-    let mut trailing = encoded;
-    trailing.push(0);
-    assert!(decode_workspace_deleted(&trailing, 1024).is_err());
-    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

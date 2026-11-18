@@ -1,6 +1,7 @@
 mod checkpoint;
 mod export;
 mod generation;
+mod retention;
 mod transfer;
 
 #[path = "../../support/memory_objects.rs"]
