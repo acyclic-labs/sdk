@@ -466,10 +466,7 @@ impl<M: Medium> Pages<'_, M> {
     async fn keys(&mut self) -> Result<Vec<String>, Error> {
         let mut keys = Vec::new();
         while let Some(page) = self.next().await? {
-            for (key, _) in page {
-                self.relative(&key)?;
-                keys.push(key);
-            }
+            keys.extend(page.into_iter().map(|(key, _)| key));
         }
         Ok(keys)
     }
@@ -494,14 +491,16 @@ async fn list_page(
     limit: usize,
 ) -> Result<Vec<(String, u64)>, Error> {
     let page = source.list(prefix, after, limit).await.map_err(medium)?;
-    let overlaps = after.is_some_and(|after| {
-        [page.first(), page.last()]
-            .into_iter()
-            .flatten()
-            .any(|(key, _)| key.as_str() <= after)
-    });
-    if page.len() > limit || overlaps {
+    if page.len() > limit {
         return Err(corrupt());
+    }
+    let mut preceding = after;
+    for (key, _) in &page {
+        let key = key.as_str();
+        if !key.starts_with(prefix) || preceding.is_some_and(|before| key <= before) {
+            return Err(corrupt());
+        }
+        preceding = Some(key);
     }
     Ok(page)
 }
