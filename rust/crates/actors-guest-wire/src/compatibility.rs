@@ -2,7 +2,11 @@
 
 use crate::{
     Checkpoint, CodecIdentity,
-    live_selection::{Artifact, DeploymentId, Error, decimal, encode, optional_decimal},
+    live_selection::{
+        Artifact, CallPair, ChangeKind, DeploymentId, Error, Fraction, GuardDecision, Pin,
+        RolloutPolicy, RolloutStatus, Selection, SelectionChange, Split, Version, decimal, encode,
+        optional_decimal,
+    },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -143,4 +147,72 @@ pub struct DurableAwait<Path> {
     pub continuation: Checkpoint,
     /// Pending original operations, whose producers/unknown outcomes remain owned.
     pub pending: Vec<JournalPosition<Path>>,
+}
+
+/// Host-bound provenance on every Actor RPC/message and retained reply. Copying
+/// or supplying this envelope never authorizes code selection or effects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallEnvelope {
+    /// Caller deployment; unrelated deployments' epochs are incomparable.
+    pub deployment: DeploymentId,
+    /// Admitted caller membership, never a cohort chosen by the request header.
+    pub pin: Pin,
+    /// Original caller admission epoch, retained across queues and rollback.
+    #[serde(with = "decimal")]
+    #[ts(type = "string")]
+    pub epoch: NonZeroU64,
+    /// Caller immutable version set.
+    pub version: Version,
+    /// Original method/message contract identity.
+    pub contract: [u8; 32],
+}
+
+impl CallEnvelope {
+    /// Structural admission only. The receiving host also binds these values to
+    /// original caller authority and the admitted live compatibility relation.
+    pub fn validate(&self) -> Result<(), Error> {
+        self.deployment.validate()?;
+        self.pin.validate(&self.deployment)
+    }
+}
+
+/// Self-contained TypeScript JSON declarations, emitted by the existing Actors
+/// producer. u64 values are decimal strings, including epochs above 2^53.
+pub fn typescript() -> String {
+    let config = ts_rs::Config::default();
+    let mut output = String::from(
+        "// Generated from acyclic_actors::live_update. Do not edit.\nimport type { CodecIdentity } from './guest.js';\n",
+    );
+    macro_rules! declarations {
+        ($($ty:ty),+ $(,)?) => { $(
+            output.push_str("export "); output.push_str(&<$ty as TS>::decl(&config)); output.push('\n');
+        )+ };
+    }
+    declarations!(
+        DeploymentId,
+        Version,
+        Artifact,
+        Pin,
+        Fraction,
+        Split,
+        Selection,
+        ChangeKind,
+        SelectionChange,
+        Schema,
+        RpcSchema,
+        PeerRange,
+        HandoffRequirements,
+        Adapter,
+        CompatibilityManifest,
+        PublicationUpload,
+        CallEnvelope,
+        JournalPosition<String>,
+        DurableAwait<String>,
+        CallPair,
+        GuardDecision,
+        RolloutPolicy,
+        RolloutStatus
+    );
+    output
 }

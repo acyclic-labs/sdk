@@ -10,22 +10,21 @@ use acyclic_stream::{CommitCondition, CommitId, StreamPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, num::NonZeroU64};
-use ts_rs::TS;
 
 mod handler;
 pub use handler::{FencedHandler, VersionedHandler};
 #[cfg(test)]
 mod tests;
 
+use acyclic_actors_guest_wire::compatibility::PublicationUpload;
 pub use acyclic_actors_guest_wire::compatibility::{
-    Adapter, CompatibilityManifest, HandoffRequirements, PeerRange, RpcSchema, Schema,
+    Adapter, CallEnvelope, CompatibilityManifest, HandoffRequirements, PeerRange, RpcSchema, Schema,
 };
 pub use acyclic_actors_guest_wire::live_selection::{
     Artifact, CallPair, ChangeKind, DeploymentId, Error, Fraction, GuardDecision, POLICY_FILE, Pin,
     RolloutPolicy, RolloutStatus, SELECTION_FILE, SELECTION_REQUEST_FILE, STATUS_FILE, Selection,
     SelectionChange, Split, VERSIONS_DIRECTORY, Version, decode, encode,
 };
-use acyclic_actors_guest_wire::{compatibility::PublicationUpload, live_selection::decimal};
 
 fn validate_compatibility(manifest: &CompatibilityManifest) -> Result<(), Error> {
     let mut schemas = manifest.messages.iter().collect::<Vec<_>>();
@@ -205,54 +204,25 @@ impl AdmittedPublication {
     }
 }
 
-/// Host-bound provenance on every Actor RPC/message and retained reply. Copying
-/// or supplying this envelope never authorizes code selection or effects.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CallEnvelope {
-    /// Caller deployment; unrelated deployments' epochs are incomparable.
-    pub deployment: DeploymentId,
-    /// Admitted caller membership, never a cohort chosen by the request header.
-    pub pin: Pin,
-    /// Original caller admission epoch, retained across queues and rollback.
-    #[serde(with = "decimal")]
-    #[ts(type = "string")]
-    pub epoch: NonZeroU64,
-    /// Caller immutable version set.
-    pub version: Version,
-    /// Original method/message contract identity.
-    pub contract: [u8; 32],
-}
-
-impl CallEnvelope {
-    /// Structural admission only. The receiving host also binds these values to
-    /// original caller authority and the admitted live compatibility relation.
-    pub fn validate(&self) -> Result<(), Error> {
-        self.deployment.validate()?;
-        self.pin.validate(&self.deployment)
+/// Bind a durable message without changing its application bytes or indexed
+/// keys. An existing envelope cannot be replaced during forwarding.
+pub fn bind_message(
+    envelope: &CallEnvelope,
+    mut record: acyclic_stream::AppendRecord,
+) -> Result<acyclic_stream::AppendRecord, Error> {
+    envelope.validate()?;
+    if message_envelope(&record.headers)?.is_some() {
+        return Err(Error::Invalid("message already has caller provenance"));
     }
-
-    /// Bind a durable message without changing its application bytes or indexed
-    /// keys. An existing envelope cannot be replaced during forwarding.
-    pub fn message(
-        &self,
-        mut record: acyclic_stream::AppendRecord,
-    ) -> Result<acyclic_stream::AppendRecord, Error> {
-        self.validate()?;
-        if message_envelope(&record.headers)?.is_some() {
-            return Err(Error::Invalid("message already has caller provenance"));
-        }
-        let mut attributes = record.headers.attributes().to_vec();
-        attributes.push(acyclic_stream::Attribute {
-            name: MESSAGE_HEADER.into(),
-            value: encode(self)?.into(),
-        });
-        attributes.sort_by(|left, right| left.name.cmp(&right.name));
-        record.headers =
-            acyclic_stream::RecordHeaders::new(record.headers.keys().to_vec(), attributes)
-                .map_err(|_| Error::Invalid("message headers"))?;
-        Ok(record)
-    }
+    let mut attributes = record.headers.attributes().to_vec();
+    attributes.push(acyclic_stream::Attribute {
+        name: MESSAGE_HEADER.into(),
+        value: encode(envelope)?.into(),
+    });
+    attributes.sort_by(|left, right| left.name.cmp(&right.name));
+    record.headers = acyclic_stream::RecordHeaders::new(record.headers.keys().to_vec(), attributes)
+        .map_err(|_| Error::Invalid("message headers"))?;
+    Ok(record)
 }
 
 /// Public durable-message header containing the same v1 call envelope as RPCs.
@@ -286,46 +256,6 @@ pub type JournalPosition = acyclic_actors_guest_wire::compatibility::JournalPosi
 
 /// A committed resumable continuation at an admitted journal cut.
 pub type DurableAwait = acyclic_actors_guest_wire::compatibility::DurableAwait<StreamPath>;
-
-/// Self-contained TypeScript JSON declarations, emitted by the existing Actors
-/// producer. u64 values are decimal strings, including epochs above 2^53.
-pub fn typescript() -> String {
-    let config = ts_rs::Config::default();
-    let mut output = String::from(
-        "// Generated from acyclic_actors::live_update. Do not edit.\nimport type { CodecIdentity } from './guest.js';\n",
-    );
-    macro_rules! declarations {
-        ($($ty:ty),+ $(,)?) => { $(
-            output.push_str("export "); output.push_str(&<$ty as TS>::decl(&config)); output.push('\n');
-        )+ };
-    }
-    declarations!(
-        DeploymentId,
-        Version,
-        Artifact,
-        Pin,
-        Fraction,
-        Split,
-        Selection,
-        ChangeKind,
-        SelectionChange,
-        Schema,
-        RpcSchema,
-        PeerRange,
-        HandoffRequirements,
-        Adapter,
-        CompatibilityManifest,
-        PublicationUpload,
-        CallEnvelope,
-        acyclic_actors_guest_wire::compatibility::JournalPosition<String>,
-        acyclic_actors_guest_wire::compatibility::DurableAwait<String>,
-        CallPair,
-        GuardDecision,
-        RolloutPolicy,
-        RolloutStatus
-    );
-    output
-}
 
 /// Original selection publication carried by the admitted host. It is joined to
 /// the Actor's existing transaction, buying stale-instance publication exclusion

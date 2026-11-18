@@ -35,7 +35,7 @@ when it selects older code. Neither rollback nor promotion rewinds retained data
 
 `CallEnvelope` identifies the original caller deployment, pin, epoch, immutable
 version and schema contract. RPC requests/replies and durable `Invocation`
-records retain its canonical bytes; `CallEnvelope::message` binds it to an
+records retain its canonical bytes; `live_update::bind_message` binds it to an
 ordinary Stream message header without changing the payload or indexed keys.
 Forwarding retains the original envelope. External callers have no deployment
 envelope; that absence is not epoch zero. Cloud supplies and authenticates

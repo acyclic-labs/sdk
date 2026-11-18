@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::write(parent.join("guest.ts"), acyclic_actors::guest::typescript())?;
             std::fs::write(
                 parent.join("live-update.ts"),
-                acyclic_actors::live_update::typescript(),
+                acyclic_actors_guest_wire::compatibility::typescript(),
             )?;
             <acyclic_actors_diagnostics::ErrorMetadata as ts_rs::TS>::export_all(
                 &ts_rs::Config::default()

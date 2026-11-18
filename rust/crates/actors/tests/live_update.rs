@@ -274,7 +274,7 @@ impl Handler for Package {
                     .map_err(guest)?
                     .record(&route.state)?
                 } else {
-                    self.envelope.message(payload.into()).map_err(guest)?
+                    bind_message(&self.envelope, payload.into()).map_err(guest)?
                 };
                 effects.extend([
                     acyclic_stream::CommitEffect::hard(
