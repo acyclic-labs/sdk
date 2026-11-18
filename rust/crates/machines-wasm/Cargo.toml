@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+acyclic-machines-simulation = { version = "=0.2.0", path = "../machines-simulation", default-features = false }
 serde.workspace = true
 serde_bytes.workspace = true
 futures.workspace = true

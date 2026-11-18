@@ -2,14 +2,14 @@
 use super::*;
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct Intent {
-    pub(super) digest: [u8; 32],
+pub struct Intent {
+    pub digest: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct Completed<T = MutationOutcome> {
-    pub(super) digest: [u8; 32],
-    pub(super) outcome: T,
+pub struct Completed<T = MutationOutcome> {
+    pub digest: [u8; 32],
+    pub outcome: T,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -23,7 +23,7 @@ struct Envelope<T> {
     value: T,
 }
 
-pub(super) fn encode(value: &impl Serialize) -> Result<Vec<u8>, ProviderError> {
+pub fn encode(value: &impl Serialize) -> Result<Vec<u8>, ProviderError> {
     serde_json::to_vec(&Envelope {
         version: Version::V1,
         value,
@@ -31,7 +31,7 @@ pub(super) fn encode(value: &impl Serialize) -> Result<Vec<u8>, ProviderError> {
     .map_err(encoding)
 }
 
-pub(super) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ProviderError> {
+pub fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ProviderError> {
     // The persisted encoder always writes the version first. Admit that fixed
     // header before serde can visit an arbitrary or truncated payload.
     acyclic_auth::format::header(
@@ -77,57 +77,7 @@ pub mod codec_fuzz {
             && check_type::<MachineObservation>(bytes)
     }
 
-    /// Capture the shipped simulator's public create/fork/recovery outcomes
-    /// through the production journal encoder. These are process-local
-    /// simulation records, not physical guest or deployed transport captures.
-    pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, ProviderError> {
-        use crate::{SimulatedMachines, simulation::MemoryIntent};
 
-        futures::executor::block_on(async {
-            let provider = SimulatedMachines::default();
-            let key = IdempotencyKey::from_digest([5; 32]);
-            let request = CreateMachine::new(key, Some(Image::custom([2; 32])?), [4; 32]);
-            let digest = intent_digest(&MemoryIntent::Create(request.clone()))?;
-            provider.create(request).await?;
-            let created = provider.recover(key).await?;
-            let MutationOutcome::Created(machine) = &created else {
-                return Err(ProviderError::Rejected("Machine corpus create recovery has no original observation; recovery: run the original simulator create before capture".into()));
-            };
-            let fork_key = IdempotencyKey::from_digest([6; 32]);
-            let count = NonZeroU32::MIN.saturating_add(1);
-            let fork_digest = intent_digest(&MemoryIntent::ForkMachine(machine.id, count.get()))?;
-            provider.fork_machine(machine.id, count, fork_key).await?;
-            let forked = provider.recover(fork_key).await?;
-            Ok(vec![
-                ("simulator-v1-machine", encode(machine)?),
-                (
-                    "simulator-v1-result-observation",
-                    crate::results::record(machine)?.value.to_vec(),
-                ),
-                ("simulator-v1-pending", encode(&Intent { digest })?),
-                (
-                    "simulator-v1-settled",
-                    encode(&Completed {
-                        digest,
-                        outcome: created,
-                    })?,
-                ),
-                (
-                    "simulator-v1-fork-pending",
-                    encode(&Intent {
-                        digest: fork_digest,
-                    })?,
-                ),
-                (
-                    "simulator-v1-fork-settled",
-                    encode(&Completed {
-                        digest: fork_digest,
-                        outcome: forked,
-                    })?,
-                ),
-            ])
-        })
-    }
 }
 
 fn encoding(error: serde_json::Error) -> ProviderError {
@@ -139,46 +89,6 @@ fn encoding(error: serde_json::Error) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "test-support")]
-    #[test]
-    fn original_fork_terminals_enter_the_permanent_corpus() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let seeds = codec_fuzz::seeds()?;
-        let mut created = false;
-        let mut forked = false;
-        for (name, bytes) in seeds {
-            // The capture tool can retain these original producer bytes without
-            // a second execution or a hand-written wire fixture.
-            println!("machine_journal/{name}\t{}", hex::encode(&bytes));
-            assert!(codec_fuzz::check(&bytes));
-            if let Ok(terminal) = decode::<Completed>(&bytes) {
-                for end in 0..bytes.len() {
-                    assert!(
-                        decode::<Completed>(&bytes[..end]).is_err(),
-                        "partial original terminal at {end} was accepted"
-                    );
-                }
-                match terminal.outcome {
-                    MutationOutcome::Created(_) => created = true,
-                    MutationOutcome::Forked { results, .. } => {
-                        assert!(results.count > 1);
-                        forked = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        assert!(
-            created,
-            "the original create terminal must enter the corpus"
-        );
-        assert!(
-            forked,
-            "the original paged fork terminal must enter the corpus"
-        );
-        Ok(())
-    }
 
     #[test]
     fn version_refusal_precedes_journal_payload() -> Result<(), Box<dyn std::error::Error>> {

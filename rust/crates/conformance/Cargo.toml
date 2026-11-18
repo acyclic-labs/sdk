@@ -36,14 +36,15 @@ acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-agent-host-conformance = { path = "agent-host" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
-acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false, features = ["conformance"] }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false }
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
 rustls = { workspace = true, optional = true }
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["conformance"] }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", optional = true }
-acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["conformance"] }
+acyclic-machines = { version = "=0.2.0", path = "../machines" }
+acyclic-machines-conformance = { version = "=0.2.0", path = "../machines-conformance" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["conformance"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["conformance"] }
@@ -154,6 +155,7 @@ test = false
 required-features = ["client-session"]
 
 [dev-dependencies]
+acyclic-machines-simulation = { version = "=0.2.0", path = "../machines-simulation", features = ["test-support"] }
 acyclic-observability = { version = "=0.2.0", path = "../observability", features = ["research"] }
 acyclic-test-support = { path = "../test-support" }
 divan.workspace = true

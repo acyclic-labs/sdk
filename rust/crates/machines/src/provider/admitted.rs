@@ -9,7 +9,7 @@ use tokio::sync::{MutexGuard, watch};
 /// Physical primitives. Authentication, selection, keyed settlement and
 /// retained observations belong to the shared provider above this boundary.
 #[async_trait]
-pub(crate) trait NativeMachine: Send + Sync + 'static {
+pub trait NativeMachine: Send + Sync + 'static {
     async fn exec(
         &self,
         command: ExecCommand,
@@ -32,7 +32,7 @@ pub(crate) trait NativeMachine: Send + Sync + 'static {
     async fn wake(&self) -> Result<(), ProviderError>;
 }
 
-pub(crate) struct AdmittedMachine<B> {
+pub struct AdmittedMachine<B> {
     attaches_volume: bool,
     backend: B,
     observation: Mutex<(MachineObservation, Option<IdempotencyKey>)>,
@@ -100,7 +100,7 @@ impl Transition {
 }
 
 impl<B: NativeMachine> AdmittedMachine<B> {
-    pub(crate) async fn open(
+    pub async fn open(
         backend: B,
         observation: MachineObservation,
         streams: Arc<dyn StreamProvider>,

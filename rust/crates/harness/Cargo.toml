@@ -170,6 +170,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["javascript"] }
+acyclic-machines-grpc = { version = "=0.2.0", path = "../machines-grpc", default-features = false, features = ["javascript"] }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true

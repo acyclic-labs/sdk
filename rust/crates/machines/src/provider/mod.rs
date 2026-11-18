@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) mod events;
+pub mod events;
 
 /// Public provider interface shared by deterministic and managed implementations.
 /// Native providers retain thread-safe futures; browser providers retain their
@@ -300,9 +300,9 @@ pub use client::*;
 mod capture;
 pub use capture::{CapturedExec, capture_exec};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod admitted;
+pub mod admitted;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod deadline;
+pub mod deadline;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod journal;
 #[cfg(all(

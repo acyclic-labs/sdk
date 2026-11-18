@@ -1,0 +1,30 @@
+[package]
+name = "acyclic-machines-simulation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic Machines simulator over the public provider contract"
+
+[features]
+test-support = ["acyclic-machines/test-support"]
+
+[dependencies]
+acyclic-machines = { path = "../machines", version = "=0.2.0", default-features = false }
+acyclic-observability = { path = "../observability", version = "=0.2.0" }
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
+
+[dev-dependencies]
+hex.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+[lints]
+workspace = true

@@ -628,7 +628,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    for (name, bytes) in acyclic_machines::codec_fuzz::seeds()? {
+    for (name, bytes) in acyclic_machines_simulation::codec_fuzz::seeds()? {
         save(
             "machine_journal",
             name,

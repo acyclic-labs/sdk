@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_machines_simulation::SimulatedMachines;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Default)]

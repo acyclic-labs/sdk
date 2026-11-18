@@ -27,7 +27,6 @@ machines-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
 consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]
 
 [features]
-conformance = ["acyclic-stream/conformance", "tokio/time"]
 test-support = [
     "acyclic-actors/test-support",
     "acyclic-auth/test-support",
@@ -61,6 +60,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
+acyclic-machines-conformance = { version = "=0.2.0", path = "../machines-conformance" }
+acyclic-machines-simulation = { version = "=0.2.0", path = "../machines-simulation", features = ["test-support"] }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false, features = ["conformance"] }
 proptest.workspace = true

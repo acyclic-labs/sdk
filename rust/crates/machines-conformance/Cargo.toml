@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-machines-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Backend-independent Machines qualification and request budgets"
+
+[dependencies]
+acyclic-machines = { path = "../machines", version = "=0.2.0", default-features = false }
+acyclic-machines-simulation = { path = "../machines-simulation", version = "=0.2.0", default-features = false }
+acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false, features = ["conformance"] }
+async-trait.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["macros", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+[lints]
+workspace = true

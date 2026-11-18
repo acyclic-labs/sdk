@@ -1,7 +1,7 @@
 use super::*;
+use acyclic_machines_simulation::SimulatedMachines;
 use crate::{
     CreateMachine, IdempotencyKey, Image, MachineState, MachinesProvider as _, MutationOutcome,
-    SimulatedMachines,
 };
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitEffect, CommitOutcome, CommitRequest,

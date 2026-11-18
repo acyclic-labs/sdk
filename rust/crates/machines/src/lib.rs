@@ -84,32 +84,30 @@ pub fn page_limit(requested: u64, chunk: u32) -> Result<u32, ProviderError> {
 /// Default automatic idle suspension delay.
 pub const DEFAULT_IDLE_SUSPEND: Duration = Duration::from_secs(15);
 
+pub mod codec;
 mod contract;
 pub use contract::*;
 mod provider;
+#[doc(hidden)]
+pub use provider::events;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub use provider::{admitted, deadline};
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use provider::journal_codec::codec_fuzz;
+#[cfg(feature = "test-support")]
+pub use provider::journal_codec::{
+    Completed as JournalCompleted, Intent as JournalIntent, decode as journal_decode,
+    encode as journal_encode,
+};
 pub use provider::*;
 /// Canonical HTTP/JSON route names and descriptor-backed serialization.
 #[cfg(feature = "http-codec")]
 pub mod http_codec;
 /// Original-operation result publication and credited immutable reads.
 pub mod results;
-mod simulation;
-pub use simulation::*;
 
-/// Native process execution over the same public output stream.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod local;
 
-pub mod grpc;
-mod obs;
-#[cfg(not(target_arch = "wasm32"))]
-pub use grpc::Tls;
-
-/// Shared provider qualification, checked benchmarks and request accounting.
-#[cfg(feature = "conformance")]
-pub mod conformance;
 
 #[cfg(test)]
 mod admission_tests {

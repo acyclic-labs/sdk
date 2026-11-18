@@ -236,6 +236,8 @@ dependencies = [
  "acyclic-inference",
  "acyclic-log-frame",
  "acyclic-machines",
+ "acyclic-machines-grpc",
+ "acyclic-machines-simulation",
  "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
@@ -288,6 +290,8 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-providers",
  "acyclic-machines",
+ "acyclic-machines-conformance",
+ "acyclic-machines-simulation",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
@@ -661,6 +665,7 @@ dependencies = [
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-machines-daytona",
+ "acyclic-machines-grpc",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -825,6 +830,9 @@ dependencies = [
  "acyclic-harness-sse",
  "acyclic-host-platform",
  "acyclic-machines",
+ "acyclic-machines-conformance",
+ "acyclic-machines-local",
+ "acyclic-machines-simulation",
  "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
@@ -947,6 +955,7 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-machines",
+ "acyclic-machines-local",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -1421,6 +1430,8 @@ dependencies = [
  "acyclic-auth-action",
  "acyclic-grpc-observability",
  "acyclic-machines-limits",
+ "acyclic-machines-conformance",
+ "acyclic-machines-simulation",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
@@ -1459,6 +1470,84 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-machines-grpc"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-grpc-observability",
+ "acyclic-machines",
+ "acyclic-machines-simulation",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "acyclic-stream",
+ "async-trait",
+ "futures",
+ "hex",
+ "hyper-util",
+ "js-sys",
+ "proptest",
+ "prost",
+ "rcgen",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "acyclic-machines-local"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-machines",
+ "acyclic-machines-conformance",
+ "acyclic-native-runtime",
+ "acyclic-stream",
+ "async-trait",
+ "futures",
+ "rustix",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "acyclic-machines-simulation"
+version = "0.2.0"
+dependencies = [
+ "acyclic-machines",
+ "acyclic-native-runtime",
+ "acyclic-observability",
+ "async-trait",
+ "futures",
+ "hex",
+ "serde",
+ "sha2 0.11.1",
+ "tokio",
+]
+
+[[package]]
+name = "acyclic-machines-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-machines",
+ "acyclic-machines-simulation",
+ "acyclic-stream",
+ "async-trait",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "acyclic-machines-daytona"
 version = "0.2.0"
 dependencies = [
@@ -1466,6 +1555,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-providers",
  "acyclic-machines",
+ "acyclic-machines-conformance",
  "acyclic-stream",
  "async-trait",
  "bytes",
@@ -1491,6 +1581,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-machines",
+ "acyclic-machines-simulation",
  "acyclic-stream",
  "futures",
  "hex",

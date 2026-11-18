@@ -4771,6 +4771,7 @@ rust_library(
         "//rust/crates/harness-tui:acyclic_harness_tui_wasm",
         "//rust/crates/host-platform:acyclic_host_platform_wasm",
         "//rust/crates/machines-daytona:acyclic_machines_daytona_wasm",
+        "//rust/crates/machines-grpc:acyclic_machines_grpc_wasm",
         "//rust/crates/machines:acyclic_machines_wasm",
         "//rust/crates/objects:acyclic_objects_wasm",
         "//rust/crates/stream-wire:acyclic_stream_wire_wasm",

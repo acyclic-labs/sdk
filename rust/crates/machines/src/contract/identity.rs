@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
+pub fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
     if value.is_nil() {
         return Err(IdentityError);
     }
@@ -127,8 +127,6 @@ pub mod identity_codec_fuzz {
     /// UUID syntax is owned by the UUID library; each public identity must add
     /// exactly the non-nil constraint and preserve all original bits.
     pub fn check(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-        #[cfg(feature = "test-support")]
-        crate::grpc::codec_fuzz::check_identities(bytes)?;
         let expected_bytes = <[u8; 16]>::try_from(bytes)
             .ok()
             .filter(|value| value.iter().any(|byte| *byte != 0));

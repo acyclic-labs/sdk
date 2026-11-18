@@ -1,0 +1,507 @@
+use super::*;
+
+impl From<MachineState> for wire::MachineStatus {
+    fn from(value: MachineState) -> Self {
+        match value {
+            MachineState::Starting => Self::Starting,
+            MachineState::Running => Self::Running,
+            MachineState::Suspending => Self::Suspending,
+            MachineState::Suspended => Self::Suspended,
+            MachineState::Waking => Self::Waking,
+            MachineState::Destroying => Self::Destroying,
+            MachineState::Destroyed => Self::Destroyed,
+            MachineState::Failed => Self::Failed,
+            MachineState::Indeterminate => Self::Indeterminate,
+            MachineState::Offline => Self::Offline,
+        }
+    }
+}
+
+impl From<MachineEvent> for wire::MachineEvent {
+    fn from(event: MachineEvent) -> Self {
+        let mut value = Self {
+            machine: Some(encode_machine(event.machine)),
+            sequence: event.sequence,
+            observed_at_unix_ms: event.observed_at_unix_ms,
+            ..Default::default()
+        };
+        match event.fact {
+            EventFact::State(state) => {
+                value.kind = wire::EventKind::State as i32;
+                value.state = wire::MachineStatus::from(state) as i32;
+            }
+            EventFact::Pressure(pressure) => {
+                value.kind = wire::EventKind::Pressure as i32;
+                value.pressure = match pressure {
+                    Pressure::CustomerBudget => wire::PressureKind::CustomerBudget,
+                    Pressure::MachineLimit => wire::PressureKind::MachineLimit,
+                    Pressure::ServiceSaturation => wire::PressureKind::ServiceSaturation,
+                } as i32;
+            }
+            EventFact::CapacityChanged => value.kind = wire::EventKind::Capacity as i32,
+        }
+        value
+    }
+}
+
+impl TryFrom<MachinePage> for wire::MachinePage {
+    type Error = ProviderError;
+
+    fn try_from(value: MachinePage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            machines: value
+                .machines
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            next: value.next.map(encode_machine),
+        })
+    }
+}
+
+pub fn decode_machine_page(
+    page: wire::MachinePage,
+    after: Option<MachineId>,
+    limit: u32,
+) -> Result<MachinePage, ProviderError> {
+    let mut previous = after;
+    let mut machines = Vec::with_capacity(page.machines.len());
+    for value in page.machines {
+        let expected = decode_machine(value.machine.as_ref())?;
+        if previous.is_some_and(|cursor| expected <= cursor) {
+            return Err(ProviderError::Rejected(
+                "server returned a noncanonical machine page".into(),
+            ));
+        }
+        machines.push(decode_machine_observation(value, expected)?);
+        previous = Some(expected);
+    }
+    let next = page
+        .next
+        .as_ref()
+        .map(|value| decode_machine(Some(value)))
+        .transpose()?;
+    if machines.len()
+        > usize::try_from(limit).map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
+        || next.is_some() && next != machines.last().map(|value| value.id)
+    {
+        return Err(ProviderError::Rejected(
+            "server returned a malformed machine cursor".into(),
+        ));
+    }
+    Ok(MachinePage { machines, next })
+}
+
+impl TryFrom<wire::MachineState> for MachineObservation {
+    type Error = ProviderError;
+
+    fn try_from(value: wire::MachineState) -> Result<Self, Self::Error> {
+        let machine = decode_machine(value.machine.as_ref())?;
+        decode_machine_observation(value, machine)
+    }
+}
+
+impl TryFrom<MachineObservation> for wire::MachineState {
+    type Error = ProviderError;
+
+    fn try_from(value: MachineObservation) -> Result<Self, Self::Error> {
+        Ok(Self {
+            machine: Some(encode_machine(value.id)),
+            status: wire::MachineStatus::from(value.state) as i32,
+            contract: Some(value.contract.try_into()?),
+            endpoints: value
+                .endpoints
+                .into_iter()
+                .map(|endpoint| wire::Endpoint {
+                    name: endpoint.name,
+                    uri: endpoint.uri,
+                })
+                .collect(),
+            last_checkpoint: value.last_checkpoint.map(encode_checkpoint),
+            created_at_unix_ms: value.created_at_unix_ms,
+            changed_at_unix_ms: value.changed_at_unix_ms,
+        })
+    }
+}
+
+impl TryFrom<MachineContract> for wire::MachineContract {
+    type Error = ProviderError;
+
+    fn try_from(contract: MachineContract) -> Result<Self, Self::Error> {
+        let platform = contract.platform;
+        Ok(Self {
+            image: Some(encode_image(&contract.image)?),
+            selected_volume_ref: contract.selected_volume_ref,
+            capabilities: contract
+                .capabilities
+                .into_iter()
+                .map(encode_capability)
+                .collect(),
+            compatibility: Some(encode_compatibility(&contract.compatibility)?),
+            compatibility_revision: contract.compatibility_revision.to_vec(),
+            suspension: Some(encode_suspension(contract.suspension)?),
+            expiration: Some(encode_expiration(contract.expiration)?),
+            network_policy_digest: contract.network_policy_digest.to_vec(),
+            budgets: Some(wire::Budgets {
+                spend_micros: contract.budgets.spend_micros,
+                concurrency: contract.budgets.concurrency,
+            }),
+            platform: Some(wire::Platform {
+                os: (match platform.os {
+                    OperatingSystem::Linux => wire::OperatingSystem::Linux,
+                    OperatingSystem::Macos => wire::OperatingSystem::Macos,
+                    OperatingSystem::Windows => wire::OperatingSystem::Windows,
+                }) as i32,
+                arch: (match platform.arch {
+                    Architecture::X64 => wire::Architecture::X64,
+                    Architecture::Arm64 => wire::Architecture::Arm64,
+                }) as i32,
+                device_kind: (match platform.device_kind {
+                    DeviceKind::VirtualMachine => wire::DeviceKind::VirtualMachine,
+                    DeviceKind::Container => wire::DeviceKind::Container,
+                    DeviceKind::Desktop => wire::DeviceKind::Desktop,
+                    DeviceKind::Server => wire::DeviceKind::Server,
+                }) as i32,
+                shell: (match platform.shell {
+                    Shell::Bash => wire::Shell::Bash,
+                    Shell::PowerShell => wire::Shell::Powershell,
+                }) as i32,
+                path_style: (match platform.path_style {
+                    PathStyle::Posix => wire::PathStyle::Posix,
+                    PathStyle::Windows => wire::PathStyle::Windows,
+                }) as i32,
+            }),
+            lifecycle: (match contract.lifecycle {
+                LifecycleClass::Provisioned => wire::LifecycleClass::Provisioned,
+                LifecycleClass::Attached => wire::LifecycleClass::Attached,
+            }) as i32,
+        })
+    }
+}
+
+impl TryFrom<CheckpointObservation> for wire::CheckpointState {
+    type Error = ProviderError;
+
+    fn try_from(value: CheckpointObservation) -> Result<Self, Self::Error> {
+        Ok(Self {
+            checkpoint: Some(encode_checkpoint(value.id)),
+            source: Some(encode_machine(value.source)),
+            contract: Some(value.contract.try_into()?),
+            forkable: value.forkable,
+            created_at_unix_ms: value.created_at_unix_ms,
+        })
+    }
+}
+
+impl From<OperationObservation> for wire::OperationState {
+    fn from(value: OperationObservation) -> Self {
+        Self {
+            operation: Some(encode_operation(value.id)),
+            status: match value.phase {
+                OperationPhase::Pending => wire::OperationStatus::Pending,
+                OperationPhase::Succeeded => wire::OperationStatus::Succeeded,
+                OperationPhase::Cancelled => wire::OperationStatus::Cancelled,
+                OperationPhase::Indeterminate => wire::OperationStatus::Indeterminate,
+                OperationPhase::Failed => wire::OperationStatus::Failed,
+            } as i32,
+            outcome: None,
+        }
+    }
+}
+
+pub fn decode_qualification(
+    value: wire::ImageQualification,
+    expected: Option<&Image>,
+) -> Result<ImageQualification, ProviderError> {
+    let image = decode_image(value.image.as_ref())?;
+    if expected.is_some_and(|expected| &image != expected) {
+        return Err(ProviderError::Rejected(
+            "qualified image was substituted".into(),
+        ));
+    }
+    let capabilities = value
+        .capabilities
+        .into_iter()
+        .map(decode_capability)
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let compatibility_revision = digest(&value.compatibility_revision, "compatibility revision")?;
+    Ok(ImageQualification {
+        image,
+        capabilities,
+        compatibility_revision,
+    })
+}
+pub fn decode_contract(
+    value: Option<&wire::MachineContract>,
+) -> Result<MachineContract, ProviderError> {
+    let value =
+        value.ok_or_else(|| ProviderError::Rejected("machine contract is missing".into()))?;
+    let capabilities =
+        decode_capability_set(&value.capabilities, "capabilities contain duplicates")?;
+    let budgets = value
+        .budgets
+        .as_ref()
+        .ok_or_else(|| ProviderError::Rejected("budgets are missing".into()))?;
+    Ok(MachineContract {
+        image: decode_image(value.image.as_ref())?,
+        selected_volume_ref: value.selected_volume_ref.clone(),
+        compatibility: decode_compatibility(value.compatibility.as_ref(), &capabilities)?,
+        capabilities,
+        compatibility_revision: digest(&value.compatibility_revision, "compatibility revision")?,
+        suspension: decode_suspension(value.suspension.as_ref())?,
+        expiration: decode_expiration(value.expiration.as_ref())?,
+        network_policy_digest: digest(&value.network_policy_digest, "network policy")?,
+        budgets: Budgets {
+            spend_micros: budgets.spend_micros,
+            concurrency: budgets.concurrency,
+        },
+        platform: decode_platform(value.platform.as_ref())?,
+        lifecycle: match wire::LifecycleClass::try_from(value.lifecycle) {
+            Ok(wire::LifecycleClass::Provisioned) => LifecycleClass::Provisioned,
+            Ok(wire::LifecycleClass::Attached) => LifecycleClass::Attached,
+            _ => {
+                return Err(ProviderError::Rejected(
+                    "machine lifecycle class is invalid".into(),
+                ));
+            }
+        },
+    })
+}
+fn decode_platform(value: Option<&wire::Platform>) -> Result<Platform, ProviderError> {
+    let invalid = || ProviderError::Rejected("machine platform is invalid".into());
+    let value = value.ok_or_else(invalid)?;
+    Ok(Platform {
+        os: match wire::OperatingSystem::try_from(value.os) {
+            Ok(wire::OperatingSystem::Linux) => OperatingSystem::Linux,
+            Ok(wire::OperatingSystem::Macos) => OperatingSystem::Macos,
+            Ok(wire::OperatingSystem::Windows) => OperatingSystem::Windows,
+            _ => return Err(invalid()),
+        },
+        arch: match wire::Architecture::try_from(value.arch) {
+            Ok(wire::Architecture::X64) => Architecture::X64,
+            Ok(wire::Architecture::Arm64) => Architecture::Arm64,
+            _ => return Err(invalid()),
+        },
+        device_kind: match wire::DeviceKind::try_from(value.device_kind) {
+            Ok(wire::DeviceKind::VirtualMachine) => DeviceKind::VirtualMachine,
+            Ok(wire::DeviceKind::Container) => DeviceKind::Container,
+            Ok(wire::DeviceKind::Desktop) => DeviceKind::Desktop,
+            Ok(wire::DeviceKind::Server) => DeviceKind::Server,
+            _ => return Err(invalid()),
+        },
+        shell: match wire::Shell::try_from(value.shell) {
+            Ok(wire::Shell::Bash) => Shell::Bash,
+            Ok(wire::Shell::Powershell) => Shell::PowerShell,
+            _ => return Err(invalid()),
+        },
+        path_style: match wire::PathStyle::try_from(value.path_style) {
+            Ok(wire::PathStyle::Posix) => PathStyle::Posix,
+            Ok(wire::PathStyle::Windows) => PathStyle::Windows,
+            _ => return Err(invalid()),
+        },
+    })
+}
+pub fn digest(value: &[u8], name: &str) -> Result<[u8; 32], ProviderError> {
+    let value: [u8; 32] = value
+        .try_into()
+        .map_err(|_| ProviderError::Rejected(format!("{name} digest width is invalid")))?;
+    if value == [0; 32] {
+        Err(ProviderError::Rejected(format!("{name} digest is zero")))
+    } else {
+        Ok(value)
+    }
+}
+pub fn decode_machine_observation(
+    value: wire::MachineState,
+    expected: MachineId,
+) -> Result<MachineObservation, ProviderError> {
+    let id = decode_machine(value.machine.as_ref())?;
+    if id != expected {
+        return Err(ProviderError::Rejected(
+            "machine identity was substituted".into(),
+        ));
+    }
+    let state = decode_machine_state(value.status)?;
+
+    let mut names = BTreeSet::new();
+    let mut endpoints = Vec::with_capacity(value.endpoints.len());
+    for endpoint in value.endpoints {
+        if endpoint.name.is_empty()
+            || endpoint.uri.is_empty()
+            || !names.insert(endpoint.name.clone())
+        {
+            return Err(ProviderError::Rejected(
+                "machine endpoints are malformed".into(),
+            ));
+        }
+        endpoints.push(Endpoint {
+            name: endpoint.name,
+            uri: endpoint.uri,
+        });
+    }
+    if value.created_at_unix_ms == 0 || value.changed_at_unix_ms < value.created_at_unix_ms {
+        return Err(ProviderError::Rejected(
+            "machine timestamps are malformed".into(),
+        ));
+    }
+    Ok(MachineObservation {
+        id,
+        state,
+        contract: decode_contract(value.contract.as_ref())?,
+        endpoints,
+        last_checkpoint: value
+            .last_checkpoint
+            .as_ref()
+            .map(|item| decode_checkpoint(Some(item)))
+            .transpose()?,
+        created_at_unix_ms: value.created_at_unix_ms,
+        changed_at_unix_ms: value.changed_at_unix_ms,
+    })
+}
+pub fn decode_checkpoint_observation(
+    value: &wire::CheckpointState,
+    expected: CheckpointId,
+) -> Result<CheckpointObservation, ProviderError> {
+    let id = decode_checkpoint(value.checkpoint.as_ref())?;
+    if id != expected || value.created_at_unix_ms == 0 {
+        return Err(ProviderError::Rejected(
+            "checkpoint observation is malformed".into(),
+        ));
+    }
+    Ok(CheckpointObservation {
+        id,
+        source: decode_machine(value.source.as_ref())?,
+        contract: decode_contract(value.contract.as_ref())?,
+        forkable: value.forkable,
+        created_at_unix_ms: value.created_at_unix_ms,
+    })
+}
+pub fn decode_event(
+    value: &wire::MachineEvent,
+    expected: MachineId,
+) -> Result<MachineEvent, ProviderError> {
+    let machine = decode_machine(value.machine.as_ref())?;
+    if machine != expected || value.sequence == 0 || value.observed_at_unix_ms == 0 {
+        return Err(ProviderError::Rejected(
+            "event identity is malformed".into(),
+        ));
+    }
+    let fact = match wire::EventKind::try_from(value.kind)
+        .map_err(|_| ProviderError::Rejected("event kind is invalid".into()))?
+    {
+        wire::EventKind::State => EventFact::State(decode_machine_state(value.state)?),
+        wire::EventKind::Pressure => EventFact::Pressure(
+            match wire::PressureKind::try_from(value.pressure)
+                .map_err(|_| ProviderError::Rejected("pressure kind is invalid".into()))?
+            {
+                wire::PressureKind::CustomerBudget => Pressure::CustomerBudget,
+                wire::PressureKind::MachineLimit => Pressure::MachineLimit,
+                wire::PressureKind::ServiceSaturation => Pressure::ServiceSaturation,
+                wire::PressureKind::Unspecified => {
+                    return Err(ProviderError::Rejected("pressure is unspecified".into()));
+                }
+            },
+        ),
+        wire::EventKind::Capacity => EventFact::CapacityChanged,
+        wire::EventKind::Unspecified => {
+            return Err(ProviderError::Rejected("event kind is unspecified".into()));
+        }
+    };
+    Ok(MachineEvent {
+        machine,
+        sequence: value.sequence,
+        observed_at_unix_ms: value.observed_at_unix_ms,
+        fact,
+    })
+}
+pub fn decode_machine_state(value: i32) -> Result<MachineState, ProviderError> {
+    match wire::MachineStatus::try_from(value)
+        .map_err(|_| ProviderError::Rejected("machine state is invalid".into()))?
+    {
+        wire::MachineStatus::Starting => Ok(MachineState::Starting),
+        wire::MachineStatus::Running => Ok(MachineState::Running),
+        wire::MachineStatus::Suspending => Ok(MachineState::Suspending),
+        wire::MachineStatus::Suspended => Ok(MachineState::Suspended),
+        wire::MachineStatus::Waking => Ok(MachineState::Waking),
+        wire::MachineStatus::Destroying => Ok(MachineState::Destroying),
+        wire::MachineStatus::Destroyed => Ok(MachineState::Destroyed),
+        wire::MachineStatus::Failed => Ok(MachineState::Failed),
+        wire::MachineStatus::Indeterminate => Ok(MachineState::Indeterminate),
+        wire::MachineStatus::Offline => Ok(MachineState::Offline),
+        wire::MachineStatus::Unspecified => Err(ProviderError::Rejected(
+            "machine state is unspecified".into(),
+        )),
+    }
+}
+pub fn decode_operation_observation(
+    value: &wire::OperationState,
+    expected: OperationId,
+) -> Result<OperationObservation, ProviderError> {
+    let id = decode_operation(value.operation.as_ref())?;
+    if id != expected {
+        return Err(ProviderError::Rejected(
+            "operation identity was substituted".into(),
+        ));
+    }
+    let phase = match wire::OperationStatus::try_from(value.status)
+        .map_err(|_| ProviderError::Rejected("operation status is invalid".into()))?
+    {
+        wire::OperationStatus::Pending => OperationPhase::Pending,
+        wire::OperationStatus::Succeeded => OperationPhase::Succeeded,
+        wire::OperationStatus::Cancelled => OperationPhase::Cancelled,
+        wire::OperationStatus::Indeterminate => OperationPhase::Indeterminate,
+        wire::OperationStatus::Failed => OperationPhase::Failed,
+        wire::OperationStatus::Unspecified => {
+            return Err(ProviderError::Rejected(
+                "operation status is unspecified".into(),
+            ));
+        }
+    };
+    if phase != OperationPhase::Succeeded
+        && value.outcome.is_some()
+        && !(matches!(phase, OperationPhase::Failed | OperationPhase::Cancelled)
+            && matches!(
+                value
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.result.as_ref()),
+                Some(wire::mutation_outcome::Result::Forked(_))
+            ))
+    {
+        return Err(ProviderError::Rejected(
+            "non-successful operation contains a settled result".into(),
+        ));
+    }
+    Ok(OperationObservation { id, phase })
+}
+pub fn decode_usage_receipt(
+    value: wire::UsageReceipt,
+    machine: MachineId,
+    start_unix_ms: u64,
+    end_unix_ms: u64,
+) -> Result<UsageReceipt, ProviderError> {
+    let lineage_receipt_sha256: [u8; 32] = value
+        .lineage_receipt_sha256
+        .as_slice()
+        .try_into()
+        .map_err(|_| ProviderError::Rejected("lineage receipt identity is malformed".into()))?;
+    if decode_machine(value.machine.as_ref())? != machine
+        || value.start_unix_ms != start_unix_ms
+        || value.end_unix_ms != end_unix_ms
+        || value.receipt.is_empty()
+        || lineage_receipt_sha256 == [0; 32]
+    {
+        return Err(ProviderError::Rejected("usage receipt is malformed".into()));
+    }
+    Ok(UsageReceipt {
+        machine,
+        start_unix_ms,
+        end_unix_ms,
+        cpu_ns: value.cpu_ns,
+        resident_byte_seconds: value.resident_byte_seconds,
+        durable_private_bytes: value.durable_private_bytes,
+        lineage_receipt_sha256,
+        egress_bytes: value.egress_bytes,
+        receipt: value.receipt,
+    })
+}

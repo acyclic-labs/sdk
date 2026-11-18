@@ -79,6 +79,7 @@ rust_test(
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/machines-local:acyclic_machines_local",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream-wire:acyclic_stream_wire",

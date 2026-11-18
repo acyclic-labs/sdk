@@ -1,5 +1,5 @@
 {
-  "checksum": "bc3f9b83a0a5e0c06972ecb7ef24a2a6963c15ca00c7a96892fc500da0e4fc9d",
+  "checksum": "92ee2b5419ce41711ad56cf6c06eab019842251ba800e640722c7f6cb8dc92e4",
   "conditions": {
     "aarch64-pc-windows-gnullvm": [],
     "cfg(all(all(target_arch = \"aarch64\", target_endian = \"little\"), target_os = \"windows\"))": [],
@@ -57,6 +57,9 @@
     "cfg(any(unix, target_os = \"hermit\", target_os = \"wasi\"))": [
       "x86_64-unknown-linux-gnu"
     ],
+    "cfg(any(unix, target_os = \"wasi\"))": [
+      "x86_64-unknown-linux-gnu"
+    ],
     "cfg(curve25519_dalek_backend = \"fiat\")": [],
     "cfg(not(all(target_arch = \"arm\", target_os = \"none\")))": [
       "wasm32-unknown-unknown",
@@ -76,6 +79,7 @@
     "cfg(target_os = \"aix\")": [],
     "cfg(target_os = \"android\")": [],
     "cfg(target_os = \"haiku\")": [],
+    "cfg(target_os = \"hermit\")": [],
     "cfg(target_os = \"macos\")": [],
     "cfg(target_os = \"netbsd\")": [],
     "cfg(target_os = \"redox\")": [],
@@ -3432,6 +3436,68 @@
         }
       ],
       "version": "1.0.2"
+    },
+    "errno 0.3.15": {
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "std"
+        ],
+        "deps": {
+          "common": [],
+          "selects": {
+            "cfg(target_os = \"hermit\")": [
+              {
+                "id": "libc 0.2.191",
+                "target": "libc"
+              }
+            ],
+            "cfg(target_os = \"wasi\")": [
+              {
+                "id": "libc 0.2.191",
+                "target": "libc"
+              }
+            ],
+            "cfg(unix)": [
+              {
+                "id": "libc 0.2.191",
+                "target": "libc"
+              }
+            ],
+            "cfg(windows)": [
+              {
+                "id": "windows-sys 0.52.0",
+                "target": "windows_sys"
+              }
+            ]
+          }
+        },
+        "edition": "2018"
+      },
+      "library_target_name": "errno",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "errno",
+      "package_url": "https://github.com/lambda-fairy/rust-errno",
+      "repository": {
+        "Http": {
+          "sha256": "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776",
+          "url": "https://static.crates.io/crates/errno/0.3.15/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "errno",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.3.15"
     },
     "fancy-regex 0.20.2": {
       "common_attrs": {
@@ -7443,19 +7509,21 @@
     },
     "mio 1.2.4": {
       "common_attrs": {
-        "crate_features": [
-          "default",
-          "log",
-          "os-ext",
-          "os-poll"
-        ],
-        "deps": {
+        "crate_features": {
           "common": [
-            {
-              "id": "log 0.4.34",
-              "target": "log"
-            }
+            "net",
+            "os-ext",
+            "os-poll"
           ],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              "default",
+              "log"
+            ]
+          }
+        },
+        "deps": {
+          "common": [],
           "selects": {
             "cfg(any(unix, target_os = \"hermit\", target_os = \"wasi\"))": [
               {
@@ -7473,6 +7541,12 @@
               {
                 "id": "windows-sys 0.61.2",
                 "target": "windows_sys"
+              }
+            ],
+            "x86_64-unknown-linux-gnu": [
+              {
+                "id": "log 0.4.34",
+                "target": "log"
               }
             ]
           }
@@ -11128,6 +11202,45 @@
       ],
       "version": "2.0.1"
     },
+    "signal-hook-registry 1.4.8": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "errno 0.3.15",
+            "target": "errno"
+          },
+          {
+            "id": "libc 0.2.191",
+            "target": "libc"
+          }
+        ],
+        "edition": "2015"
+      },
+      "library_target_name": "signal_hook_registry",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "signal-hook-registry",
+      "package_url": "https://github.com/vorner/signal-hook",
+      "repository": {
+        "Http": {
+          "sha256": "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b",
+          "url": "https://static.crates.io/crates/signal-hook-registry/1.4.8/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "signal_hook_registry",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "1.4.8"
+    },
     "signature 3.0.0": {
       "common_attrs": {
         "crate_features": [
@@ -11294,6 +11407,55 @@
         }
       ],
       "version": "1.16.2"
+    },
+    "socket2 0.6.5": {
+      "common_attrs": {
+        "crate_features": [
+          "all"
+        ],
+        "deps": {
+          "common": [],
+          "selects": {
+            "cfg(any(unix, target_os = \"wasi\"))": [
+              {
+                "id": "libc 0.2.191",
+                "target": "libc"
+              }
+            ],
+            "cfg(windows)": [
+              {
+                "id": "windows-sys 0.61.2",
+                "target": "windows_sys"
+              }
+            ]
+          }
+        },
+        "edition": "2021"
+      },
+      "library_target_name": "socket2",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "socket2",
+      "package_url": "https://github.com/rust-lang/socket2",
+      "repository": {
+        "Http": {
+          "sha256": "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4",
+          "url": "https://static.crates.io/crates/socket2/0.6.5/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "socket2",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.6.5"
     },
     "spin 0.10.1": {
       "common_attrs": {
@@ -12094,23 +12256,53 @@
         "crate_features": [
           "bytes",
           "default",
+          "fs",
           "io-util",
+          "libc",
           "macros",
+          "mio",
+          "net",
           "rt",
+          "rt-multi-thread",
+          "signal",
+          "signal-hook-registry",
+          "socket2",
           "sync",
           "time",
           "tokio-macros"
         ],
-        "deps": [
-          {
-            "id": "bytes 1.12.1",
-            "target": "bytes"
-          },
-          {
-            "id": "pin-project-lite 0.2.17",
-            "target": "pin_project_lite"
+        "deps": {
+          "common": [
+            {
+              "id": "bytes 1.12.1",
+              "target": "bytes"
+            },
+            {
+              "id": "mio 1.2.4",
+              "target": "mio"
+            },
+            {
+              "id": "pin-project-lite 0.2.17",
+              "target": "pin_project_lite"
+            }
+          ],
+          "selects": {
+            "x86_64-unknown-linux-gnu": [
+              {
+                "id": "libc 0.2.191",
+                "target": "libc"
+              },
+              {
+                "id": "signal-hook-registry 1.4.8",
+                "target": "signal_hook_registry"
+              },
+              {
+                "id": "socket2 0.6.5",
+                "target": "socket2"
+              }
+            ]
           }
-        ],
+        },
         "edition": "2021",
         "proc_macro_deps": [
           {

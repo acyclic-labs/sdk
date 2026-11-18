@@ -56,9 +56,9 @@ async fn abandoned_pause_joins_original_native_retirement() -> Result {
         changed_at_unix_ms: 1,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let provider = acyclic_machines::local::provider(
+    let provider = acyclic_machines_local::provider(
         enrolled,
-        acyclic_machines::local::LocalOptions {
+        acyclic_machines_local::LocalOptions {
             cwd: std::fs::canonicalize(directory.path())?,
             environment: [(
                 "ACYCLIC_PAUSE_CHILD_SOCKET".into(),

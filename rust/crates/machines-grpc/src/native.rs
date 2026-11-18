@@ -1,0 +1,249 @@
+use super::*;
+use acyclic_auth::{channel, credential::ResolvedCredential};
+use tonic::transport::{
+    Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,
+};
+use tonic::{
+    Request, Status,
+    metadata::{Ascii, MetadataValue},
+    service::{Interceptor, interceptor::InterceptedService},
+};
+
+const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.
+pub struct Tls<'a> {
+    pub ca: &'a [u8],
+    pub certificate: &'a [u8],
+    pub private_key: &'a [u8],
+}
+
+/// Opaque account credential metadata shared by all generated requests.
+#[derive(Clone, Default)]
+pub struct BearerAuth(pub(super) Option<MetadataValue<Ascii>>);
+
+impl BearerAuth {
+    pub(super) fn new(token: &str) -> Result<Self, ProviderError> {
+        let value = acyclic_auth::credential::bearer_metadata(token)
+            .map_err(|_| ProviderError::Invalid("invalid Machines bearer credential".into()))?;
+        Ok(Self(Some(value)))
+    }
+}
+
+impl Interceptor for BearerAuth {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+        if let Some(value) = &self.0 {
+            request
+                .metadata_mut()
+                .insert("authorization", value.clone());
+        }
+        Ok(request)
+    }
+}
+
+/// Native RPC owner retaining the original credential through dispatch and reply.
+#[derive(Clone)]
+pub struct Client {
+    pub(super) inner: wire::machines_service_client::MachinesServiceClient<
+        InterceptedService<channel::CredentialChannel, BearerAuth>,
+    >,
+    credential: Option<ResolvedCredential>,
+}
+
+impl Client {
+    pub(super) fn request<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
+        if let Some(credential) = &self.credential {
+            channel::retain_credential(&mut request, credential)?;
+        }
+        Ok(request)
+    }
+
+    pub(super) async fn admit<T>(
+        &self,
+        response: Result<tonic::Response<T>, Status>,
+    ) -> Result<tonic::Response<T>, Status> {
+        match &self.credential {
+            Some(credential) => channel::admit_response(credential, response).await,
+            None => response,
+        }
+    }
+}
+
+/// Authenticated remote Machines provider.
+#[derive(Clone)]
+pub struct NativeEndpoint {
+    channel: Channel,
+    pub(super) authorization: BearerAuth,
+    credential: Option<CredentialProvider>,
+}
+
+impl Provider<NativeEndpoint> {
+    /// Resolve the current callback for each physical RPC, including watch reopenings.
+    pub fn with_credential_provider(mut self, credential: CredentialProvider) -> Self {
+        self.endpoint.authorization = BearerAuth::default();
+        self.endpoint.credential = Some(credential);
+        self
+    }
+
+    /// Establish mutual TLS without obtaining a bearer until the first request.
+    pub async fn connect_with_credential(
+        uri: &str,
+        tls: Tls<'_>,
+        credential: CredentialProvider,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self::connect(uri, tls, None)
+            .await?
+            .with_credential_provider(credential))
+    }
+
+    /// Connects to a public HTTPS service using an account credential callback.
+    /// Public certificate roots are used unless an explicit private CA is added.
+    /// No client certificate or credential is sent into a guest.
+    pub async fn connect_service(
+        uri: &str,
+        credential: CredentialProvider,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, ProviderError> {
+        let mut tls = ClientTlsConfig::new().with_webpki_roots();
+        if let Some(ca) = ca {
+            tls = tls.ca_certificate(Certificate::from_pem(ca));
+        }
+        Ok(Self::connect_authenticated(uri, tls, None)
+            .await?
+            .with_credential_provider(credential))
+    }
+
+    /// Connects with mutual TLS and an optional account bearer.
+    pub async fn connect(
+        uri: &str,
+        tls: Tls<'_>,
+        token: Option<&str>,
+    ) -> Result<Self, ProviderError> {
+        Self::connect_authenticated(
+            uri,
+            ClientTlsConfig::new()
+                .ca_certificate(Certificate::from_pem(tls.ca))
+                .identity(Identity::from_pem(tls.certificate, tls.private_key)),
+            token,
+        )
+        .await
+    }
+
+    async fn connect_authenticated(
+        uri: &str,
+        tls: ClientTlsConfig,
+        token: Option<&str>,
+    ) -> Result<Self, ProviderError> {
+        let auth = token.map(BearerAuth::new).transpose()?.unwrap_or_default();
+        if !uri.starts_with("https://") {
+            return Err(ProviderError::Invalid(
+                "remote Machines endpoint must use https".into(),
+            ));
+        }
+        let endpoint = TonicEndpoint::from_shared(uri.to_owned())
+            .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?
+            .tls_config(tls)
+            .map_err(|_| ProviderError::Invalid("invalid Machines TLS identity".into()))?;
+        if endpoint
+            .uri()
+            .authority()
+            .is_none_or(|value| value.as_str().contains('@'))
+            || endpoint.uri().query().is_some()
+        {
+            return Err(ProviderError::Invalid("Machines endpoint admission failed; recovery: use HTTPS without embedded credentials or a query".into()));
+        }
+        let channel = endpoint
+            .connect()
+            .await
+            .map_err(|_| ProviderError::Unavailable)?;
+        Ok(Self::grpc_with_auth(channel, auth))
+    }
+
+    /// Connects to an owner-confined Linux socket with an optional account bearer.
+    #[cfg(target_os = "linux")]
+    pub async fn connect_local(
+        path: &std::path::Path,
+        token: Option<&str>,
+    ) -> Result<Self, ProviderError> {
+        use tower::service_fn;
+
+        let auth = token.map(BearerAuth::new).transpose()?.unwrap_or_default();
+        if !path.is_absolute() {
+            return Err(ProviderError::Invalid(
+                "local Machines socket must be absolute".into(),
+            ));
+        }
+        let path = path.to_path_buf();
+        let owner = acyclic_native_runtime::ipc::PeerCredentials::current()
+            .map_err(|_| ProviderError::Unavailable)?;
+        let channel = TonicEndpoint::from_static("http://[::]:50051")
+            .connect_with_connector(service_fn(move |_| {
+                let path = path.clone();
+                let owner = owner.clone();
+                async move {
+                    owner
+                        .connect_unix(&path)
+                        .await
+                        .map(hyper_util::rt::TokioIo::new)
+                }
+            }))
+            .await
+            .map_err(|_| ProviderError::Unavailable)?;
+        Ok(Self::grpc_with_auth(channel, auth))
+    }
+
+    /// Reports that owner-confined local sockets require Linux.
+    #[cfg(not(target_os = "linux"))]
+    pub async fn connect_local(
+        _path: &std::path::Path,
+        token: Option<&str>,
+    ) -> Result<Self, ProviderError> {
+        token.map(BearerAuth::new).transpose()?;
+        Err(ProviderError::Unsupported(
+            "local Machines sockets require Linux".into(),
+        ))
+    }
+
+    pub(super) fn grpc_with_auth(channel: Channel, authorization: BearerAuth) -> Self {
+        Self::over(NativeEndpoint {
+            channel,
+            authorization,
+            credential: None,
+        })
+    }
+}
+
+impl NativeEndpoint {
+    async fn authenticated_client(&self) -> Result<Client, ProviderError> {
+        let credential = match &self.credential {
+            Some(provider) => Some(
+                provider
+                    .resolve()
+                    .await
+                    .map_err(|cause| read_error(cause.into()))?,
+            ),
+            None => None,
+        };
+        Ok(Client {
+            inner: wire::machines_service_client::MachinesServiceClient::with_interceptor(
+                channel::guard(self.channel.clone()),
+                self.authorization.clone(),
+            )
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES),
+            credential,
+        })
+    }
+}
+
+impl transport::Endpoint for NativeEndpoint {
+    type Client = Client;
+    type Deadline = crate::transport::GuestDeadline;
+
+    async fn client(&self) -> Result<Self::Client, ProviderError> {
+        self.authenticated_client().await
+    }
+    fn absolute_deadline(&self, expiry: u64) -> Result<Self::Deadline, ProviderError> {
+        Self::Deadline::absolute(expiry)
+    }
+}

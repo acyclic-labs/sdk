@@ -1,0 +1,99 @@
+use acyclic_machines::*;
+use async_trait::async_trait;
+use futures::stream;
+use std::{collections::BTreeMap, fmt, num::NonZeroU32, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
+pub use acyclic_auth::credential::CredentialProvider;
+use tonic::{Request, Status};
+use transport::{Deadline as _, Endpoint as RpcEndpoint, Messages as _, RpcClient as _};
+
+/// Thread-affine binding to an embedding platform's authenticated Connect transport.
+#[cfg(all(target_arch = "wasm32", feature = "javascript"))]
+pub mod javascript;
+/// Typed public RPC transport and platform ownership contracts.
+pub mod transport;
+
+/// One Machines client core over an authenticated platform endpoint.
+#[derive(Clone)]
+pub struct Provider<E: RpcEndpoint> {
+    endpoint: E,
+}
+
+impl<E: RpcEndpoint> Provider<E> {
+    /// Retain the original protected transport. No RPC or credential copy occurs.
+    pub fn over(endpoint: E) -> Self {
+        Self { endpoint }
+    }
+
+    async fn client(&self) -> Result<E::Client, ProviderError> {
+        self.endpoint.client().await
+    }
+    /// Qualifies the service's installed default and returns its actual immutable
+    /// identity. Use that image in CreateMachine; no guessed image alias is used.
+    pub async fn qualify_default_image(&self) -> Result<ImageQualification, ProviderError> {
+        self.qualification(None).await
+    }
+
+    async fn qualification(
+        &self,
+        expected: Option<Image>,
+    ) -> Result<ImageQualification, ProviderError> {
+        obs::operation!("acyclic.machines.qualify_image", observation, async {
+            let response = self
+                .client()
+                .await?
+                .qualify_image(wire::QualifyImageRequest {
+                    protocol: Some(protocol()),
+                    image: expected.as_ref().map(encode_image).transpose()?,
+                })
+                .await
+                .map_err(|error| {
+                    obs::failed_rpc(&observation, &error);
+                    read_error(error)
+                })?
+                .into_inner();
+            decode_qualification(response, expected.as_ref())
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{NativeEndpoint, Tls};
+#[cfg(not(target_arch = "wasm32"))]
+/// Authenticated native gRPC Machines provider.
+pub type GrpcProvider = Provider<NativeEndpoint>;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use native::BearerAuth;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use tonic::{
+    metadata::MetadataValue,
+    service::Interceptor as _,
+    transport::{Certificate, Endpoint as TonicEndpoint, Identity},
+};
+
+mod guest;
+use guest::*;
+#[cfg(feature = "test-support")]
+pub mod codec_fuzz;
+mod duplex;
+mod obs;
+mod files;
+mod input;
+mod provider;
+mod recovery;
+use acyclic_machines::codec::*;
+use recovery::*;
+
+// All transports reuse the same original admission and settlement validation.
+pub use recovery::{
+    ForkAdmitted, decode_fork_admissions, decode_recovered, settled_change, settled_checkpoint,
+    settled_fork, settled_machine, validate_recovered_admission,
+};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod credential_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

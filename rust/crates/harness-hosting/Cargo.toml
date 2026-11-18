@@ -43,6 +43,7 @@ tracing.workspace = true
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 
 [dev-dependencies]
+acyclic-machines-local = { version = "=0.2.0", path = "../machines-local" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }

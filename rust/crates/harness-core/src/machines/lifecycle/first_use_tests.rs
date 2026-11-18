@@ -8,6 +8,7 @@ use crate::{
     resources::{ArtifactRef, ProviderRef, SandboxRef},
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
+use acyclic_machines_simulation::SimulatedMachines;
 #[cfg(feature = "conformance")]
 use acyclic_machines::{Capability, MachineState};
 use acyclic_machines::{
@@ -15,7 +16,7 @@ use acyclic_machines::{
     ExecStream, FileAccess, FileRead, FileWrite, IdempotencyKey as MachinesKey, Image,
     ImageQualification, MachineId, MachineObservation, MachineOutput, MachinePage,
     MachinesProvider, MutationOutcome, OperationId as MachinesOperationId, OperationObservation,
-    OperationStream, ProviderAssurance, ProviderError, SimulatedMachines, SuspensionPolicy,
+    OperationStream, ProviderAssurance, ProviderError, SuspensionPolicy,
     UsageReceipt, wire,
 };
 use acyclic_stream::{
@@ -321,7 +322,7 @@ async fn retained_refusals_leave_original_sources_for_their_last_fork() -> TestR
     ] {
         let (_release, ready) = watch::channel(true);
         conformance.push(
-            acyclic_machines::conformance::verify(&acyclic_machines::conformance::Fixture::new(
+            acyclic_machines_conformance::verify(&acyclic_machines_conformance::Fixture::new(
                 HeldInspection {
                     inner,
                     ready,
