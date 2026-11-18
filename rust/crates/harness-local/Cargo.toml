@@ -36,7 +36,6 @@ acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
 async-trait.workspace = true
 async-stream = "=0.3.6"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
-acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-machines-daytona = { version = "=0.2.0", path = "../machines-daytona" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
@@ -129,7 +128,6 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support", "conformance"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["javascript"] }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true
