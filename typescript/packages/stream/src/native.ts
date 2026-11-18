@@ -7,9 +7,8 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { fromBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
-import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { decodeTailResponse, invalidResponse, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -162,8 +161,7 @@ export class NativeStreamProvider implements StreamProvider {
   async tail(path: string): Promise<Sequence> {
     const input = await validateWireRequest({ kind: "tail" as const, path });
     const value = await this.operation("tail", this.request(client => client.tailResult(Buffer.from(input))));
-    try { return fromBinary(wire.TailResponseSchema, value).tail; }
-    catch (error) { throw invalidResponse("tail", error); }
+    return decodeTailResponse(value);
   }
 
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
@@ -268,9 +266,4 @@ export class NativeStreamProvider implements StreamProvider {
     try { return projectMemoryResponse(operation, value); }
     catch (error) { throw invalidResponse(operation, error); }
   }
-}
-
-function invalidResponse(operation: string, error: unknown): StreamError {
-  const message = error instanceof Error ? error.message : String(error);
-  return new StreamError("invalid_response", `invalid ${operation} response${message ? `: ${message}` : ""}`);
 }

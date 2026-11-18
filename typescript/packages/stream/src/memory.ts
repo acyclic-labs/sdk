@@ -1,12 +1,10 @@
 import { streamError } from "./wasm-error.js";
-import { fromBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import { TailResponseSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { decodeTailResponse, ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateFollowRequest, validateForkRequest, validateHeadsRequest, validateReadRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -60,7 +58,7 @@ class RustStreamProvider implements StreamProvider {
   }
   async tail(path: string): Promise<Sequence> {
     const input = await validateWireRequest({ kind: "tail" as const, path });
-    return fromBinary(TailResponseSchema, await this.#dispatch("tail", input)).tail;
+    return decodeTailResponse(await this.#dispatch("tail", input));
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
     const request = await validateAppend(path, values, options);

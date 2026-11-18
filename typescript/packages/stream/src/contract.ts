@@ -6,7 +6,7 @@ import initStreamWasm, { decodeHttpResponse as decodeHttpResponseWasm, decodeRea
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
-  ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
+  ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema, TailResponseSchema,
   ReadRequestSchema, FollowRequestSchema, HeadRequestSchema, HeadsRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
@@ -211,6 +211,16 @@ export function validateChildrenPageRequest(options: import("./types.js").Childr
 
 export function validateHeadsRequest(options: import("./types.js").HeadsRequest): Promise<Uint8Array> {
   return validateWireRequest({ ...options, kind: "heads" });
+}
+
+export function invalidResponse(operation: string, error: unknown): StreamError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new StreamError("invalid_response", `invalid ${operation} response${message ? `: ${message}` : ""}`);
+}
+
+export function decodeTailResponse(input: Uint8Array): bigint {
+  try { return fromBinary(TailResponseSchema, input).tail; }
+  catch (error) { throw invalidResponse("tail", error); }
 }
 
 export function validateForkRequest(source: string, destination: string, options: ForkOptions): Promise<Uint8Array> {
