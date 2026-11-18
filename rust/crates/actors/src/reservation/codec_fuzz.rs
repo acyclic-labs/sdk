@@ -81,13 +81,13 @@ async fn publication_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std
         hosting::Host,
         local::{ControlledClock, PreparedPublish, RuntimeLimits, Store},
     };
-    use acyclic_stream::{IdempotencyKey, MemoryStream, StreamPath};
+    use acyclic_stream::{IdempotencyKey, MemoryStream, ProviderOwner, StreamPath};
     use std::sync::Arc;
 
-    let provider = Arc::new(MemoryStream::default());
+    let provider = ProviderOwner::new(MemoryStream::default());
     let root = StreamPath::new("codec/reservations")?;
     let actor = ActorReference::new(b"account", b"pools", b"codec")?;
-    let store = Store::new(Arc::clone(&provider), root.clone());
+    let store = Store::new(provider.clone(), root.clone());
     let mut creation = PreparedPublish::foreign(IdempotencyKey::unique());
     for effect in create(
         &store,
