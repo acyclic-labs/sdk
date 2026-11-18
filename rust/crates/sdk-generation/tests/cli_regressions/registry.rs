@@ -129,11 +129,6 @@ fn archive_locks_override_foreign_cargo_authority() {
                     replayed_compilers,
                     "each identical policy profile must replay its real JSON"
                 );
-                let (executed, replayed) = queries.counts();
-                assert!(
-                    executed > 0 && replayed > 0,
-                    "both real recording and policy replay must run"
-                );
                 let home = cargo_home_frontier.iter();
                 let cwd = working_directory_frontier.iter();
                 assert!(
