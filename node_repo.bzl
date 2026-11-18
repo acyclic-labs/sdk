@@ -54,6 +54,7 @@ def _node_release_impl(ctx):
     )
     ctx.file("defs.bzl", _DEFS)
     ctx.file("BUILD.bazel", _RELEASE_BUILD % ctx.attr.node)
+    return ctx.repo_metadata(reproducible = True)
 
 _node_release = repository_rule(
     implementation = _node_release_impl,

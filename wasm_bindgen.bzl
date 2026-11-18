@@ -24,5 +24,6 @@ tool = rule(implementation = _tool_impl, executable = True,
 load(":defs.bzl", "tool")
 tool(name = "wasm_bindgen_cli", binary = "wasm-bindgen", visibility = ["//visibility:public"])
 ''')
+    return ctx.repo_metadata(reproducible = True)
 
 wasm_bindgen_cli = repository_rule(implementation = _wasm_bindgen_impl)

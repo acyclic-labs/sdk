@@ -12,6 +12,7 @@ def _npm_tool_impl(ctx):
         stripPrefix = "package",
     )
     ctx.file("BUILD.bazel", 'filegroup(name = "files", srcs = glob(["**"], exclude = ["BUILD.bazel"]), visibility = ["//visibility:public"])\n')
+    return ctx.repo_metadata(reproducible = True)
 
 npm_tool_repository = repository_rule(
     implementation = _npm_tool_impl,
