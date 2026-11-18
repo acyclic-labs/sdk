@@ -1,3 +1,4 @@
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { isDirectChild, validateChildCursor } from "./child.js";
 import { DefaultStreamProvider } from "./default.js";
 import { Opened } from "./opened.js";
@@ -195,7 +196,7 @@ export class Stream<Value = Uint8Array> {
     if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
     const authored = structuredClone(options);
     if (authored?.idempotencyKey === undefined) throw new StreamError("invalid_argument", "an explicit idempotency key is required");
-    return this.provider.append(this.path, values.map(value => this.codec.encode(value).slice()), authored);
+    return this.provider.append(this.path, values.map(value => snapshotBytes(this.codec.encode(value))), authored);
   }
   async fork(destination: string, options: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
     validatePathValue(destination);
@@ -234,7 +235,7 @@ function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
 }
 export async function validateAppend(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<Uint8Array> {
-  const records = values.map(value => value.slice());
+  const records = values.map(snapshotBytes);
   const authored = structuredClone(options);
   // Validate path before optional fields so the canonical path error wins.
   await ensureStreamWasm();

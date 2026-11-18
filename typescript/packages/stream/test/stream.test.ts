@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { describe, expect, test } from "bun:test";
 import { SessionSocket } from "./session-socket.js";
 import { checkpoint } from "./session-node.js";
@@ -128,6 +129,20 @@ describe("website Stream contract", () => {
     expect((await quiet.opened).snapshot).toMatchObject(second.revision);
     await quiet.close();
     expect((await quiet.next()).done).toBe(true);
+  });
+
+  test("append captures Node Buffer bytes before yielding", async () => {
+    const provider = new MemoryStreamProvider();
+    const record = Buffer.from([7]);
+    const append = provider.append("capture/buffer", [record], { idempotencyKey: key("capture-buffer") });
+    record[0] = 9;
+    expect((await append).ok).toBe(true);
+    const read = provider.read("capture/buffer", { from: 0n, limit: 1 });
+    try {
+      expect(await read.next()).toMatchObject({ done: false, value: { value: new Uint8Array([7]) } });
+    } finally {
+      await read.close();
+    }
   });
 
   test("local streams do not issue unused hosted access tokens", async () => {

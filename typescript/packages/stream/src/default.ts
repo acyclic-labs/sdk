@@ -1,3 +1,4 @@
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { HttpStreamProvider } from "./http.js";
 import { Opened } from "./opened.js";
 import { StreamError, type StreamEnvironment, type StreamProvider } from "./types.js";
@@ -115,7 +116,7 @@ export class DefaultStreamProvider implements StreamProvider {
   head(path: string) { return this.provider().then(provider => provider.head(path)); }
   tail(path: string) { return this.provider().then(provider => provider.tail(path)); }
   append(path: string, values: Parameters<StreamProvider["append"]>[1], options: Parameters<StreamProvider["append"]>[2]) {
-    const copiedValues = values.map(value => value.slice());
+    const copiedValues = values.map(snapshotBytes);
     const authored = structuredClone(options);
     return this.provider().then(provider => provider.append(path, copiedValues, authored));
   }
