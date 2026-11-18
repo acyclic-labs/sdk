@@ -1,3 +1,4 @@
+import { validateChildCursor } from "./child.js";
 import { isTransportEndpoint, validateByteLimit } from "@acyclic-labs/core";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
@@ -11,7 +12,7 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/core/observe";
-import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { decodeHttpResponseFor, encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {
   readonly endpoint: string; readonly fetcher?: typeof fetch;
@@ -68,16 +69,7 @@ export class HttpStreamProvider implements StreamProvider {
 
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
-    if (request.parent !== undefined) validatePathValue(request.parent);
-    if (request.after !== undefined) {
-      validatePathValue(request.after);
-      if (directParent(request.after) !== (request.parent ?? "")) {
-        throw new StreamError("invalid_cursor", "child continuation must name a direct child");
-      }
-    }
-    if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
-      throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
-    }
+    validateChildCursor(request);
     if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
       throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
     }
@@ -200,4 +192,3 @@ async function boundedText(response: Response, maximum: number | undefined, size
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return decoder.decode(bytes);
 }
-function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }

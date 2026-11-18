@@ -1,3 +1,4 @@
+import { isDirectChild, validateChildCursor } from "./child.js";
 import { DefaultStreamProvider } from "./default.js";
 import { Opened } from "./opened.js";
 import { MemoryStreamProvider } from "./memory.js";
@@ -78,16 +79,7 @@ export class StreamClient {
     const { parent, after, offset, hierarchyVersion, limit } = request;
     const origin = { limit, ...(offset === undefined ? {} : { offset }), ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
     const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
-    if (authored.parent !== undefined) validatePathValue(authored.parent);
-    if (authored.after !== undefined) {
-      validatePathValue(authored.after);
-      if (directParent(authored.after) !== (authored.parent ?? "")) {
-        throw new StreamError("invalid_cursor", "child continuation must name a direct child");
-      }
-    }
-    if (authored.hierarchyVersion !== undefined && authored.hierarchyVersion.byteLength !== 32) {
-      throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
-    }
+    validateChildCursor(authored);
     positiveInteger(authored.limit, "limit");
     const page = await this.provider.childrenPage(authored);
     if (page.hierarchyVersion.byteLength !== 32) throw new StreamError("invalid_page", "provider returned an invalid hierarchy version");
@@ -102,7 +94,7 @@ export class StreamClient {
     let previous = authored.after;
     for (const child of page.children) {
       validatePathValue(child.path);
-      if (directParent(child.path) !== (authored.parent ?? "") ||
+      if (!isDirectChild(child.path, authored.parent) ||
           (previous !== undefined && compareStreamPaths(previous, child.path) >= 0)) {
         throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
       }
@@ -110,7 +102,7 @@ export class StreamClient {
     }
     if (page.nextAfter !== undefined) {
       validatePathValue(page.nextAfter);
-      if (directParent(page.nextAfter) !== (authored.parent ?? "") ||
+      if (!isDirectChild(page.nextAfter, authored.parent) ||
           (authored.after !== undefined && compareStreamPaths(authored.after, page.nextAfter) >= 0) ||
           (previous !== undefined && compareStreamPaths(previous, page.nextAfter) > 0)) {
         throw new StreamError("invalid_page", "provider returned an invalid child continuation");
@@ -238,7 +230,6 @@ export class Stream<Value = Uint8Array> {
 function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
   if (stream.provider !== provider) throw new StreamError("provider_mismatch", "coordinated commit streams must use one provider");
 }
-function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
 }
