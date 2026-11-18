@@ -75,6 +75,7 @@ fn exchange_kernel<W: SourceDemandReadWork>(
                         )
                     };
                     #[cfg(target_os = "macos")]
+                    // SAFETY: both parent descriptors and NUL-terminated names remain live.
                     let result = unsafe {
                         libc::renameatx_np(
                             left.as_raw_fd(),
