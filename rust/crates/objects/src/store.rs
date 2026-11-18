@@ -463,6 +463,14 @@ impl<M: Medium> Pages<'_, M> {
         key.strip_prefix(self.prefix.as_str()).ok_or_else(corrupt)
     }
 
+    async fn keys(&mut self) -> Result<Vec<String>, Error> {
+        let mut keys = Vec::new();
+        while let Some(page) = self.next().await? {
+            keys.extend(page.into_iter().map(|(key, _)| key));
+        }
+        Ok(keys)
+    }
+
     async fn next(&mut self) -> Result<Option<Vec<(String, u64)>>, Error> {
         if self.done {
             return Ok(None);
@@ -1359,15 +1367,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
     }
 
-    async fn list_keys(&self, prefix: String) -> Result<Vec<String>, Error> {
-        let mut keys = Vec::new();
-        let mut pages = self.pages(prefix);
-        while let Some(page) = pages.next().await? {
-            keys.extend(page.into_iter().map(|(key, _)| key));
-        }
-        Ok(keys)
-    }
-
     /// Publishes the blob `wanted` describes: creates its envelope under a
     /// fresh version, or adopts an equal one, then indexes its references
     /// and writes its payload unless complete. A new blob costs one envelope
@@ -1934,13 +1933,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 let _gate = self.state.gate.read().await;
                 let encoded = Digest::of(root.as_bytes()).encoded_hex();
                 let root_hash = encoded.as_ref();
-                let batches = self
-                    .list_keys(self.retention_key('r', root_hash, ""))
-                    .await?;
+                let mut pages = self.pages(self.retention_key('r', root_hash, ""));
+                let batches = pages.keys().await?;
                 let existed = !batches.is_empty();
                 let mut batch_keys = Vec::new();
                 let mut batch_references = Vec::new();
                 for key in batches {
+                    pages.relative(&key)?;
                     let Some(references) = self.batch(&key).await? else {
                         continue;
                     };
@@ -1953,7 +1952,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                 self.medium.flush(&batch_keys).await.map_err(medium)?;
                 let mut index_keys = Vec::new();
                 for (key, references) in batch_keys.into_iter().zip(batch_references) {
-                    let name = key.rsplit('/').next().ok_or_else(corrupt)?;
+                    let name = pages.relative(&key)?;
                     let tag = Self::batch_tag('r', root_hash, name);
                     self.unreference(&references, &tag, Some(&mut index_keys))
                         .await?;
