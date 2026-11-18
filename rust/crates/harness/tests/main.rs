@@ -98,11 +98,6 @@ mod client_diff;
 #[cfg(not(loom))]
 mod local_cloud_actors;
 
-// Preserve the ordinary allocator/runtime path independently of Loom schedules.
-#[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "test-support"))]
-#[path = "dst/main.rs"]
-mod dst;
-
 #[cfg(all(not(loom), feature = "test-support"))]
 mod filesystem_access;
 

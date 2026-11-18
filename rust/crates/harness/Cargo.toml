@@ -17,6 +17,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "dst"
+path = "tests/dst_cases.rs"
+
+[[test]]
 name = "native_receipt"
 path = "tests/native_receipt.rs"
 
