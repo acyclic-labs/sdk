@@ -41,7 +41,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "STEP capture original secret reference metadata failed: {error}; recovery from rust/crates/auth: cargo run --locked --example secret_ref_corpus"
+            "STEP capture original secret reference metadata failed: {error}; recovery: bazel build //rust/crates/auth:secret_ref_corpus_example and run the binary from rust/crates/auth"
         );
         std::process::exit(1);
     }

@@ -66,7 +66,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
 fn main() {
     if let Err(error) = capture() {
         eprintln!(
-            "STEP capture original issuance corpus failed: {error}; recovery from rust/crates/auth: cargo run --locked --features test-support --example issuance_corpus"
+            "STEP capture original issuance corpus failed: {error}; recovery: bazel build //rust/crates/auth:issuance_corpus_example and run the binary from rust/crates/auth"
         );
         std::process::exit(1);
     }
