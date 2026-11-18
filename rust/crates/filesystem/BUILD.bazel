@@ -2794,6 +2794,8 @@ rust_test(
     crate_root = "tests/extent_codec.rs",
     srcs = [
         "tests/extent_codec.rs",
+        "tests/extent_codec/kernel/blob/mod.rs",
+        "tests/extent_codec/kernel/blob/tests.rs",
         "tests/extent_codec/kernel/codec/mod.rs",
         "tests/extent_codec/kernel/codec/tests.rs",
         "tests/extent_codec/kernel/extent/mod.rs",
@@ -2822,6 +2824,7 @@ rust_test(
         ":acyclic_fs",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "@sdk_crates//hex-0.4.3",
         "@sdk_crates//proptest-1.12.0",
     ],
     tags = ["manual"],
