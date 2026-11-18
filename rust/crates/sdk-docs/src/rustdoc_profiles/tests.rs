@@ -52,10 +52,11 @@ fn browser_profiles_follow_cargo_features_and_binding_policy() {
     };
     let profile = plan(&package, false).unwrap().unwrap();
     assert!(!profile.default_features);
-    assert_eq!(
-        profile.features,
-        BTreeSet::from(["wasm".into(), "codec".into()])
-    );
+    assert!(profile
+        .features
+        .iter()
+        .map(String::as_str)
+        .eq(["codec", "wasm"]));
     assert_eq!(
         browser_profile_for_package(&package, false, &BTreeSet::new()),
         Err(ProfileError::UnsupportedTarget {
