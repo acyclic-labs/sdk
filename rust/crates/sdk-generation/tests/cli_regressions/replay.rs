@@ -144,17 +144,16 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
         rebased_digest.as_bytes(),
     )
     .unwrap();
-    changed.insert(
-        release_path.to_str().unwrap().replace('\\', "/"),
-        (original_digest.clone(), rebased_digest.clone()),
+    let sidecar_hashes = (
+        hash_bytes(original_digest.as_bytes()),
+        hash_bytes(rebased_digest.as_bytes()),
     );
-    changed.insert(
-        digest_path.to_str().unwrap().replace('\\', "/"),
-        (
-            hash_bytes(original_digest.as_bytes()),
-            hash_bytes(rebased_digest.as_bytes()),
-        ),
-    );
+    for (path, hashes) in [
+        (release_path, (original_digest, rebased_digest)),
+        (digest_path, sidecar_hashes),
+    ] {
+        changed.insert(path.to_str().unwrap().replace('\\', "/"), hashes);
+    }
     for (path, (old, new)) in changed {
         assert_eq!(manifest["artifacts"][&path].as_str().unwrap(), old);
         manifest["artifacts"][&path] = json!(new);
