@@ -12,6 +12,9 @@ description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 
+[package.metadata.bazel]
+precise-bin-inputs = true
+
 [[test]]
 name = "main"
 path = "tests/main.rs"

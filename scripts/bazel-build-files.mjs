@@ -873,13 +873,18 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       test(`${crateName(lib)}_test`, attrs, runtimeData(lib), {}, p.name);
     }
   }
+  const exactInputs = target => {
+    const extra = extras(target, () => false);
+    return [["srcs", list(extra.srcs)], ["compile_data", list(extra.data)]];
+  };
+  const binInputs = bazel?.["precise-bin-inputs"] === true ? exactInputs : libInputs;
   const executables = !graph && workspace.has(p.id) ? p.targets : [];
   for (const bin of executables.filter(t => t.kind.includes("bin"))) {
     covered.add(`build bin ${bin.name}`);
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
-      ...libInputs(bin),
+      ...binInputs(bin),
       ...common(bin),
       ...deps([null], [...ownLib, ...ownDeps], ownMacro),
       ["visibility", q(["//visibility:public"])],
@@ -888,7 +893,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
     const binCrate = bin.name.replaceAll("-", "_");
     if (bin.test) covered.add(`test bin ${bin.name}`), test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
-      ...libInputs(bin),
+      ...binInputs(bin),
       ...common(bin),
       ...deps([null, "dev"],
         [...ownLib, ...ownDeps], ownMacro),
@@ -910,11 +915,9 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
       || (includeOwn && !bazel?.["test-without-build-script"]?.includes(target.name));
     const extraDeps = [...(includeOwn ? ownLib : []), ...(needsBuildScript ? ownDeps : [])];
     const crateRoot = local(target.src_path);
-    const extra = extras(target, () => false);
     return [
       ["crate_root", q(crateRoot)],
-      ["srcs", list(extra.srcs)],
-      ["compile_data", list(extra.data)],
+      ...exactInputs(target),
       ...common(target),
       ...(names ? deps([null, "dev"], extraDeps,
         includeOwn ? ownMacro : [], {}, names)
