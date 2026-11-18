@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "S3 HTTP translation over Acyclic filesystem workspaces"
 
+[package.metadata.bazel]
+unit-test-only-sources = ["src/s3_http/access_tests.rs", "src/s3_http/tests.rs"]
+
 [dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
 acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
