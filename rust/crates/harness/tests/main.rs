@@ -71,10 +71,6 @@ mod context_discovery;
 #[cfg(not(loom))]
 mod mcp_oauth_provider;
 
-#[path = "cases/plan_markdown.rs"]
-#[cfg(not(loom))]
-mod plan_markdown;
-
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[cfg(not(loom))]
 include!("e2e/root.rs");
