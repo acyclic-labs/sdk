@@ -239,7 +239,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             })
             .await?
         };
-        let root_cut = if workspace.id() != root.id() {
+        let root_cut = if workspace.id() == root.id() {
+            None
+        } else {
             Some(
                 read_before_effect(&mut cancellation, async {
                     root.capture_policy_cut(
@@ -252,8 +254,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 })
                 .await?,
             )
-        } else {
-            None
         };
         drop(cancellation);
         let output = crate::tools::git::run_volume_with_guard(
