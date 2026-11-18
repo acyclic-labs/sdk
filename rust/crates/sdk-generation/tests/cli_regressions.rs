@@ -564,21 +564,16 @@ fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
-        Command::new(runtime::binary("sdk-generation"))
-            .args([
-                "generate",
-                "--root",
-                fixture.root.to_str().unwrap(),
-                "--output",
-                fixture.output.to_str().unwrap(),
-                "--version",
-                "feature-profile-catalog",
-                "--channel",
-                "preview",
-                "--execute-profiles",
-                "--skip-scenarios",
-            ])
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
+        generate_command(
+            &fixture.root,
+            &fixture.rustdoc,
+            &fixture.output,
+            "feature-profile-catalog",
+            "preview",
+            true,
+        )
+        .arg("--execute-profiles")
+        .env("CARGO_HOME", fixture_cargo_home(fixture)),
     )
 }
 
