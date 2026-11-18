@@ -1,8 +1,8 @@
-use acyclic_fs::CancellationToken;
 use acyclic_fs::kernel::{
     GenerationTransferError, TransferCursor, export_generation_batch_async,
     import_generation_batch_async,
 };
+use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken};
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
 #[path = "../../../support/memory_objects.rs"]
@@ -209,6 +209,104 @@ async fn import_rejects_every_noncanonical_page_before_backend_work()
             std::mem::discriminant(&expected)
         );
         assert_eq!(*failure.work()?, WorkCounters::default());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (manifest, bodies) = fixture();
+    let source = memory_objects();
+    let destination = memory_objects();
+    let cancellation = CancellationToken::new();
+    for (object_id, body) in manifest.objects.iter().copied().zip(bodies.iter().cloned()) {
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        source.put(object_id, body, &mut work).await?;
+    }
+
+    let first = (export_generation_batch_async(
+        &source,
+        &manifest,
+        TransferCursor::START,
+        1,
+        manifest.config.limits.maximum_object_bytes,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    assert_eq!(first.value.first_object, TransferCursor::START);
+    assert_eq!(first.value.next, Some(TransferCursor::new(1)));
+    assert_eq!(first.value.objects.len(), 1);
+    let first_object = first
+        .value
+        .objects
+        .first()
+        .ok_or("missing first transfer object")?;
+    let [chunk, root] = &bodies;
+    assert_eq!(first_object.bytes.as_ref(), chunk.as_ref());
+    assert_eq!(first.work.backend_read_operations, 1);
+    assert!(first.work.peak_allocation_bytes > 0);
+
+    let imported = (import_generation_batch_async(
+        &destination,
+        &manifest,
+        TransferCursor::START,
+        std::slice::from_ref(&first_object.bytes),
+        1,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    assert_eq!(imported.value, TransferCursor::new(1));
+    let repeated = (import_generation_batch_async(
+        &destination,
+        &manifest,
+        TransferCursor::START,
+        std::slice::from_ref(chunk),
+        1,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    assert_eq!(repeated.value, TransferCursor::new(1));
+
+    let second = (export_generation_batch_async(
+        &source,
+        &manifest,
+        TransferCursor::new(1),
+        8,
+        manifest.config.limits.maximum_object_bytes,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    assert_eq!(second.value.next, None);
+    let second_object = second
+        .value
+        .objects
+        .first()
+        .ok_or("missing second transfer object")?;
+    assert_eq!(second_object.bytes.as_ref(), root.as_ref());
+    (import_generation_batch_async(
+        &destination,
+        &manifest,
+        TransferCursor::new(1),
+        std::slice::from_ref(&second_object.bytes),
+        8,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    for (object_id, body) in manifest.objects.iter().copied().zip(bodies) {
+        let read = AsyncObjectStore::read(
+            &destination,
+            object_id,
+            manifest.config.limits.maximum_object_bytes,
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await?;
+        assert_eq!(read.bytes.as_ref(), body.as_ref());
     }
     Ok(())
 }
