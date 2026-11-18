@@ -81,7 +81,7 @@ export function qualifySkillMaterializerLoom(run = runCommand) {
 }
 
 export function qualifyProviderRefreshLoom(run = runCommand) {
-  return qualifyLoom("acyclic-harness-providers", "main", [], run, {
+  return qualifyLoom("acyclic-harness-providers", "models", [], run, {
     env: loomEnvironment(),
     suites: ["verification_models::refresh::"],
   });
@@ -97,7 +97,7 @@ export function qualifyProviderRefreshMutationsLoom(run = runCommand) {
       ["return Err(failure);", "let _ = failure;", "failed refresh was repeated by a waiter"],
       ["lock_owned(self.result.clone()).await", "lock_owned(Arc::new(Mutex::new(None))).await", "refresh ownership overlapped"],
     ],
-    qualify: (run, expectedFailure) => qualifyLoom("acyclic-harness-providers", "main", [], run, {
+    qualify: (run, expectedFailure) => qualifyLoom("acyclic-harness-providers", "models", [], run, {
       env: loomEnvironment(), expectedFailure, recovery,
       filter: "verification_models::refresh::refresh_attempt_failure_retains_exclusive_ownership",
     }),

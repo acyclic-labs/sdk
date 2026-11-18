@@ -5,15 +5,7 @@
 // Each layer erases its futures at its boundary, so query depth stays well
 // below the default 128; a by-value chain across layers fails here first.
 #![recursion_limit = "112"]
-use acyclic_harness_providers::Adapter;
 mod benchmark_catalog;
-#[cfg(loom)]
-#[path = "../src/sync.rs"]
-mod sync;
-#[cfg(not(loom))]
-#[path = "../src/sync/loom.rs"]
-mod sync;
-mod verification_models;
 
 mod integration_helpers;
 use integration_helpers::TestResult;
