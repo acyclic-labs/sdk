@@ -1405,7 +1405,9 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-auth-action",
  "acyclic-grpc-observability",
+ "acyclic-machines-limits",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
@@ -1461,6 +1463,13 @@ dependencies = [
  "time",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "acyclic-machines-limits"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

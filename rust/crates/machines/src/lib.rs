@@ -9,6 +9,11 @@ acyclic_test_support::counting_allocator!();
 
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
+/// Canonical OCI and pagination constants shared with the TypeScript generator.
+pub use acyclic_machines_limits::{
+    MANAGED_OCI_DIGEST_HEX_LENGTH, MANAGED_OCI_HEX_DIGITS, MANAGED_OCI_REFERENCE_SEPARATOR,
+    MANAGED_OCI_ZERO_DIGIT, MAX_EVENT_PAGE_SIZE, MAX_PAGE_SIZE,
+};
 /// Compiler-linked public method admission.
 pub mod authorization {
     use acyclic_auth::action as auth_action;
@@ -62,12 +67,8 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.
 pub const PROTOCOL_MINOR: u32 = 8;
-/// Maximum machines returned in one page.
-pub const MAX_PAGE_SIZE: u32 = 256;
 /// Maximum bytes returned by one live guest console read.
 pub const MAX_OUTPUT_READ_BYTES: u32 = 65_536;
-/// Maximum events returned in one page.
-pub const MAX_EVENT_PAGE_SIZE: u32 = 1_024;
 /// Normalize a positive request hint to one physical page or output chunk.
 /// Continue using the returned page cursor or output offset for more data.
 ///

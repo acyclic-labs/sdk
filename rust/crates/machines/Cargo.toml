@@ -17,10 +17,11 @@ categories = ["api-bindings"]
 name = "main"
 path = "tests/main.rs"
 
-[[bin]]
-name = "machines-managed-oci-contract"
-test = false
+[package.metadata.bazel]
+test-build-script = ["machines-authorization"]
 
+[package.metadata.bazel.test-dependencies]
+machines-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
 
 [package.metadata.acyclic]
 consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]
@@ -37,6 +38,7 @@ http-codec = ["dep:acyclic-protobuf-json", "dep:prost-reflect"]
 javascript = ["dep:js-sys", "dep:wasm-bindgen-futures"]
 
 [dependencies]
+acyclic-machines-limits = { version = "=0.2.0", path = "../machines-limits" }
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json", optional = true }
 prost-reflect = { workspace = true, optional = true }
 acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false }
@@ -58,6 +60,7 @@ tonic-prost = { workspace = true }
 uuid.workspace = true
 
 [dev-dependencies]
+acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false, features = ["conformance"] }
 proptest.workspace = true
