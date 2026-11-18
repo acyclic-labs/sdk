@@ -1,5 +1,20 @@
 use super::*;
 
+#[cfg(any(target_arch = "wasm32", test))]
+pub(in super::super) fn request_credential_status(
+    mut message: String,
+    detail: Option<String>,
+) -> tonic::Status {
+    if let Some(detail) = detail.filter(|detail| !detail.is_empty()) {
+        message.push_str(": ");
+        message.push_str(&detail);
+    }
+    let cause = acyclic_auth::credential::RequestCredentialError::from_browser(message.clone());
+    let mut status = tonic::Status::unavailable(message);
+    status.set_source(std::sync::Arc::new(cause));
+    status
+}
+
 fn credential_before_dispatch(status: &tonic::Status) -> bool {
     std::error::Error::source(status)
         .is_some_and(|cause| cause.is::<acyclic_auth::credential::RequestCredentialError>())

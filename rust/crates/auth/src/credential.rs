@@ -91,8 +91,15 @@ impl From<CredentialCacheError> for CredentialError {
 
 /// Local credential admission failed before the original transport acquired the request.
 #[derive(Debug, thiserror::Error)]
-#[error("original request credential admission failed")]
-pub struct RequestCredentialError;
+#[error("{0}")]
+pub struct RequestCredentialError(String);
+
+impl RequestCredentialError {
+    /// Own the diagnostic from a browser credential callback across the Wasm boundary.
+    pub fn from_browser(diagnostic: String) -> Self {
+        Self(diagnostic)
+    }
+}
 
 /// Local credential admission failed after the original transport returned.
 /// This cannot attest that an original effect was refused before dispatch.
