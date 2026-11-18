@@ -1,4 +1,4 @@
-import { decodeUnaryResponse, validateHeadsRequest, validateReadRequest, wireRequest, wireWhenAbsent } from "./contract.js";
+import { decodeUnaryResponse, validateHeadsRequest, validateReadRequest, validateWireRequest, wireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -61,7 +61,8 @@ export class StreamSessions {
     catch (error) { throw streamError(error, "session"); }
   }
 
-  tailRequest(path: string, validated: Uint8Array): { input: Uint8Array; atLeast: Revision[] } {
+  async tailRequest(path: string): Promise<{ input: Uint8Array; atLeast: Revision[] }> {
+    const validated = await validateWireRequest({ kind: "tail", path });
     const atLeast = this.revisionFloor();
     return { atLeast, input: atLeast.length === 0 ? validated : wireRequest({ kind: "tail", path, atLeast }) };
   }

@@ -264,8 +264,7 @@ export class GrpcStreamProvider implements StreamProvider {
     return decodeUnaryResponse("head", toBinary(wire.PathHeadSchema, response));
   }
   async tail(path: string): Promise<bigint> {
-    const validated = await validateWireRequest({ kind: "tail", path });
-    const { input, atLeast } = this.#sessions.tailRequest(path, validated);
+    const { input, atLeast } = await this.#sessions.tailRequest(path);
     const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, input)));
     this.#sessions.served(atLeast, response.applied);
     return response.tail;

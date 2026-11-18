@@ -92,8 +92,7 @@ export class HttpStreamProvider implements StreamProvider {
     return this.#request("head", await encodeHttpRequest("head", input));
   }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
-    const validated = await validateWireRequest({ kind: "tail", path });
-    const { input, atLeast } = this.#sessions.tailRequest(path, validated);
+    const { input, atLeast } = await this.#sessions.tailRequest(path);
     const { tail, applied } = await this.#request("tail", await encodeHttpRequest("tail", input), signal);
     this.#sessions.served(atLeast, applied);
     return tail;
