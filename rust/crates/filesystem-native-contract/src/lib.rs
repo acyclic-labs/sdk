@@ -13,8 +13,6 @@ pub use mount_path::MountPath;
 pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod native_host {
-    pub mod device;
-}
+mod native_host;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use native_host::device;

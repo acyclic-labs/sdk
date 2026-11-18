@@ -66,6 +66,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -79,6 +80,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -128,6 +130,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -141,6 +144,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -190,6 +194,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -203,6 +208,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -252,6 +258,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -265,6 +272,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -316,6 +324,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -329,6 +338,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -381,6 +391,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -394,6 +405,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -443,6 +455,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -456,6 +469,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -505,6 +519,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -518,6 +533,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -567,6 +583,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -580,6 +597,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -629,6 +647,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -642,6 +661,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -693,6 +713,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -706,6 +727,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -755,6 +777,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -768,6 +791,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -817,6 +841,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -830,6 +855,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -879,6 +905,7 @@ rust_binary(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -892,6 +919,7 @@ rust_binary(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/stream:acyclic_stream",
@@ -948,6 +976,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -964,6 +993,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1063,6 +1093,7 @@ rust_test(
     ] + select({
         "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -1079,6 +1110,7 @@ rust_test(
     ],
         "@rules_rust//rust/platform:aarch64-apple-darwin": [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem-native-contract:acyclic_fs_native_contract",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
