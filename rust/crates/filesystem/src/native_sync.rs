@@ -1,9 +1,18 @@
 //! Native namespace synchronization shared with the Loom model.
 
+mod locks;
+pub(crate) use locks::*;
+
 #[cfg(loom)]
-pub(crate) use loom::{sync::*, thread};
+pub(crate) use loom::{
+    sync::{MutexGuard, mpsc},
+    thread,
+};
 #[cfg(not(loom))]
-pub(crate) use std::{sync::*, thread};
+pub(crate) use std::{
+    sync::{MutexGuard, mpsc},
+    thread,
+};
 
 #[cfg(loom)]
 pub(crate) type RetirementSender = loom::sync::mpsc::Sender<()>;

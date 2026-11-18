@@ -1,6 +1,7 @@
+include!("../../../src/native_mount/shared/view_table/implementation.rs");
+
 mod tests {
-    use crate::native_sync::Arc;
-    use crate::table::*;
+    use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Core {
@@ -87,5 +88,44 @@ mod tests {
         );
         assert_eq!(first.len(), 0);
         assert_eq!(second.len(), 0);
+    }
+
+    #[test]
+    fn lease_releases_its_core_before_counting_out() {
+        struct Checked(Arc<Drain>);
+        impl Drop for Checked {
+            fn drop(&mut self) {
+                assert_eq!(
+                    self.0
+                        .state
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .leases,
+                    1,
+                    "core must drop before lease counts out"
+                );
+            }
+        }
+        let drain = Arc::new(Drain::new());
+        drain
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .leases = 1;
+        let lease = ViewLease {
+            core: Arc::new(Checked(Arc::clone(&drain))),
+            _count: LeaseCount {
+                drain: Arc::clone(&drain),
+            },
+        };
+        drop(lease);
+        assert_eq!(
+            drain
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .leases,
+            0
+        );
     }
 }
