@@ -1981,6 +1981,42 @@ async fn a_delayed_collector_never_removes_a_later_version()
     Ok(())
 }
 
+#[tokio::test]
+async fn a_delayed_collector_never_removes_a_reput_retain() -> Result<(), Box<dyn std::error::Error>>
+{
+    let medium = Shared::default();
+    let writer = Store::new(medium.clone()).account(b"account")?;
+    let collector = Store::new(medium.clone()).account(b"account")?;
+    let body = OwnedBytes::from(vec![9; 64]);
+    let digest = Digest::of(&body);
+    writer.put(body.clone(), Vec::new()).await?;
+    collector.collect().await?;
+    collector.collect().await?;
+    // The third pass parks right after removing the old envelope, before its
+    // payload and outbound index keys.
+    let (mut removed, resume) = medium.park("remove", "/e/");
+    let collecting = collector.collect();
+    tokio::pin!(collecting);
+    drive_to_park(collecting.as_mut(), &mut removed).await;
+    // A fresh put and retain publish a new version and its inbound marker
+    // while the old collector is still between the envelope and its cleanup.
+    assert!(matches!(
+        writer.put(body.clone(), Vec::new()).await?,
+        Put::Created { .. }
+    ));
+    let root = RootId::new(*b"root")?;
+    writer.retain(&root, vec![digest]).await?;
+    resume
+        .send(())
+        .expect("parked medium operation remains alive");
+    collecting.await?;
+    // Negative control: cleanup tied to the removed version leaves the new
+    // holder's marker; an unconditional shared-marker removal deletes it.
+    assert_eq!(writer.delete(digest).await?, Delete::Referenced);
+    assert_eq!(writer.head(digest).await?.length, 64);
+    Ok(())
+}
+
 /// Where the first of two equal puts parks while the second runs to
 /// completion: after each of its writes; it reads nothing.
 const EQUAL_PUT_STALLS: [(&str, &str, usize); 2] = [("create", "/e/", 0), ("create", "/p/", 0)];
