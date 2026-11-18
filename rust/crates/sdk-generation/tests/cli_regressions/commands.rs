@@ -235,11 +235,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             };
             root = parent;
         }
-        if root.join(declared_manifest) != manifest_path
-            || root
-                .ancestors()
-                .any(|ancestor| ancestor.join(".cargo").exists())
-        {
+        if root.join(declared_manifest) != manifest_path {
             continue;
         }
         let mut expected_args = vec![
@@ -285,6 +281,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             .get_args()
             .map(OsStr::to_str)
             .eq(expected_args.into_iter().map(Some))
+        {
+            continue;
+        }
+        if root
+            .ancestors()
+            .any(|ancestor| ancestor.join(".cargo").exists())
         {
             continue;
         }
