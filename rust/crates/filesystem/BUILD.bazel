@@ -964,7 +964,6 @@ rust_test(
         "tests/support/provider_receipt.rs",
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
-        "tests/transaction_create_batch.rs",
         "tests/windows_ntfs_perf.rs",
     ],
     compile_data = [
@@ -2105,6 +2104,7 @@ rust_test(
         "tests/support/transaction.rs",
         "tests/support/unbounded.rs",
         "tests/support/workspace.rs",
+        "tests/transaction_create_batch.rs",
         "tests/workspace_transactions.rs",
         "tests/workspace_transactions/workspace/mod.rs",
         "tests/workspace_transactions/workspace/tests/mod.rs",

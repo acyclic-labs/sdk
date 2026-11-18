@@ -2,6 +2,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::fixtures::commit;
 use acyclic_fs_format::metadata::FileMetadata;
 use {
     acyclic_fs::{
@@ -28,30 +29,6 @@ async fn begin(workspace: &MemoryWorkspace) -> MemoryTransaction {
         WorkBudget::UNBOUNDED,
         &CancellationToken::new()
     ))
-}
-
-async fn commit(
-    transaction: &mut MemoryTransaction,
-) -> Result<
-    TransactionCommit<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
-    WorkspaceError,
-> {
-    transaction
-        .commit::<WorkspaceError, _, _>(
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(acyclic_fs_work::performance::OperationReceipt {
-                    value: (),
-                    work: Default::default(),
-                }))
-            },
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
 }
 
 async fn publish(transaction: &mut MemoryTransaction) {
