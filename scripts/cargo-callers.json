@@ -33,7 +33,6 @@
   "scripts/bazel-build-files.mjs",
   "scripts/build-host-fixture.sh",
   "scripts/build-native-family.mjs",
-  "scripts/build-product.mjs",
   "scripts/build-wasm.mjs",
   "scripts/check-dev-build.mjs",
   "scripts/check-feature-matrix.mjs",

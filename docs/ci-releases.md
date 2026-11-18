@@ -61,7 +61,7 @@ fail instead of replacing a version. Existing registry integrity and installatio
 checks remain part of the release.
 
 The same platform builds also produce standalone GraphCoder executables through
-`node scripts/build-product.mjs graphcoder`. Assembly admits the complete target
+`bazel build -c opt //plugin:graphcoder`. Assembly admits the complete target
 inventory using the shared native-image verifier. The binaries and version-pinned
 shell/PowerShell installers join the existing attested `SHA256SUMS` and GitHub
 publisher; the SBOM includes GraphCoder's dependency closure. Native Linux, macOS

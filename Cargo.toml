@@ -376,8 +376,7 @@ opt-level = 3
 [profile.release]
 incremental = true
 
-# The shipped executable, built by scripts/build-product.mjs. Release stays
-# fast to build for development.
+# Distribution settings for Cargo consumers.
 [profile.dist]
 inherits = "release"
 lto = "fat"

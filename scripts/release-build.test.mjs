@@ -7,9 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { releaseBuild } from "./release-build.mjs";
 
-const root = fileURLToPath(new URL("../", import.meta.url));
 const adapter = fileURLToPath(new URL("./release-build.mjs", import.meta.url));
-const product = fileURLToPath(new URL("./build-product.mjs", import.meta.url));
 const fixture = fileURLToPath(new URL("./tests/fixtures/release-build/artifact-build.mjs", import.meta.url));
 
 function workspace(t) {
@@ -82,43 +80,6 @@ for (const outcome of [0, 7, "throw", "missing-module"]) {
           assert.equal(actualEnv[name], env[name]);
         }
       }
-    });
-  }
-}
-
-test("product cache invocation preserves compiler settings and dist output", t => {
-  for (const productName of ["acyclic", "graphcoder"]) {
-  const dir = workspace(t);
-  const env = { ...cacheEnv(dir, 0), CARGO: "fixture-cargo",
-    CARGO_TARGET_DIR: join(dir, "target"), CARGO_BUILD_TARGET: "x86_64-pc-windows-msvc",
-    RUSTFLAGS: "", CARGO_ENCODED_RUSTFLAGS: "" };
-  const result = run(product, [productName], { cwd: dir, env });
-  assert.equal(result.status, 0, result.stderr);
-  assertTerminal(result.stderr, productName === "acyclic" ? "product" : productName, "PASS");
-  const invocation = JSON.parse(readFileSync(env.RELEASE_TEST_INVOCATION, "utf8"));
-  assert.equal(invocation.command, env.CARGO);
-  assert.equal(invocation.cwd, resolve(root));
-  assert.equal(invocation.env.CARGO_TARGET_DIR, env.CARGO_TARGET_DIR);
-  assert.equal(invocation.context, env.SDK_RELEASE_BUILD_CONTEXT);
-  assert.deepEqual(invocation.args.slice(0, 8), ["build", "--locked", "--profile", "dist", "-p", "acyclic-plugin", "--bin", productName]);
-  assert.ok(invocation.args.includes("--timings"));
-  assert.deepEqual(invocation.args.slice(-2), ["--target", env.CARGO_BUILD_TARGET]);
-  assert.equal(invocation.output, join(env.CARGO_TARGET_DIR, env.CARGO_BUILD_TARGET, "dist", `${productName}.exe`));
-  }
-});
-
-for (const flag of ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]) {
-  for (const cached of [false, true]) {
-    test(`product rejects ${flag} with one FAIL result (cache ${cached})`, t => {
-      const dir = workspace(t);
-      const env = { ...cacheEnv(dir, 0), RUSTFLAGS: "", CARGO_ENCODED_RUSTFLAGS: "", [flag]: "--cfg=unowned",
-        CARGO: join(dir, "compiler-must-not-run") };
-      if (!cached) delete env.SDK_RELEASE_BUILD_CONTEXT;
-      const result = run(product, [], { cwd: dir, env });
-      assert.equal(result.status, 1, result.stderr);
-      assert.match(result.stderr, /build-product owns Rust flags/);
-      assertTerminal(result.stderr, "product", "FAIL");
-      assert.equal(existsSync(env.RELEASE_TEST_INVOCATION), false);
     });
   }
 }
