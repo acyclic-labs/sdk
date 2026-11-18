@@ -562,7 +562,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     config.model = None;
     config.models = Some((models, None));
     let harness = Arc::new(super::open_scripted(config).await?);
-    let executable = acyclic_native_runtime::platform_shell()
+    let executable = acyclic_executable_search::platform_shell()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mut command = vec![
         executable

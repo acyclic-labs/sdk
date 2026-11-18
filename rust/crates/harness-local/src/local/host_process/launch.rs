@@ -218,7 +218,7 @@ pub fn child(
     session: Option<NativeSession<'_>>,
 ) -> Result<ProcessCommand> {
     let arguments = child_arguments(host, args, cwd, session)?;
-    let resolved = acyclic_native_runtime::host_command(program(host)?).map_err(storage)?;
+    let resolved = acyclic_executable_search::host_command(program(host)?).map_err(storage)?;
     let mut command = ProcessCommand::new(resolved.get_program());
     command.args(resolved.get_args());
     command

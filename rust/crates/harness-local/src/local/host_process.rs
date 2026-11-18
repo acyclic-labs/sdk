@@ -55,7 +55,7 @@ pub fn run_root_session(
             .ok_or_else(|| Error::Invalid("native root task absent".into()))?,
     )
     .map_err(storage)?;
-    let resolved = acyclic_native_runtime::host_command(program).map_err(storage)?;
+    let resolved = acyclic_executable_search::host_command(program).map_err(storage)?;
     let host_args = serde_json::to_string(arguments).map_err(storage)?;
     let environment = admitted_environment(&location)?;
     let status = if prompt.is_some() {

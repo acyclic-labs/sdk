@@ -1,6 +1,6 @@
 //! Installation uses native host configuration and never changes its sandbox.
 use super::*;
-use acyclic_native_runtime::host_command;
+use acyclic_executable_search::host_command;
 use acyclic_plugin::marketplace;
 use std::fs;
 

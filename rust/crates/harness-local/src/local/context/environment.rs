@@ -27,7 +27,7 @@ pub(super) fn gather(
     }
     if let (Some(cwd), crate::native_environment::PlatformPolicy::Native) = (cwd, platform) {
         let environment =
-            crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)
+            crate::native_environment::tool_environment(acyclic_executable_search::platform_shell)
                 .map_err(crate::Error::process_io)?;
         let search = acyclic_executable_search::ExecutableSearch::from_environment(cwd, |name| {
             environment.get(name).map(std::ffi::OsString::from)

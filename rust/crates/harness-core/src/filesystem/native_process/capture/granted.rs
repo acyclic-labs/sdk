@@ -122,9 +122,9 @@ fn syscall_denials_return_to_guest() -> std::result::Result<(), Box<dyn std::err
         .build()?;
     let root = tempfile::tempdir()?;
     let executable = std::env::current_exe()?;
-    let shell = acyclic_native_runtime::platform_shell()?;
+    let shell = acyclic_executable_search::platform_shell()?;
     let mut environment =
-        crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)?;
+        crate::native_environment::tool_environment(acyclic_executable_search::platform_shell)?;
     environment.insert("ACYCLIC_GC171_PROBE".into(), "1".into());
     let grant = ExecutionGrant::workspace_default(
         root.path(),

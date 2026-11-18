@@ -181,7 +181,7 @@ impl LoadedProgram {
             }
             None => {
                 let executable =
-                    acyclic_native_runtime::platform_shell().map_err(Error::process_io)?;
+                    acyclic_executable_search::platform_shell().map_err(Error::process_io)?;
                 let executable = executable.to_str().ok_or_else(|| {
                     Error::Unsupported("program shell path is not Unicode".into())
                 })?;

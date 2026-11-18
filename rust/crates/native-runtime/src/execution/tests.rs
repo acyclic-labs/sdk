@@ -58,8 +58,14 @@ fn sandbox_policy() {
                 .env_clear()
                 .env("ACYCLIC_POLICY_OUTSIDE", &outside)
                 .env("ACYCLIC_POLICY_VOLUME", &volume)
-                .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
-                .env("SHELL", crate::platform_shell().unwrap())
+                .env(
+                    "ACYCLIC_POLICY_SHELL",
+                    acyclic_executable_search::platform_shell().unwrap(),
+                )
+                .env(
+                    "SHELL",
+                    acyclic_executable_search::platform_shell().unwrap(),
+                )
                 .env("HOME", &workspace)
                 .env(
                     "ACYCLIC_POLICY_DESTINATION",
@@ -267,7 +273,10 @@ fn sandbox_userland_commands() {
         .current_dir(&workspace)
         .env_clear()
         .env("ACYCLIC_USERLAND_PROBE", "1")
-        .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
+        .env(
+            "ACYCLIC_POLICY_SHELL",
+            acyclic_executable_search::platform_shell().unwrap(),
+        )
         .env("HOME", &workspace)
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
@@ -1654,7 +1663,8 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     };
     for input in [true, false] {
         let command = |file_stdio: bool| {
-            let mut command = ProcessCommand::new(crate::platform_shell().unwrap());
+            let mut command =
+                ProcessCommand::new(acyclic_executable_search::platform_shell().unwrap());
             command
                 .args(acyclic_host_platform::shell::PLATFORM.arguments)
                 .arg(match (cfg!(windows), input) {
@@ -2078,7 +2088,7 @@ fn numbered_cat_preserves_file_and_pipeline_content() -> io::Result<()> {
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("sample"), "GC95_CONTENT\n")?;
     let grant = ExecutionGrant::workspace_default(root.path(), ExecutionAccess::ReadOnly, [], [])?;
-    let shell = crate::platform_shell()?;
+    let shell = acyclic_executable_search::platform_shell()?;
     for source in [
         "cat -n sample",
         "cat -A sample",
@@ -2151,7 +2161,7 @@ fn directory_inspection_handles_unavailable_local_sockets() -> io::Result<()> {
         [],
         [executable.clone()],
     )?;
-    let shell = crate::platform_shell()?;
+    let shell = acyclic_executable_search::platform_shell()?;
     let custody = crate::ProcessCustody::open(&root.path().join("custody"))?;
     let path = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")])
         .map_err(io::Error::other)?;
