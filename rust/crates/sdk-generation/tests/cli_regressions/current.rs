@@ -462,26 +462,20 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
     )
     .unwrap();
+    let entries = availability["entries"].as_array().unwrap();
     for (path, expected) in [
         ("demo::FeatureOnly", 2),
         ("demo::base_only", 3),
         ("demo::default_only", 2),
     ] {
-        let entry = availability["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["path"] == path)
-            .unwrap();
+        let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(
             entry["profiles"].as_array().unwrap().len(),
             expected,
             "the compilation reuse key must preserve every cfg feature: {path}"
         );
     }
-    let feature_entry = availability["entries"]
-        .as_array()
-        .unwrap()
+    let feature_entry = entries
         .iter()
         .find(|entry| entry["path"] == "demo::FeatureOnly")
         .expect("feature-only item must retain a sidecar entry");
@@ -496,9 +490,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         })
         .expect("FeatureOnly must be attributed to the extra profile");
 
-    let variant_entries = availability["entries"]
-        .as_array()
-        .unwrap()
+    let variant_entries = entries
         .iter()
         .filter(|entry| entry["path"] == "demo::overloaded")
         .collect::<Vec<_>>();

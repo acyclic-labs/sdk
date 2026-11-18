@@ -640,11 +640,13 @@ fn assert_executed_profiles(
             .with_extension("source.sha256")
             .is_file());
     }
+    let expected_counts = expected.iter().copied().collect::<BTreeMap<_, _>>();
     assert_eq!(
-        rows.len(),
-        expected.iter().map(|(_, count)| count).sum::<usize>()
+        expected_counts.len(),
+        expected.len(),
+        "duplicate expected owner"
     );
-    assert_eq!(counts, expected.iter().copied().collect::<BTreeMap<_, _>>());
+    assert_eq!(counts, expected_counts);
     rows
 }
 
