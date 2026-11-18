@@ -1,10 +1,12 @@
 """Qualify actual authorization guard mutations against existing public properties."""
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[5]
+RUN_ENV = {**os.environ, "ACYCLIC_TEST_SOURCE_ROOT": str(ROOT)}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("mode", choices=["request", "dns", "socket-work"])
 MODE = parser.parse_args().mode
@@ -16,17 +18,16 @@ PROPERTY = ("noncanonical_resources_and_audiences_never_match" if MODE == "reque
 CONTROLS = ([("request_resource_guard", "NonCanonicalResource"),
              ("request_audience_guard", "NonCanonicalAudience")] if MODE == "request"
             else [("dns_numeric_guard", "!admit(name)")])
-COMMAND = ["cargo", "test", "--locked", "--all-features", "-p", "acyclic-auth",
-           "--test", "main", f"request_hardening::{PROPERTY}",
-           "--", "--exact", "--nocapture"]
+COMMAND = ["bazel", "run", "//rust/crates/auth:main_cases", "--",
+           f"request_hardening::{PROPERTY}", "--exact", "--nocapture"]
 PATHS = [SOURCE, TEST, HELPER]
 if MODE == "socket-work":
     TEST = SOURCE.parent / "socket/tests.rs"
     PATHS = [SOURCE, TEST]
     CONTROLS = [("socket_validation_work", "left: 32")]
-    COMMAND = ["cargo", "test", "--locked", "--all-features", "-p", "acyclic-auth",
-               "--lib", "socket::tests::destination_validation_is_once_per_grant_not_once_per_rule",
-               "--", "--exact", "--nocapture"]
+    COMMAND = ["bazel", "run", "//rust/crates/auth:acyclic_auth_test_cases", "--",
+               "socket::tests::destination_validation_is_once_per_grant_not_once_per_rule",
+               "--exact", "--nocapture"]
 
 
 def refuse(step):
@@ -35,7 +36,7 @@ def refuse(step):
 
 
 def run(label):
-    result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(COMMAND, cwd=ROOT, env=RUN_ENV, capture_output=True, text=True)
     output = result.stdout + result.stderr
     print(label, "exit", result.returncode, output, flush=True)
     return result.returncode, output

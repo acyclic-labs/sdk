@@ -16,7 +16,10 @@ observer_hash = hashlib.sha256(observer.read_bytes()).hexdigest()
 target = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", "target"))
 target.mkdir(parents=True, exist_ok=True)
 evidence = pathlib.Path(tempfile.mkdtemp(prefix="continuation-index-", dir=target))
-command = ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib", "--all-features", "executor::tests::request_continuation::one_stock_turn_preserves_admitted_continuations_across_step_limits", "--", "--exact", "--nocapture"]
+command = ["bazel", "run", "//rust/crates/harness-core:acyclic_harness_core_test_cases", "--",
+           "executor::tests::request_continuation::one_stock_turn_preserves_admitted_continuations_across_step_limits",
+           "--exact", "--nocapture"]
+run_env = {**os.environ, "ACYCLIC_TEST_SOURCE_ROOT": str(root)}
 receipt = {"source": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "evidence": str(evidence), "phases": [], "observer_sha256": observer_hash, "scope": "Actual ordinary StockExecutor and authenticated FilesystemExecutionJournal: six original live step-limit cases and five restored executions must request no public replay. Existing same-journal one-record replay must emit one replay request and one decoded record. Source control disables the existing indexed selection in place; no alternate journal, provider, constructor, input or oracle."}
 
 def require(ok, step):
@@ -29,7 +32,7 @@ def run(label, expected):
     print("PHASE " + label + " " + shlex.join(command), flush=True)
     start = time.monotonic()
     with output_path.open("w") as output:
-        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        child = subprocess.Popen(command, env=run_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for line in child.stdout:
             output.write(line)
             print(line, end="", flush=True)

@@ -1,6 +1,7 @@
 """Check the real native cleanup oracle against late status publication."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -23,14 +24,17 @@ def main():
         fence,
         b"        recorded?;\n        if let Ok(status) = waited { *retained = status; }\n        match waited {",
     )
-    command = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--all-features", "--lib", "process_tree::tests::cleanup_recording_failure_retains_the_observed_terminal", "--", "--exact", "--nocapture"]
+    command = ["bazel", "run", "//rust/crates/native-runtime:acyclic_native_runtime_test_cases", "--",
+               "process_tree::tests::cleanup_recording_failure_retains_the_observed_terminal",
+               "--exact", "--nocapture"]
+    run_env = {**os.environ, "ACYCLIC_TEST_SOURCE_ROOT": str(root)}
     oracle = root / "rust/crates/native-runtime/src/process_tree/tests.rs"
     oracle_hash = hashlib.sha256(oracle.read_bytes()).hexdigest()
     report = {"source_sha256": hashlib.sha256(original).hexdigest(), "mutant_sha256": hashlib.sha256(mutant).hexdigest(), "oracle_sha256": oracle_hash, "commands": []}
     try:
         for step, contents in [("late-publication-negative", mutant), ("original-positive", original)]:
             source.write_bytes(contents)
-            result = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            result = subprocess.run(command, cwd=root, env=run_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             log = output / (step + ".log")
             log.write_text(result.stdout)
             print(result.stdout, flush=True)
