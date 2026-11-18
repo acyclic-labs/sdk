@@ -100,32 +100,36 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
             }
         }
     }
-    let mut files = Vec::new();
-    receipts(&original.rustdoc, &mut files);
-    let mut changed = BTreeMap::new();
-    for original_file in files {
-        let original_bytes = fs::read(&original_file).unwrap();
-        let mut value: Value = serde_json::from_slice(&original_bytes).unwrap();
-        if value.get("format_version").is_none() {
-            continue;
+    let mut changed = sdk_docs::with_rustdoc_cache(|| {
+        let mut files = Vec::new();
+        receipts(&original.rustdoc, &mut files);
+        let mut changed = BTreeMap::new();
+        for original_file in files {
+            let original_bytes = sdk_docs::read_rustdoc(&original_file).unwrap();
+            let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
+            if value.get("format_version").is_none() {
+                continue;
+            }
+            let relative = original_file.strip_prefix(&original.output).unwrap();
+            let file = relocated.output.join(relative);
+            let logical = rustdoc_digest(&original_file, &original.root).unwrap();
+            let mut value = (*value).clone();
+            rebase(&mut value, original, relocated);
+            let rebased_bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(&file, &rebased_bytes).unwrap();
+            assert_eq!(
+                rustdoc_digest(&file, &relocated.root).unwrap(),
+                logical,
+                "rebasing every physical receipt must preserve its logical digest: {}",
+                file.display()
+            );
+            changed.insert(
+                relative.to_str().unwrap().replace('\\', "/"),
+                (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
+            );
         }
-        let relative = original_file.strip_prefix(&original.output).unwrap();
-        let file = relocated.output.join(relative);
-        let logical = rustdoc_digest(&original_file, &original.root).unwrap();
-        rebase(&mut value, original, relocated);
-        let rebased_bytes = serde_json::to_vec(&value).unwrap();
-        fs::write(&file, &rebased_bytes).unwrap();
-        assert_eq!(
-            rustdoc_digest(&file, &relocated.root).unwrap(),
-            logical,
-            "rebasing every physical receipt must preserve its logical digest: {}",
-            file.display()
-        );
-        changed.insert(
-            relative.to_str().unwrap().replace('\\', "/"),
-            (hash_bytes(&original_bytes), hash_bytes(&rebased_bytes)),
-        );
-    }
+        changed
+    });
     // Relocation changes physical receipt bytes. Re-attest only those verified
     // rewrites; preserve all source identities and logical Rustdoc digests.
     let manifest_path = relocated.output.join("generation-manifest.v1.json");
