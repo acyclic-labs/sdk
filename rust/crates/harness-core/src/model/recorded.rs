@@ -224,6 +224,14 @@ pub trait DivergenceSink: acyclic_stream::ProviderPlatform {
     fn diverged(&self, divergence: Divergence);
 }
 
+#[cfg(any(test, all(feature = "test-support", not(target_arch = "wasm32"))))]
+pub(crate) struct IgnoreDivergence;
+
+#[cfg(any(test, all(feature = "test-support", not(target_arch = "wasm32"))))]
+impl DivergenceSink for IgnoreDivergence {
+    fn diverged(&self, _: Divergence) {}
+}
+
 #[derive(Default)]
 struct Replay {
     cursor: Cursor,
@@ -720,10 +728,6 @@ mod tests {
         }
         Ok(())
     }
-    struct Quiet;
-    impl DivergenceSink for Quiet {
-        fn diverged(&self, _: Divergence) {}
-    }
 
     proptest! {
         #[test]
@@ -777,7 +781,7 @@ mod tests {
     fn trial_admission_shares_source_without_copying_its_population() {
         let live: Arc<dyn ModelProvider> =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-        let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
+        let sink: Arc<dyn DivergenceSink> = Arc::new(IgnoreDivergence);
         for size in [1u64, 2048] {
             let mut source = Recording::default();
             for key in 0..size {
@@ -1031,9 +1035,10 @@ mod tests {
             let live = Arc::new(RecordedModel::new(
                 Arc::new(crate::test_support::ScriptedModelProvider::new([])),
                 Arc::new(source),
-                Arc::new(Quiet),
+                Arc::new(IgnoreDivergence),
             ));
-            let trial = RecordedModel::new(live.clone(), Arc::default(), Arc::new(Quiet));
+            let trial =
+                RecordedModel::new(live.clone(), Arc::default(), Arc::new(IgnoreDivergence));
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut budget = acyclic_fs_work::performance::BOUNDARY_BUDGET;
             budget.allocation_operations = 1;
@@ -1197,7 +1202,7 @@ mod tests {
             RecordedModel::new(
                 Arc::new(crate::test_support::ScriptedModelProvider::new([])),
                 Arc::clone(&source),
-                Arc::new(Quiet),
+                Arc::new(IgnoreDivergence),
             )
         };
         // Measure every returned-object allocation through the actual public entry.
@@ -1622,7 +1627,7 @@ mod tests {
     fn tool_copy_uses_original_work_and_refusal_keeps_the_settlement() -> Result<()> {
         let live: Arc<dyn ModelProvider> =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-        let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
+        let sink: Arc<dyn DivergenceSink> = Arc::new(IgnoreDivergence);
         let operation = OperationId::new();
         let call_id = "0";
         let request = PreparedModelRequest::prepare(
