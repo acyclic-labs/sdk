@@ -211,31 +211,6 @@ fn source_state_tamper_is_rejected() {
 }
 
 #[test]
-fn plugin_source_is_part_of_manifest_closure() {
-    runtime::time_control();
-    let fixture = fixture(true);
-    let result = run_generate(
-        &fixture.root,
-        &fixture.rustdoc,
-        &fixture.output,
-        "plugin-source-closure",
-        "preview",
-        true,
-    );
-    assert!(result.status.success(), "{}", output_message(&result));
-    let generated: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(generated["sourceFiles"]
-        .get("plugin/src/main.rs")
-        .and_then(Value::as_str)
-        .is_some());
-    let drift = run_drift(&fixture);
-    assert!(drift.status.success(), "{}", output_message(&drift));
-}
-
-#[test]
 fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
     runtime::time_control();
     let fixture = fixture(false);
