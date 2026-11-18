@@ -9,7 +9,7 @@ import { captureFollow, type Opened } from "./opened.js";
 import { wasmRecords } from "./wasm-records.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateChildrenPageRequest, validateHeadsRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -54,7 +54,7 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
-    const input = await validateWireRequest({ kind: "heads" as const, ...structuredClone(options) });
+    const input = await validateHeadsRequest(options);
     return this.#project("heads", input);
   }
   async head(path: string): Promise<import("./types.js").PathHead> {

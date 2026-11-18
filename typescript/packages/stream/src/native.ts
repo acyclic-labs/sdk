@@ -10,7 +10,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeWireCommitBytes, validateChildrenPageRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
+import { normalizeWireCommitBytes, validateChildrenPageRequest, validateHeadsRequest, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -151,7 +151,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
-    const input = await validateWireRequest({ kind: "heads" as const, ...structuredClone(options) });
+    const input = await validateHeadsRequest(options);
     const value = await this.operation("heads", this.request(client => client.headsResult(Buffer.from(input))));
     return this.project("heads", value) as import("./types.js").Heads;
   }

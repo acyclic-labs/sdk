@@ -206,6 +206,10 @@ export function validateChildrenPageRequest(request: import("./types.js").Childr
   return validateWireRequest({ kind: "children_page", offset, tailStream, parent, after, hierarchyVersion, limit });
 }
 
+export function validateHeadsRequest(options: import("./types.js").HeadsRequest): Promise<Uint8Array> {
+  return validateWireRequest({ ...options, kind: "heads" });
+}
+
 export async function validateWireRequest(request: WireRequest): Promise<Uint8Array> {
   let input: Uint8Array;
   try {

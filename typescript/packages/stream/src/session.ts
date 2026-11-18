@@ -1,4 +1,4 @@
-import { validateWireRequest, wireRequest, wireWhenAbsent } from "./contract.js";
+import { validateHeadsRequest, validateWireRequest, wireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { projectMemoryResponse, WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -80,8 +80,7 @@ export class StreamSessions {
 
   async heads(options: import("./types.js").HeadsRequest, credential = 0): Promise<import("./types.js").Heads> {
     validateCredentialSlot(credential);
-    const request = { kind: "heads" as const, ...structuredClone(options) };
-    const input = await validateWireRequest(request);
+    const input = await validateHeadsRequest(options);
     try { return projectMemoryResponse("heads", await this.#inner.heads(input, credential)) as import("./types.js").Heads; }
     catch (error) { throw streamError(error, "heads"); }
   }
