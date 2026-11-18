@@ -22,6 +22,15 @@ const FOLLOW: MethodAuth<()> = MethodAuth {
     }],
 };
 
+/// Route used by hosts that open a Follow with a single request envelope.
+pub const HOSTED_FOLLOW_ROUTE: &str = "/acyclic.stream.v1.StreamService/Follow";
+
+/// The hosted transport uses the same Follow admission and delivery scope.
+pub const HOSTED_FOLLOW: MethodAuth<StreamMethod> = MethodAuth {
+    route: HOSTED_FOLLOW_ROUTE,
+    ..FOLLOW.for_method(StreamMethod::Follow, Scope::Follow)
+};
+
 pub(crate) const FOLLOW_ACTION: Action = Action::Streams(StreamsAction::Follow);
 pub(crate) const RESOURCE_FOLLOW_ACTION: Action = Action::Fs(FsAction::List);
 
