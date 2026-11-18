@@ -82,7 +82,8 @@ pub(super) mod codec_fuzz {
             let work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
-            )?;
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
             {
                 let io = PreparationIo::from_native_work(&work)?;

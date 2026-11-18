@@ -18,7 +18,7 @@ fn take_failure(
         .take())
 }
 
-fn native_work(deny_allocation: bool) -> Observation<acyclic_fs::NativeMaterializationWork> {
+fn fuzz_work(deny_allocation: bool) -> Observation<acyclic_fs::NativeMaterializationWork> {
     let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = if deny_allocation {
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
@@ -26,8 +26,16 @@ fn native_work(deny_allocation: bool) -> Observation<acyclic_fs::NativeMateriali
         // Fuzz credit bounds hostile expansion; it changes no product default.
         64 * 1024 * 1024
     };
-    acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
-        .map_err(Into::into)
+    native_work(budget)
+}
+
+fn native_work(
+    budget: acyclic_fs::WorkBudget,
+) -> Observation<acyclic_fs::NativeMaterializationWork> {
+    Ok(
+        acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?,
+    )
 }
 
 /// Programs and reply frames must retire their engine and original credit.
@@ -68,7 +76,7 @@ fn check_arguments(input: &[u8]) -> Observation<Option<serde_json::Value>> {
         Some(&JsonValueSchema::ROOT),
         &mut |_| Ok(()),
     );
-    let work = native_work(false)?;
+    let work = fuzz_work(false)?;
     let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let result = io.decode(
@@ -146,7 +154,7 @@ fn check_arguments(input: &[u8]) -> Observation<Option<serde_json::Value>> {
 }
 
 async fn check_bridge(text: &str) -> Observation<()> {
-    let work = native_work(false)?;
+    let work = fuzz_work(false)?;
     let original = work.live_allocation_bytes()?;
     let allocator = EngineAllocator::new(Some(&work));
     let runtime = rquickjs::AsyncRuntime::new_with_alloc(allocator.clone())?;
@@ -257,7 +265,7 @@ async fn check_programs(
         (Some("export default ("), literal.len(), true),
     ] {
         if let Some(source) = source {
-            let work = native_work(deny_allocation)?;
+            let work = fuzz_work(deny_allocation)?;
             let baseline = work.live_allocation_bytes()?;
             let allocator = EngineAllocator::new(Some(&work));
             let failure = allocator.failure();
@@ -315,7 +323,7 @@ async fn check_progress(definitions: &OwnedBytes) -> Observation<()> {
             false,
         ),
     ] {
-        let work = native_work(false)?;
+        let work = fuzz_work(false)?;
         let baseline = work.live_allocation_bytes()?;
         let allocator = EngineAllocator::new(Some(&work));
         let failure = allocator.failure();
@@ -390,7 +398,7 @@ async fn check_replies(
         "ok": false, "value": &cause.message, "class": cause.class,
     }));
     for kind in 0..3 {
-        let work = native_work(false)?;
+        let work = fuzz_work(false)?;
         let baseline = work.live_allocation_bytes()?;
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         let value = if kind == 0 { &success } else { &refusal };
@@ -498,7 +506,7 @@ async fn canonical_reply(
         "export default ({{ok:true,value:JSON.parse({})}})",
         serde_json::to_string(encoded)?
     );
-    let work = native_work(false)?;
+    let work = fuzz_work(false)?;
     let baseline = work.live_allocation_bytes()?;
     let allocator = EngineAllocator::new(Some(&work));
     let failure = allocator.failure();
@@ -543,7 +551,7 @@ async fn check_settlement(
             if !console && matches!(settlement, Settlement::Console) {
                 continue; // Successful tool replies are checked above.
             }
-            let work = native_work(false)?;
+            let work = fuzz_work(false)?;
             let baseline = work.live_allocation_bytes()?;
             let allocator = EngineAllocator::new(Some(&work));
             let failure = allocator.failure();
@@ -641,7 +649,7 @@ fn check_logs(frame: &str) -> Observation<()> {
         .collect::<Vec<_>>()
         .join(" ");
     for maximum in [0, 64, frame.len() + 64, frame.len() + 128] {
-        let work = native_work(false)?;
+        let work = fuzz_work(false)?;
         let baseline = work.live_allocation_bytes()?;
         {
             let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
@@ -687,7 +695,7 @@ fn check_logs(frame: &str) -> Observation<()> {
     // Exhaust the original owner after initialization. A fitting line must
     // refuse before its argument index or decoded text allocates. An omitted
     // line needs neither allocation and must still make progress.
-    let work = native_work(false)?;
+    let work = fuzz_work(false)?;
     let baseline = work.live_allocation_bytes()?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let held = work.claim(
@@ -711,12 +719,11 @@ fn check_logs(frame: &str) -> Observation<()> {
 async fn repeated_console_logs_release_temporary_decode_credit() -> Observation<()> {
     let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 32 * 1024;
-    let work =
-        acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())?;
+    let work = native_work(budget)?;
     let baseline = work.live_allocation_bytes()?;
     // Keep engine activity on its own finite owner so the collector's live
     // credit can be measured without racing the engine's drop paths.
-    let engine_work = native_work(false)?;
+    let engine_work = fuzz_work(false)?;
     let engine_baseline = engine_work.live_allocation_bytes()?;
     let allocator = EngineAllocator::new(Some(&engine_work));
     let (send, receive) = tokio::sync::mpsc::channel(1);
