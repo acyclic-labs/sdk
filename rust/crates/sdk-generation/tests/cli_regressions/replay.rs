@@ -93,7 +93,7 @@ pub(super) fn relocate_profile_output(original: &Fixture, relocated: &Fixture) {
             let value = sdk_docs::read_rustdoc_json(&original_file).unwrap();
             let relative = original_file.strip_prefix(&original.output).unwrap();
             let file = relocated.output.join(relative);
-            let mut value = (*value).clone();
+            let mut value = std::rc::Rc::unwrap_or_clone(value);
             rebase(&mut value);
             let rebased_bytes = serde_json::to_vec(&value).unwrap();
             fs::write(&file, &rebased_bytes).unwrap();
