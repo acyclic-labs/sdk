@@ -57,21 +57,12 @@ fn copy_tree_inner(source: &Path, destination: &Path, mode: CopyMode) {
 }
 
 pub(super) fn copy_historical_fixture(template: &(Fixture, PathBuf)) -> (Fixture, PathBuf) {
-    let directory = fixture_directory();
-    let root = directory.path().join("source");
-    let output = directory.path().join("output");
-    copy_tree(&template.0.root, &root);
-    copy_tree(&template.0.output, &output);
-    let support = output.join("test-support");
-    (
-        Fixture {
-            directory,
-            root,
-            rustdoc: output.join(".rustdoc"),
-            output,
-        },
-        support,
-    )
+    let fixture = copy_fixture(&template.0);
+    copy_tree(&template.0.output, &fixture.output);
+    let support = fixture
+        .output
+        .join(template.1.strip_prefix(&template.0.output).unwrap());
+    (fixture, support)
 }
 
 pub(super) fn copy_git_objects(source: &Path, destination: &Path) {

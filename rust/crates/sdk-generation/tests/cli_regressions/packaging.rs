@@ -57,21 +57,10 @@ pub(super) fn include_sources(package: &Path) {
 
 pub(super) fn source_fixture() -> (Fixture, PathBuf) {
     let template = shared_package();
-    let directory = fixture_directory();
-    let root = directory.path().join("source");
-    let output = directory.path().join("output");
-    super::replay::copy_tree(&template.0.root, &root);
-    let support = output.join("test-support");
+    let fixture = copy_fixture(&template.0);
+    let support = fixture.output.join("test-support");
     fs::create_dir_all(support.join("registry")).unwrap();
-    (
-        Fixture {
-            directory,
-            root,
-            rustdoc: output.join(".rustdoc"),
-            output,
-        },
-        support,
-    )
+    (fixture, support)
 }
 
 pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) -> PathBuf {
