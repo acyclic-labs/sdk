@@ -31,7 +31,6 @@
   "rust/proofs/agent-path/run.py",
   "rust/proofs/qualify.mjs",
   "scripts/bazel-build-files.mjs",
-  "scripts/bench-client-requests.mjs",
   "scripts/build-host-fixture.sh",
   "scripts/build-native-family.mjs",
   "scripts/build-product.mjs",
