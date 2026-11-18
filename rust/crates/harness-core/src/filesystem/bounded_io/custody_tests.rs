@@ -196,7 +196,7 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         let cancellation = CancellationToken::new();
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes()?;
         let io = PreparationIo::from_native_work(&native)?;
         let before = native.receipt().allocation_operations;
         let mut index = FixedIndex::<u64, OwnedIndexAllocation>::default();
@@ -207,7 +207,7 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         }
         assert_eq!(native.receipt().allocation_operations - before, 5);
         drop(io);
-        assert!(native.live_allocation_bytes() > baseline);
+        assert!(native.live_allocation_bytes()? > baseline);
         let reader = PreparationIo::from_native_work(&native)?;
         cancellation.cancel();
         assert!(matches!(
@@ -221,7 +221,7 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
         assert!(index.retire_if([0; 16], |_| true));
         drop(index);
         assert_eq!(native.receipt(), before);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes()?, baseline);
     }
     Ok(())
 }
