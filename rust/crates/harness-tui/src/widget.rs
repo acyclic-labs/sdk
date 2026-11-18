@@ -1,4 +1,4 @@
-use crate::Editor;
+use crate::{Editor, Viewport};
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::StatefulWidget};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -6,17 +6,6 @@ use unicode_width::UnicodeWidthStr;
 /// A cell count as a terminal coordinate, saturating at the largest one.
 pub(crate) fn cells(count: usize) -> u16 {
     u16::try_from(count).unwrap_or(u16::MAX)
-}
-
-/// Rendering state, including the insertion cursor for host cursor/fade hooks.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Viewport {
-    /// First displayed visual row.
-    pub scroll: usize,
-    /// Horizontal cell offset when wrapping is disabled by configuration.
-    pub horizontal: usize,
-    /// Absolute terminal cursor cell, if visible.
-    pub cursor: Option<(u16, u16)>,
 }
 
 /// Ratatui adapter; the editor itself has no terminal dependency.
@@ -67,18 +56,14 @@ impl StatefulWidget for PromptWidget<'_> {
         }
         buffer.set_style(area, self.style);
         let layout = self.editor.layout(usize::from(area.width));
-        let (row, column) = layout.position(self.editor.cursor());
+        let cursor = state.follow_cursor(
+            &layout,
+            self.editor.cursor(),
+            area.width,
+            area.height,
+            self.editor.settings().wrap,
+        );
         let height = usize::from(area.height);
-        state.horizontal = if self.editor.settings().wrap {
-            0
-        } else {
-            state
-                .horizontal
-                .min(column)
-                .max(column.saturating_sub(usize::from(area.width) - 1))
-        };
-        state.scroll = state.scroll.min(row).max(row.saturating_sub(height - 1));
-        state.scroll = state.scroll.min(layout.rows.len().saturating_sub(height));
         let selection = self.editor.selection();
         for (y, row) in layout
             .rows
@@ -127,14 +112,6 @@ impl StatefulWidget for PromptWidget<'_> {
                 self.placeholder_style,
             );
         }
-        if row >= state.scroll
-            && row < state.scroll + height
-            && column.saturating_sub(state.horizontal) < usize::from(area.width)
-        {
-            state.cursor = Some((
-                area.x + cells(column - state.horizontal),
-                area.y + cells(row - state.scroll),
-            ));
-        }
+        state.cursor = cursor.map(|(x, y)| (area.x + x, area.y + y));
     }
 }

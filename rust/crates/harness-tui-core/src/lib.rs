@@ -12,7 +12,7 @@ mod settings;
 
 pub use editor::{Editor, Motion};
 pub use keymap::{ACTIONS, Action, AppAction, Binding, KEYMAP, keymap_help, named_action};
-pub use layout::{Cell, Layout, Row};
+pub use layout::{Cell, Layout, Row, Viewport};
 pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
 
 #[cfg(not(target_arch = "wasm32"))]
