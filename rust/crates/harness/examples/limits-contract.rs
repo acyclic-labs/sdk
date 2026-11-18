@@ -1,6 +1,6 @@
-#![allow(missing_docs, reason = "contract example binary, not public API")]
+//! Emit the Harness limits contract.
 
-use acyclic_harness::conversation::{Limits, MAX_EXACT_JS_INTEGER, MAX_PORTABLE_COUNT};
+use acyclic_harness_core::conversation::{Limits, MAX_EXACT_JS_INTEGER, MAX_PORTABLE_COUNT};
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "default_max_attachments": MAX_PORTABLE_COUNT,
                 "default_max_messages": MAX_PORTABLE_COUNT,
                 "default_max_render_bytes": defaults.render_bytes,
-                "max_projected_attachments": acyclic_harness::conversation::MAX_PORTABLE_COUNT,
+                "max_projected_attachments": acyclic_harness_core::conversation::MAX_PORTABLE_COUNT,
                 "max_json_bytes": MAX_EXACT_JS_INTEGER,
             },
         })

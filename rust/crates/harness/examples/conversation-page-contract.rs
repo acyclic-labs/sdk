@@ -1,6 +1,6 @@
-#![allow(missing_docs, reason = "contract example binary, not public API")]
+//! Emit the conversation pagination contract.
 
-use acyclic_harness::conversation::{
+use acyclic_harness_core::conversation::{
     DEFAULT_CONVERSATION_PAGE_MESSAGES, MAX_CONVERSATION_PAGE_MESSAGES,
 };
 use serde_json::json;

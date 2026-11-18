@@ -29,6 +29,8 @@ name = "plan-markdown"
 path = "tests/plan_markdown_cases.rs"
 
 [package.metadata.bazel.test-dependencies]
+conversation-page-contract = ["acyclic_harness_core", "serde_json"]
+limits-contract = ["acyclic_harness_core", "serde_json"]
 plan-markdown = ["acyclic_harness_client", "acyclic_test_support", "proptest"]
 
 [[bin]]
