@@ -22,18 +22,38 @@ struct FaultStream {
 }
 
 impl FaultStream {
-    fn fail_operation(&self, error: StreamError) {
-        *self.operation_error.lock().unwrap() = Some(error);
+    fn fail_operation(&self, error: StreamError) -> TestResult {
+        *self
+            .operation_error
+            .lock()
+            .map_err(|_| "operation fault lock poisoned")? = Some(error);
+        Ok(())
     }
 
-    fn take_failure(&self, path: &StreamPath) -> Option<StreamError> {
-        if path.as_str().starts_with("fs/operations/")
-            && let Some(error) = self.operation_error.lock().unwrap().take()
-        {
-            self.failed_paths.lock().unwrap().push(path.clone());
-            return Some(error);
+    fn take_failure(&self, path: &StreamPath) -> Result<Option<StreamError>, StreamError> {
+        if !path.as_str().starts_with("fs/operations/") {
+            return Ok(None);
         }
-        None
+        let error = self
+            .operation_error
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .take();
+        if error.is_some() {
+            self.failed_paths
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .push(path.clone());
+        }
+        Ok(error)
+    }
+
+    fn failure_count(&self) -> Result<usize, &'static str> {
+        let paths = self
+            .failed_paths
+            .lock()
+            .map_err(|_| "failed paths lock poisoned")?;
+        Ok(paths.len())
     }
 }
 
@@ -48,7 +68,7 @@ impl StreamProvider for FaultStream {
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         for path in &request.paths {
-            if let Some(error) = self.take_failure(path) {
+            if let Some(error) = self.take_failure(path)? {
                 return Err(error);
             }
         }
@@ -125,14 +145,13 @@ async fn observe_failure(error: StreamError, expected: Code) -> TestResult {
         workspace: created.workspace,
         operation_id: operation_bytes(1),
     };
-    stream.fail_operation(error.clone());
-    let failure = service
-        .observe(Request::new(request.clone()))
-        .await
-        .unwrap_err();
+    stream.fail_operation(error.clone())?;
+    let Err(failure) = service.observe(Request::new(request.clone())).await else {
+        return Err("injected operation fault was ignored".into());
+    };
     assert_eq!(failure.code(), expected, "{error:?}");
     assert!(failure.message().contains(&error.to_string()));
-    assert_eq!(stream.failed_paths.lock().unwrap().len(), 1);
+    assert_eq!(stream.failure_count()?, 1);
     let retry = service.observe(Request::new(request)).await?.into_inner();
     assert_eq!(retry.state, "completed");
     Ok(())
@@ -200,14 +219,13 @@ async fn join_failure(error: StreamError, expected: Code) -> TestResult {
     };
     // Only the operation-index tail fails; resolving source/target generations
     // above and inside ApplyJoin succeeds before join_target_head is reached.
-    stream.fail_operation(error.clone());
-    let failure = service
-        .apply_join(Request::new(request.clone()))
-        .await
-        .unwrap_err();
+    stream.fail_operation(error.clone())?;
+    let Err(failure) = service.apply_join(Request::new(request.clone())).await else {
+        return Err("injected operation fault was ignored".into());
+    };
     assert_eq!(failure.code(), expected, "{error:?}");
     assert!(failure.message().contains(&error.to_string()));
-    assert_eq!(stream.failed_paths.lock().unwrap().len(), 1);
+    assert_eq!(stream.failure_count()?, 1);
     let retry = service
         .apply_join(Request::new(request))
         .await?
