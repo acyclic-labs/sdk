@@ -228,6 +228,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-format",
+ "acyclic-fs-windows",
  "acyclic-fs-wire",
  "acyclic-fs-work",
  "acyclic-harness-client",
@@ -364,6 +365,7 @@ dependencies = [
  "acyclic-fs-base",
  "acyclic-fs-format",
  "acyclic-fs-native-contract",
+ "acyclic-fs-windows",
  "acyclic-fs-wire",
  "acyclic-fs-work",
  "acyclic-grpc-observability",
@@ -566,6 +568,15 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+]
+
+[[package]]
+name = "acyclic-fs-windows"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-fs-native-contract",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1333,6 +1344,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs",
  "acyclic-fs-format",
+ "acyclic-fs-windows",
  "acyclic-log-frame",
  "acyclic-objects",
  "acyclic-stream",

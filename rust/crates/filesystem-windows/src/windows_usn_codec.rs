@@ -1,5 +1,5 @@
 //! Portable codec for the durable Windows USN checkpoint.
-use crate::NativeRootIdentity;
+use acyclic_fs_native_contract::NativeRootIdentity;
 use thiserror::Error;
 
 const CHECKPOINT_MAGIC: &[u8; 8] = b"ACYUSN\0\x01";
@@ -8,12 +8,32 @@ const CHECKPOINT_BYTES: usize = 40;
 /// Durable conservative USN marker captured before a full authenticated scan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WindowsUsnCheckpoint {
-    pub(super) root_identity: NativeRootIdentity,
-    pub(super) journal_id: u64,
-    pub(super) next_usn: u64,
+    root_identity: NativeRootIdentity,
+    journal_id: u64,
+    next_usn: u64,
 }
 
 impl WindowsUsnCheckpoint {
+    /// Constructs a checkpoint from one held-root journal observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the marker is outside Windows' signed USN domain.
+    pub fn new(
+        root_identity: NativeRootIdentity,
+        journal_id: u64,
+        next_usn: u64,
+    ) -> Result<Self, WindowsUsnError> {
+        if next_usn > i64::MAX as u64 {
+            return Err(WindowsUsnError::InvalidCheckpoint);
+        }
+        Ok(Self {
+            root_identity,
+            journal_id,
+            next_usn,
+        })
+    }
+
     /// Returns the root identity to which this marker is confined.
     #[must_use]
     pub const fn root_identity(self) -> NativeRootIdentity {
@@ -72,14 +92,7 @@ impl WindowsUsnCheckpoint {
                 .get(32..40)
                 .ok_or(WindowsUsnError::InvalidCheckpoint)?,
         );
-        if next_usn > i64::MAX as u64 {
-            return Err(WindowsUsnError::InvalidCheckpoint);
-        }
-        Ok(Self {
-            root_identity: NativeRootIdentity::from_bytes(root),
-            journal_id,
-            next_usn,
-        })
+        Self::new(NativeRootIdentity::from_bytes(root), journal_id, next_usn)
     }
 }
 

@@ -1408,7 +1408,9 @@ pub fn filesystem_codecs(bytes: &[u8]) {
     assert!(acyclic_fs::distributed::state_record::codec_fuzz::check(
         bytes
     ));
-    if let Ok(value) = acyclic_fs::windows_usn_codec::WindowsUsnCheckpoint::from_bytes(bytes) {
+    if let Ok(value) =
+        acyclic_fs_windows::windows_usn_codec::WindowsUsnCheckpoint::from_bytes(bytes)
+    {
         assert_eq!(value.to_bytes().as_slice(), bytes);
     }
     macro_rules! context {

@@ -169,7 +169,7 @@ mod version {
     #[kani::proof]
     #[kani::unwind(41)]
     fn usn_checkpoint_preserves_accepted_bytes_and_refuses_other_versions() {
-        use acyclic_fs::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError};
+        use acyclic_fs_windows::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError};
         let bytes: [u8; 40] = kani::any();
         if let Ok(value) = WindowsUsnCheckpoint::from_bytes(&bytes) {
             assert_eq!(value.to_bytes(), bytes);

@@ -20,7 +20,7 @@ use windows::Win32::Foundation::{ERROR_JOURNAL_NOT_ACTIVE, HANDLE};
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{FSCTL_QUERY_USN_JOURNAL, USN_JOURNAL_DATA_V0};
 
-pub use crate::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError};
+use acyclic_fs_windows::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError};
 
 /// Why a restart cannot skip the canonical authenticated baseline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,11 +61,7 @@ pub fn capture_windows_usn_checkpoint(
     root: &Path,
 ) -> Result<WindowsUsnCheckpoint, WindowsUsnError> {
     let (root_identity, journal) = observe_root(root)?;
-    Ok(WindowsUsnCheckpoint {
-        root_identity,
-        journal_id: journal.journal_id,
-        next_usn: journal.next_usn,
-    })
+    WindowsUsnCheckpoint::new(root_identity, journal.journal_id, journal.next_usn)
 }
 
 /// Proves unchanged restart continuity or requires a baseline.
@@ -88,19 +84,19 @@ fn classify_continuity(
     checkpoint: WindowsUsnCheckpoint,
     journal: &JournalSnapshot,
 ) -> WindowsUsnContinuity {
-    if observed != checkpoint.root_identity {
+    if observed != checkpoint.root_identity() {
         return WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::RootChanged);
     }
-    if journal.journal_id != checkpoint.journal_id {
+    if journal.journal_id != checkpoint.journal_id() {
         return WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::JournalChanged);
     }
-    if checkpoint.next_usn < journal.lowest_valid_usn {
+    if checkpoint.next_usn() < journal.lowest_valid_usn {
         return WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::JournalTruncated);
     }
-    if checkpoint.next_usn > journal.next_usn {
+    if checkpoint.next_usn() > journal.next_usn {
         return WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::MarkerAhead);
     }
-    if checkpoint.next_usn != journal.next_usn {
+    if checkpoint.next_usn() != journal.next_usn {
         return WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::VolumeAdvanced);
     }
     WindowsUsnContinuity::Unchanged
@@ -177,11 +173,7 @@ mod tests {
     #[test]
     fn every_journal_transition_is_total_and_fail_closed() {
         let root = NativeRootIdentity::from_bytes([1; 16]);
-        let checkpoint = WindowsUsnCheckpoint {
-            root_identity: root,
-            journal_id: 2,
-            next_usn: 20,
-        };
+        let checkpoint = WindowsUsnCheckpoint::new(root, 2, 20).unwrap();
         let snapshot = |journal_id, lowest_valid_usn, next_usn| JournalSnapshot {
             journal_id,
             lowest_valid_usn,
@@ -227,11 +219,7 @@ mod tests {
             same_journal in any::<bool>(),
         ) {
             let root = NativeRootIdentity::from_bytes([1; 16]);
-            let checkpoint = WindowsUsnCheckpoint {
-                root_identity: root,
-                journal_id: 2,
-                next_usn: marker,
-            };
+            let checkpoint = WindowsUsnCheckpoint::new(root, 2, marker).unwrap();
             let observed_root = if same_root {
                 root
             } else {

@@ -3188,8 +3188,11 @@ impl NativeWatch {
     #[cfg(target_os = "windows")]
     pub fn accept_windows_usn_baseline(
         &mut self,
-        checkpoint: crate::WindowsUsnCheckpoint,
-    ) -> Result<Result<crate::WindowsUsnContinuity, crate::WindowsUsnError>, NativeWatchError> {
+        checkpoint: acyclic_fs_windows::windows_usn_codec::WindowsUsnCheckpoint,
+    ) -> Result<
+        Result<crate::WindowsUsnContinuity, acyclic_fs_windows::windows_usn_codec::WindowsUsnError>,
+        NativeWatchError,
+    > {
         let mut shared = self
             .shared
             .state

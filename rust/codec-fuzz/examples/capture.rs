@@ -615,7 +615,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     save(
         "filesystem_codecs",
         "usn-checkpoint",
-        &acyclic_fs::windows_usn_codec::seed(),
+        &acyclic_fs_windows::windows_usn_codec::seed(),
         "WindowsUsnCheckpoint::to_bytes",
         &mut manifest,
     )?;

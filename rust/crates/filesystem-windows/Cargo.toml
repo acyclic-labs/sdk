@@ -1,0 +1,20 @@
+[package]
+name = "acyclic-fs-windows"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Windows filesystem adapter contracts"
+
+[dependencies]
+acyclic-auth = { path = "../auth", version = "=0.2.0" }
+acyclic-fs-native-contract = { path = "../filesystem-native-contract", version = "=0.2.0" }
+thiserror.workspace = true
+
+[features]
+test-support = []
+
+[lints]
+workspace = true

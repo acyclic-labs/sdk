@@ -182,16 +182,6 @@ pub(crate) mod test_support;
 pub mod watch;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 mod windows_usn;
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(
-        test,
-        feature = "test-support",
-        all(not(target_arch = "wasm32"), windows)
-    )
-))]
-#[doc(hidden)]
-pub mod windows_usn_codec;
 pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
@@ -424,8 +414,8 @@ pub use watch::{
 };
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 pub use windows_usn::{
-    WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
-    capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
+    WindowsUsnContinuity, WindowsUsnDiscontinuity, capture_windows_usn_checkpoint,
+    validate_windows_usn_checkpoint,
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, ChangedPathEntry, ChangedPaths, DrivenJoinError,
