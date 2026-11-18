@@ -54,14 +54,7 @@ rust_library(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/filesystem:tests/support/native_access.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//plugin:tests/hosts/fixtures/native-completion.json",
-        "//plugin:tests/hosts/fixtures/native/codex.jsonl",
-        "//plugin:tests/hosts/fixtures/native/pi.jsonl",
-        "//rust/crates/harness-core:tests/fixtures/notebook-output.png",
-        "//rust/crates/harness-fuzz:corpus/native_answer/agy-hook-refusal.jsonl",
-        "//rust/crates/harness-fuzz:corpus/native_answer/opencode-incomplete.jsonl",
-    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -403,14 +396,7 @@ rust_library(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/filesystem:tests/support/native_access.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//plugin:tests/hosts/fixtures/native-completion.json",
-        "//plugin:tests/hosts/fixtures/native/codex.jsonl",
-        "//plugin:tests/hosts/fixtures/native/pi.jsonl",
-        "//rust/crates/harness-core:tests/fixtures/notebook-output.png",
-        "//rust/crates/harness-fuzz:corpus/native_answer/agy-hook-refusal.jsonl",
-        "//rust/crates/harness-fuzz:corpus/native_answer/opencode-incomplete.jsonl",
-    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = WASM_FEATURES,
