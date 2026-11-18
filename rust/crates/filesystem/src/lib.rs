@@ -270,9 +270,7 @@ pub use git_compat::{
 pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_fs_native_contract::{
-    MountPath, NativeMountRequest, NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation,
-};
+use acyclic_fs_native_contract::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
     GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,

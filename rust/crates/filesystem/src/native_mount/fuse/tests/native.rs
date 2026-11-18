@@ -449,7 +449,7 @@ pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellati
         .map_err(|(cause, _)| cause)?;
     let prepared = crate::native_mount::prepare_native_mount_start(&work)?;
     let mut session = prepared.start(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id,
             destination: destination.path().to_path_buf(),
@@ -569,7 +569,7 @@ pub(super) fn mount(
     destination: &std::path::Path,
 ) -> Result<crate::NativeMountSession, crate::NativeMountError> {
     crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id,
             destination: destination.to_path_buf(),

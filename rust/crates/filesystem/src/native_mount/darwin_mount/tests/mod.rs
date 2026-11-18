@@ -530,7 +530,7 @@ fn live_mount() -> Result<
     let (source, _, work) = checkout_context(MountPublication::Manual)?;
     let temporary = tempfile::tempdir()?;
     let mount = crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id: source.volume_id()?,
             destination: temporary.path().to_path_buf(),

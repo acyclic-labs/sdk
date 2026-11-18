@@ -410,7 +410,7 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
             warm_namespace: None,
         };
         let mut session = crate::NativeMountSession::new(
-            crate::NativeMountRequest {
+            crate::native_mount::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: crate::VolumeId::new(),
                 destination: Path::new("not-mounted").to_path_buf(),

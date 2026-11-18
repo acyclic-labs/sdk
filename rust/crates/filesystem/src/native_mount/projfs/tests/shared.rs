@@ -24,7 +24,7 @@ fn mount_shared(
     let issued = crate::native_mount::shared_view_destination(None)?;
     let destination = issued.path().to_path_buf();
     let session = crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id: source.volume_id()?,
             destination: destination.clone(),

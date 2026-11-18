@@ -21,7 +21,7 @@ fn macos_explicit_file_fsync_reaches_mount_source() -> Result<(), Box<dyn std::e
     let source = Arc::new(source(FilesystemProfile::Posix)?);
     let temporary = tempfile::tempdir()?;
     let mut mount = crate::mount_native(
-        crate::NativeMountRequest {
+        crate::native_mount::NativeMountRequest {
             mount_id: crate::MountId::new(),
             volume_id: source.volume_id()?,
             destination: temporary.path().to_path_buf(),
