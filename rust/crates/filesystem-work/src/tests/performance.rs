@@ -155,8 +155,10 @@ proptest::proptest! {
                 let wide = if index == 22 {
                     u128::from(a[index].max(b[index]))
                 } else { u128::from(a[index]) + u128::from(b[index]) };
-                overflow |= wide > u128::from(u64::MAX);
-                *field = wide as u64;
+                match u64::try_from(wide) {
+                    Ok(value) => *field = value,
+                    Err(_) => overflow = true,
+                }
             }
             let expected = if overflow { Err(WorkError::Overflow) } else { Ok(sum) };
             proptest::prop_assert_eq!(prior.checked_add(delta), expected,
@@ -181,6 +183,7 @@ proptest::proptest! {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 mod native {
     mod borrowed {
         use super::super::{WorkBudget, WorkCounters, WorkError, counter_fields};
