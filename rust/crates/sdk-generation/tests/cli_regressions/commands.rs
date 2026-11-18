@@ -236,6 +236,22 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 .iter()
                 .map(|flag| flag.as_str().unwrap())
         };
+        let mut prefix = [
+            "rustdoc",
+            "--locked",
+            "--manifest-path",
+            manifest,
+            "--package",
+            package,
+        ]
+        .into_iter()
+        .chain(flags("target_args"))
+        .chain(["--target", target])
+        .chain(flags("cargo_flags"));
+        let mut actual = command.get_args().map(OsStr::to_str);
+        if !prefix.all(|expected| actual.next() == Some(Some(expected))) {
+            continue;
+        }
         let Some(root) = manifest_path
             .ancestors()
             .nth(declared_manifest.components().count())
@@ -254,30 +270,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 serde_json::to_string(lock.to_str().unwrap())?
             ))
         };
-        let expected_args = [
-            "rustdoc",
-            "--locked",
-            "--manifest-path",
-            manifest,
-            "--package",
-            package,
-        ]
-        .into_iter()
-        .chain(flags("target_args"))
-        .chain(["--target", target])
-        .chain(flags("cargo_flags"))
-        .chain(
-            config
-                .as_deref()
-                .into_iter()
-                .flat_map(|value| ["--config", value]),
-        )
-        .chain(["--", "-Z", "unstable-options", "--output-format", "json"]);
-        if !command
-            .get_args()
-            .map(OsStr::to_str)
-            .eq(expected_args.map(Some))
-        {
+        let suffix = config
+            .as_deref()
+            .into_iter()
+            .flat_map(|value| ["--config", value])
+            .chain(["--", "-Z", "unstable-options", "--output-format", "json"]);
+        if !actual.eq(suffix.map(Some)) {
             continue;
         }
         for ancestor in root.ancestors() {
