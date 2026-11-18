@@ -1,5 +1,6 @@
 //! Authenticated gRPC client and account-resolving service adapter.
 use crate::convert;
+use crate::error::invalid;
 use crate::operation::MAX_DEADLINE;
 use crate::{
     Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object, Page, Put,
@@ -541,8 +542,7 @@ type Reply<T> = Result<tonic::Response<T>, tonic::Status>;
 /// Waits until `blobs` applies the request's minimum, bounded by its call
 /// deadline. A minimum the account cannot prove is foreign.
 async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error> {
-    let minimum =
-        revision::requested(metadata).map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+    let minimum = revision::requested(metadata).map_err(|_| invalid())?;
     if minimum.is_empty() {
         return Ok(());
     }

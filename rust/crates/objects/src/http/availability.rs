@@ -35,7 +35,7 @@ impl HttpObjects {
             let url = self
                 .endpoint
                 .join(crate::ObjectsMethod::Availability.http_route())
-                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+                .map_err(|_| invalid())?;
             let response = self
                 .transport
                 .post(url)

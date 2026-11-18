@@ -1,5 +1,5 @@
 //! Content addresses, logical ranges, manifests and the v2 envelope encoding.
-use crate::{Error, wire::ErrorCode};
+use crate::{Error, error::invalid, wire::ErrorCode};
 use sha2::{Digest as _, Sha256};
 
 /// Hashes the logical body in input order, independent of transport framing.
@@ -611,10 +611,6 @@ impl<'a> Reader<'a> {
             Err(corrupt())
         }
     }
-}
-
-pub(crate) fn invalid() -> Error {
-    ErrorCode::InvalidArgument.into()
 }
 
 pub(crate) fn corrupt() -> Error {

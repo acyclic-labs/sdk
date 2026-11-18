@@ -2,7 +2,7 @@
 //! each route through these functions, each paired with the revision its
 //! result carries.
 use crate::convert;
-use crate::error::unavailable;
+use crate::error::{invalid, unavailable};
 use crate::{Blobs, Digest, Error, ObjectsMethod, RootId, wire};
 use acyclic_auth::action::{Action, ObjectsAction};
 use acyclic_stream::Revision;
@@ -426,7 +426,7 @@ pub async fn usage(
 }
 
 fn decode<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
-    T::decode(bytes).map_err(|_| wire::ErrorCode::InvalidArgument.into())
+    T::decode(bytes).map_err(|_| invalid())
 }
 
 /// Serves one [`crate::HTTP_ROUTES`] route from its binary input message,

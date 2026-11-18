@@ -1,5 +1,5 @@
 //! Authenticated blob client for the Protobuf-JSON HTTP gateway.
-use crate::error::unavailable;
+use crate::error::{invalid, unavailable};
 use crate::{
     Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
     RootId, Usage,
@@ -18,8 +18,7 @@ mod availability;
 mod tests;
 
 fn credential_header(token: &str) -> Result<HeaderValue, Error> {
-    acyclic_auth::credential::bearer_header(token)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
+    acyclic_auth::credential::bearer_header(token).map_err(|_| invalid())
 }
 
 /// The canonical JSON success acknowledgement of a batch put, bounded per member:
@@ -155,7 +154,6 @@ impl HttpObjects {
         maximum_response_bytes: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
-        let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
         let endpoint = acyclic_auth::credential::base_endpoint(endpoint).map_err(|_| invalid())?;
         if maximum_response_bytes == Some(0) {
             return Err(invalid());
@@ -215,10 +213,7 @@ impl HttpObjects {
                 .filter(|method| !method.is_streaming_http())
                 .map(crate::ObjectsMethod::http_message_types)
                 .ok_or_else(unavailable)?;
-            let url = self
-                .endpoint
-                .join(route)
-                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+            let url = self.endpoint.join(route).map_err(|_| invalid())?;
             let (authorization, lease) = self.authorization().await?;
             let request = self
                 .transport
