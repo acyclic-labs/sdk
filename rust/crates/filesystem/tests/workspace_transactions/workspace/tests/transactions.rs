@@ -1,9 +1,10 @@
-use acyclic_fs::kernel::{FileKind, FileMetadata};
+use acyclic_fs::kernel::FileKind;
 use acyclic_fs::{
     ByteRange, ForkOptions, Fs, IdempotencyKey, TransactionCommit, TransactionRebase,
     WorkspaceError,
 };
 use acyclic_fs_format::identity::FileId;
+use acyclic_fs_format::metadata::FileMetadata;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;
 

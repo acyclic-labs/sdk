@@ -850,7 +850,7 @@ mod tests {
                         file_id: None,
                         path,
                         bytes: bytes::Bytes::from_static(b"advanced").into(),
-                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                        metadata: acyclic_fs_format::metadata::FileMetadata::default(),
                     },
                     acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancellation,

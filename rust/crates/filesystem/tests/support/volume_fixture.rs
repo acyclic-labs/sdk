@@ -1,4 +1,3 @@
-use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
@@ -6,6 +5,7 @@ use acyclic_fs::{
     VolumeConfig,
 };
 use acyclic_fs_format::identity::{FileId, OperationId};
+use acyclic_fs_format::metadata::FileMetadata;
 use acyclic_fs_work::performance::OperationFailure;
 use acyclic_stream::OwnedBytes;
 

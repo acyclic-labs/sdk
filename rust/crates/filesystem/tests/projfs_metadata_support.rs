@@ -1,8 +1,8 @@
-use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
 };
+use acyclic_fs_format::metadata::FileMetadata;
 use bytes::Bytes;
 use std::sync::Arc;
 use {

@@ -1,13 +1,16 @@
-use acyclic_fs::kernel::{
-    CanonicalDecodeError, Child, DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord,
-    FileTablePage, GenerationRoot, MergeGenerationOutcome, MergeGenerationRequest, MetadataField,
-    encode_file_metadata, encode_file_table_page, encode_generation_root, file_metadata_id,
-    file_table_page_id, merge_generation_async,
-};
 use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use {
+    acyclic_fs::kernel::{
+        CanonicalDecodeError, Child, DecodeLimits, FileKind, FilePayload, FileRecord,
+        FileTablePage, GenerationRoot, MergeGenerationOutcome, MergeGenerationRequest,
+        encode_file_metadata, encode_file_table_page, encode_generation_root, file_metadata_id,
+        file_table_page_id, merge_generation_async,
+    },
+    acyclic_fs_format::metadata::{FileMetadata, MetadataField},
+};
 use {
     acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, LogicalObjectStore},
     acyclic_fs_format::identity::{FileId, VolumeId},

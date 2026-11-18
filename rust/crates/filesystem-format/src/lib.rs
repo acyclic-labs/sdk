@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 pub mod identity;
+pub mod metadata;
 pub mod object_reference;
 
 #[cfg(test)]

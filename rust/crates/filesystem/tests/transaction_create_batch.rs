@@ -2,7 +2,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use acyclic_fs::kernel::FileMetadata;
+use acyclic_fs_format::metadata::FileMetadata;
 use {
     acyclic_fs::{
         CancellationToken, FsError, IdempotencyKey, Transaction, TransactionCommit, Workspace,

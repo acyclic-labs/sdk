@@ -305,8 +305,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CopiedWorkspace for Copy<A, O>
                             .map_err(|e| Error::from(e.error))?;
                     }
                     Entry::File(bytes, mode) => {
-                        let metadata = acyclic_fs::kernel::FileMetadata {
-                            posix_mode: acyclic_fs::kernel::MetadataField::Value(mode),
+                        let metadata = acyclic_fs_format::metadata::FileMetadata {
+                            posix_mode: acyclic_fs_format::metadata::MetadataField::Value(mode),
                             ..Default::default()
                         };
                         transaction

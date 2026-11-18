@@ -78,7 +78,7 @@ impl Fixture {
                         file_id: None,
                         path,
                         bytes: bytes::Bytes::copy_from_slice(bytes).into(),
-                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                        metadata: acyclic_fs_format::metadata::FileMetadata::default(),
                     },
                     acyclic_fs_work::performance::WorkBudget::UNBOUNDED,
                     &cancel,

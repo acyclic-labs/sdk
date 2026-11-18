@@ -83,12 +83,6 @@ mod write;
 
 use super::{IndexedDbObjectStore, OpfsAcceleratedObjectStore};
 use acyclic_fs::compat_wire;
-use acyclic_fs::kernel::{
-    AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
-    FileMetadata, FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding,
-    NamespacePath, RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata,
-    encode_file_metadata,
-};
 use acyclic_fs::model::{
     AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeConfigError,
@@ -102,6 +96,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
+use {
+    acyclic_fs::kernel::{
+        AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
+        FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding, NamespacePath,
+        RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata, encode_file_metadata,
+    },
+    acyclic_fs_format::metadata::FileMetadata,
+};
 use {
     acyclic_fs::{
         ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,

@@ -1,11 +1,14 @@
 //! Cold-process native operations must use the production library graph.
 //! Unit-test accounting initializes IO and cannot establish this precondition.
 
-use acyclic_fs::kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath};
 use acyclic_fs::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode,
 };
 use std::path::Path;
+use {
+    acyclic_fs::kernel::{LogicalName, NameEncoding, NamespacePath},
+    acyclic_fs_format::metadata::FileMetadata,
+};
 use {
     acyclic_fs::{
         AuthoredMutation, CancellationToken, CaptureOptions, CapturePolicy, Fs,

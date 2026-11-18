@@ -148,7 +148,7 @@ async fn unchanged_range_case(
                 .await?;
         }
         RangeMutation::Metadata => {
-            use acyclic_fs::kernel::{FileMetadata, MetadataField};
+            use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
             let before = unbounded!(original, stat("/entry"))?;
             let mode = before.metadata.posix_mode.unwrap_or(0o100_644) ^ 0o111;
             let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;

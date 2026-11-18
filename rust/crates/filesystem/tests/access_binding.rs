@@ -1,7 +1,8 @@
 use super::*;
 use {
-    acyclic_fs::{GenerationId, kernel::MetadataField},
+    acyclic_fs::GenerationId,
     acyclic_fs_format::identity::Digest,
+    acyclic_fs_format::metadata::MetadataField,
     acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
 };
 
