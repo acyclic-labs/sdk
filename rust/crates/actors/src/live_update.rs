@@ -18,7 +18,8 @@ mod tests;
 
 use acyclic_actors_guest_wire::compatibility::PublicationUpload;
 pub use acyclic_actors_guest_wire::compatibility::{
-    Adapter, CallEnvelope, CompatibilityManifest, HandoffRequirements, PeerRange, RpcSchema, Schema,
+    Adapter, CallEnvelope, CompatibilityManifest, HandoffRequirements, PeerRange, RpcSchema,
+    Schema, decode_envelope,
 };
 pub use acyclic_actors_guest_wire::live_selection::{
     Artifact, CallPair, ChangeKind, DeploymentId, Error, Fraction, GuardDecision, POLICY_FILE, Pin,
@@ -242,13 +243,6 @@ pub fn message_envelope(
         .get(index)
         .ok_or(Error::Invalid("message headers"))?;
     decode_envelope(&attribute.value).map(Some)
-}
-
-/// Admit the original call's structural scope before retaining its provenance.
-pub fn decode_envelope(bytes: &[u8]) -> Result<CallEnvelope, Error> {
-    let envelope: CallEnvelope = decode(bytes)?;
-    envelope.validate()?;
-    Ok(envelope)
 }
 
 /// A reference into the existing admitted journal.

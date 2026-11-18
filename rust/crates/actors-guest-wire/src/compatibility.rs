@@ -4,8 +4,8 @@ use crate::{
     Checkpoint, CodecIdentity,
     live_selection::{
         Artifact, CallPair, ChangeKind, DeploymentId, Error, Fraction, GuardDecision, Pin,
-        RolloutPolicy, RolloutStatus, Selection, SelectionChange, Split, Version, decimal, encode,
-        optional_decimal,
+        RolloutPolicy, RolloutStatus, Selection, SelectionChange, Split, Version, decimal, decode,
+        encode, optional_decimal,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -175,6 +175,13 @@ impl CallEnvelope {
         self.deployment.validate()?;
         self.pin.validate(&self.deployment)
     }
+}
+
+/// Admit the original call's structural scope before retaining its provenance.
+pub fn decode_envelope(bytes: &[u8]) -> Result<CallEnvelope, Error> {
+    let envelope: CallEnvelope = decode(bytes)?;
+    envelope.validate()?;
+    Ok(envelope)
 }
 
 /// Self-contained TypeScript JSON declarations, emitted by the existing Actors
