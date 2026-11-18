@@ -38,6 +38,10 @@ path = "tests/main.rs"
 name = "computed_ui_records"
 path = "tests/computed_ui_records.rs"
 
+[[test]]
+name = "contract_error_cases"
+path = "tests/contract_error_cases.rs"
+
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
