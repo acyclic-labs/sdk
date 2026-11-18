@@ -128,29 +128,26 @@ fn historical_defaults_cover_features() {
 fn historical_docs_rs_policy_is_required_and_validated() {
     let mut metadata = (*metadata()).clone();
     let targets = BTreeSet::from(["host".into()]);
-    metadata.packages[0].metadata =
-        serde_json::json!({"docs":{"rs":{"all-features":true,"no-default-features":true}}});
+    let mut plan = |policy: serde_json::Value| {
+        metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":policy}});
+        historical_profiles_for_package(&metadata, "feature-rich", "host", &targets)
+    };
     let profiles =
-        historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).unwrap();
+        plan(serde_json::json!({"all-features":true,"no-default-features":true})).unwrap();
     assert!(profiles
         .iter()
         .any(|profile| profile.default_features && profile.features.is_empty()));
     assert!(profiles.iter().any(|profile| !profile.default_features
         && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
-    metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":{"features":["absent"]}}});
     assert!(matches!(
-        historical_profiles_for_package(&metadata, "feature-rich", "host", &targets),
+        plan(serde_json::json!({"features":["absent"]})),
         Err(ProfileError::InvalidFeature { .. })
     ));
     for policy in [
         serde_json::json!({"all-features":"true"}),
         serde_json::json!({"rustdoc-args":["--cfg","pretend"]}),
     ] {
-        metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":policy}});
-        assert!(matches!(
-            historical_profiles_for_package(&metadata, "feature-rich", "host", &targets),
-            Err(ProfileError::InvalidRustdoc(_))
-        ));
+        assert!(matches!(plan(policy), Err(ProfileError::InvalidRustdoc(_))));
     }
 }
 
