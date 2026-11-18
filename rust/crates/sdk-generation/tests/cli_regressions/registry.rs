@@ -887,7 +887,7 @@ fn excluded_published_path_owners_have_executed_api_and_drift() {
     let generated = queries.run(|| run_generate_execute_profiles(&fixture));
     assert!(generated.status.success(), "{}", output_message(&generated));
     assert!(fixture.rustdoc.join("renamed_macro_target.json").is_file());
-    assert_executed_profiles(
+    let _ = assert_executed_profiles(
         &fixture.output,
         &fixture.rustdoc,
         &[("demo", 5), ("demo-macros", 5), ("demo-helper", 1)],

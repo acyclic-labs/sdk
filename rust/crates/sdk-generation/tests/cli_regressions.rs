@@ -607,15 +607,19 @@ fn output_message(result: &std::process::Output) -> String {
     )
 }
 
-fn assert_executed_profiles(output: &Path, rustdoc: &Path, expected: &[(&str, usize)]) {
-    let rows: Value = serde_json::from_slice(
+fn assert_executed_profiles(
+    output: &Path,
+    rustdoc: &Path,
+    expected: &[(&str, usize)],
+) -> Vec<Value> {
+    let rows: Vec<Value> = serde_json::from_slice(
         &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
     )
     .unwrap();
-    let rows = rows.as_array().unwrap();
+
     let mut counts = BTreeMap::new();
     let mut identities = std::collections::BTreeSet::new();
-    for row in rows {
+    for row in &rows {
         assert_eq!(row["rustdocProfilesCovered"], true);
         *counts.entry(row["package"].as_str().unwrap()).or_insert(0) += 1;
         assert!(
@@ -641,6 +645,7 @@ fn assert_executed_profiles(output: &Path, rustdoc: &Path, expected: &[(&str, us
         expected.iter().map(|(_, count)| count).sum::<usize>()
     );
     assert_eq!(counts, expected.iter().copied().collect::<BTreeMap<_, _>>());
+    rows
 }
 
 fn historical_source_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
@@ -827,7 +832,7 @@ fn run_historical_generation(
                 expected_owners.iter().copied().collect::<BTreeSet<_>>(),
             );
         }
-        assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
+        let _ = assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
     }
     result
 }

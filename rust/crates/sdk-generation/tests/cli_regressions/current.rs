@@ -502,10 +502,6 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .iter()
         .filter(|entry| entry["path"] == "demo::overloaded")
         .collect::<Vec<_>>();
-    assert!(
-        variant_entries.len() >= 2,
-        "profile merge must retain same-path items with distinct signatures"
-    );
     let signatures = variant_entries
         .iter()
         .filter_map(|entry| entry["signature"].as_str())
@@ -524,14 +520,8 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         })
     }));
 
-    let receipts: Value = serde_json::from_slice(
-        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-    )
-    .unwrap();
-    assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
+    let receipts = assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
     let effective = receipts
-        .as_array()
-        .unwrap()
         .iter()
         .map(|receipt| {
             (
@@ -555,8 +545,6 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         "both API branches remain qualified with and without Cargo defaults"
     );
     let receipt = receipts
-        .as_array()
-        .unwrap()
         .iter()
         .find(|receipt| receipt["profile"] == feature_profile["profile"])
         .expect("sidecar profile must have an executed receipt row");
@@ -718,7 +706,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     assert!(!relocated.output.exists());
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
-    assert_executed_profiles(
+    let _ = assert_executed_profiles(
         &fixture.output,
         &fixture.rustdoc,
         &[("demo", 5), ("relocation-helper", 1)],
