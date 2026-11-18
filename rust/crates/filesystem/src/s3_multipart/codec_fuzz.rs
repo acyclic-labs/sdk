@@ -147,7 +147,7 @@ pub fn seeds() -> MultipartStorageResult<Vec<(&'static str, Vec<u8>)>> {
             encode_multipart_part(1, root, 4, IdempotencyKey::from_bytes([6; 16]), &etag())
                 .to_vec(),
         ));
-        let generation = crate::GenerationId::from_root(ObjectId {
+        let generation = acyclic_fs_format::object_reference::GenerationId::from_root(ObjectId {
             kind: crate::ObjectKind::GenerationRoot,
             ..root
         });

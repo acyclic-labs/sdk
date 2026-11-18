@@ -230,7 +230,7 @@ pub enum MultipartTerminal {
     /// Completion intent with the selected part numbers and entity tags.
     Completing(Vec<(u32, String)>),
     /// Published generation for a completed upload.
-    Completed(crate::GenerationId),
+    Completed(acyclic_fs_format::object_reference::GenerationId),
     /// Durable abort that fences further parts and completion.
     Aborted,
 }

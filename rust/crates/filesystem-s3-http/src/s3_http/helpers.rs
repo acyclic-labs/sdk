@@ -121,7 +121,7 @@ fn etag(value: &str) -> S3Result<s3s::dto::ETag> {
 }
 
 fn etag_for_generation(
-    generation: acyclic_fs::GenerationId,
+    generation: acyclic_fs_format::object_reference::GenerationId,
     key: &str,
 ) -> S3Result<s3s::dto::ETag> {
     let mut hasher = blake3::Hasher::new();
