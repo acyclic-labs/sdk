@@ -1,5 +1,4 @@
-use crate::kernel::serde_decode::DecodeWork;
-pub(super) use crate::kernel::serde_decode::{DecodeKind, Funded, MaterializationDecode};
+use acyclic_fs_work::serde_decode::DecodeWork;
 
 impl DecodeWork for crate::NativeMaterializationWork {
     type Allocation = crate::NativeAllocation;

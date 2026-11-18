@@ -2,3 +2,4 @@
 #![deny(unsafe_code)]
 
 pub mod performance;
+pub mod serde_decode;
