@@ -1,5 +1,5 @@
 {
-  "checksum": "bc3f9b83a0a5e0c06972ecb7ef24a2a6963c15ca00c7a96892fc500da0e4fc9d",
+  "checksum": "7862276fd02064f448f3aa084be6880935532b8b3226a9e97653c58f99e74d4f",
   "conditions": {
     "aarch64-pc-windows-gnullvm": [],
     "cfg(all(all(target_arch = \"aarch64\", target_endian = \"little\"), target_os = \"windows\"))": [],
@@ -65,11 +65,9 @@
     "cfg(not(all(target_family = \"wasm\", target_os = \"unknown\")))": [
       "x86_64-unknown-linux-gnu"
     ],
-    "cfg(target_arch = \"aarch64\")": [],
     "cfg(target_arch = \"wasm32\")": [
       "wasm32-unknown-unknown"
     ],
-    "cfg(target_arch = \"x86\")": [],
     "cfg(target_arch = \"x86_64\")": [
       "x86_64-unknown-linux-gnu"
     ],
@@ -1730,71 +1728,6 @@
       ],
       "version": "0.3.1"
     },
-    "crc-fast 1.10.0": {
-      "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "default",
-          "digest",
-          "ffi",
-          "panic-handler",
-          "std"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "digest 0.10.7",
-              "target": "digest"
-            }
-          ],
-          "selects": {
-            "cfg(target_arch = \"aarch64\")": [
-              {
-                "id": "spin 0.10.1",
-                "target": "spin"
-              }
-            ],
-            "cfg(target_arch = \"x86\")": [
-              {
-                "id": "spin 0.10.1",
-                "target": "spin"
-              }
-            ],
-            "cfg(target_arch = \"x86_64\")": [
-              {
-                "id": "spin 0.10.1",
-                "target": "spin"
-              }
-            ]
-          }
-        },
-        "edition": "2021"
-      },
-      "library_target_name": "crc_fast",
-      "license": "MIT OR Apache-2.0",
-      "license_file": "LICENSE-Apache",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "crc-fast",
-      "package_url": "https://github.com/awesomized/crc-fast-rust",
-      "repository": {
-        "Http": {
-          "sha256": "e75b2483e97a5a7da73ac68a05b629f9c53cff58d8ed1c77866079e18b00dba5",
-          "url": "https://static.crates.io/crates/crc-fast/1.10.0/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "crc_fast",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "1.10.0"
-    },
     "crc32fast 1.5.3": {
       "build_script_attrs": {},
       "common_attrs": {
@@ -1907,45 +1840,6 @@
         }
       ],
       "version": "0.7.10"
-    },
-    "crypto-common 0.1.7": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "generic-array 0.14.7",
-            "target": "generic_array"
-          },
-          {
-            "id": "typenum 1.20.1",
-            "target": "typenum"
-          }
-        ],
-        "edition": "2018"
-      },
-      "library_target_name": "crypto_common",
-      "license": "MIT OR Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "crypto-common",
-      "package_url": "https://github.com/RustCrypto/traits",
-      "repository": {
-        "Http": {
-          "sha256": "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a",
-          "url": "https://static.crates.io/crates/crypto-common/0.1.7/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "crypto_common",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.1.7"
     },
     "crypto-common 0.2.2": {
       "common_attrs": {
@@ -2429,44 +2323,6 @@
       ],
       "version": "2.1.1"
     },
-    "digest 0.10.7": {
-      "common_attrs": {
-        "crate_features": [
-          "alloc"
-        ],
-        "deps": [
-          {
-            "id": "crypto-common 0.1.7",
-            "target": "crypto_common"
-          }
-        ],
-        "edition": "2018"
-      },
-      "library_target_name": "digest",
-      "license": "MIT OR Apache-2.0",
-      "license_file": "LICENSE-APACHE",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "name": "digest",
-      "package_url": "https://github.com/RustCrypto/traits",
-      "repository": {
-        "Http": {
-          "sha256": "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292",
-          "url": "https://static.crates.io/crates/digest/0.10.7/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "digest",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.10.7"
-    },
     "digest 0.11.3": {
       "common_attrs": {
         "crate_features": [
@@ -2558,10 +2414,6 @@
           {
             "id": "chacha20poly1305 0.11.0",
             "target": "chacha20poly1305"
-          },
-          {
-            "id": "crc-fast 1.10.0",
-            "target": "crc_fast"
           },
           {
             "id": "ed25519-dalek 3.0.0",
@@ -4327,60 +4179,6 @@
         }
       ],
       "version": "0.3.34"
-    },
-    "generic-array 0.14.7": {
-      "build_script_attrs": {
-        "deps": [
-          {
-            "id": "version_check 0.9.5",
-            "target": "version_check"
-          }
-        ]
-      },
-      "common_attrs": {
-        "crate_features": [
-          "more_lengths"
-        ],
-        "deps": [
-          {
-            "id": "typenum 1.20.1",
-            "target": "typenum"
-          }
-        ],
-        "edition": "2015",
-        "extra_deps": [
-          ":build_script_build"
-        ]
-      },
-      "library_target_name": "generic_array",
-      "license": "MIT",
-      "license_file": "LICENSE",
-      "license_ids": [
-        "MIT"
-      ],
-      "name": "generic-array",
-      "package_url": "https://github.com/fizyk20/generic-array.git",
-      "repository": {
-        "Http": {
-          "sha256": "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a",
-          "url": "https://static.crates.io/crates/generic-array/0.14.7/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "generic_array",
-            "crate_root": "src/lib.rs"
-          }
-        },
-        {
-          "BuildScript": {
-            "crate_name": "build_script_build",
-            "crate_root": "build.rs"
-          }
-        }
-      ],
-      "version": "0.14.7"
     },
     "getrandom 0.2.17": {
       "common_attrs": {
@@ -11295,40 +11093,6 @@
       ],
       "version": "1.16.2"
     },
-    "spin 0.10.1": {
-      "common_attrs": {
-        "crate_features": [
-          "mutex",
-          "once",
-          "rwlock",
-          "spin_mutex"
-        ],
-        "edition": "2015"
-      },
-      "library_target_name": "spin",
-      "license": "MIT",
-      "license_file": "LICENSE",
-      "license_ids": [
-        "MIT"
-      ],
-      "name": "spin",
-      "package_url": "https://github.com/mvdnes/spin-rs.git",
-      "repository": {
-        "Http": {
-          "sha256": "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3",
-          "url": "https://static.crates.io/crates/spin/0.10.1/download"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "spin",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.10.1"
-    },
     "stable_deref_trait 1.2.1": {
       "common_attrs": {
         "crate_features": [
@@ -15693,7 +15457,6 @@
     "bytes 1.12.1",
     "caseless 0.2.2",
     "chacha20poly1305 0.11.0",
-    "crc-fast 1.10.0",
     "ed25519-dalek 3.0.0",
     "fancy-regex 0.20.2",
     "flate2 1.1.10",

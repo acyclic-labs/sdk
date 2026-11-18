@@ -90,6 +90,9 @@ rust_test(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    deps = [
+        "//compatibility:acyclic_proto_build",
+    ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )

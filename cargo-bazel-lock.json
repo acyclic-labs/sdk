@@ -1,5 +1,5 @@
 {
-  "checksum": "638cad838f9bc8d9328d6e210d492667de4dddbbc2fd6997fd736d082c2c0a43",
+  "checksum": "f4e6ef21bbacc8e81e4eb873a6e71a3af0af2a88dbe16d5e90484491b59705ae",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -8163,10 +8163,6 @@
           {
             "id": "serde_path_to_error 0.1.20",
             "target": "serde_path_to_error"
-          },
-          {
-            "id": "serde_urlencoded 0.7.1",
-            "target": "serde_urlencoded"
           },
           {
             "id": "sha2 0.11.1",
@@ -38712,7 +38708,6 @@
     "serde_derive_internals 0.30.0",
     "serde_json 1.0.154",
     "serde_path_to_error 0.1.20",
-    "serde_urlencoded 0.7.1",
     "sha2 0.11.1",
     "shell-words 1.1.1",
     "shuttle 0.9.8",
