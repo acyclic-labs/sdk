@@ -27,24 +27,22 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
 /// over every put outcome, with the widest length. Failure details have
 /// producer-owned lengths and are admitted against the actual response budget.
 fn put_batch_acknowledgement() -> Option<(usize, usize)> {
-    use wire::{put_response::Outcome as Put, put_result::Outcome};
+    use wire::put_result::Outcome;
     static BOUND: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
     *BOUND.get_or_init(|| {
-        let verified = wire::Verified {
-            digest: Some(Digest::of(b"").into()),
+        let verified = crate::Verified {
+            digest: Digest::from_bytes([0; 32]),
             length: u64::MAX,
+            revision: None,
         };
         let outcomes = [
-            Outcome::Put(wire::PutResponse {
-                outcome: Some(Put::Created(verified.clone())),
-            }),
-            Outcome::Put(wire::PutResponse {
-                outcome: Some(Put::AlreadyExists(verified)),
-            }),
-            Outcome::Put(wire::PutResponse {
-                outcome: Some(Put::Unknown(true)),
-            }),
-        ];
+            Put::Created {
+                verified: verified.clone(),
+            },
+            Put::AlreadyExists { verified },
+            Put::Unknown,
+        ]
+        .map(|put| Outcome::Put(crate::convert::wire_put(&put)));
         let reply = |outcome: &Outcome, members: usize| {
             json::encode(
                 "PutBlobsResponse",
@@ -78,10 +76,11 @@ fn put_batch_acknowledgement() -> Option<(usize, usize)> {
 fn put_batch_request() -> Option<(usize, usize, usize)> {
     static BOUND: std::sync::OnceLock<Option<(usize, usize, usize)>> = std::sync::OnceLock::new();
     *BOUND.get_or_init(|| {
+        let digest: wire::Digest = Digest::from_bytes([0; 32]).into();
         let member = |references: usize| wire::PutBlobRequest {
-            digest: Some(Digest::of(b"").into()),
+            digest: Some(digest.clone()),
             body: bytes::Bytes::from_static(&[0xff; 3]),
-            references: vec![Digest::of(b"").into(); references],
+            references: vec![digest.clone(); references],
         };
         let request = |members: usize, references: usize| {
             json::encode(
