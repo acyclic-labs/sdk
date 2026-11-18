@@ -483,9 +483,15 @@ impl<M: Medium> Pages<'_, M> {
             .list(&self.prefix, self.after.as_deref(), PAGE)
             .await
             .map_err(medium)?;
+        if page.len() > PAGE {
+            return Err(corrupt());
+        }
         self.done = page.len() < PAGE;
-        if !self.done {
-            self.after = page.last().map(|(key, _)| key.clone());
+        if let Some((last, _)) = page.last().filter(|_| !self.done) {
+            if self.after.as_ref().is_some_and(|after| last <= after) {
+                return Err(corrupt());
+            }
+            self.after = Some(last.clone());
         }
         Ok(Some(page))
     }
