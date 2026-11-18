@@ -1367,6 +1367,8 @@ rust_test(
     srcs = [
         "tests/git_history.rs",
         "tests/git_history/git_compat/mod.rs",
+        "tests/git_history/git_compat/stream_store/mod.rs",
+        "tests/git_history/git_compat/stream_store/tests.rs",
         "tests/git_history/git_compat/tests/history.rs",
         "tests/git_history/git_compat/tests/mod.rs",
         "tests/support/git_history.rs",
