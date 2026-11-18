@@ -138,10 +138,11 @@ catalog! {
         RetainContext => "retain-context", WriteContext => "write-context",
     }
     Machines MachinesAction "machines" Metering::Billed("vmm"), {
-        Cancel => "cancel", Checkpoint => "checkpoint", Create => "create", Delete => "delete",
+        AttachVolume => "attach-volume", Cancel => "cancel", Checkpoint => "checkpoint", Create => "create", Delete => "delete",
         DeleteCheckpoint => "delete-checkpoint", Exec => "exec", Follow => "follow", List => "list",
         Qualify => "qualify", Read => "read", ReadCheckpoint => "read-checkpoint", ReadFile => "read-file",
-        ReadOutput => "read-output", ReadUsage => "read-usage", Recover => "recover", Update => "update",
+        ReadOutput => "read-output", ReadUsage => "read-usage", Recover => "recover",
+        SetSuspensionPolicy => "set-suspension-policy", Suspend => "suspend", Wake => "wake",
         WriteFile => "write-file",
     }
     Objects ObjectsAction "objects" Metering::Billed("objects"), {
