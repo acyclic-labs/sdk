@@ -24,9 +24,7 @@ acyclic-fs-format = { version = "=0.2.0", path = "../filesystem-format" }
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
 acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout" }
 ed25519-dalek = { version = "3.0.0", optional = true }
-once_cell = "1.21.3"
 notify = { workspace = true }
-pulldown-cmark.workspace = true
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
@@ -34,7 +32,6 @@ acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
-arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 async-stream = "=0.3.6"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
@@ -49,7 +46,6 @@ bytes.workspace = true
 futures.workspace = true
 hex = { workspace = true }
 http.workspace = true
-jsonschema.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 regex-lite = { version = "0.1.9" }
 js-sys = { workspace = true }
@@ -58,7 +54,6 @@ prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.3"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
-serde-saphyr = { version = "=2.0.0", default-features = false, features = ["deserialize"] }
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -113,6 +108,7 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+jsonschema.workspace = true
 which = "8.0.6"
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
@@ -120,7 +116,6 @@ tokio-util = { workspace = true, features = ["rt"] }
 rcgen = "0.14.10"
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true
-serde-saphyr = { version = "=2.0.0", default-features = false, features = ["serialize"] }
 shuttle = "=0.9.8"
 tracing-subscriber.workspace = true
 loom = "0.7.3"
