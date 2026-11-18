@@ -134,12 +134,14 @@ impl Escrow {
         Ok(escrow)
     }
 
-    pub(crate) fn in_branch(mut self, branch: Option<CommitId>) -> Self {
+    #[doc(hidden)]
+    pub fn in_branch(mut self, branch: Option<CommitId>) -> Self {
         self.branch = branch;
         self
     }
 
-    pub(crate) fn require_branch(self, branch: Option<CommitId>) -> Result<Self, Error> {
+    #[doc(hidden)]
+    pub fn require_branch(self, branch: Option<CommitId>) -> Result<Self, Error> {
         if self.branch != branch {
             return Err(Error::ForeignBranch);
         }

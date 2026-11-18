@@ -38,7 +38,8 @@ pub struct Interrupt {
 }
 
 impl Manifest {
-    pub(crate) fn validate_external(&self, ids: &[String]) -> Result<(), GuestError> {
+    #[doc(hidden)]
+    pub fn validate_external(&self, ids: &[String]) -> Result<(), GuestError> {
         if ids.iter().any(|id| !self.subscriptions.contains(id)) {
             return Err(GuestError::Decode(
                 "undeclared external subscription".into(),
@@ -47,7 +48,8 @@ impl Manifest {
         Ok(())
     }
 
-    pub(crate) fn validate_interrupts(&self) -> Result<(), GuestError> {
+    #[doc(hidden)]
+    pub fn validate_interrupts(&self) -> Result<(), GuestError> {
         if self.interrupts.iter().any(|filter| {
             filter.value_prefix.is_empty() || !self.subscriptions.contains(&filter.subscription)
         }) {
@@ -335,7 +337,8 @@ pub enum AdmissionClass {
     Control,
 }
 impl AdmissionClass {
-    pub(crate) const fn index(self) -> usize {
+    #[doc(hidden)]
+    pub const fn index(self) -> usize {
         match self {
             Self::Work => 0,
             Self::Control => 1,

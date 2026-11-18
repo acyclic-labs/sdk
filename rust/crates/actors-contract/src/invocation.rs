@@ -150,7 +150,8 @@ impl Invocation {
         Ok(Self::decode_bound(record)?.map(|(_, invocation)| invocation))
     }
 
-    pub(crate) fn decode_bound(record: &Record) -> Result<Option<(StreamPath, Self)>, GuestError> {
+    #[doc(hidden)]
+    pub fn decode_bound(record: &Record) -> Result<Option<(StreamPath, Self)>, GuestError> {
         let attributes = record.headers.attributes();
         if attributes
             .binary_search_by(|attribute| attribute.name.cmp("acyclic.actors.invoke"))

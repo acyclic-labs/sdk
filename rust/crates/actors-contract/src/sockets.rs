@@ -98,7 +98,8 @@ struct FrameWire {
 
 impl WebSocketAutoResponse {
     /// Size of the response in the canonical channel encoding, without copying it.
-    pub(crate) fn response_frame_len(&self) -> usize {
+    #[doc(hidden)]
+    pub fn response_frame_len(&self) -> usize {
         prost::encoding::string::encoded_len(1, &self.response)
     }
 }
