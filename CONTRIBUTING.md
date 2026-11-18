@@ -89,8 +89,7 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc cargo build --locked -p acyclic-
 For isolated identity or filesystem protocol changes, validate the owning crate:
 
 ```sh
-cargo test --locked -p acyclic-plugin-identity
-cargo test --locked -p acyclic-fs-wire
+bazel test //plugin/identity:all //rust/crates/filesystem-wire:all
 ```
 
 Identity's unit tests and main-thread entry contract live in the identity crate;
