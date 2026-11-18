@@ -36,7 +36,7 @@ diff --git a/util/process_wrapper/options.rs b/util/process_wrapper/options.rs
 index 29467a62a..58bdd0d88 100644
 --- a/util/process_wrapper/options.rs
 +++ b/util/process_wrapper/options.rs
-@@ -161,22 +161,44 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+@@ -161,22 +161,55 @@ pub(crate) fn options() -> Result<Options, OptionError> {
          .ok_or_else(|| OptionError::Generic("current directory not utf-8".to_owned()))?
          .to_owned();
      let output_base = {
@@ -66,7 +66,18 @@ index 29467a62a..58bdd0d88 100644
 +                    .and_then(|path| path.to_str())
 +                    .map(str::to_owned)
 +            });
-+        if let Some(base) = from_bazel_out {
++        // Linux sandboxes can contain a real bazel-out directory of input links.
++        // Derive the output base from the execroot layout before inspecting external.
++        let from_exec_root = std::path::Path::new(&current_dir)
++            .parent()
++            .filter(|path| path.file_name().is_some_and(|name| name == "execroot"))
++            .and_then(|exec_root| {
++                let sandbox = exec_root.ancestors().nth(3)
++                    .filter(|path| path.file_name().is_some_and(|name| name == "sandbox"));
++                sandbox.map_or_else(|| exec_root.parent(), std::path::Path::parent)
++            })
++            .and_then(|path| path.to_str()).map(str::to_owned);
++        if let Some(base) = from_bazel_out.or(from_exec_root) {
 +            base
 +        } else {
 +            let external = std::path::Path::new(&current_dir).join("external");
@@ -92,7 +103,7 @@ index 29467a62a..58bdd0d88 100644
          }
      };
  
-@@ -237,10 +259,11 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+@@ -237,10 +270,11 @@ pub(crate) fn options() -> Result<Options, OptionError> {
          //
          // Inserting into `environment_file_block` (which subsequently
          // overrides the inherited process env) makes this take precedence
