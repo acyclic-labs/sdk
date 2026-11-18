@@ -14,16 +14,19 @@
 //! retention and is not bounded by the active lease count.
 
 use crate::record_store::{MemoryRecords, next_revision};
-use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, GenerationId, IdempotencyKey, OperationId, Workspace,
-    WorkspaceError, WorkspaceId, WorkspaceRebase,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
+use {
+    crate::{
+        AsyncAuthorityStore, AsyncObjectStore, IdempotencyKey, OperationId, Workspace,
+        WorkspaceError, WorkspaceId, WorkspaceRebase,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 pub(crate) mod lease_path;
 

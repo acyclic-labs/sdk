@@ -40,10 +40,10 @@ pub struct PathTrie {
     subject: (super::PrincipalKind, String),
     capability_binding: [u8; 32],
     policy_revision: Option<(
-        crate::GenerationId,
+        acyclic_fs_format::object_reference::GenerationId,
         crate::kernel::MetadataField<crate::ObjectId>,
     )>,
-    data_generation: Option<crate::GenerationId>,
+    data_generation: Option<acyclic_fs_format::object_reference::GenerationId>,
     generation_sensitive: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) native_custody: Option<crate::NativeAllocation>,
@@ -258,7 +258,7 @@ impl PathTrie {
     #[must_use]
     pub fn with_policy_revision(
         mut self,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         revision: crate::kernel::MetadataField<crate::ObjectId>,
     ) -> Self {
         self.policy_revision = Some((generation, revision));
@@ -268,21 +268,26 @@ impl PathTrie {
     /// Bind an explicitly selected immutable data generation. Its authorization
     /// uses current policy, whose storage fence remains independent.
     #[must_use]
-    pub fn with_data_generation(mut self, generation: crate::GenerationId) -> Self {
+    pub fn with_data_generation(
+        mut self,
+        generation: acyclic_fs_format::object_reference::GenerationId,
+    ) -> Self {
         self.data_generation = Some(generation);
         self
     }
 
     /// Explicit immutable selection, absent for a tracking view.
     #[must_use]
-    pub const fn data_generation(&self) -> Option<crate::GenerationId> {
+    pub const fn data_generation(
+        &self,
+    ) -> Option<acyclic_fs_format::object_reference::GenerationId> {
         self.data_generation
     }
 
     /// Whether this view still represents the authenticated persisted policy.
     pub fn matches_policy_revision(
         &self,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         revision: crate::kernel::MetadataField<crate::ObjectId>,
     ) -> bool {
         self.policy_revision.is_some_and(|(original, policy)| {

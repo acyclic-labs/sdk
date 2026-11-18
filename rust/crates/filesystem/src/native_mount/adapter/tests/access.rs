@@ -109,7 +109,7 @@ pub(super) fn compile_policy<A, O>(
     source: &CheckoutMountSource<A, O>,
     policy: &Policy,
     capability: Option<Capability>,
-    head: crate::GenerationId,
+    head: acyclic_fs_format::object_reference::GenerationId,
     revision: crate::kernel::MetadataField<crate::ObjectId>,
 ) -> Result<PathTrie, MountSourceError>
 where

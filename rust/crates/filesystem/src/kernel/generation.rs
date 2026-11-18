@@ -5,9 +5,12 @@ use super::codec::{
 };
 #[cfg(test)]
 use crate::Digest;
-use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{CancellationToken, WorkCounters};
+use {
+    crate::foundation::{FileId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const DOMAIN: &[u8; 8] = b"ACYFSGEN";
 const VERSION: u16 = 1;

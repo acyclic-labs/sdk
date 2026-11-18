@@ -234,15 +234,17 @@ fn a_delta_entry_decodes_to_its_exact_path_and_origin_and_nothing_else() {
     for (config, path, _) in cases {
         for origin in [
             DeltaOrigin::Empty,
-            DeltaOrigin::Generation(crate::GenerationId::from_root(crate::ObjectId {
-                kind: crate::ObjectKind::GenerationRoot,
-                digest: crate::Digest::from_bytes([91; 32]),
-                storage: Some(crate::ObjectStorage {
-                    locator: crate::Digest::from_bytes([92; 32]),
-                    root_file_id: crate::FileId::from_bytes([93; 16]),
-                    origin_generation: crate::Digest::from_bytes([94; 32]),
+            DeltaOrigin::Generation(
+                acyclic_fs_format::object_reference::GenerationId::from_root(crate::ObjectId {
+                    kind: crate::ObjectKind::GenerationRoot,
+                    digest: crate::Digest::from_bytes([91; 32]),
+                    storage: Some(crate::ObjectStorage {
+                        locator: crate::Digest::from_bytes([92; 32]),
+                        root_file_id: crate::FileId::from_bytes([93; 16]),
+                        origin_generation: crate::Digest::from_bytes([94; 32]),
+                    }),
                 }),
-            })),
+            ),
         ] {
             let key = key(&path, config);
             let mut metadata = Vec::new();

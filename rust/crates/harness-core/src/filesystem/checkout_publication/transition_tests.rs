@@ -2,10 +2,13 @@ use super::*;
 use proptest::prelude::*;
 use {acyclic_fs_format::identity::OperationId, acyclic_fs_work::performance::WorkCounters};
 
-fn generation_associations(digest: [u8; 32], root: [u8; 16]) -> [acyclic_fs::GenerationId; 5] {
+fn generation_associations(
+    digest: [u8; 32],
+    root: [u8; 16],
+) -> [acyclic_fs_format::object_reference::GenerationId; 5] {
     use {
-        acyclic_fs::GenerationId,
         acyclic_fs_format::identity::{Digest, FileId},
+        acyclic_fs_format::object_reference::GenerationId,
         acyclic_fs_format::object_reference::{ObjectId, ObjectKind, ObjectStorage},
     };
     let plain = GenerationId::new(Digest::from_bytes(digest));
@@ -50,7 +53,7 @@ proptest! {
         root in any::<[u8; 16]>(), from in any::<[u8; 32]>(), to in any::<[u8; 32]>(),
         phase in 0usize..6, change in 0usize..4, from_case in 0usize..5, to_case in 0usize..5,
     ) {
-        use {acyclic_fs::{GenerationId, MaterializationIntent, MaterializationJournal, MaterializationPhase, MaterializationPlan}, acyclic_fs_format::identity::{Digest}, acyclic_fs_native_contract::{NativeRootIdentity}};
+        use {acyclic_fs::{MaterializationIntent, MaterializationJournal, MaterializationPhase, MaterializationPlan}, acyclic_fs_format::object_reference::GenerationId, acyclic_fs_format::identity::{Digest}, acyclic_fs_native_contract::{NativeRootIdentity}};
         let from_variants = generation_associations(from, root);
         let to_variants = generation_associations(to, root);
         let from = from_variants[from_case];

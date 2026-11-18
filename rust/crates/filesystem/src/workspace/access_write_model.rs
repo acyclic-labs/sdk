@@ -1,13 +1,16 @@
 //! Models the production admission predicate and authority CAS together.
 use super::checkout::authorization_changed;
-use crate::{
-    AppendOutcome, AsyncAuthorityStore, AuthorityId, AuthorityWork, CancellationToken, Digest,
-    Epoch, GenerationId, GuardedAppend, Head, MemoryAuthorityStore, OperationId, ProposedCommit,
-    PublicationPermit, WorkBudget,
-};
 use std::{
     future::Future,
     task::{Context, Poll, Waker},
+};
+use {
+    crate::{
+        AppendOutcome, AsyncAuthorityStore, AuthorityId, AuthorityWork, CancellationToken, Digest,
+        Epoch, GuardedAppend, Head, MemoryAuthorityStore, OperationId, ProposedCommit,
+        PublicationPermit, WorkBudget,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
 };
 
 pub(super) const AUTHORITY: AuthorityId = AuthorityId::from_bytes([1; 16]);

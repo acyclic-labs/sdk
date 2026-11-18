@@ -8,7 +8,7 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub struct NativePublicationSnapshot {
     pub(crate) operation: Option<crate::OperationId>,
-    pub(crate) generation: crate::GenerationId,
+    pub(crate) generation: acyclic_fs_format::object_reference::GenerationId,
     pub(crate) context: NativeSnapshotContext,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -60,7 +60,7 @@ impl NativePublicationSnapshot {
     /// [`Self::lazy_snapshot`] to identify its source epoch, overlay and identity
     /// shadows. Equal authored generations do not imply equal
     /// source-backed views or an empty complete diff.
-    pub const fn generation(&self) -> crate::GenerationId {
+    pub const fn generation(&self) -> acyclic_fs_format::object_reference::GenerationId {
         self.generation
     }
     /// Workspace represented by this view.
@@ -179,7 +179,7 @@ impl<
         &self,
         operation: crate::OperationId,
         context: NativeSnapshotContext,
-        generation: Option<crate::GenerationId>,
+        generation: Option<acyclic_fs_format::object_reference::GenerationId>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
         let cut = match context {

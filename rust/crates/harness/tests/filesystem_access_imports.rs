@@ -193,7 +193,7 @@ async fn unchecked_join_plan(
         acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend,
     >,
-    source_head: acyclic_fs::GenerationId,
+    source_head: acyclic_fs_format::object_reference::GenerationId,
     cancel: &CancellationToken,
 ) -> Result<
     acyclic_fs::workspace::JoinPlan<
@@ -225,7 +225,7 @@ async fn check_import_result(
         acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend,
     >,
-    target_head: acyclic_fs::GenerationId,
+    target_head: acyclic_fs_format::object_reference::GenerationId,
     protected: bool,
     denied: bool,
 ) -> Result<(), Box<dyn Error>> {

@@ -13,7 +13,7 @@ type SelectedPublication<'a> = Option<(
 )>;
 type CommittedPublication = (
     crate::OperationId,
-    crate::GenerationId,
+    acyclic_fs_format::object_reference::GenerationId,
     Option<SelectedImportProof>,
     Option<crate::OperationId>,
     Option<crate::OperationId>,

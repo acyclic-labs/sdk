@@ -69,7 +69,7 @@ impl<
         &self,
         cut: LazySnapshotRef,
         child: Workspace<A, O>,
-        original_generation: crate::GenerationId,
+        original_generation: acyclic_fs_format::object_reference::GenerationId,
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {

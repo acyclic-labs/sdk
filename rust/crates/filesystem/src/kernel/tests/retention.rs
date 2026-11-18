@@ -1,9 +1,9 @@
 use super::*;
 use crate::Digest;
-use crate::foundation::GenerationId;
 use crate::kernel::allocation::KernelAccounting;
 use crate::model::Lifecycle;
 use crate::{CancellationToken, WorkBudget, WorkError};
+use acyclic_fs_format::object_reference::GenerationId;
 
 #[test]
 fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::error::Error>> {

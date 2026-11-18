@@ -232,8 +232,9 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
     let directory = temporary_directory().map_err(storage)?;
     let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     let workspace_id = acyclic_fs::WorkspaceId::from_bytes([1; 16]);
-    let generation =
-        acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([2; 32]));
+    let generation = acyclic_fs_format::object_reference::GenerationId::new(
+        acyclic_fs_format::identity::Digest::from_bytes([2; 32]),
+    );
     let record = WorkspaceLineageRecord {
         version: 1,
         revision: 1,

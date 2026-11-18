@@ -4,10 +4,6 @@ use crate::async_storage::authority_error;
 use crate::cancellation::CancellationToken;
 #[cfg(test)]
 use crate::foundation::authority_commit_digest;
-use crate::foundation::{
-    AuthorityId, Digest, DurableCommit, Epoch, GenerationId, Head, OperationId, ProposedCommit,
-    Sequence,
-};
 use crate::kernel::volume_authority_id;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
@@ -23,6 +19,12 @@ use acyclic_stream::StreamProviderExt as _;
 use bytes::Bytes;
 use futures::StreamExt;
 use std::sync::Arc;
+use {
+    crate::foundation::{
+        AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const STREAM_RECORD_LIMIT: u64 = acyclic_stream::MAX_RECORD_BYTES as u64;
 const GENESIS_DOMAIN: &[u8] = b"acyclic-fs-stream-genesis-v1\0";

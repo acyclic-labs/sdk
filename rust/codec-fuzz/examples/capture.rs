@@ -676,7 +676,9 @@ fn capture() -> Result<(), Box<dyn Error>> {
                 save(
                     "ids",
                     &format!("generation-json-sealed-{sealed}"),
-                    &serde_json::to_vec(&acyclic_fs::GenerationId::from_root(value))?,
+                    &serde_json::to_vec(
+                        &acyclic_fs_format::object_reference::GenerationId::from_root(value),
+                    )?,
                     "GenerationId::Serialize delegates to the complete canonical to_bytes output",
                     &mut manifest,
                 )?;

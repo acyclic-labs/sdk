@@ -6,13 +6,19 @@ mod hosted_contract;
 mod compat_wire {
     mod tests {
         use acyclic_fs::compat_wire::*;
-        use acyclic_fs::{
-            GenerationId, MergePlan, MultiRootFence, MultiRootMergeCandidate, MultiRootMergePlan,
-            MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationPhase, Publication,
-            WorkspaceContextId, WorkspaceId, WorkspaceRootId,
-        };
-        use acyclic_fs_format::identity::{Digest, OperationId};
         use std::collections::{BTreeMap, BTreeSet};
+        use {
+            acyclic_fs::{
+                MultiRootFence, MultiRootMergeCandidate, MultiRootMergePlan, MultiRootMergeRoot,
+                MultiRootPublication, MultiRootPublicationPhase, Publication, WorkspaceContextId,
+                WorkspaceId, WorkspaceRootId,
+            },
+            acyclic_fs_format::{
+                identity::{Digest, OperationId},
+                object_reference::GenerationId,
+            },
+            acyclic_fs_merge::merge_driver::MergePlan,
+        };
 
         fn generation(byte: u8) -> GenerationId {
             GenerationId::new(Digest::from_bytes([byte; 32]))

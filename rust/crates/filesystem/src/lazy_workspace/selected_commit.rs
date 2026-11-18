@@ -23,7 +23,7 @@ impl<
     pub(crate) async fn selected_snapshot(
         &self,
         operation: crate::OperationId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazySnapshotRef, crate::Digest), LazyWorkspaceError> {
         let (publication, _, _) = self
@@ -73,7 +73,7 @@ impl<
     pub(super) async fn load_original_publication(
         &self,
         operation: crate::OperationId,
-        expected: Option<crate::GenerationId>,
+        expected: Option<acyclic_fs_format::object_reference::GenerationId>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<
         Option<(NativePublicationSnapshot, crate::Sequence, crate::Digest)>,
@@ -170,7 +170,7 @@ impl<
     pub(crate) async fn finish_selected_import(
         &self,
         operation: crate::OperationId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         destination: LazySnapshotRef,
         source: LazySnapshotRef,
         config: VolumeConfig,

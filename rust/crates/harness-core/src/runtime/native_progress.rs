@@ -13,9 +13,9 @@ pub enum NativeCaptureEvidence {
         /// Original workspace.
         workspace: acyclic_fs::WorkspaceId,
         /// Actual predecessor of that receipt.
-        before: acyclic_fs::GenerationId,
+        before: acyclic_fs_format::object_reference::GenerationId,
         /// Actual accepted generation.
-        after: acyclic_fs::GenerationId,
+        after: acyclic_fs_format::object_reference::GenerationId,
     },
     /// Both exact source-backed cuts retained by the original DATA receipt.
     Lazy {

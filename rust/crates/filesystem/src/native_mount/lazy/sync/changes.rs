@@ -96,7 +96,7 @@ where
     pub(super) async fn publication_context(
         &self,
         operation: crate::OperationId,
-        committed: Option<crate::GenerationId>,
+        committed: Option<acyclic_fs_format::object_reference::GenerationId>,
         proof: Option<SelectedImportProof>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<NativeSnapshotContext, MountSourceError> {
@@ -166,7 +166,7 @@ where
     pub(super) async fn finish_publication(
         &self,
         operation: crate::OperationId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         proof: Option<SelectedImportProof>,
         context: NativeSnapshotContext,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
@@ -208,7 +208,7 @@ where
     pub(in crate::native_mount::lazy) async fn retire_settled_publication(
         &self,
         operation: crate::OperationId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), MountSourceError> {
         let crate::kernel::KernelAccounting::NativeOriginal {

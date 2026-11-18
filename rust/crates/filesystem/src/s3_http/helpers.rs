@@ -118,7 +118,10 @@ fn etag(value: &str) -> S3Result<s3s::dto::ETag> {
     s3s::dto::ETag::parse_http_header(value.as_bytes()).map_err(|_| s3s::s3_error!(InternalError))
 }
 
-fn etag_for_generation(generation: crate::GenerationId, key: &str) -> S3Result<s3s::dto::ETag> {
+fn etag_for_generation(
+    generation: acyclic_fs_format::object_reference::GenerationId,
+    key: &str,
+) -> S3Result<s3s::dto::ETag> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-fs-s3-etag-v1\0");
     hasher.update(generation.digest().as_bytes());

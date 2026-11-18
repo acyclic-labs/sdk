@@ -1,13 +1,16 @@
 //! Native source roots retain their watcher; every call supplies its own SDK workspace.
-use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FilesystemSourceProvider,
-    GenerationId, HostedSourceInvalidation, HostedSourceResult, HostedSourceState, IdempotencyKey,
-    ReconcileOutcome, Source, SourceError, SourceOptions, SourceState, WatchInvalidationReason,
-    WorkBudget, Workspace,
-};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::Status;
+use {
+    crate::{
+        AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FilesystemSourceProvider,
+        HostedSourceInvalidation, HostedSourceResult, HostedSourceState, IdempotencyKey,
+        ReconcileOutcome, Source, SourceError, SourceOptions, SourceState, WatchInvalidationReason,
+        WorkBudget, Workspace,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 struct Directory<A: 'static, O: 'static> {
     path: PathBuf,

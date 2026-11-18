@@ -19,7 +19,7 @@ impl Fixture {
         // A real same-content merge still creates an unpublished checkpoint.
         // Its distinct parent must be present for closure authentication.
         let parent = crate::kernel::GenerationRoot {
-            parents: vec![crate::GenerationId::new(
+            parents: vec![acyclic_fs_format::object_reference::GenerationId::new(
                 first.request.generation_root.digest,
             )],
             ..first.base.value.clone()

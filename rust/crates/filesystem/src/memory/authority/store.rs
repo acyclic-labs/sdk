@@ -147,7 +147,7 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
     async fn first_generation(
         &self,
         authority: AuthorityId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         through: Sequence,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<Sequence>, AuthorityStoreError> {

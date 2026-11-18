@@ -92,7 +92,7 @@ where
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: Option<&crate::MergePlan>,
+        conflict: Option<&acyclic_fs_merge::merge_driver::MergePlan>,
     ) -> Result<GenerationId, Self::Error> {
         let cancellation = CancellationToken::new();
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -138,7 +138,8 @@ where
                 ));
             }
             for view in &conflict.conflicts {
-                let resolution = if view.kind == crate::ConflictKind::Text {
+                let resolution = if view.kind == acyclic_fs_merge::merge_driver::ConflictKind::Text
+                {
                     DefaultTextMergeDriver
                         .resolve(view)
                         .unwrap_or(MergeResolution::Select(ConflictSide::Ours))
@@ -328,7 +329,7 @@ where
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: &crate::MergePlan,
+        conflict: &acyclic_fs_merge::merge_driver::MergePlan,
         paths: &[String],
     ) -> Result<BTreeSet<ConflictKey>, Self::Error> {
         let target = self
@@ -367,7 +368,7 @@ where
             }) {
                 continue;
             }
-            if view.kind == crate::ConflictKind::Text {
+            if view.kind == acyclic_fs_merge::merge_driver::ConflictKind::Text {
                 match current
                     .read(
                         &format!("/{path}"),

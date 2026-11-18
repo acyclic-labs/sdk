@@ -189,8 +189,10 @@ pub(in crate::bindings) fn fixed_16(bytes: &[u8]) -> Result<[u8; 16]> {
     })
 }
 
-pub(in crate::bindings) fn decode_generation_id(bytes: &[u8]) -> Result<acyclic_fs::GenerationId> {
-    acyclic_fs::GenerationId::from_bytes(bytes)
+pub(in crate::bindings) fn decode_generation_id(
+    bytes: &[u8],
+) -> Result<acyclic_fs_format::object_reference::GenerationId> {
+    acyclic_fs_format::object_reference::GenerationId::from_bytes(bytes)
         .ok_or_else(|| napi_wire_error("invalid generation reference"))
 }
 
@@ -227,7 +229,9 @@ pub(in crate::bindings) fn native_storage_tier(value: &str) -> Result<StorageTie
 }
 
 pub(in crate::bindings) fn encode_checkpoint_receipt(
-    receipt: &acyclic_fs_work::performance::OperationReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs_work::performance::OperationReceipt<
+        acyclic_fs_format::object_reference::GenerationId,
+    >,
 ) -> Result<NativeCheckpointResult> {
     Ok(NativeCheckpointResult {
         generation_id: Buffer::from(receipt.value.to_bytes().to_vec()),

@@ -1,5 +1,5 @@
---- a/rust/crates/filesystem/src/merge_driver.rs
-+++ b/rust/crates/filesystem/src/merge_driver.rs
+--- a/rust/crates/filesystem-merge/src/merge_driver.rs
++++ b/rust/crates/filesystem-merge/src/merge_driver.rs
 @@ -175,7 +175,7 @@
          serializer: S,
      ) -> Result<S::Ok, S::Error> {

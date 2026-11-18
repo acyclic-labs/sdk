@@ -199,7 +199,8 @@ async fn publication_evidence_codec_preserves_the_complete_sealed_root_reference
         root_file_id: proof.root.root_file_id,
         origin_generation: plaintext_root.digest,
     });
-    proof.generation_id = crate::GenerationId::from_root(request.generation_root);
+    proof.generation_id =
+        acyclic_fs_format::object_reference::GenerationId::from_root(request.generation_root);
     *proof
         .objects
         .iter_mut()
@@ -221,7 +222,8 @@ async fn publication_evidence_codec_preserves_the_complete_sealed_root_reference
     assert_eq!(decoded.request, request);
     assert_eq!(decoded.manifest.generation_id, proof.generation_id);
     assert_eq!(decoded.manifest.objects, proof.objects);
-    proof.generation_id = crate::GenerationId::from_root(plaintext_root);
+    proof.generation_id =
+        acyclic_fs_format::object_reference::GenerationId::from_root(plaintext_root);
     assert!(matches!(
         encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024),
         Err(PublicationEvidenceError::Mismatch)
@@ -391,7 +393,8 @@ async fn original_evidence_binds_complete_creation_and_retention_references() ->
                 root_file_id: proof.root.root_file_id,
                 origin_generation: Digest::from_bytes([92; 32]),
             });
-            proof.generation_id = crate::GenerationId::from_root(root);
+            proof.generation_id =
+                acyclic_fs_format::object_reference::GenerationId::from_root(root);
             *proof
                 .objects
                 .iter_mut()
@@ -483,7 +486,8 @@ async fn original_evidence_binds_complete_creation_and_retention_references() ->
                 root_file_id: proof.root.root_file_id,
                 origin_generation: Digest::from_bytes([92; 32]),
             });
-            changed.generation_id = crate::GenerationId::from_root(wrong_root);
+            changed.generation_id =
+                acyclic_fs_format::object_reference::GenerationId::from_root(wrong_root);
             assert!(matches!(
                 encode_original_generation_evidence(&changed, &append, config, 64 * 1024),
                 Err(PublicationEvidenceError::Mismatch)

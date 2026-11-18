@@ -8,13 +8,6 @@ use crate::kernel::{
     FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, TreeEntry,
 };
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
-use crate::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
-    DependencyRegion, DependencyState, DurableCommit, ForkOptions, Fs, Generation, GenerationId,
-    IdempotencyKey, JoinHistory, JoinOutcome, MergeConflict, ObjectId, RebaseConflict, Sequence,
-    Transaction, TransactionCommit, TransactionRebase, WorkBudget, Workspace, WorkspaceDelete,
-    WorkspaceError, WorkspaceRebase,
-};
 use acyclic_fs_wire::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use bytes::Bytes;
 use futures::stream;
@@ -22,6 +15,16 @@ use prost::Message;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
+use {
+    crate::{
+        ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
+        DependencyRegion, DependencyState, DurableCommit, ForkOptions, Fs, Generation,
+        IdempotencyKey, JoinHistory, JoinOutcome, MergeConflict, ObjectId, RebaseConflict,
+        Sequence, Transaction, TransactionCommit, TransactionRebase, WorkBudget, Workspace,
+        WorkspaceDelete, WorkspaceError, WorkspaceRebase,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 mod native_sources;
 pub use native_sources::FilesystemNativeSources;

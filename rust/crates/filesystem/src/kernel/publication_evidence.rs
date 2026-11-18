@@ -109,7 +109,7 @@ pub fn encode_generation_publication_evidence(
     }
     let (plaintext_root, _) = generation_root_id(&proof.root)?;
     let root_id = request.generation_root;
-    let generation_id = crate::GenerationId::from_root(root_id);
+    let generation_id = acyclic_fs_format::object_reference::GenerationId::from_root(root_id);
     let published = decode_published_generation(&append.commit.payload, maximum_bytes, |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
@@ -317,7 +317,7 @@ where
     let plaintext_root = crate::storage::object_digest(root_bytes);
     observe(ReadAllocationStep::Hashed(root_bytes.len() as u64))?;
     let root_id = manifest.generation_root;
-    let generation_id = crate::GenerationId::from_root(root_id);
+    let generation_id = acyclic_fs_format::object_reference::GenerationId::from_root(root_id);
     let published =
         decode_published_generation(&append.commit.payload, maximum_bytes, &mut *observe)?;
     if request.authority_id != super::volume_authority_id(volume_id)

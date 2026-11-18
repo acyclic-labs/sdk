@@ -10,10 +10,10 @@ pub(super) fn binding_conflict_view<A, O>(
     directory_id: FileId,
     name: &LogicalName,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+) -> Result<Owned<acyclic_fs_merge::merge_driver::ConflictView>, WorkspaceError> {
     let name = canonical_name_key(name, accounting)?;
     let mut view = Owned::new(
-        crate::ConflictView {
+        acyclic_fs_merge::merge_driver::ConflictView {
             key: ConflictKey::Binding {
                 directory_id,
                 name: name.value,
@@ -53,12 +53,12 @@ pub(super) fn record_conflict_view<A, O>(
     file_id: FileId,
     path: Option<String>,
     kind: ConflictKind,
-) -> crate::ConflictView {
+) -> acyclic_fs_merge::merge_driver::ConflictView {
     let value = |generation| ConflictValue::Record {
         generation,
         file_id,
     };
-    crate::ConflictView {
+    acyclic_fs_merge::merge_driver::ConflictView {
         key: ConflictKey::File(file_id),
         path,
         kind,
@@ -166,6 +166,7 @@ pub(super) fn resolution_matches_conflict(key: &ConflictKey, resolution: &MergeR
         }
         MergeResolution::Metadata(_) => matches!(key, ConflictKey::Metadata(_)),
         MergeResolution::Binding(_) => matches!(key, ConflictKey::Binding { .. }),
+        _ => false,
     }
 }
 

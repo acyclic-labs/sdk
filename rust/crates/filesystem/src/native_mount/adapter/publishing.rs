@@ -160,7 +160,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
     fn acknowledge_publication(
         &mut self,
         operation: OperationId,
-        ack: Option<(Option<OperationId>, crate::GenerationId)>,
+        ack: Option<(
+            Option<OperationId>,
+            acyclic_fs_format::object_reference::GenerationId,
+        )>,
         context: Option<crate::lazy_workspace::NativeSnapshotContext>,
         acknowledged: &mut Option<crate::NativePublicationSnapshot>,
     ) -> Result<(), MountSourceError> {

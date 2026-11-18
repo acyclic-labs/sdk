@@ -85,12 +85,13 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             root_file_id: crate::FileId::from_bytes([8; 16]),
             origin_generation: crate::Digest::from_bytes([9; 32]),
         });
-        *generation = crate::GenerationId::from_root(reference);
+        *generation = acyclic_fs_format::object_reference::GenerationId::from_root(reference);
         assert!(!unbounded!(main, verify_join_commit(&altered))?);
     }
     let mut forged = serde_json::to_value(witness)?;
-    forged["source_generation"] =
-        serde_json::to_value(crate::GenerationId::new(crate::Digest::ZERO))?;
+    forged["source_generation"] = serde_json::to_value(
+        acyclic_fs_format::object_reference::GenerationId::new(crate::Digest::ZERO),
+    )?;
     let forged: crate::JoinCommitWitness = serde_json::from_value(forged)?;
     assert!(!unbounded!(main, verify_join_commit(&forged))?);
     assert_eq!(

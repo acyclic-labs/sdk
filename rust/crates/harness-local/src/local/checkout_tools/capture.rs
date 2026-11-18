@@ -358,7 +358,7 @@ async fn apply_owed_write(
     physical: &LocalWorkspace,
     view: &workspace::View,
     operation: acyclic_fs_format::identity::OperationId,
-    staged: acyclic_fs::GenerationId,
+    staged: acyclic_fs_format::object_reference::GenerationId,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
     let workspace = view.workspace();

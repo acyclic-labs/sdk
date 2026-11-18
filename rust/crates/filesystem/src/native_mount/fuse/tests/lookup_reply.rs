@@ -103,7 +103,7 @@ impl NativeAccessOwner for Refresh {
 
     fn select<'a>(
         &'a self,
-        _: crate::GenerationId,
+        _: acyclic_fs_format::object_reference::GenerationId,
         _: &'a crate::NativeMaterializationWork,
     ) -> Result<NativeMountCallbackFuture<'a, crate::MountOptions>, NativeMountError> {
         Err(MountSourceError::NativeUnsupported.into())

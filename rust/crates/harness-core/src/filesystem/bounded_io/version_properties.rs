@@ -35,7 +35,7 @@ proptest! {
             &mut None,
         ))?;
         let cut = if authored {
-            let id = acyclic_fs::GenerationId::new(
+            let id = acyclic_fs_format::object_reference::GenerationId::new(
                 acyclic_fs_format::identity::Digest::from_bytes(digest),
             );
             ok(generation_ref(&provider, id, None))?

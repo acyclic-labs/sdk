@@ -1,7 +1,10 @@
 //! Fixed durable records share the page oracle without inventing copy receipts.
 use super::super::CanonicalDecodeError;
 use super::super::source_state::*;
-use crate::{Digest, GenerationId, VolumeId};
+use {
+    crate::{Digest, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 /// Require original writer admission, complete framing and canonical identity.
 pub(crate) fn record<

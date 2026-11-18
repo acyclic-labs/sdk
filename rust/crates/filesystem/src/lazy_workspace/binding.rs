@@ -510,7 +510,7 @@ impl<
         &self,
         key: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
-    ) -> Result<Option<crate::GenerationId>, LazyWorkspaceError> {
+    ) -> Result<Option<acyclic_fs_format::object_reference::GenerationId>, LazyWorkspaceError> {
         let original = self
             .workspace
             .volume

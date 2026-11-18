@@ -8,9 +8,12 @@ use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
 
 use crate::cancellation::{CancellationError, CancellationToken};
 
-use crate::foundation::{
-    AuthorityId, Digest, DurableCommit, FileId, GenerationId, Head, OperationId, ProposedCommit,
-    Sequence, VolumeId,
+use {
+    crate::foundation::{
+        AuthorityId, Digest, DurableCommit, FileId, Head, OperationId, ProposedCommit, Sequence,
+        VolumeId,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
 };
 
 use crate::heap_future::in_heap;

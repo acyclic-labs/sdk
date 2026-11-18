@@ -268,7 +268,9 @@ pub(in crate::bindings) fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, Js
 }
 
 pub(in crate::bindings) fn encode_checkpoint_result(
-    receipt: &acyclic_fs_work::performance::OperationReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs_work::performance::OperationReceipt<
+        acyclic_fs_format::object_reference::GenerationId,
+    >,
 ) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
     ts(BrowserCheckpointResult {
         generation_id: receipt.value.to_bytes().to_vec(),
@@ -301,7 +303,7 @@ pub(in crate::bindings) fn device_kind(kind: &str) -> Result<FileKind, JsValue> 
 
 pub(in crate::bindings) fn decode_generation_id(
     bytes: &[u8],
-) -> Result<acyclic_fs::GenerationId, JsValue> {
-    acyclic_fs::GenerationId::from_bytes(bytes)
+) -> Result<acyclic_fs_format::object_reference::GenerationId, JsValue> {
+    acyclic_fs_format::object_reference::GenerationId::from_bytes(bytes)
         .ok_or_else(|| js_error("invalid generation reference"))
 }

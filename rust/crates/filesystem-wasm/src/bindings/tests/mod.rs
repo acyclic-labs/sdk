@@ -99,10 +99,12 @@ fn result_dtos_preserve_bytes_bigints_and_work_counters() -> Result<(), JsValue>
     let commit = js(BrowserCommitResult {
         status: "committed",
         generation_id: Some(
-            acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([5; 32]))
-                .to_bytes()
-                .to_vec()
-                .into(),
+            acyclic_fs_format::object_reference::GenerationId::new(
+                acyclic_fs_format::identity::Digest::from_bytes([5; 32]),
+            )
+            .to_bytes()
+            .to_vec()
+            .into(),
         ),
         epoch: Some(9_007_199_254_740_993),
         sequence: None,

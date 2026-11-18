@@ -591,7 +591,9 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
 }
 
 /// The source baseline's receipt, when the import has been recorded.
-async fn baseline(tools: &CheckoutTools) -> Result<Option<acyclic_fs::GenerationId>> {
+async fn baseline(
+    tools: &CheckoutTools,
+) -> Result<Option<acyclic_fs_format::object_reference::GenerationId>> {
     let workspace = tools.workspace.view().workspace();
     Ok(workspace
         .operation_generation(

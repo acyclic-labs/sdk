@@ -142,11 +142,13 @@ impl From<BrowserOperationReconcileOptions> for OperationReconcileLimits {
     }
 }
 
-fn generation_bytes(value: acyclic_fs::GenerationId) -> serde_bytes::ByteBuf {
+fn generation_bytes(
+    value: acyclic_fs_format::object_reference::GenerationId,
+) -> serde_bytes::ByteBuf {
     value.to_bytes().to_vec().into()
 }
 
-fn generation(value: &[u8]) -> Result<acyclic_fs::GenerationId, JsValue> {
+fn generation(value: &[u8]) -> Result<acyclic_fs_format::object_reference::GenerationId, JsValue> {
     decode_generation_id(value)
 }
 

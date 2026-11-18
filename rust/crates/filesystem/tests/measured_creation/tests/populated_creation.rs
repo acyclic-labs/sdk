@@ -361,7 +361,10 @@ async fn many_file_creation(
     files: &[(&str, OwnedBytes)],
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<OperationReceipt<acyclic_fs::GenerationId>, Box<OperationFailure<WorkspaceError>>> {
+) -> Result<
+    OperationReceipt<acyclic_fs_format::object_reference::GenerationId>,
+    Box<OperationFailure<WorkspaceError>>,
+> {
     let config = acyclic_fs::VolumeInitialization {
         config: VolumeConfig::portable(Lifecycle::Ephemeral),
         access_policy: Some(acyclic_fs::access::INITIAL_POLICY),

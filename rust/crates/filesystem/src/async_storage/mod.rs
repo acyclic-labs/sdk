@@ -1,9 +1,6 @@
 //! Runtime-neutral asynchronous storage contracts for browser and remote use.
 
 use crate::cancellation::CancellationToken;
-use crate::foundation::{
-    AuthorityId, Epoch, GenerationId, Head, OperationId, ProposedCommit, Sequence,
-};
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome, CreateAuthorityOutcome, FenceOutcome, GuardedAppend, ObjectId, ObjectRead,
@@ -13,6 +10,10 @@ use acyclic_stream::{ProviderPlatform, ProviderTask};
 use std::any::{Any, TypeId};
 use std::future::Future;
 use std::sync::Arc;
+use {
+    crate::foundation::{AuthorityId, Epoch, Head, OperationId, ProposedCommit, Sequence},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 #[macro_use]
 mod contract;

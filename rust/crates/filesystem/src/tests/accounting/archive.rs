@@ -185,7 +185,8 @@ fn decoder_custody(
             if refusal == 0 {
                 let decoded = decoded?;
                 let minimum = (decoded.manifest.objects.capacity() * size_of::<ObjectId>()
-                    + decoded.root.parents.capacity() * size_of::<crate::GenerationId>()
+                    + decoded.root.parents.capacity()
+                        * size_of::<acyclic_fs_format::object_reference::GenerationId>()
                     + decoded.append.commit.payload.len()) as u64;
                 assert!(minimum > 0);
                 let (mut allocation, owned_bytes) = observed.into_parts();

@@ -12,7 +12,7 @@ pub trait NativeAccessOwner: Send + Sync {
     /// retaining the permissions and selection of previously issued views.
     fn select<'a>(
         &'a self,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeMountCallbackFuture<'a, MountOptions>, NativeMountError>;
 }

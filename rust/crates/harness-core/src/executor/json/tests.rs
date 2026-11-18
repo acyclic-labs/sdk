@@ -5,12 +5,12 @@ use serde::Serialize;
 fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
     use {
         acyclic_fs::{
-            GenerationId, LazyOverlayId, LazyShadowId, LazySnapshotRef, WorkspaceId,
+            LazyOverlayId, LazyShadowId, LazySnapshotRef, WorkspaceId,
             demand::{DemandSource, Empty, Routed},
             kernel::{KernelAccounting, LogicalName, NameEncoding},
         },
         acyclic_fs_format::identity::Digest,
-        acyclic_fs_format::object_reference::{ObjectId, ObjectKind},
+        acyclic_fs_format::object_reference::{GenerationId, ObjectId, ObjectKind},
     };
     let cancel = acyclic_fs::CancellationToken::new();
     let mut accounting =

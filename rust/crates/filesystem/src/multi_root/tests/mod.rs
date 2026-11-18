@@ -82,7 +82,7 @@ impl MultiRootPublisher for Publisher {
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        _conflict: Option<&crate::MergePlan>,
+        _conflict: Option<&acyclic_fs_merge::merge_driver::MergePlan>,
     ) -> Result<GenerationId, Self::Error> {
         Ok(root.target_generation)
     }
@@ -102,7 +102,7 @@ impl MultiRootPublisher for Publisher {
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
         _root: &MultiRootMergeRoot,
-        conflict: &crate::MergePlan,
+        conflict: &acyclic_fs_merge::merge_driver::MergePlan,
         _paths: &[String],
     ) -> Result<BTreeSet<ConflictKey>, Self::Error> {
         Ok(conflict
@@ -279,17 +279,17 @@ async fn add_all_declares_pathless_typed_conflicts() -> Result<(), Box<dyn std::
         directory_id,
         name: b"entry".to_vec(),
     };
-    let plan = crate::MergePlan {
+    let plan = acyclic_fs_merge::merge_driver::MergePlan {
         base: head.id(),
         ours: head.id(),
         theirs: head.id(),
-        conflicts: vec![crate::ConflictView {
+        conflicts: vec![acyclic_fs_merge::merge_driver::ConflictView {
             key: key.clone(),
             path: None,
-            kind: crate::ConflictKind::Binding,
-            base: crate::ConflictValue::Binding(None),
-            ours: crate::ConflictValue::Binding(None),
-            theirs: crate::ConflictValue::Binding(None),
+            kind: acyclic_fs_merge::merge_driver::ConflictKind::Binding,
+            base: acyclic_fs_merge::merge_driver::ConflictValue::Binding(None),
+            ours: acyclic_fs_merge::merge_driver::ConflictValue::Binding(None),
+            theirs: acyclic_fs_merge::merge_driver::ConflictValue::Binding(None),
         }],
         truncated: false,
     };

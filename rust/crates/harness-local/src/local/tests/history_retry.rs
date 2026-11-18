@@ -36,10 +36,13 @@ impl crate::filesystem::VolumeResources for BeforeCut {
         source: &'a str,
         destination: &'a str,
         operation: acyclic_fs_format::identity::OperationId,
-        generation: Option<acyclic_fs::GenerationId>,
+        generation: Option<acyclic_fs_format::object_reference::GenerationId>,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,
-        std::result::Result<Option<acyclic_fs::GenerationId>, crate::filesystem::ForkCutError>,
+        std::result::Result<
+            Option<acyclic_fs_format::object_reference::GenerationId>,
+            crate::filesystem::ForkCutError,
+        >,
     > {
         Box::pin(async move {
             let change = self

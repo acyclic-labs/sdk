@@ -31,7 +31,7 @@ pub struct LazySnapshotRef {
     /// Workspace authenticating authored copy-on-write state.
     pub workspace_id: WorkspaceId,
     /// Immutable authored generation.
-    pub authored_generation: crate::GenerationId,
+    pub authored_generation: acyclic_fs_format::object_reference::GenerationId,
     /// Live source identity and invalidation epoch.
     pub source: SourceReference,
     /// Immutable first-observation/tombstone overlay root.
@@ -41,7 +41,10 @@ pub struct LazySnapshotRef {
 }
 
 impl LazySnapshotRef {
-    pub(crate) fn hash_bytes(generation: crate::GenerationId, source: &SourceReference) -> u64 {
+    pub(crate) fn hash_bytes(
+        generation: acyclic_fs_format::object_reference::GenerationId,
+        source: &SourceReference,
+    ) -> u64 {
         (LAZY_SNAPSHOT_DOMAIN.len()
             + 80
             + source.encoded_len()
@@ -53,7 +56,7 @@ impl LazySnapshotRef {
     /// This performs no storage validation, retention or authorization.
     pub fn new(
         workspace_id: WorkspaceId,
-        authored_generation: crate::GenerationId,
+        authored_generation: acyclic_fs_format::object_reference::GenerationId,
         source: SourceReference,
         overlay: LazyOverlayId,
         shadows: LazyShadowId,

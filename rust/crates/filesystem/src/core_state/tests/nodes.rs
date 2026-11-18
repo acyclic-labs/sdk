@@ -365,7 +365,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     .unwrap();
     let snapshot = crate::LazySnapshotRef::new(
         id,
-        crate::GenerationId::new(Digest::from_bytes([0xb2; 32])),
+        acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes([0xb2; 32])),
         state.source.clone(),
         state.overlay,
         state.shadows,

@@ -229,9 +229,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     .stage_merge_regular_record(volume, template, Bytes::copy_from_slice(bytes))
                     .await?
             }
-            MergeResolution::Metadata(_)
-            | MergeResolution::Binding(_)
-            | MergeResolution::Unresolved => {
+            _ => {
                 return Err(DrivenJoinError::UnsupportedResolution(ConflictKey::File(
                     file_id,
                 )));
@@ -273,7 +271,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
 
     pub(super) async fn git_delete_binding(
         &self,
-        conflict: &crate::ConflictView,
+        conflict: &acyclic_fs_merge::merge_driver::ConflictView,
         resolution: &MergeConflictResolution,
         resolutions: &mut BTreeMap<MergeConflict, MergeConflictResolution>,
     ) -> Result<(), DrivenJoinError> {

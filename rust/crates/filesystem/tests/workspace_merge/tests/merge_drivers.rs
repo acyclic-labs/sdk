@@ -1,8 +1,10 @@
 use acyclic_fs::{
-    ApplyOptions, CancellationToken, ConflictKind, ConflictSide, ConflictValue, ConflictView,
-    DefaultTextMergeDriver, DriverError, ForkOptions, Fs, IdempotencyKey, JoinHistory, JoinOutcome,
-    MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergeResolution,
+    ApplyOptions, CancellationToken, ForkOptions, Fs, IdempotencyKey, JoinHistory, JoinOutcome,
     PublicationPermit, TransactionCommit,
+};
+use acyclic_fs_merge::merge_driver::{
+    ConflictKind, ConflictSide, ConflictValue, ConflictView, DefaultTextMergeDriver, DriverError,
+    MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergeResolution,
 };
 use acyclic_fs_work::performance::WorkBudget;
 use acyclic_stream::OwnedBytes;

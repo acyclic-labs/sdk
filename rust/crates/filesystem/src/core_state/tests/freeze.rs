@@ -91,7 +91,8 @@ async fn freeze_survives_lost_acknowledgement_and_keeps_its_origin_immutable() {
         .as_mut()
         .unwrap()
         .snapshot
-        .authored_generation = crate::GenerationId::new(Digest::from_bytes([0xb1; 32]));
+        .authored_generation =
+        acyclic_fs_format::object_reference::GenerationId::new(Digest::from_bytes([0xb1; 32]));
     replacements[4].parent_workspace_id = Some(WorkspaceId::from_bytes([0xb2; 16]));
     replacements[5].fork_origin.as_mut().unwrap().phase = crate::LazyForkPhase::Prepared;
     for replacement in replacements {

@@ -299,8 +299,8 @@ impl CheckoutPublication {
 fn completed(
     journal: &MaterializationJournal,
     root: NativeRootIdentity,
-    from: acyclic_fs::GenerationId,
-    to: acyclic_fs::GenerationId,
+    from: acyclic_fs_format::object_reference::GenerationId,
+    to: acyclic_fs_format::object_reference::GenerationId,
 ) -> Result<bool> {
     if journal.root_identity != Some(root.to_bytes())
         || journal.plan().intent

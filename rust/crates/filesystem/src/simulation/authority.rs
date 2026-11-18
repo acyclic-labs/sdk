@@ -283,7 +283,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
     async fn first_generation(
         &self,
         authority: AuthorityId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         through: Sequence,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<Option<Sequence>, AuthorityStoreError> {

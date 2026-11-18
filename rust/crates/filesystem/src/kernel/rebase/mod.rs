@@ -2,12 +2,15 @@
 
 use super::{ExtentSeekTarget, LogicalName};
 use crate::cancellation::CancellationToken;
-use crate::foundation::{Digest, FileId, GenerationId};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
+use {
+    crate::foundation::{Digest, FileId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 /// One exact semantic region whose state can affect a checkout.
 #[derive(Clone, Debug, Eq, PartialEq)]

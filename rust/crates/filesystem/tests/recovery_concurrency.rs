@@ -14,14 +14,15 @@ use thiserror::Error;
 use tokio::sync::Barrier;
 use {
     acyclic_fs::{
-        GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
-        MaterializationError, MaterializationIntent, MaterializationJournal,
-        MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
-        MaterializationPreimage, MaterializationRecovery, OperationWindowCoordinator,
-        OperationWindowError, OperationWindowFinish, OperationWindowPhase, OperationWindowSnapshot,
-        OperationWindowStore, WorkspaceId,
+        JournaledMaterializer, MaterializationBackend, MaterializationEdit, MaterializationError,
+        MaterializationIntent, MaterializationJournal, MaterializationJournalStore,
+        MaterializationPhase, MaterializationPlan, MaterializationPreimage,
+        MaterializationRecovery, OperationWindowCoordinator, OperationWindowError,
+        OperationWindowFinish, OperationWindowPhase, OperationWindowSnapshot, OperationWindowStore,
+        WorkspaceId,
     },
     acyclic_fs_format::identity::{Digest, OperationId},
+    acyclic_fs_format::object_reference::GenerationId,
 };
 
 fn generation(byte: u8) -> GenerationId {

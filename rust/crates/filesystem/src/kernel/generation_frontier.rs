@@ -5,6 +5,7 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FsError, Head, ObjectId, VolumeId,
     WorkError,
 };
+use acyclic_fs_format::object_reference::GenerationId;
 
 pub(crate) struct FrontierRequest<'a> {
     pub(crate) volume: VolumeId,
@@ -97,7 +98,7 @@ async fn replay_frontier<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         )
                         .await?;
                     let bytes = crate::foundation::usize_to_u64(
-                        root.parents.capacity() * std::mem::size_of::<crate::GenerationId>(),
+                        root.parents.capacity() * std::mem::size_of::<GenerationId>(),
                     );
                     let root = Owned::new(root, allocation, bytes);
                     let result = async {

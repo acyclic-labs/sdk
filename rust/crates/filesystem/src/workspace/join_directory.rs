@@ -60,7 +60,7 @@ pub struct MergeConflictFile {
     /// Non-text resolution category; the original key remains authoritative.
     pub kind: MergeConflictFileKind,
     /// The original domain conflict, including its authoritative key.
-    pub conflict: crate::ConflictView,
+    pub conflict: acyclic_fs_merge::merge_driver::ConflictView,
 }
 
 /// Non-text categories in `<path>.conflict.json`.
@@ -108,7 +108,10 @@ enum ResolutionSide {
 }
 
 impl ResolutionFile {
-    fn resolve(self, conflict: &crate::ConflictView) -> Result<MergeResolution, DrivenJoinError> {
+    fn resolve(
+        self,
+        conflict: &acyclic_fs_merge::merge_driver::ConflictView,
+    ) -> Result<MergeResolution, DrivenJoinError> {
         match self {
             Self::Take { take } => Ok(MergeResolution::Select(match take {
                 ResolutionSide::Ours => ConflictSide::Ours,
@@ -131,7 +134,7 @@ impl ResolutionFile {
 
 fn decode_resolution(
     bytes: acyclic_stream::OwnedBytes,
-    conflict: &crate::ConflictView,
+    conflict: &acyclic_fs_merge::merge_driver::ConflictView,
 ) -> Result<MergeResolution, DrivenJoinError> {
     if conflict.kind == ConflictKind::Text {
         std::str::from_utf8(&bytes).map_err(WorkspaceError::engine)?;
@@ -162,8 +165,11 @@ fn check_captured_merge_resolution_inner(
     trace: &[u8],
     data: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (conflict, bytes, expected): (crate::ConflictView, Vec<u8>, Option<MergeResolution>) =
-        serde_json::from_slice(trace)?;
+    let (conflict, bytes, expected): (
+        acyclic_fs_merge::merge_driver::ConflictView,
+        Vec<u8>,
+        Option<MergeResolution>,
+    ) = serde_json::from_slice(trace)?;
     let bytes: acyclic_stream::OwnedBytes = bytes.into();
     let backing = bytes.as_ptr();
     let actual = decode_resolution(bytes, &conflict);
@@ -228,7 +234,8 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     check_merge_file_roundtrip::<MergeDirectoryPlan>(data);
     check_merge_file_roundtrip::<MergeCleanFile>(data);
     check_merge_file_roundtrip::<MergeConflictFile>(data);
-    let Ok((conflict, bytes)) = serde_json::from_slice::<(crate::ConflictView, Vec<u8>)>(data)
+    let Ok((conflict, bytes)) =
+        serde_json::from_slice::<(acyclic_fs_merge::merge_driver::ConflictView, Vec<u8>)>(data)
     else {
         return;
     };

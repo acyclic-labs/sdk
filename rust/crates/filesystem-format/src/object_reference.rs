@@ -294,3 +294,100 @@ pub enum ObjectIdError {
     #[error(transparent)]
     Kind(#[from] ObjectKindError),
 }
+
+/// Content-addressed generation identity and its authenticated storage association.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct GenerationId {
+    digest: Digest,
+    storage: Option<ObjectStorage>,
+}
+
+impl Serialize for GenerationId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_bytes().as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GenerationId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Reference;
+        impl<'de> serde::de::Visitor<'de> for Reference {
+            type Value = GenerationId;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a canonical generation-root reference")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut bytes = [0; ObjectId::ENCODED_LEN];
+                let mut length = 0;
+                while let Some(byte) = sequence.next_element::<u8>()? {
+                    let slot = bytes.get_mut(length).ok_or_else(|| {
+                        serde::de::Error::custom("generation reference is too long")
+                    })?;
+                    *slot = byte;
+                    length += 1;
+                }
+                let encoded = bytes
+                    .get(..length)
+                    .ok_or_else(|| serde::de::Error::custom("generation reference is too long"))?;
+                GenerationId::from_bytes(encoded).ok_or_else(|| {
+                    serde::de::Error::custom("invalid canonical generation-root reference")
+                })
+            }
+        }
+        deserializer.deserialize_seq(Reference)
+    }
+}
+
+impl GenerationId {
+    /// Constructs an unsealed generation identity.
+    #[must_use]
+    pub const fn new(digest: Digest) -> Self {
+        Self {
+            digest,
+            storage: None,
+        }
+    }
+
+    /// Preserves the complete authenticated generation-root reference.
+    #[must_use]
+    pub const fn from_root(root: ObjectId) -> Self {
+        Self {
+            digest: root.digest,
+            storage: root.storage,
+        }
+    }
+
+    /// Returns the complete reference needed to reopen this generation.
+    #[must_use]
+    pub const fn object_id(self) -> ObjectId {
+        ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: self.digest,
+            storage: self.storage,
+        }
+    }
+
+    /// Encodes the complete canonical generation-root reference.
+    #[must_use]
+    pub fn to_bytes(self) -> ObjectIdBytes {
+        self.object_id().to_bytes()
+    }
+
+    /// Decodes a canonical generation-root reference, rejecting other object kinds.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let root = ObjectId::try_from(bytes).ok()?;
+        (root.kind == ObjectKind::GenerationRoot).then(|| Self::from_root(root))
+    }
+
+    /// Returns the authenticated plaintext root digest.
+    #[must_use]
+    pub const fn digest(self) -> Digest {
+        self.digest
+    }
+}

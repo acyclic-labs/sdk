@@ -1,6 +1,6 @@
 //! Explicit, backend-independent volume and checkout semantics.
 
-use crate::foundation::GenerationId;
+use acyclic_fs_format::object_reference::GenerationId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

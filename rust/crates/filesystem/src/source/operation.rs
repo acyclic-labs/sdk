@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> BoundSource<'_, A, O> {
         self.session.state
     }
 
-    pub(crate) fn generation_id(&self) -> crate::GenerationId {
+    pub(crate) fn generation_id(&self) -> acyclic_fs_format::object_reference::GenerationId {
         self.session.checkout.generation_id()
     }
 

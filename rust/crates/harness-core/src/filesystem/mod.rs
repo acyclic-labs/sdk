@@ -17,14 +17,17 @@ use crate::{
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
 use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName};
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, Generation, GenerationId,
-    IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
-    WorkspaceStat,
-};
 use acyclic_fs_work::performance::WorkCounters;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
+use {
+    acyclic_fs::{
+        AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, Generation,
+        IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
+        WorkspaceStat,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+};
 mod content_input;
 use content_input::{ContentInput, ContentPublication, HashedSource, PublicationInput};
 mod content_publisher;

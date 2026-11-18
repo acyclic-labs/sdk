@@ -5,7 +5,7 @@
 //! callers then submit that proposal to the filesystem's validation and
 //! publication path.
 
-use crate::{FileId, GenerationId};
+use acyclic_fs_format::{identity::FileId, object_reference::GenerationId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;

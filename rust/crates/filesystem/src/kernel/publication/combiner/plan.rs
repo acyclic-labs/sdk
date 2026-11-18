@@ -85,7 +85,10 @@ pub(super) async fn compose_metadata<O: crate::AsyncObjectStore>(
         cancellation,
     )
     .await?;
-    let bytes = usize_to_u64(root.parents.capacity() * std::mem::size_of::<crate::GenerationId>());
+    let bytes = usize_to_u64(
+        root.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>(),
+    );
     let root = Owned::new(root, allocation, bytes);
     let table = crate::kernel::apply_generation_delta(
         objects,

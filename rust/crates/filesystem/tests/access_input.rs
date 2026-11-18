@@ -181,9 +181,11 @@ fn check_publications(
             continue;
         };
         if let Some(generation) = update.data_generation {
-            candidate = candidate.with_data_generation(acyclic_fs::GenerationId::new(
-                acyclic_fs_format::identity::Digest::from_bytes(generation),
-            ));
+            candidate = candidate.with_data_generation(
+                acyclic_fs_format::object_reference::GenerationId::new(
+                    acyclic_fs_format::identity::Digest::from_bytes(generation),
+                ),
+            );
         }
         let previous = published.current()?;
         // This relation uses the input history, not the production binding

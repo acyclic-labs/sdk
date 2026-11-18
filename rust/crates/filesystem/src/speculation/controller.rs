@@ -6,8 +6,11 @@ use super::{
     ResidencyAdmission, ResidencyCandidate, ResidencyHint, ResidencyMetrics, ResidencyPermit,
     ResidencySpeculator, ResidencySpeculatorError, ResidencySpeculatorOptions, StorageTier,
 };
-use crate::foundation::{GenerationId, OperationId, VolumeId};
 use thiserror::Error;
+use {
+    crate::foundation::{OperationId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 /// Complete policy for both correctness-inert speculation engines.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

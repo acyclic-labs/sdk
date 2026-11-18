@@ -162,7 +162,7 @@ pub async fn require_workspace_subtree_read<
     workspace: &acyclic_fs::Workspace<A, O>,
     volume: &VolumeRef,
     root: &str,
-    generation: acyclic_fs::GenerationId,
+    generation: acyclic_fs_format::object_reference::GenerationId,
     verifier: &AuthorityVerifier,
     scope: &Scope,
     io: &PreparationIo,

@@ -6,21 +6,32 @@
 //! the decision pauses recovery instead of overwriting external work.
 
 use crate::record_store::{MemoryRecords, next_revision};
-use crate::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictKey,
-    ConflictSide, DefaultTextMergeDriver, DriverError, GenerationId, IdempotencyKey, JoinOutcome,
-    MemoryMergeResolutionCache, MergeDriver, MergeDriverRegistry, MergePlanResolutionError,
-    MergeResolution, OperationId, PublicationPermit, PublicationReservation, ReservationOutcome,
-    UnpublishedMergeCandidate, WorkBudget, Workspace, WorkspaceContextError, WorkspaceContextId,
-    WorkspaceContextRegistry, WorkspaceContextStore, WorkspaceError, WorkspaceGraph, WorkspaceId,
-    WorkspaceLineageError, WorkspaceLineageStore, WorkspaceRootId,
-};
 use acyclic_stream::ProviderTask;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Mutex;
 use thiserror::Error;
+use {
+    crate::{
+        ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, IdempotencyKey,
+        JoinOutcome, OperationId, PublicationPermit, PublicationReservation, ReservationOutcome,
+        WorkBudget, Workspace, WorkspaceContextError, WorkspaceContextId, WorkspaceContextRegistry,
+        WorkspaceContextStore, WorkspaceError, WorkspaceGraph, WorkspaceId, WorkspaceLineageError,
+        WorkspaceLineageStore, WorkspaceRootId,
+    },
+    acyclic_fs_format::object_reference::GenerationId,
+    acyclic_fs_merge::merge_driver::ConflictKey,
+    acyclic_fs_merge::merge_driver::ConflictSide,
+    acyclic_fs_merge::merge_driver::DefaultTextMergeDriver,
+    acyclic_fs_merge::merge_driver::DriverError,
+    acyclic_fs_merge::merge_driver::MemoryMergeResolutionCache,
+    acyclic_fs_merge::merge_driver::MergeDriver,
+    acyclic_fs_merge::merge_driver::MergeDriverRegistry,
+    acyclic_fs_merge::merge_driver::MergePlanResolutionError,
+    acyclic_fs_merge::merge_driver::MergeResolution,
+    acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate,
+};
 
 pub(crate) const MULTI_ROOT_VERSION: u32 = 1;
 
@@ -115,7 +126,7 @@ pub struct MultiRootPublication {
     /// Per-root reservations acquired before the commit decision.
     pub fences: BTreeMap<WorkspaceRootId, MultiRootFence>,
     /// Immutable typed conflicts pinned during validation.
-    pub conflicts: BTreeMap<WorkspaceRootId, crate::MergePlan>,
+    pub conflicts: BTreeMap<WorkspaceRootId, acyclic_fs_merge::merge_driver::MergePlan>,
     /// Parent generations containing the durable conflict projection.
     pub projected_roots: BTreeMap<WorkspaceRootId, GenerationId>,
     /// Conflict keys explicitly accepted from the projected working copy.
@@ -132,7 +143,7 @@ pub enum MultiRootPrepare {
     /// The exact target changed before it could be reserved.
     Stale,
     /// Immutable typed conflicts require a later declarative resolution.
-    Conflicted(Box<crate::MergePlan>),
+    Conflicted(Box<acyclic_fs_merge::merge_driver::MergePlan>),
 }
 
 /// Exact resolved generation and its durable publication reservation.
@@ -213,7 +224,7 @@ pub trait MultiRootPublisher: acyclic_stream::ProviderPlatform {
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: Option<&crate::MergePlan>,
+        conflict: Option<&acyclic_fs_merge::merge_driver::MergePlan>,
     ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
     /// Restores one projected root to its exact pre-merge generation.
@@ -231,7 +242,7 @@ pub trait MultiRootPublisher: acyclic_stream::ProviderPlatform {
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: &crate::MergePlan,
+        conflict: &acyclic_fs_merge::merge_driver::MergePlan,
         paths: &[String],
     ) -> impl Future<Output = Result<BTreeSet<ConflictKey>, Self::Error>> + ProviderTask;
 
@@ -452,7 +463,7 @@ pub enum WorkspaceMultiRootPublisherError<E: std::error::Error + 'static> {
     #[error("merge requires declarative conflict resolutions")]
     Conflicted {
         /// Immutable exact alternatives suitable for presentation or drivers.
-        plan: Box<crate::MergePlan>,
+        plan: Box<acyclic_fs_merge::merge_driver::MergePlan>,
     },
     /// The supplied opaque fence does not describe these exact inputs.
     #[error("multi-root publication fence is invalid")]

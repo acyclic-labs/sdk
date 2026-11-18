@@ -116,7 +116,6 @@ mod lock_order;
 pub mod materializer;
 #[cfg(test)]
 pub mod memory;
-pub mod merge_driver;
 pub mod model;
 pub mod mount;
 pub mod multi_root;
@@ -249,8 +248,8 @@ pub use facade::{
 };
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
-    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, DurableCommit, Epoch, GenerationId, Head,
-    ProposedCommit, Sequence, authority_commit_digest,
+    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, DurableCommit, Epoch, Head, ProposedCommit, Sequence,
+    authority_commit_digest,
 };
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
@@ -312,13 +311,6 @@ pub use materializer::{
 };
 #[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
-pub use merge_driver::{
-    AttributeRule, CachedMergeResolution, ConflictKey, ConflictKind, ConflictSide, ConflictValue,
-    ConflictView, DefaultTextMergeDriver, DriverError, DriverRegistrationError,
-    MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergePlan,
-    MergePlanResolutionError, MergeResolution, MergeResolutionCache, ResolutionKey,
-    UnpublishedMergeCandidate, resolve_merge_conflict, resolve_merge_plan,
-};
 pub use model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,

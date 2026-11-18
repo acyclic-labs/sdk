@@ -4,7 +4,7 @@ impl MemoryAuthorityStore {
     pub(super) fn lookup_generation(
         &self,
         authority: AuthorityId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         through: Sequence,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<Sequence>, FsError> {

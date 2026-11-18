@@ -3,11 +3,14 @@
 use super::active::Active;
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::foundation::{GenerationId, OperationId, VolumeId};
 use crate::performance::WorkBudget;
 use crate::storage::{ObjectReadRequest, ObjectResult};
 use std::collections::VecDeque;
 use thiserror::Error;
+use {
+    crate::foundation::{OperationId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 const BASIS_POINTS: u128 = 10_000;
 

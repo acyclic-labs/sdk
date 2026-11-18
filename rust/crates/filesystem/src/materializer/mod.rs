@@ -1,11 +1,11 @@
 //! Journaled pathwise application and crash recovery.
 use crate::record_store::next_revision;
-use crate::{GenerationId, OperationId};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use {crate::OperationId, acyclic_fs_format::object_reference::GenerationId};
 // Version eight binds immutable history to preparation outside the checkout.
 // Earlier journals belong to their original runtime and are never relocated.
 pub(crate) const JOURNAL_VERSION: u32 = 8;

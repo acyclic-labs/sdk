@@ -1,9 +1,10 @@
 use super::*;
 use acyclic_fs::{
-    GenerationId, Workspace,
+    Workspace,
     access::{AccessView, PathTrie},
     native_mount::{NativeAccessOwner, NativeMountCallbackFuture, NativeMountError},
 };
+use acyclic_fs_format::object_reference::GenerationId;
 
 struct PolicyOwner<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,

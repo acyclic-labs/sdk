@@ -206,7 +206,10 @@ async fn proposal_core(
         cancellation,
     )
     .await?;
-    let bytes = usize_to_u64(root.parents.capacity() * std::mem::size_of::<crate::GenerationId>());
+    let bytes = usize_to_u64(
+        root.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>(),
+    );
     let base = Retained::from_owned(Owned::new(root, allocation, bytes), accounting)?;
     if let Some(parent) = merge_parent {
         request.generation_root = crate::kernel::build_checkpoint_with_accounting(
@@ -242,8 +245,10 @@ async fn proposal_core(
         cancellation,
     )
     .await?;
-    let bytes =
-        usize_to_u64(candidate.parents.capacity() * std::mem::size_of::<crate::GenerationId>());
+    let bytes = usize_to_u64(
+        candidate.parents.capacity()
+            * std::mem::size_of::<acyclic_fs_format::object_reference::GenerationId>(),
+    );
     let candidate = Owned::new(candidate, allocation, bytes);
     let changes = crate::PublicationChanges::between(
         fs.objects(),
@@ -319,7 +324,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
     let mut collector = None;
     if matches!(delivery, Delivery::Collected) {
         let orphan = crate::kernel::GenerationRoot {
-            parents: vec![crate::GenerationId::from_root(root)],
+            parents: vec![acyclic_fs_format::object_reference::GenerationId::from_root(root)],
             ..core.base.value.clone()
         };
         let encoded = crate::kernel::encode_generation_root(

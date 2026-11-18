@@ -1,6 +1,5 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
-use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
     TreePage,
@@ -8,6 +7,10 @@ use crate::kernel::{
 use crate::memory::MemoryObjectStore;
 use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig};
 use crate::storage::{ObjectKind, object_digest};
+use {
+    crate::foundation::{FileId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
 
 fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
     let chunk = acyclic_stream::OwnedBytes::from_static(b"transfer-chunk");

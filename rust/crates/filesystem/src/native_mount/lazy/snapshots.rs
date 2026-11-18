@@ -205,7 +205,7 @@ where
     pub(super) async fn replay_selected_publication(
         &self,
         operation: crate::OperationId,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         input: crate::Digest,
         carrier: &mut adapter::NativeDemandCarrier<'_>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,

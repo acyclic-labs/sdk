@@ -57,7 +57,7 @@ pub struct HistoryVolume {
     /// Original binding; a history fork retains its original generation.
     pub binding: WorkspaceEntry,
     /// Existing immutable generation, never a directory backup.
-    pub generation: acyclic_fs::GenerationId,
+    pub generation: acyclic_fs_format::object_reference::GenerationId,
 }
 
 /// A captured project head with its own retained volume generation. Retention
@@ -68,11 +68,11 @@ pub struct SavedVolume {
     /// Original project binding.
     pub binding: WorkspaceEntry,
     /// Original project's head at this turn.
-    pub generation: acyclic_fs::GenerationId,
+    pub generation: acyclic_fs_format::object_reference::GenerationId,
     /// Structurally shared retention workspace, never a materialized directory.
     pub retained_workspace: String,
     /// Exact generation owned by the retention workspace.
-    pub retained_generation: acyclic_fs::GenerationId,
+    pub retained_generation: acyclic_fs_format::object_reference::GenerationId,
 }
 
 /// Bounded history-picker projection. Saved roots stay at the original cut;

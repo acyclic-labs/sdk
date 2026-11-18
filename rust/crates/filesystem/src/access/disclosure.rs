@@ -5,7 +5,7 @@ impl AccessView {
         &self,
         selected: &PathTrie,
         observed: Option<(
-            crate::GenerationId,
+            acyclic_fs_format::object_reference::GenerationId,
             crate::kernel::MetadataField<crate::ObjectId>,
         )>,
         now: u64,

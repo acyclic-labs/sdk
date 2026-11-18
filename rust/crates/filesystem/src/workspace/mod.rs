@@ -1,7 +1,6 @@
 //! Workspace identities, immutable generations, and atomic mutations.
 
 use crate::CancellationToken;
-use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, MetadataField, NamespacePath,
@@ -9,12 +8,6 @@ use crate::kernel::{
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::path::PortablePath;
 use crate::performance::WorkBudget;
-use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, ConflictKey, ConflictKind,
-    ConflictSide, ConflictValue, FsError, GenerationDiff, LivePublicationObservation,
-    MergeConflict, MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
-    MergeResolutionCache, UnpublishedMergeCandidate, Volume, resolve_merge_plan,
-};
 use acyclic_stream::ProviderTask;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -24,6 +17,27 @@ use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
+use {
+    crate::foundation::{FileId, OperationId, VolumeId},
+    acyclic_fs_format::object_reference::GenerationId,
+};
+use {
+    crate::{
+        AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, FsError, GenerationDiff,
+        LivePublicationObservation, MergeConflict, Volume,
+    },
+    acyclic_fs_merge::merge_driver::ConflictKey,
+    acyclic_fs_merge::merge_driver::ConflictKind,
+    acyclic_fs_merge::merge_driver::ConflictSide,
+    acyclic_fs_merge::merge_driver::ConflictValue,
+    acyclic_fs_merge::merge_driver::MergeDriverRegistry,
+    acyclic_fs_merge::merge_driver::MergePlan,
+    acyclic_fs_merge::merge_driver::MergePlanResolutionError,
+    acyclic_fs_merge::merge_driver::MergeResolution,
+    acyclic_fs_merge::merge_driver::MergeResolutionCache,
+    acyclic_fs_merge::merge_driver::UnpublishedMergeCandidate,
+    acyclic_fs_merge::merge_driver::resolve_merge_plan,
+};
 
 const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 

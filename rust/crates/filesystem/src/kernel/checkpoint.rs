@@ -5,11 +5,11 @@ use super::allocation::KernelOwnedAllocation;
 use super::persistent_point::Owned;
 use super::{DecodeLimits, GenerationRoot, encode_generation_root};
 use crate::cancellation::CancellationToken;
-use crate::foundation::{GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{HashedObject, ObjectId, ObjectKind, ObjectStoreError};
 use std::mem::size_of;
 use thiserror::Error;
+use {crate::foundation::usize_to_u64, acyclic_fs_format::object_reference::GenerationId};
 
 /// Inputs for constructing a candidate immutable generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

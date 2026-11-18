@@ -1,8 +1,9 @@
 use acyclic_fs::{
-    CancellationToken, ConflictKind, ForkOptions, Fs, FsError, IdempotencyKey, PublicationPermit,
+    CancellationToken, ForkOptions, Fs, FsError, IdempotencyKey, PublicationPermit,
     TransactionCommit, WorkspacePathApply,
 };
 use acyclic_fs_format::metadata::{FileMetadata, MetadataField};
+use acyclic_fs_merge::merge_driver::ConflictKind;
 use acyclic_fs_work::performance::WorkBudget;
 use acyclic_stream::OwnedBytes;
 use std::error::Error;

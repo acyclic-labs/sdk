@@ -175,7 +175,7 @@ pub(crate) struct Hold {
 /// The original checkout seals this identity before transferring its registration.
 pub(crate) struct GenerationHold {
     original: crate::kernel::allocation::retained::RetainedArc<Hold>,
-    generation: crate::GenerationId,
+    generation: acyclic_fs_format::object_reference::GenerationId,
     config: crate::VolumeConfig,
 }
 
@@ -188,14 +188,14 @@ impl GenerationHold {
     ) -> Result<Self, crate::FsError> {
         Ok(Self {
             original: crate::kernel::allocation::retained::RetainedArc::new(hold, accounting)?,
-            generation: crate::GenerationId::from_root(root),
+            generation: acyclic_fs_format::object_reference::GenerationId::from_root(root),
             config,
         })
     }
 
     pub(crate) fn matches(
         &self,
-        generation: crate::GenerationId,
+        generation: acyclic_fs_format::object_reference::GenerationId,
         config: crate::VolumeConfig,
         epochs: Option<&Epochs>,
     ) -> bool {

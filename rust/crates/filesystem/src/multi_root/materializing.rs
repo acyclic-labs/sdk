@@ -39,7 +39,7 @@ where
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: Option<&crate::MergePlan>,
+        conflict: Option<&acyclic_fs_merge::merge_driver::MergePlan>,
     ) -> Result<GenerationId, Self::Error> {
         let to = self
             .publisher
@@ -113,7 +113,7 @@ where
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: &crate::MergePlan,
+        conflict: &acyclic_fs_merge::merge_driver::MergePlan,
         paths: &[String],
     ) -> Result<BTreeSet<ConflictKey>, Self::Error> {
         self.publisher

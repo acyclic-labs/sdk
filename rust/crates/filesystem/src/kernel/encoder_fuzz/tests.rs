@@ -91,7 +91,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
                 file_table: object(crate::ObjectKind::FileTablePage, 3, sealed),
                 parents: (0..number % 3)
                     .map(|i| {
-                        crate::GenerationId::from_root(object(
+                        acyclic_fs_format::object_reference::GenerationId::from_root(object(
                             crate::ObjectKind::GenerationRoot,
                             i as u8,
                             sealed,

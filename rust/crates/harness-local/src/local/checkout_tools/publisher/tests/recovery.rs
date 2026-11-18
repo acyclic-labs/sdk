@@ -146,7 +146,7 @@ async fn staged_reference(harness: &Fixture, file: &FileRef) -> Result<FileRef> 
         .workspace()
         .clone();
     let encoded = hex::decode(file.version()).map_err(storage)?;
-    let generation = acyclic_fs::GenerationId::from_bytes(&encoded)
+    let generation = acyclic_fs_format::object_reference::GenerationId::from_bytes(&encoded)
         .ok_or_else(|| Error::Invalid("file version is not a canonical generation".into()))?;
     let stop = acyclic_fs::CancellationToken::new();
     let (parents, _allocation) = workspace

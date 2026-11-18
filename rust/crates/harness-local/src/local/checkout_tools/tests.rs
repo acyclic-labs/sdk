@@ -42,7 +42,9 @@ fn publication_after_revocation(broken: bool, fork: bool) {
     };
     let lease = loom::future::block_on(Box::pin(windows.begin_with_lease_id(
         workspace,
-        acyclic_fs::GenerationId::new(acyclic_fs_format::identity::Digest::from_bytes([1; 32])),
+        acyclic_fs_format::object_reference::GenerationId::new(
+            acyclic_fs_format::identity::Digest::from_bytes([1; 32]),
+        ),
         "task:reservation",
         1,
         10_000,
@@ -97,7 +99,7 @@ fn publication_after_revocation(broken: bool, fork: bool) {
             let fork = acyclic_fs::WorkspaceForkCommit {
                 lineage: Some(acyclic_fs::GenerationForkSource {
                     authority: authority_id,
-                    generation: acyclic_fs::GenerationId::new(
+                    generation: acyclic_fs_format::object_reference::GenerationId::new(
                         acyclic_fs_format::identity::Digest::from_bytes([1; 32]),
                     ),
                     lineage: acyclic_fs::GenerationFork::Independent,

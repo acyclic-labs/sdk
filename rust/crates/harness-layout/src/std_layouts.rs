@@ -367,7 +367,7 @@ pub mod markers {
 
 copy_layouts!(
     acyclic_fs_format::identity::OperationId,
-    acyclic_fs::GenerationId,
+    acyclic_fs_format::object_reference::GenerationId,
     acyclic_fs_format::identity::VolumeId,
     acyclic_fs::MaterializationPhase,
     acyclic_fs::MaterializationPreparationIdentity,
@@ -393,7 +393,7 @@ impl HeapLayout for acyclic_fs::LazySnapshotRef {
     const LAYOUT: &'static JsonLayout = &record!(
         "id" => <[u8; 32] as HeapLayout>::LAYOUT,
         "workspace_id" => <[u8; 16] as HeapLayout>::LAYOUT,
-        "authored_generation" => <acyclic_fs::GenerationId as HeapLayout>::LAYOUT,
+        "authored_generation" => <acyclic_fs_format::object_reference::GenerationId as HeapLayout>::LAYOUT,
         "source" => <acyclic_fs::demand::SourceReference as HeapLayout>::LAYOUT,
         "overlay" => <[u8; 32] as HeapLayout>::LAYOUT,
         "shadows" => <[u8; 32] as HeapLayout>::LAYOUT
@@ -426,12 +426,13 @@ mod materializer {
     use super::{Alloc, HeapLayout, JsonLayout};
     use {
         acyclic_fs::{
-            GenerationId, MaterializationEdit, MaterializationIntent, MaterializationJournal,
+            MaterializationEdit, MaterializationIntent, MaterializationJournal,
             MaterializationPhase, MaterializationPlan, MaterializationPreimage,
             MaterializationPreparationIdentity, MaterializationPreparationProgress,
             MaterializationPreparationSelection,
         },
         acyclic_fs_format::identity::{OperationId, VolumeId},
+        acyclic_fs_format::object_reference::GenerationId,
         acyclic_fs_work::performance::WorkCounters,
     };
 

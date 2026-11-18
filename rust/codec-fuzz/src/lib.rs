@@ -314,7 +314,7 @@ pub fn ids(bytes: &[u8]) {
                 tail.is_empty()
             );
             assert_eq!(
-                acyclic_fs::GenerationId::from_bytes(bytes).is_some(),
+                acyclic_fs_format::object_reference::GenerationId::from_bytes(bytes).is_some(),
                 tail.is_empty()
                     && id.kind == acyclic_fs_format::object_reference::ObjectKind::GenerationRoot
             );
@@ -341,7 +341,7 @@ pub fn ids(bytes: &[u8]) {
             assert_eq!(second, encoded.as_slice());
             assert_eq!(second.as_ptr(), pair[width..].as_ptr());
             assert!(acyclic_fs_format::object_reference::ObjectId::try_from(pair).is_err());
-            assert!(acyclic_fs::GenerationId::from_bytes(pair).is_none());
+            assert!(acyclic_fs_format::object_reference::GenerationId::from_bytes(pair).is_none());
             assert!(
                 acyclic_fs_format::object_reference::ObjectId::try_from(
                     id.digest.as_bytes().as_slice()
@@ -351,30 +351,38 @@ pub fn ids(bytes: &[u8]) {
         }
         Err(_) => {
             assert!(acyclic_fs_format::object_reference::ObjectId::try_from(bytes).is_err());
-            assert!(acyclic_fs::GenerationId::from_bytes(bytes).is_none());
+            assert!(acyclic_fs_format::object_reference::GenerationId::from_bytes(bytes).is_none());
         }
     }
-    if let Some(id) = acyclic_fs::GenerationId::from_bytes(bytes) {
+    if let Some(id) = acyclic_fs_format::object_reference::GenerationId::from_bytes(bytes) {
         assert_eq!(id.to_bytes().as_slice(), bytes);
         assert_eq!(
-            acyclic_fs::GenerationId::from_bytes(id.to_bytes().as_slice()),
+            acyclic_fs_format::object_reference::GenerationId::from_bytes(id.to_bytes().as_slice()),
             Some(id)
         );
     }
-    if let Ok(id) = serde_json::from_slice::<acyclic_fs::GenerationId>(bytes) {
+    if let Ok(id) =
+        serde_json::from_slice::<acyclic_fs_format::object_reference::GenerationId>(bytes)
+    {
         let canonical = id.to_bytes();
         let encoded = serde_json::to_vec(&id).unwrap();
         assert_eq!(encoded, serde_json::to_vec(canonical.as_slice()).unwrap());
         assert_eq!(
-            serde_json::from_slice::<acyclic_fs::GenerationId>(&encoded).unwrap(),
+            serde_json::from_slice::<acyclic_fs_format::object_reference::GenerationId>(&encoded)
+                .unwrap(),
             id
         );
         let digest_only = serde_json::to_vec(id.digest().as_bytes()).unwrap();
-        assert!(serde_json::from_slice::<acyclic_fs::GenerationId>(&digest_only).is_err());
+        assert!(
+            serde_json::from_slice::<acyclic_fs_format::object_reference::GenerationId>(
+                &digest_only
+            )
+            .is_err()
+        );
         let mut trailing = canonical.as_slice().to_vec();
         trailing.push(0);
         assert!(
-            serde_json::from_slice::<acyclic_fs::GenerationId>(
+            serde_json::from_slice::<acyclic_fs_format::object_reference::GenerationId>(
                 &serde_json::to_vec(&trailing).unwrap()
             )
             .is_err()
