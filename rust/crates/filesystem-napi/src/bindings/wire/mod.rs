@@ -12,7 +12,7 @@ impl NapiU32 {
 }
 
 pub(in crate::bindings) fn validate_napi_u32(number: f64) -> Result<u32> {
-    acyclic_fs::exact_u32_from_f64(number)
+    acyclic_fs_base::numeric::exact_u32_from_f64(number)
         .map_err(|message| Error::new(Status::InvalidArg, message))
 }
 

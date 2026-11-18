@@ -135,7 +135,7 @@ fn decode_resolution(
 ) -> Result<MergeResolution, DrivenJoinError> {
     if conflict.kind == ConflictKind::Text {
         std::str::from_utf8(&bytes).map_err(WorkspaceError::engine)?;
-        if crate::text_merge::has_conflict_markers(&bytes) {
+        if acyclic_fs_base::text_merge::has_conflict_markers(&bytes) {
             return Err(WorkspaceError::InvalidMergeResolution.into());
         }
         return Ok(MergeResolution::Text(bytes));
@@ -211,7 +211,7 @@ fn check_captured_merge_resolution_inner(
             return Err("plain-text proposal selected a different resolution kind".into());
         };
         assert_eq!(text.as_slice(), data, "plain-text proposal bytes changed");
-        assert!(!crate::text_merge::has_conflict_markers(&text));
+        assert!(!acyclic_fs_base::text_merge::has_conflict_markers(&text));
     }
     Ok(())
 }
@@ -236,7 +236,7 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     check_resolution_roundtrip(&bytes);
     if let Ok(MergeResolution::Text(text)) = result {
         assert_eq!(conflict.kind, ConflictKind::Text);
-        assert!(!crate::text_merge::has_conflict_markers(&text));
+        assert!(!acyclic_fs_base::text_merge::has_conflict_markers(&text));
     }
 }
 

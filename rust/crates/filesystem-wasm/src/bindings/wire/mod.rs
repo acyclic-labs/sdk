@@ -246,7 +246,7 @@ pub(in crate::bindings) fn wasm_u32(value: &JsValue) -> Result<u32, JsValue> {
     let number = value
         .as_f64()
         .ok_or_else(|| js_error("expected a JavaScript number"))?;
-    acyclic_fs::exact_u32_from_f64(number).map_err(js_error)
+    acyclic_fs_base::numeric::exact_u32_from_f64(number).map_err(js_error)
 }
 
 pub(in crate::bindings) fn closed_error() -> JsValue {

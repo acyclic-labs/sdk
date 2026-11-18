@@ -464,6 +464,7 @@ name = "acyclic-fs-napi"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-base",
  "acyclic-harness",
  "acyclic-native-runtime",
  "bytes",
@@ -487,6 +488,7 @@ name = "acyclic-fs-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fs-base",
  "acyclic-objects",
  "acyclic-stream",
  "blake3",
@@ -703,6 +705,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-fs-base",
  "acyclic-harness-control",
  "acyclic-harness-json",
  "acyclic-harness-layout",

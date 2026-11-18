@@ -146,7 +146,7 @@ where
                         }
                     };
                     needs_resolution |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
-                        if acyclic_fs::text_merge::has_conflict_markers(text));
+                        if acyclic_fs_base::text_merge::has_conflict_markers(text));
                     if needs_resolution {
                         unresolved.push(conflict.path.clone().unwrap_or_else(|| "/".into()));
                     }

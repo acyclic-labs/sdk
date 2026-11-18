@@ -325,7 +325,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         .remove("version");
     assert!(serde_json::from_value::<MergeCleanFile>(clean_document).is_err());
     let text = unbounded!(staging, read(text_path, 16384))?;
-    assert!(crate::text_merge::has_conflict_markers(
+    assert!(acyclic_fs_base::text_merge::has_conflict_markers(
         std::str::from_utf8(&text)?
     ));
     let longest_document = unbounded!(
@@ -904,7 +904,7 @@ fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn 
     ] {
         let mut result = None;
         let work = acyclic_test_support::measure(|| {
-            result = Some(crate::text_merge::merge_text(
+            result = Some(acyclic_fs_base::text_merge::merge_text(
                 base,
                 ours,
                 theirs,
@@ -952,7 +952,7 @@ fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn 
         ] {
             let mut result = None;
             let work = acyclic_test_support::measure(|| {
-                result = Some(crate::text_merge::merge_text(
+                result = Some(acyclic_fs_base::text_merge::merge_text(
                     base, ours, theirs, "ours", "theirs",
                 ));
             });
