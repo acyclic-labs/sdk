@@ -1843,6 +1843,7 @@ dependencies = [
  "acyclic-process-resources",
  "acyclic-proto-build",
  "acyclic-stream-body",
+ "acyclic-stream-trust",
  "acyclic-stream-wire",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
@@ -1973,6 +1974,17 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "acyclic-stream-trust"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-stream",
+ "ed25519-dalek",
+ "futures",
  "tokio",
 ]
 

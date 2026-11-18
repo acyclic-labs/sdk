@@ -32,6 +32,3 @@ mod revision_frontier_loom;
 
 #[cfg(all(not(loom), target_arch = "wasm32", feature = "wasm"))]
 mod credential_javascript;
-
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod trust_anchor;

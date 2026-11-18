@@ -8,11 +8,11 @@
 //! a refused account record fences that account, whose reads refuse as
 //! `VerifyError::Refused`, and pauses its original follow until an
 //! environment record or bootstrap key publication lets it apply.
-use crate::{
-    FollowFilter, Record, Stream, StreamCategory, StreamError, StreamProvider, UnixMillisClock,
-};
 use acyclic_auth::trust::{
     AnchorKeys, Applied, FenceCause, Follower, FollowerState, account_path, environment_path,
+};
+use acyclic_stream::{
+    FollowFilter, Record, Stream, StreamCategory, StreamError, StreamProvider, UnixMillisClock,
 };
 use futures::{
     FutureExt as _, StreamExt as _,

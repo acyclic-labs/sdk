@@ -217,6 +217,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/stream-trust:acyclic_stream_trust",
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
@@ -530,7 +531,6 @@ rust_test(
         "tests/record_formats.rs",
         "tests/retry_recovery_loom.rs",
         "tests/revision_frontier_loom.rs",
-        "tests/trust_anchor.rs",
         "tests/wave1_loom.rs",
     ],
     edition = "2024",
