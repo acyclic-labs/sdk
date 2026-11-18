@@ -23,8 +23,6 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-local",
     edition = "2024",
     version = "0.2.0",
@@ -370,8 +368,6 @@ cargo_build_script(
     srcs = [
         "build.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     pkg_name = "acyclic-harness-local",
     edition = "2024",
     version = "0.2.0",

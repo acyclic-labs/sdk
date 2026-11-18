@@ -12,6 +12,9 @@ description = "The durable native host behind the acyclic-harness facade"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness-local"
 
+[package.metadata.bazel]
+build-script-inputs = []
+
 [features]
 research = ["acyclic-harness-core/research"]
 conformance = ["acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
