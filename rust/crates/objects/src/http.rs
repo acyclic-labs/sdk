@@ -177,32 +177,14 @@ impl HttpObjects {
         })
     }
 
-    async fn authorization(
+    fn authorization_header(
         &self,
-    ) -> Result<
-        (
-            HeaderValue,
-            Option<acyclic_auth::credential::ResolvedCredential>,
-        ),
-        Error,
-    > {
-        if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            token
-                .check()
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            let header = credential_header(&token)
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            Ok((header, Some(token)))
-        } else {
-            self.authorization
-                .clone()
-                .map(|header| (header, None))
-                .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))
+        lease: Option<&acyclic_auth::credential::ResolvedCredential>,
+    ) -> Result<HeaderValue, Error> {
+        let denied = || Error::from(wire::ErrorCode::AccessDenied);
+        match lease {
+            Some(lease) => credential_header(lease).map_err(|_| denied()),
+            None => self.authorization.clone().ok_or_else(denied),
         }
     }
 
@@ -214,7 +196,11 @@ impl HttpObjects {
                 .map(crate::ObjectsMethod::http_message_types)
                 .ok_or_else(unavailable)?;
             let url = self.endpoint.join(route).map_err(|_| invalid())?;
-            let (authorization, lease) = self.authorization().await?;
+            let lease = match self.credential.as_ref() {
+                Some(provider) => Some(crate::operation::checked_lease(provider).await?),
+                None => None,
+            };
+            let authorization = self.authorization_header(lease.as_ref())?;
             let request = self
                 .transport
                 .post(url)

@@ -27,8 +27,7 @@ impl Credential {
         };
         let observed_at = tokio::time::Instant::now();
         let watch = provider.watch().await.map_err(|_| denied())?;
-        let lease = provider.resolve().await.map_err(|_| denied())?;
-        lease.check().await.map_err(|_| denied())?;
+        let lease = crate::operation::checked_lease(provider).await?;
         let expiry = watch
             .as_ref()
             .zip(lease.binding())

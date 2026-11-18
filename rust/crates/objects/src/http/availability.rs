@@ -21,14 +21,7 @@ impl HttpObjects {
             if let Some(context) = &self.context {
                 context.check()?;
             }
-            let authorization = match &credential.lease {
-                Some(lease) => credential_header(lease)
-                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?,
-                None => self
-                    .authorization
-                    .clone()
-                    .ok_or(Error::from(wire::ErrorCode::AccessDenied))?,
-            };
+            let authorization = self.authorization_header(credential.lease.as_ref())?;
             let request = wire::AvailabilityRequest {
                 digest: Some(digest.into()),
             };

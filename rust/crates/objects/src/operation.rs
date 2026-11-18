@@ -62,3 +62,12 @@ pub(crate) fn deadline(
         .map(Some)
         .ok_or_else(|| crate::wire::ErrorCode::InvalidArgument.into())
 }
+
+pub(crate) async fn checked_lease(
+    provider: &acyclic_auth::credential::CredentialProvider,
+) -> Result<acyclic_auth::credential::ResolvedCredential, Error> {
+    let denied = || Error::from(crate::wire::ErrorCode::AccessDenied);
+    let lease = provider.resolve().await.map_err(|_| denied())?;
+    lease.check().await.map_err(|_| denied())?;
+    Ok(lease)
+}
