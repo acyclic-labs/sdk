@@ -1,25 +1,12 @@
 use super::*;
-use crate::StreamCategory;
 use std::collections::{BTreeMap, BTreeSet};
-
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) enum Key {
-    Records(StreamPath),
-}
-impl std::borrow::Borrow<str> for Key {
-    fn borrow(&self) -> &str {
-        match self {
-            Self::Records(path) => path.as_str(),
-        }
-    }
-}
 
 /// Retained outside the replaceable replay cache, dispatched after durability.
 #[derive(Default)]
 pub(super) struct Changes {
-    keys: BTreeSet<Key>,
+    keys: BTreeSet<StreamPath>,
     records: BTreeMap<StreamPath, (Vec<Record>, u64)>,
-    created: BTreeMap<StreamPath, u64>,
+    created: BTreeSet<StreamPath>,
 }
 
 // Declared before the cache guard, so early return/cancellation drops that guard
@@ -52,7 +39,13 @@ impl Drop for Dispatch {
             for key in &self.keys.keys {
                 let _ = self.provider.inner.publications.interests.notify(key);
             }
-            for path in self.keys.created.keys() {
+            let created = self.keys.created.iter().map(|path| (path, None));
+            let published = self
+                .keys
+                .records
+                .iter()
+                .map(|(path, batch)| (path, Some(batch)));
+            for (path, batch) in created.chain(published) {
                 let index = self
                     .provider
                     .inner
@@ -62,20 +55,12 @@ impl Drop for Dispatch {
                     .ok()
                     .flatten();
                 if let Some(index) = index {
-                    crate::follow_index::FollowIndex::created(&index);
-                }
-            }
-            for (path, (records, tail)) in &self.keys.records {
-                let index = self
-                    .provider
-                    .inner
-                    .publications
-                    .follows
-                    .get(path)
-                    .ok()
-                    .flatten();
-                if let Some(index) = index {
-                    crate::follow_index::FollowIndex::publish(&index, records, *tail);
+                    match batch {
+                        None => crate::follow_index::FollowIndex::created(&index),
+                        Some((records, tail)) => {
+                            crate::follow_index::FollowIndex::publish(&index, records, *tail);
+                        }
+                    }
                 }
             }
         }
@@ -85,7 +70,7 @@ impl Drop for Dispatch {
     }
 }
 
-pub(super) struct Before(BTreeMap<StreamPath, Option<u64>>);
+pub(super) struct Before(Vec<(StreamPath, Option<u64>)>);
 impl Before {
     pub(super) async fn capture(
         provider: &MemoryStream,
@@ -98,9 +83,7 @@ impl Before {
             // Consult active subscriptions, never enumerate the forked subtree.
             if fork {
                 let descendants = path.descendants();
-                for Key::Records(path) in publications.interests.keys_in(descendants.bounds())? {
-                    paths.insert(path);
-                }
+                paths.extend(publications.interests.keys_in(descendants.bounds())?);
                 paths.extend(publications.follows.keys_in(descendants.bounds())?);
             }
             let mut next = Some(path.clone());
@@ -122,9 +105,11 @@ impl Before {
                 }
             }
         }
-        let mut before = BTreeMap::new();
+        // The input set has already deduplicated and ordered these paths.
+        let mut before = Vec::with_capacity(paths.len());
         for path in paths {
-            before.insert(path.clone(), tail(provider, path).await?);
+            let tail = provider.publication_tail(&path).await?;
+            before.push((path, tail));
         }
         Ok(Self(before))
     }
@@ -135,17 +120,17 @@ impl Before {
         publications: &notifications::Publications,
     ) -> Result<(), StreamError> {
         for (path, before) in self.0 {
-            let after = tail(provider, path.clone()).await?;
+            let after = provider.publication_tail(&path).await?;
             if after == before {
                 continue;
             }
-            keys.keys.insert(Key::Records(path.clone()));
-            let followed = publications.follows.get(&path)?.is_some();
+            keys.keys.insert(path.clone());
+            let followed = publications.follows.contains(&path)?;
             let Some(after) = after.filter(|_| followed) else {
                 continue;
             };
             if before.is_none() {
-                keys.created.insert(path.clone(), after);
+                keys.created.insert(path.clone());
             }
             let records = keys.records.entry(path.clone()).or_default();
             records.1 = after;
@@ -177,13 +162,6 @@ impl Before {
         Ok(())
     }
 }
-async fn tail(provider: &MemoryStream, path: StreamPath) -> Result<Option<u64>, StreamError> {
-    match provider.tail(path).await {
-        Ok(tail) => Ok(Some(tail)),
-        Err(error) if error.category() == StreamCategory::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-}
 
 impl BrowserStream {
     pub(super) async fn refresh_publication(&self, force: bool) -> Result<(), StreamError> {
@@ -197,27 +175,11 @@ impl BrowserStream {
         self.refresh_observation(&mut cache, &mut dispatch).await?;
         Ok(())
     }
-    pub(super) async fn with_cached_provider<T>(
-        &self,
-        operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
-    ) -> Result<T, StreamError> {
-        let mut dispatch = Dispatch::new(self);
-        let mut cache = self.inner.cache.lock().await;
-        if !cache.valid {
-            self.refresh_observation(&mut cache, &mut dispatch).await?;
-        }
-        #[cfg(test)]
-        self.inner
-            .follow_reads
-            .set(self.inner.follow_reads.get() + 1);
-        operation(&cache.provider).await
-    }
 }
 
 pub(super) struct Observer<'a> {
     pub(super) stream: &'a BrowserStream,
     pub(super) changed: &'a mut Changes,
-    pub(super) cursor: u64,
     pub(super) announced: u64,
     pub(super) before: Option<Before>,
 }
@@ -226,6 +188,7 @@ impl crate::replicated::ReplayObserver for Observer<'_> {
         &'a mut self,
         provider: &'a MemoryStream,
         command: &'a WriteRequest,
+        cursor: u64,
         after: bool,
     ) -> Result<(), StreamError> {
         if after {
@@ -233,11 +196,10 @@ impl crate::replicated::ReplayObserver for Observer<'_> {
                 before
                     .collect(provider, self.changed, &self.stream.inner.publications)
                     .await?;
-                self.announced = self.cursor + 1;
+                self.announced = cursor;
             }
-            self.cursor += 1;
         } else {
-            self.before = if self.cursor >= self.announced {
+            self.before = if cursor >= self.announced {
                 Some(Before::capture(provider, command, &self.stream.inner.publications).await?)
             } else {
                 None

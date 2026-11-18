@@ -41,6 +41,7 @@ pub(crate) struct FollowWindow {
 }
 
 type PreparedFollow<I> = (crate::Revision, crate::StreamSelection, I, HistoryCursor);
+type SignalRegistration = crate::interest::Interest<StreamPath, Signals>;
 
 impl MemoryStream {
     /// Refreshes either follow projection from the same checked history cut.
@@ -81,8 +82,40 @@ impl MemoryStream {
         filter: crate::FollowFilter,
         window: FollowWindow,
     ) -> Result<PreparedFollow<crate::follow_index::FollowInterest>, StreamError> {
-        self.prepare_cursor(path, from, anchor, when_absent, window, |signals, tail| {
+        self.prepare_registered_cursor(path, from, anchor, when_absent, window, |signals, tail| {
             crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)
+        })
+        .await
+    }
+
+    async fn prepare_registered_cursor<I>(
+        &self,
+        path: &StreamPath,
+        from: u64,
+        anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
+        window: FollowWindow,
+        subscribe: impl FnOnce(&Signals, u64) -> Result<I, StreamError>,
+    ) -> Result<PreparedFollow<I>, StreamError> {
+        self.prepare_cursor(path, from, anchor, when_absent, window, |state, tail| {
+            let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
+            let interest = subscribe(registration.value(), tail)?;
+            Ok((Some(registration), interest))
+        })
+        .await
+    }
+
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    pub(crate) async fn prepare_browser_cursor(
+        &self,
+        path: &StreamPath,
+        from: u64,
+        anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
+        window: FollowWindow,
+    ) -> Result<PreparedFollow<()>, StreamError> {
+        self.prepare_cursor(path, from, anchor, when_absent, window, |_, _| {
+            Ok((None, ()))
         })
         .await
     }
@@ -94,9 +127,11 @@ impl MemoryStream {
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
         window: FollowWindow,
-        subscribe: impl FnOnce(&Signals, u64) -> Result<I, StreamError>,
+        subscribe: impl FnOnce(&State, u64) -> Result<(Option<SignalRegistration>, I), StreamError>,
     ) -> Result<PreparedFollow<I>, StreamError> {
-        let state = self.state.write().await;
+        // Keep the observed cut stable through registration. The registry
+        // serializes its own updates, so other readers can share this guard.
+        let state = self.state.read().await;
         let snapshot = self.observe_follow(|| state.paths.get(path).cloned())?;
         let revision = self.revisions.at(state.decision);
         let selection = follow_selection(
@@ -108,9 +143,7 @@ impl MemoryStream {
         )?;
         let (from, anchor) = (selection.from, selection.preceding);
         let tail = snapshot.as_ref().map_or(0, |path| path.tail);
-        let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
-        let signals = registration.value();
-        let interest = subscribe(signals, tail)?;
+        let (registration, interest) = subscribe(&state, tail)?;
         drop(state);
         let mut cursor = HistoryCursor::initial(
             snapshot.as_ref(),
@@ -121,7 +154,7 @@ impl MemoryStream {
             self.work.clone(),
         )
         .await?;
-        cursor.registration = Some(registration);
+        cursor.registration = registration;
         cursor.end = selection.end;
         // Both projections retain the opening cut captured with registration.
         cursor.opening_tail = Some(tail);

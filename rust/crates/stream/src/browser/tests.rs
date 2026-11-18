@@ -652,7 +652,7 @@ async fn browser_wave1_conformance() {
             .inner
             .publications
             .interests
-            .keys_in::<publication::Key, _>(..)
+            .keys_in::<StreamPath, _>(..)
             .unwrap()
             .is_empty()
     );

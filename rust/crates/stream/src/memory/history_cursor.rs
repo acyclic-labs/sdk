@@ -6,7 +6,7 @@ pub(crate) struct HistoryCursor {
     work: Option<Arc<crate::native::Work>>,
     awaiting_creation: bool,
     opening_tail: Option<u64>,
-    registration: Option<crate::interest::Interest<StreamPath, Signals>>,
+    registration: Option<SignalRegistration>,
 }
 impl HistoryCursor {
     async fn initial(

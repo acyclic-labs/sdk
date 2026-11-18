@@ -220,7 +220,6 @@ impl BrowserStream {
         let mut observe = publication::Observer {
             stream: self,
             changed,
-            cursor: cache.cursor,
             announced: cache.announced,
             before: None,
         };
@@ -243,15 +242,26 @@ impl BrowserStream {
 
     async fn with_provider<T>(
         &self,
+        refresh: bool,
         operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
     ) -> Result<T, StreamError> {
         let mut dispatch = publication::Dispatch::new(self);
         #[cfg(test)]
-        self.inner
-            .observation_locks
-            .set(self.inner.observation_locks.get() + 1);
+        if refresh {
+            self.inner
+                .observation_locks
+                .set(self.inner.observation_locks.get() + 1);
+        }
         let mut cache = self.inner.cache.lock().await;
-        self.refresh_observation(&mut cache, &mut dispatch).await?;
+        if refresh || !cache.valid {
+            self.refresh_observation(&mut cache, &mut dispatch).await?;
+        }
+        #[cfg(test)]
+        if !refresh {
+            self.inner
+                .follow_reads
+                .set(self.inner.follow_reads.get() + 1);
+        }
         operation(&cache.provider).await
     }
 
@@ -385,7 +395,7 @@ impl StreamProvider for BrowserStream {
                 )
                 .await;
         }
-        self.with_provider(async move |provider| {
+        self.with_provider(true, async move |provider| {
             provider
                 .capture_heads(&request, crate::memory::HeadDurability::Durable)
                 .await
@@ -413,8 +423,10 @@ impl StreamProvider for BrowserStream {
         if !request.request().at_least.is_empty() {
             self.wait_revision(&request.request().at_least).await?;
         }
-        self.with_provider(async move |provider| provider.read_inner(request).await)
-            .await
+        self.with_provider(true, async move |provider| {
+            provider.read_inner(request).await
+        })
+        .await
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -486,7 +498,7 @@ impl BrowserStream {
         let minimum = revisions.floor(at_least)?;
         if minimum.is_some_and(|minimum| minimum > revisions.current().index) {
             // Another opener's commits reach the durable authority by replay.
-            self.with_provider(async |_| Ok(())).await?;
+            self.with_provider(true, async |_| Ok(())).await?;
         }
         // Covered cuts use the durable authority, independent of cache validity.
         // Park outside the cache lock so writes and refreshes can advance it.

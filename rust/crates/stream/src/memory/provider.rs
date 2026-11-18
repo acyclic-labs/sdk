@@ -59,6 +59,15 @@ impl MemoryStream {
         }
     }
 
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    pub(crate) async fn publication_tail(
+        &self,
+        path: &StreamPath,
+    ) -> Result<Option<u64>, StreamError> {
+        self.revisions.wait(&Default::default()).await?;
+        Ok(self.state.read().await.tail(path))
+    }
+
     pub(crate) async fn heads_inner(
         &self,
         request: crate::HeadsRequest,

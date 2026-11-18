@@ -7,7 +7,7 @@ impl MemoryStream {
         when_absent: crate::WhenAbsent,
         window: FollowWindow,
     ) -> Result<PreparedFollow<crate::change::Subscription>, StreamError> {
-        self.prepare_cursor(path, from, anchor, when_absent, window, |signals, _| {
+        self.prepare_registered_cursor(path, from, anchor, when_absent, window, |signals, _| {
             signals.changed.subscribe()
         })
         .await
