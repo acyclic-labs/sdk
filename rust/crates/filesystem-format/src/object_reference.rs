@@ -331,7 +331,10 @@ impl<'de> Deserialize<'de> for GenerationId {
                     *slot = byte;
                     length += 1;
                 }
-                GenerationId::from_bytes(&bytes[..length]).ok_or_else(|| {
+                let encoded = bytes
+                    .get(..length)
+                    .ok_or_else(|| serde::de::Error::custom("generation reference is too long"))?;
+                GenerationId::from_bytes(encoded).ok_or_else(|| {
                     serde::de::Error::custom("invalid canonical generation-root reference")
                 })
             }
