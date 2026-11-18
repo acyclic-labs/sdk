@@ -1,7 +1,9 @@
 use crate::{Attribute, OwnedBytes, StreamError};
+use acyclic_stream_wire::headers::{HeaderError, HeaderValidation};
 use std::sync::Arc;
 
 mod attributes;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod validation;
 use attributes::AttributeStorage;
 pub use attributes::{RecordAttribute, RecordAttributeIter, RecordAttributes};
@@ -10,8 +12,12 @@ mod prepared;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use prepared::{PreparedHeaderControls, PreparedHeaders};
 
-/// Maximum bytes in one indexed key.
-pub const MAX_RECORD_KEY_BYTES: usize = 1024;
+fn header_error(error: HeaderError) -> StreamError {
+    match error {
+        HeaderError::Invalid => StreamError::InvalidArgument,
+        HeaderError::Limit => StreamError::LimitExceeded,
+    }
+}
 
 struct HeaderData {
     keys: Vec<OwnedBytes>,
@@ -116,14 +122,16 @@ impl RecordHeaders {
     }
 
     fn validate_parts(keys: &[OwnedBytes], attributes: &[Attribute]) -> Result<(), StreamError> {
-        let mut validation = validation::Validation::default();
+        let mut validation = HeaderValidation::default();
         for key in keys {
-            validation.key(key)?;
+            validation.key(key).map_err(header_error)?;
         }
         for attribute in attributes {
-            validation.attribute(&attribute.name, &attribute.value)?;
+            validation.attribute(&attribute.name, &attribute.value);
         }
-        validation.finish(crate::MAX_RECORD_BYTES)
+        validation
+            .finish(crate::MAX_RECORD_BYTES)
+            .map_err(header_error)
     }
 
     /// Canonically sorted unique keys.

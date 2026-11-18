@@ -715,7 +715,7 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
         },
         ReadRequest {
             key: Some(crate::ReadKeySeek::exact(
-                vec![0_u8; crate::MAX_RECORD_KEY_BYTES + 1],
+                vec![0_u8; acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES + 1],
                 2,
             )),
             ..request

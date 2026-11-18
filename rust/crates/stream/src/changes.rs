@@ -133,7 +133,7 @@ impl<'a> Size<'a> {
     }
     /// Adds `entry`, or says why it cannot follow the entries so far.
     fn push(&mut self, entry: &ChangeEntryRef<'a>) -> Result<(), StreamError> {
-        if entry.key.len() > crate::MAX_RECORD_KEY_BYTES
+        if entry.key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES
             || entry.operation.is_empty()
             || entry.operation.chars().any(char::is_control)
             || self.previous.is_some_and(|previous| previous >= entry.key)
@@ -277,7 +277,7 @@ fn parse_v1<'a>(
         let operation = std::str::from_utf8(operation).map_err(|_| StreamError::InvalidArgument)?;
         let metadata = entry.field(26)?.unwrap_or_default();
         count += 1;
-        if key.len() > crate::MAX_RECORD_KEY_BYTES
+        if key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES
             || previous.is_some_and(|previous| previous >= key)
             || operation.chars().any(char::is_control)
             || !entry.0.is_empty()
@@ -335,7 +335,7 @@ fn parse<'a>(
         let total = common
             .checked_add(suffix.len())
             .ok_or(StreamError::InvalidArgument)?;
-        if total > crate::MAX_RECORD_KEY_BYTES {
+        if total > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         if let Some(remaining) = &mut remaining_keys {

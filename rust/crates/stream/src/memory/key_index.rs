@@ -1,6 +1,6 @@
 // The original exact-key/global-cut radix is shared with every primitive.
 // Values are sequence positions only; original records remain in their history.
-const RECORD_KEY_WIDTH: usize = crate::MAX_RECORD_KEY_BYTES + 8;
+const RECORD_KEY_WIDTH: usize = acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES + 8;
 type RecordKeys = acyclic_collections::KeyedIndex<(), Allocation, RECORD_KEY_WIDTH>;
 
 impl LineageIndex for RecordKeys {

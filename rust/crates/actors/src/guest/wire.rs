@@ -522,7 +522,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
             sequence,
             key,
         }) => {
-            if sequence < from || key.len() > acyclic_stream::MAX_RECORD_KEY_BYTES {
+            if sequence < from || key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
                 return Err(invalid("indexed trigger"));
             }
             Trigger::KeyedRecord {

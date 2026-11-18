@@ -549,8 +549,8 @@ fn path_ranges(
             key.push(byte);
         }
     }
-    if key.len() >= crate::MAX_RECORD_KEY_BYTES {
-        key.truncate(crate::MAX_RECORD_KEY_BYTES);
+    if key.len() >= acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES {
+        key.truncate(acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES);
         let mut end = key.clone();
         while end.last() == Some(&255) {
             end.pop();

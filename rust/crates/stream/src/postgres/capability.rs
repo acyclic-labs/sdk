@@ -66,7 +66,7 @@ async fn publication_uses_only_required_sql_observations()
         (
             1,
             Some(crate::ReadKeySeek::exact(
-                vec![0_u8; crate::MAX_RECORD_KEY_BYTES + 1],
+                vec![0_u8; acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES + 1],
                 1,
             )),
         ),

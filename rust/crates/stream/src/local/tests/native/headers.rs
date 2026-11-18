@@ -10,8 +10,8 @@ fn body() -> Result<crate::AppendRecord, StreamError> {
                 .take(129)
                 .map(|key| {
                     OwnedBytes::from(match key {
-                        0 => vec![0; crate::MAX_RECORD_KEY_BYTES - 1],
-                        1 => vec![0; crate::MAX_RECORD_KEY_BYTES],
+                        0 => vec![0; acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES - 1],
+                        1 => vec![0; acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES],
                         _ => vec![key],
                     })
                 })

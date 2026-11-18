@@ -132,7 +132,7 @@ fn publication_key_stops_at_its_selected_prefix() {
             // Restore the old traversal over the same admitted path and
             // original component encoder, rather than a second key codec.
             let mut historical = PathKey {
-                bytes: [0; acyclic_stream::MAX_RECORD_KEY_BYTES],
+                bytes: [0; acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES],
                 len: 0,
                 components: 0,
             };

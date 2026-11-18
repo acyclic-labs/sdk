@@ -2239,7 +2239,7 @@ fn validate_selection(trigger: &Trigger, delivered: Option<&Record>) -> Result<(
         ..
     } = trigger
         && (*sequence < *from
-            || key.len() > acyclic_stream::MAX_RECORD_KEY_BYTES
+            || key.len() > acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES
             || !delivered.is_some_and(|record| {
                 record.sequence == *sequence
                     && record

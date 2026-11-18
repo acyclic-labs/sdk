@@ -285,7 +285,7 @@ async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> 
 async fn indexed_reads_share_session_credit_and_count_delivered_records() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let client = local(&provider)?;
-    for length in [1, crate::MAX_RECORD_KEY_BYTES] {
+    for length in [1, acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES] {
         for native in [false, true] {
             let observed = Arc::new(crate::test_meter::Meter::default());
             let meter = observed.original();
@@ -391,7 +391,7 @@ async fn indexed_reads_share_session_credit_and_count_delivered_records() -> Tes
     oversized.key = Some(crate::ReadKeySeek {
         end: None,
         order: Default::default(),
-        key: vec![b'a'; crate::MAX_RECORD_KEY_BYTES + 1].into(),
+        key: vec![b'a'; acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES + 1].into(),
         before: 4,
     });
     let rejected = client.read(oversized);

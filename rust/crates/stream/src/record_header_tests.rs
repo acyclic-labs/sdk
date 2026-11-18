@@ -61,7 +61,7 @@ fn indexed_header_order_is_canonical_and_unique() -> Result<(), StreamError> {
     }
     assert_eq!(
         RecordHeaders::new(
-            vec![vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into()],
+            vec![vec![0; acyclic_stream_wire::headers::MAX_RECORD_KEY_BYTES + 1].into()],
             vec![]
         )
         .map_err(|error| error.category()),

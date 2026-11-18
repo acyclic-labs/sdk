@@ -1,7 +1,6 @@
 //! Header controls can retain an existing admitted page without copying names.
 use super::super::attributes::PackedAttribute;
 use super::*;
-use crate::StreamCategory;
 use std::ops::Range;
 
 #[cfg(test)]
@@ -104,7 +103,7 @@ fn validate(
     attributes: impl Iterator<Item = (Range<usize>, Range<usize>)>,
     maximum: usize,
 ) -> io::Result<()> {
-    let mut validation = super::super::validation::Validation::default();
+    let mut validation = HeaderValidation::default();
     for range in keys {
         let key = bytes.get(range.clone()).ok_or(io::ErrorKind::InvalidData)?;
         validation
@@ -115,14 +114,10 @@ fn validate(
         let name = std::str::from_utf8(bytes.get(name.clone()).ok_or(io::ErrorKind::InvalidData)?)
             .map_err(|_| io::ErrorKind::InvalidData)?;
         let value = bytes.get(value.clone()).ok_or(io::ErrorKind::InvalidData)?;
-        validation
-            .attribute(name, value)
-            .map_err(|_| io::ErrorKind::InvalidData)?;
+        validation.attribute(name, value);
     }
-    validation
-        .finish(maximum)
-        .map_err(|error| match error.category() {
-            StreamCategory::LimitExceeded => io::ErrorKind::InvalidInput.into(),
-            _ => io::ErrorKind::InvalidData.into(),
-        })
+    validation.finish(maximum).map_err(|error| match error {
+        HeaderError::Limit => io::ErrorKind::InvalidInput.into(),
+        HeaderError::Invalid => io::ErrorKind::InvalidData.into(),
+    })
 }
