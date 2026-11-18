@@ -45,6 +45,7 @@ rustc = "//:rustc"
 
 [package.metadata.bazel.test-dependencies]
 operation_claim_model = ["acyclic_stream", "loom"]
+merge_driver_contracts = ["acyclic_fs", "acyclic_fs_base"]
 native_view_table = []
 native_checkpoint = ["acyclic_auth", "cap_primitives", "cap_std", "thiserror"]
 wire_contracts = ["acyclic_fs", "acyclic_fs_wire", "prost", "serde_json"]
@@ -84,6 +85,10 @@ required-features = ["browser"]
 [[test]]
 name = "wire_contracts"
 path = "tests/wire_contracts.rs"
+
+[[test]]
+name = "merge_driver_contracts"
+path = "tests/merge_driver_contracts.rs"
 
 [[test]]
 name = "workspace_append"
