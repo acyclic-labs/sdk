@@ -6,7 +6,7 @@ FEATURES = []
 
 WASM_FEATURES = []
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-hosted-actors-conformance","CARGO_PKG_DESCRIPTION":"Shared Actors conformance over an admitted provider and remote owner controls","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-hosted-actors-conformance","CARGO_PKG_DESCRIPTION":"Shared Actors conformance over an admitted provider and remote owner controls","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
     name = "lints",

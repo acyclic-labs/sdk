@@ -21,6 +21,8 @@ build --features=static_link_msvcrt
 # clippy aspect type-checks the same tree again.
 build --@rules_rust//rust/settings:clippy_driver
 build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+# Pipelined compilation: a dependent crate starts on its dependency's metadata, not its finished rlib.
+build --@rules_rust//rust/settings:pipelined_compilation=true
 test --test_output=errors
 # Clippy reads the workspace thresholds. Every command carries the same value, so a build, a test and a
 # clippy run on one server share its analysis cache instead of discarding it when the flag differs.

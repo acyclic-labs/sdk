@@ -27,7 +27,7 @@ WASM_FEATURES = [
         "regex-syntax",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-syntect","CARGO_PKG_DESCRIPTION":"library for high quality syntax highlighting and code intelligence using Sublime Text's grammars","CARGO_PKG_REPOSITORY":"https://github.com/trishume/syntect","CARGO_PKG_LICENSE":"MIT"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"acyclic-syntect","CARGO_PKG_DESCRIPTION":"library for high quality syntax highlighting and code intelligence using Sublime Text's grammars","CARGO_PKG_REPOSITORY":"https://github.com/trishume/syntect","CARGO_PKG_LICENSE":"MIT"}
 
 extract_cargo_lints(
     name = "lints",

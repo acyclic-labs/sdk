@@ -21,7 +21,7 @@ FEATURES = [
         "tokio_rt",
     ]
 
-PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"napi","CARGO_PKG_DESCRIPTION":"N-API bindings","CARGO_PKG_REPOSITORY":"https://github.com/napi-rs/napi-rs","CARGO_PKG_LICENSE":"MIT","CARGO_PKG_RUST_VERSION":"1.88"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${exec_root}","CARGO_PKG_NAME":"napi","CARGO_PKG_DESCRIPTION":"N-API bindings","CARGO_PKG_REPOSITORY":"https://github.com/napi-rs/napi-rs","CARGO_PKG_LICENSE":"MIT","CARGO_PKG_RUST_VERSION":"1.88"}
 
 extract_cargo_lints(
     name = "lints",
