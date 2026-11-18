@@ -59,21 +59,26 @@ pub struct ActorStateCommit {
 /// final transition; late calls fail without provider I/O.
 #[derive(Clone, Debug)]
 pub struct ActorStateHost {
-    pub(crate) commands: tokio::sync::mpsc::Sender<StateCommand>,
-    pub(crate) stopped: super::CancellationToken,
+    commands: tokio::sync::mpsc::Sender<StateCommand>,
+    stopped: super::CancellationToken,
 }
 
+/// Requests handed off from the guest binding to the original state owner.
 #[derive(Debug)]
-pub(crate) enum StateCommand {
+pub enum StateCommand {
+    /// Read the metadata and journal tail of the admitted cut.
     Seed(tokio::sync::oneshot::Sender<Result<ActorStateSeed, super::GuestError>>),
+    /// Durably publish this packet in the original delivery's state.
     Commit(
         ActorStateCommit,
         tokio::sync::oneshot::Sender<Result<(), super::GuestError>>,
     ),
+    /// Stage the final packet for publication with the delivery.
     Stage(
         ActorStateCommit,
         tokio::sync::oneshot::Sender<Result<(), super::GuestError>>,
     ),
+    /// Read committed frames from the original journal.
     Read(
         u64,
         u32,
@@ -82,6 +87,14 @@ pub(crate) enum StateCommand {
 }
 
 impl ActorStateHost {
+    /// Give the guest a capability and the state owner its bounded receiver.
+    pub fn channel(
+        stopped: super::CancellationToken,
+    ) -> (Self, tokio::sync::mpsc::Receiver<StateCommand>) {
+        let (commands, receiver) = tokio::sync::mpsc::channel(1);
+        (Self { commands, stopped }, receiver)
+    }
+
     async fn request<T>(
         &self,
         command: impl FnOnce(tokio::sync::oneshot::Sender<Result<T, super::GuestError>>) -> StateCommand,

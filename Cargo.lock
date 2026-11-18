@@ -19,16 +19,12 @@ name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors-call",
+ "acyclic-actors-contract",
  "acyclic-actors-inventory",
  "acyclic-auth",
- "acyclic-auth-action",
- "acyclic-contract-derive",
  "acyclic-grpc-observability",
- "acyclic-host-platform",
  "acyclic-native-runtime",
- "acyclic-objects",
  "acyclic-observability",
- "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
  "acyclic-stream-body",
@@ -78,6 +74,40 @@ dependencies = [
  "prost",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-actors-contract"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors-call",
+ "acyclic-auth",
+ "acyclic-auth-action",
+ "acyclic-contract-derive",
+ "acyclic-grpc-observability",
+ "acyclic-host-platform",
+ "acyclic-objects",
+ "acyclic-proto-build",
+ "acyclic-stream",
+ "acyclic-stream-body",
+ "acyclic-stream-wire",
+ "acyclic-test-support",
+ "bytes",
+ "futures",
+ "http",
+ "http-body",
+ "loom",
+ "prost",
+ "prost-reflect",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tonic-prost",
+ "ts-rs",
 ]
 
 [[package]]

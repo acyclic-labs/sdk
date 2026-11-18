@@ -301,7 +301,7 @@ rust_test(
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//compatibility:tree/proto",
-        "//rust/crates/actors:tree/proto",
+        "//rust/crates/actors-contract:tree/proto",
         "//rust/crates/filesystem-wire:tree/proto",
         "//rust/crates/inference:tree/proto",
         "//rust/crates/machines:tree/proto",

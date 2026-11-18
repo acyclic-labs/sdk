@@ -13,7 +13,7 @@ export const packagedTypeScriptBindings = [
   ["objects/v1/objects_pb", ["objects"]],
   ["stream/v1/stream_pb", ["stream"], "rust/crates/stream-wire"],
   ["stream/v1/session_pb", ["stream"], "rust/crates/stream-wire"],
-  ["actors/v1/actors_pb", ["actors"]],
+  ["actors/v1/actors_pb", ["actors"], "rust/crates/actors-contract"],
 ];
 
 // These packages intentionally own no protobuf outputs after protocol retirement.

@@ -12,7 +12,7 @@ Actors and shared protocol inputs, without rebuilding SDK packages:
 
 ```sh
 sdk-proto-codegen descriptors INPUT_ROOT OUTPUT actors
-buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-buf.bin
+buf build --path rust/crates/actors-contract/proto/actors --exclude-source-info -o actors-buf.bin
 sdk-proto-codegen canonicalize actors actors-buf.bin actors-buf-v1.bin
 ```
 
@@ -47,7 +47,7 @@ cargo run --locked -p sdk-proto-codegen -- descriptors . OUTPUT
 1.75.0 tool installed by `bun install --frozen-lockfile`:
 
 ```
-node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-buf.bin
+node_modules/.bin/buf build --path rust/crates/actors-contract/proto/actors --exclude-source-info -o actors-buf.bin
 cargo run --locked -p sdk-proto-codegen -- canonicalize actors actors-buf.bin rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
 ```
 
@@ -69,7 +69,7 @@ existing Actors metadata exporter, whose maintained-proto comparison passed:
 
 ```
 cargo run --locked -p acyclic-actors --example actors-http-routes -- target/entry-configuration/routes.json --proto-out target/entry-configuration/proto
-cmp target/entry-configuration/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
+cmp target/entry-configuration/proto/actors/v1/actors.proto rust/crates/actors-contract/proto/actors/v1/actors.proto
 ```
 
 Its emitted `target/entry-configuration/Actors.service.bin` was copied to both
@@ -81,14 +81,14 @@ retaining every other field's wire identity. The Rust descriptor came from:
 
 ```
 cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-observation/routes.json --proto-out target/actor-observation/proto
-cmp target/actor-observation/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
+cmp target/actor-observation/proto/actors/v1/actors.proto rust/crates/actors-contract/proto/actors/v1/actors.proto
 ```
 
 The emitted `target/actor-observation/Actors.service.bin` was copied to both
 Rust descriptor paths. The independent compiler capture was:
 
 ```
-node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-observation-buf.bin
+node_modules/.bin/buf build --path rust/crates/actors-contract/proto/actors --exclude-source-info -o actors-observation-buf.bin
 cargo run --locked -p sdk-proto-codegen -- canonicalize actors actors-observation-buf.bin rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
 ```
 
@@ -107,7 +107,7 @@ Its `actors-v1.bin` is copied to both Rust descriptor paths above. The
 independent Buf capture and canonicalization used:
 
 ```
-node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
+node_modules/.bin/buf build --path rust/crates/actors-contract/proto/actors --exclude-source-info -o rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
 cargo run --locked -p sdk-proto-codegen -- canonicalize actors rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin
 ```
 
@@ -133,8 +133,8 @@ counter removal. These commands captured the Rust and independent Buf outputs:
 
 ```
 cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actor-publication-contract/actors-service.ts --proto-out target/actor-publication-contract/proto
-cmp target/actor-publication-contract/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
-node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o target/actor-publication-contract/actors-buf.bin
+cmp target/actor-publication-contract/proto/actors/v1/actors.proto rust/crates/actors-contract/proto/actors/v1/actors.proto
+node_modules/.bin/buf build --path rust/crates/actors-contract/proto/actors --exclude-source-info -o target/actor-publication-contract/actors-buf.bin
 cargo run --locked -p sdk-proto-codegen -- canonicalize actors target/actor-publication-contract/actors-buf.bin target/actor-publication-contract/actors-buf-v1.bin
 ```
 
@@ -160,9 +160,9 @@ and the selected Rust compiler output both have SHA-256
 
 ```sh
 cargo run --locked -p acyclic-actors --example actors-http-routes -- target/actors-cause-capture/actors-service.ts --proto-out target/actors-cause-capture/proto
-cmp target/actors-cause-capture/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
+cmp target/actors-cause-capture/proto/actors/v1/actors.proto rust/crates/actors-contract/proto/actors/v1/actors.proto
 cargo run --locked -p sdk-proto-codegen -- descriptors . target/actors-cause-descriptors actors
-node_modules/.bin/buf build --path rust/crates/actors/proto/actors --exclude-source-info -o actors-cause-buf-raw.bin
+node_modules/.bin/buf build --path rust/crates/actors-contract/proto/actors --exclude-source-info -o actors-cause-buf-raw.bin
 cargo run --locked -p sdk-proto-codegen -- canonicalize actors actors-cause-buf-raw.bin actors-cause-buf-v1.bin
 node scripts/check-compatibility-digests.mjs write
 ```

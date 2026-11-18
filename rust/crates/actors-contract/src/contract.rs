@@ -2,6 +2,27 @@
 use crate::wire;
 use std::collections::HashSet;
 
+/// Validate the limit alternative for the selected Actors deployment operation.
+pub fn validate_deployment_operation(
+    operation: &str,
+    deployment: &wire::DeploymentRequest,
+) -> Result<(), &'static str> {
+    // RPC descriptors use UpperCamelCase and HTTP routes use lowerCamelCase.
+    if operation.eq_ignore_ascii_case("DeployNamespace") {
+        if deployment.limits.is_none() || deployment.worker_limits.is_some() {
+            return Err("namespace deploy requires actor limits");
+        }
+    } else if operation.eq_ignore_ascii_case("DeployWorker")
+        && (deployment.worker_limits.is_none()
+            || deployment.limits.is_some()
+            || !deployment.subscriptions.is_empty()
+            || !deployment.jurisdiction.is_empty())
+    {
+        return Err("Worker deploy cannot carry actor subscriptions or jurisdiction");
+    }
+    Ok(())
+}
+
 pub(super) fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
 }

@@ -6,6 +6,14 @@ const _: Option<&str> = option_env!("ACYCLIC_BUILD_SOURCE_ROOT");
 
 use std::path::PathBuf;
 
+/// Crate directory that packages the schema for a protocol family.
+pub fn protocol_crate(family: &str) -> &str {
+    match family {
+        "actors" => "actors-contract",
+        _ => family,
+    }
+}
+
 mod authorization;
 mod compiler;
 pub use compiler::Compiler;

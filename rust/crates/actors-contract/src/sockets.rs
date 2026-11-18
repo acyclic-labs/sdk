@@ -98,7 +98,8 @@ struct FrameWire {
 
 impl WebSocketAutoResponse {
     /// Size of the response in the canonical channel encoding, without copying it.
-    pub(crate) fn response_frame_len(&self) -> usize {
+    /// Encoded size of the socket's admission response.
+    pub fn response_frame_len(&self) -> usize {
         prost::encoding::string::encoded_len(1, &self.response)
     }
 }
@@ -200,7 +201,7 @@ impl SocketOpen {
 
     /// Decode only the canonical encoding.
     pub fn decode(bytes: &[u8]) -> Result<Self, GuestError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "socket-test-support"))]
         OPEN_DECODE_WORK.with(|work| {
             let (decodes, encoded) = work.get();
             work.set((decodes + 1, encoded));
@@ -208,7 +209,7 @@ impl SocketOpen {
         let wire = OpenWire::decode(bytes).map_err(|_| invalid())?;
         if {
             let canonical = wire.encode_to_vec();
-            #[cfg(test)]
+            #[cfg(any(test, feature = "socket-test-support"))]
             OPEN_DECODE_WORK.with(|work| {
                 let (decodes, encoded) = work.get();
                 work.set((decodes, encoded + canonical.len()));
@@ -232,12 +233,18 @@ impl SocketOpen {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "socket-test-support"))]
 std::thread_local! {
     /// Work at the actual untrusted decoder, including rejected requests.
-    pub(crate) static OPEN_DECODE_WORK: std::cell::Cell<(usize, usize)> = const {
+    static OPEN_DECODE_WORK: std::cell::Cell<(usize, usize)> = const {
         std::cell::Cell::new((0, 0))
     };
+}
+
+/// Number of opens decoded and bytes checked by this thread's open decoder.
+#[cfg(any(test, feature = "socket-test-support"))]
+pub fn open_decode_work() -> (usize, usize) {
+    OPEN_DECODE_WORK.with(std::cell::Cell::get)
 }
 
 /// One frame on a socket channel, in either direction.
@@ -358,17 +365,22 @@ impl SocketFrame {
 
 /// One socket event in an actor inbox, before the host appends it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SocketInput {
+pub enum SocketInput {
+    /// Application data delivered in order.
     Message(SocketPayload),
+    /// Connection termination.
     Close {
+        /// WebSocket close code.
         code: u16,
+        /// Application reason supplied with the code.
         reason: String,
+        /// The party that closed the connection.
         initiator: SocketCloseInitiator,
     },
 }
 
 /// The open invocation for `connection`: its reply is the actor's verdict.
-pub(crate) fn open_invocation(
+pub fn open_invocation(
     caller: acyclic_stream::StreamPath,
     connection: &str,
     open: &SocketOpen,
@@ -390,10 +402,7 @@ pub(crate) fn open_invocation(
 }
 
 /// One marked inbox record for a socket event after Open.
-pub(crate) fn input_record(
-    connection: &str,
-    input: SocketInput,
-) -> Result<AppendRecord, GuestError> {
+pub fn input_record(connection: &str, input: SocketInput) -> Result<AppendRecord, GuestError> {
     let kind = match input {
         SocketInput::Message(SocketPayload::Text { text }) => InputKind::Text(text),
         SocketInput::Message(SocketPayload::Binary { binary }) => InputKind::Binary(binary),
@@ -426,8 +435,8 @@ pub(crate) fn input_record(
 }
 
 /// The kind of one marked inbox value, for tests that audit an inbox.
-#[cfg(test)]
-pub(crate) fn input_kind(value: &[u8]) -> Option<&'static str> {
+#[cfg(any(test, feature = "socket-test-support"))]
+pub fn input_kind(value: &[u8]) -> Option<&'static str> {
     Some(match decode_input(value).ok()?.kind? {
         InputKind::Open(_) => "open",
         InputKind::Text(_) | InputKind::Binary(_) => "message",

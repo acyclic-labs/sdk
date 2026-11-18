@@ -1,0 +1,86 @@
+[package]
+name = "acyclic-actors-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Actors v1 wire, semantic contract and guest ABI"
+
+[package.metadata.bazel]
+build-script-inputs = ["proto"]
+library-test-features = ["socket-test-support"]
+library-test-variant = "socket_test_support"
+unit-test-only-sources = ["src/guest/state/tests.rs"]
+test-build-script = ["actors-authorization"]
+test-narrow-runfiles = ["guest_loom"]
+
+[package.metadata.bazel.test-dependencies]
+actors-authorization = ["acyclic_auth_action", "acyclic_proto_build"]
+guest_loom = ["acyclic_actors_contract", "loom"]
+
+[package.metadata.kani.unstable]
+stubbing = true
+
+[features]
+model-checking = ["dep:loom"]
+socket-test-support = []
+test-support = [
+    "acyclic-actors-call/test-support",
+    "acyclic-auth/test-support",
+    "acyclic-grpc-observability/test-support",
+    "acyclic-objects/test-support",
+    "acyclic-stream/test-support",
+]
+
+[dependencies]
+acyclic-actors-call = { version = "=0.2.0", path = "../actors-call" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+acyclic-stream-body = { version = "=0.2.0", path = "../stream-body" }
+acyclic-stream-wire = { version = "=0.2.0", path = "../stream-wire" }
+bytes = { workspace = true, features = ["serde"] }
+futures.workspace = true
+http.workspace = true
+http-body = "1.1.0"
+prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
+tokio-util = { version = "=0.7.20", features = ["rt"] }
+tonic-prost.workspace = true
+ts-rs = "=12.0.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
+loom = { version = "0.7.3", features = ["futures"], optional = true }
+tonic = { workspace = true, features = ["codegen", "router", "transport", "tls-ring"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tonic = { workspace = true, features = ["codegen"] }
+
+[dev-dependencies]
+acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
+
+[build-dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "guest_loom"
+path = "tests/guest_loom.rs"
+required-features = ["model-checking"]

@@ -107,6 +107,7 @@ filegroup(
         "//plugin/identity:Cargo.toml",
         "//rust/codec-fuzz:Cargo.toml",
         "//rust/crates/actors-call:Cargo.toml",
+        "//rust/crates/actors-contract:Cargo.toml",
         "//rust/crates/actors-inventory:Cargo.toml",
         "//rust/crates/actors-napi:Cargo.toml",
         "//rust/crates/actors-wasm:Cargo.toml",
@@ -290,7 +291,7 @@ proto_js(
     schemas = {
         "//compatibility:proto/validation/v1/options.proto": "compatibility/proto/validation/v1/options.proto",
         "//compatibility:proto/harness/v2/resources.proto": "compatibility/proto/harness/v2/resources.proto",
-        "//rust/crates/actors:proto/actors/v1/actors.proto": "rust/crates/actors/proto/actors/v1/actors.proto",
+        "//rust/crates/actors-contract:proto/actors/v1/actors.proto": "rust/crates/actors-contract/proto/actors/v1/actors.proto",
     },
 )
 
@@ -389,9 +390,9 @@ typescript_packages(
         "//wasm:inference": "inference",
     },
     tools = {
+        "//rust/crates/actors-contract:actors-authorization_example": "//rust/crates/actors-contract:actors-authorization_example",
         "//rust/crates/actors-inventory:actors-rpc-inventory": "//rust/crates/actors-inventory:actors-rpc-inventory",
         "//rust/crates/actors-inventory:actors-wasm-rpc-inventory": "//rust/crates/actors-inventory:actors-wasm-rpc-inventory",
-        "//rust/crates/actors:actors-authorization_example": "//rust/crates/actors:actors-authorization_example",
         "//rust/crates/actors:actors-http-routes_example": "//rust/crates/actors:actors-http-routes_example",
         "//rust/crates/auth:generate_example": "//rust/crates/auth:generate_example",
         "//rust/crates/inference-wasm:inference-typescript-http-routes_example": "//rust/crates/inference-wasm:inference-typescript-http-routes_example",
