@@ -184,8 +184,8 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&original)?,
             );
             assert_eq!(file.read_capability(&mut Some(&mut io))?, expected);
-            assert_eq!(original.receipt().bytes_hashed, bytes);
-            assert_eq!(original.receipt().bytes_copied, budget.bytes_copied);
+            assert_eq!(original.receipt()?.bytes_hashed, bytes);
+            assert_eq!(original.receipt()?.bytes_copied, budget.bytes_copied);
             cancellation.cancel();
             assert!(file.identity_digest(65_536, &mut Some(&mut io)).is_err());
             assert!(file.read_capability(&mut Some(&mut io)).is_err());
@@ -198,7 +198,7 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&denied)?,
             );
             assert!(file.identity_digest(65_536, &mut Some(&mut io)).is_err());
-            assert_eq!(denied.receipt().bytes_hashed, 0);
+            assert_eq!(denied.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }
@@ -217,7 +217,7 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&original)?,
             );
             assert!(old_digest(&file, &mut Some(&mut io)).is_err());
-            assert_eq!(original.receipt().bytes_hashed, 0);
+            assert_eq!(original.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }

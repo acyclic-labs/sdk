@@ -195,7 +195,7 @@ mod tests {
                 "restored result: {restored_result:?}; receipt: {:?}",
                 restored.receipt()
             );
-            assert_eq!(restored.receipt().bytes_hashed, 0);
+            assert_eq!(restored.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }
@@ -217,8 +217,8 @@ mod tests {
             assert_eq!(labels(&volume, &mut Some(&mut io))?, expected);
             let bytes = 4 * crate::contract::canonical_json_bytes(&volume)?.len()
                 + crate::contract::canonical_json_bytes(&(&volume, ""))?.len();
-            assert_eq!(work.receipt().bytes_hashed, bytes as u64);
-            assert_eq!(work.receipt().bytes_copied, budget.bytes_copied);
+            assert_eq!(work.receipt()?.bytes_hashed, bytes as u64);
+            assert_eq!(work.receipt()?.bytes_copied, budget.bytes_copied);
             cancellation.cancel();
             assert!(volume.storage_name(&mut Some(&mut io)).is_err());
             assert!(
@@ -260,7 +260,7 @@ mod tests {
                     .capability(VolumeOperation::Write, &mut Some(&mut denied_io))
                     .is_err()
             );
-            assert_eq!(denied.receipt().bytes_hashed, 0);
+            assert_eq!(denied.receipt()?.bytes_hashed, 0);
         }
         Ok(())
     }
