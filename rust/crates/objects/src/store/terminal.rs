@@ -51,11 +51,7 @@ impl Fence {
 
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn terminal_key(&self, root: &RootId) -> String {
-        format!(
-            "{}t/{}",
-            self.state.prefix,
-            Digest::of(root.as_bytes()).to_hex()
-        )
+        format!("{}t/{}", self.state.prefix, Digest::of(root.as_bytes()))
     }
 
     async fn terminal_observed(&self, root: &RootId) -> Result<(Fence, Observed<'_>), Error> {
@@ -94,11 +90,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn fenced_prefix(&self, root: &RootId) -> String {
-        format!(
-            "{}f/{}/",
-            self.state.prefix,
-            Digest::of(root.as_bytes()).to_hex()
-        )
+        format!("{}f/{}/", self.state.prefix, Digest::of(root.as_bytes()))
     }
 
     async fn remove_fenced_batch(

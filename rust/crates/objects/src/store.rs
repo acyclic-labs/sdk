@@ -855,15 +855,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn root_prefix(&self, root: &RootId) -> String {
-        format!(
-            "{}r/{}/",
-            self.state.prefix,
-            Digest::of(root.as_bytes()).to_hex()
-        )
+        format!("{}r/{}/", self.state.prefix, Digest::of(root.as_bytes()))
     }
 
     fn index_prefix(&self, child: &Digest) -> String {
-        format!("{}i/{}/", self.state.prefix, child.to_hex())
+        format!("{}i/{child}/", self.state.prefix)
     }
 
     /// Whether any key exists under `prefix`.
@@ -883,7 +879,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 
     /// The `i/` holder tag of the root batch named `batch`.
     fn batch_tag(root: &RootId, batch: &str) -> String {
-        format!("r{}.{batch}", Digest::of(root.as_bytes()).to_hex())
+        format!("r{}.{batch}", Digest::of(root.as_bytes()))
     }
 
     /// Marks `tag` as holding each of `children`, then admits them: refused
