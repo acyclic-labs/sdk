@@ -122,6 +122,7 @@ rust_test(
         "//rust/crates/differential:tree",
         "//rust/crates/executable-search:tree",
         "//rust/crates/filesystem-base:tree",
+        "//rust/crates/filesystem-darwin-bridge:tree",
         "//rust/crates/filesystem-format:tree",
         "//rust/crates/filesystem-lock-order-tests:tree",
         "//rust/crates/filesystem-merge:tree",

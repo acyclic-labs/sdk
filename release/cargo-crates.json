@@ -39,6 +39,7 @@
   "acyclic-fs-storage-probe",
   "acyclic-fs-work",
   "acyclic-fs-merge",
+  "acyclic-fs-darwin-bridge",
   "acyclic-fs",
   "acyclic-markdown-work",
   "acyclic-syntect",
