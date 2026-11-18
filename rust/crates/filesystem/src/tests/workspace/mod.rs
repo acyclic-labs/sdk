@@ -54,8 +54,6 @@ mod proof_cache;
 
 mod publication;
 
-mod publication_guards;
-
 mod reads;
 
 mod rebase;

@@ -2095,6 +2095,7 @@ rust_test(
         "tests/workspace_transactions/workspace/mod.rs",
         "tests/workspace_transactions/workspace/tests/mod.rs",
         "tests/workspace_transactions/workspace/tests/operation_identity.rs",
+        "tests/workspace_transactions/workspace/tests/publication_guards.rs",
         "tests/workspace_transactions/workspace/tests/transactions.rs",
     ],
     edition = "2024",
@@ -2114,6 +2115,7 @@ rust_test(
         ":acyclic_fs",
         ":build_script",
     ] + [
+        "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
         "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
