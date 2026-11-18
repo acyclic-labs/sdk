@@ -4,7 +4,7 @@ use crate::domain;
 use crate::wire;
 
 mod validation;
-use acyclic_actors_diagnostics::ErrorMetadata;
+pub use acyclic_actors_diagnostics::ErrorMetadata;
 pub use acyclic_auth::credential::CredentialProvider;
 use prost::Message;
 use std::future::Future;
