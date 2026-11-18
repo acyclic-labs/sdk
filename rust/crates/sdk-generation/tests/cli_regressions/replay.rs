@@ -235,13 +235,7 @@ fn project_inner(
                 .collect(),
         };
         assert_eq!(spec.id().0, row["profile"].as_str().unwrap());
-        let receipt = fixture.rustdoc.join(
-            row["rustdocFile"]
-                .as_str()
-                .unwrap()
-                .strip_prefix("rustdoc/")
-                .unwrap(),
-        );
+        let receipt = receipt_path(&fixture.rustdoc, row);
         assert_eq!(
             rustdoc_digest(&receipt, &fixture.root).unwrap(),
             row["rustdocSha256"]

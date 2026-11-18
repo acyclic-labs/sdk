@@ -607,6 +607,16 @@ fn output_message(result: &std::process::Output) -> String {
     )
 }
 
+fn receipt_path(rustdoc: &Path, row: &Value) -> PathBuf {
+    rustdoc.join(
+        row["rustdocFile"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("rustdoc/")
+            .unwrap(),
+    )
+}
+
 fn assert_executed_profiles(
     output: &Path,
     rustdoc: &Path,
@@ -626,19 +636,12 @@ fn assert_executed_profiles(
             identities.insert(row["profile"].as_str().unwrap()),
             "duplicate execution receipt"
         );
-        let relative = row["rustdocFile"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("rustdoc/")
-            .unwrap();
+        let receipt = receipt_path(rustdoc, row);
         assert!(
-            rustdoc.join(relative).is_file(),
+            receipt.is_file(),
             "every execution must retain its Rustdoc output"
         );
-        assert!(rustdoc
-            .join(relative)
-            .with_extension("source.sha256")
-            .is_file());
+        assert!(receipt.with_extension("source.sha256").is_file());
     }
     let expected_counts = expected.iter().copied().collect::<BTreeMap<_, _>>();
     assert_eq!(

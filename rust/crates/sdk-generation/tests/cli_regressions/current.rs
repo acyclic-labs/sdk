@@ -418,12 +418,7 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
     );
     for receipt in long_profiles {
         assert!(receipt["profile"].as_str().unwrap().len() > 255);
-        let relative = receipt["rustdocFile"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("rustdoc/")
-            .unwrap();
-        let path = fixture.rustdoc.join(relative);
+        let path = receipt_path(&fixture.rustdoc, receipt);
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
             format!(
@@ -540,13 +535,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         .iter()
         .find(|receipt| receipt["profile"] == feature_profile["profile"])
         .expect("sidecar profile must have an executed receipt row");
-    let receipt_path = fixture.output.join(".rustdoc").join(
-        receipt["rustdocFile"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("rustdoc/")
-            .unwrap(),
-    );
+    let receipt_path = receipt_path(&fixture.rustdoc, receipt);
     assert_eq!(
         receipt["rustdocSha256"],
         rustdoc_digest(&receipt_path, &fixture.root).unwrap()
@@ -772,13 +761,7 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         );
         let mut paths = Vec::new();
         for receipt in receipts {
-            let path = checkout.rustdoc.join(
-                receipt["rustdocFile"]
-                    .as_str()
-                    .unwrap()
-                    .strip_prefix("rustdoc/")
-                    .unwrap(),
-            );
+            let path = receipt_path(&checkout.rustdoc, receipt);
             let raw: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
             let before = paths.len();
             for record in raw["external_crates"].as_object().unwrap().values() {
