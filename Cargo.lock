@@ -577,6 +577,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-fs-native-contract",
  "thiserror 2.0.21",
+ "windows 0.62.2",
 ]
 
 [[package]]

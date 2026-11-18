@@ -6,20 +6,11 @@
 //! as proof that the watched subtree was unchanged. A same-volume checkpoint
 //! write advances the journal itself, so it cannot use this fast path.
 
-#![allow(
-    unsafe_code,
-    reason = "reads the USN journal through Win32 volume control calls"
-)]
-
 use crate::NativeRootIdentity;
 use crate::native_host::HostRoot;
-use std::mem::size_of;
-use std::os::windows::io::AsRawHandle;
 use std::path::Path;
-use windows::Win32::Foundation::{ERROR_JOURNAL_NOT_ACTIVE, HANDLE};
-use windows::Win32::System::IO::DeviceIoControl;
-use windows::Win32::System::Ioctl::{FSCTL_QUERY_USN_JOURNAL, USN_JOURNAL_DATA_V0};
 
+use acyclic_fs_windows::journal::{JournalSnapshot, query_journal};
 use acyclic_fs_windows::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError};
 
 /// Why a restart cannot skip the canonical authenticated baseline.
@@ -102,12 +93,6 @@ fn classify_continuity(
     WindowsUsnContinuity::Unchanged
 }
 
-struct JournalSnapshot {
-    journal_id: u64,
-    lowest_valid_usn: u64,
-    next_usn: u64,
-}
-
 /// Reads the root's identity and its volume's journal through one held
 /// handle on the root itself: the journal is exactly the root's volume's
 /// (mounted-folder volumes included), and querying through a directory
@@ -119,46 +104,7 @@ fn observe_root(root: &Path) -> Result<(NativeRootIdentity, JournalSnapshot), Wi
     let root = HostRoot::open(&canonical, &mut crate::native_host::ordinary_work())
         .map_err(crate::native_host::ordinary_error)
         .map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
-    Ok((root.identity(), query_journal(&root)?))
-}
-
-fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
-    let mut data = USN_JOURNAL_DATA_V0::default();
-    let mut returned = 0_u32;
-    let output_size = u32::try_from(size_of::<USN_JOURNAL_DATA_V0>())
-        .map_err(|_| WindowsUsnError::InvalidJournal)?;
-    let handle = HANDLE(root.directory_handle().as_raw_handle());
-    // SAFETY: `root` holds a valid directory handle for the duration of the call;
-    // the output pointer references a correctly sized initialized structure;
-    // no overlapped operation outlives these stack values.
-    unsafe {
-        DeviceIoControl(
-            handle,
-            FSCTL_QUERY_USN_JOURNAL,
-            None,
-            0,
-            Some((&raw mut data).cast()),
-            output_size,
-            Some(&raw mut returned),
-            None,
-        )
-    }
-    .map_err(|error| {
-        if error.code() == ERROR_JOURNAL_NOT_ACTIVE.to_hresult() {
-            WindowsUsnError::JournalInactive
-        } else {
-            WindowsUsnError::Native(error.to_string())
-        }
-    })?;
-    if returned < output_size || data.NextUsn < 0 || data.LowestValidUsn < 0 {
-        return Err(WindowsUsnError::InvalidJournal);
-    }
-    Ok(JournalSnapshot {
-        journal_id: data.UsnJournalID,
-        lowest_valid_usn: u64::try_from(data.LowestValidUsn)
-            .map_err(|_| WindowsUsnError::InvalidJournal)?,
-        next_usn: u64::try_from(data.NextUsn).map_err(|_| WindowsUsnError::InvalidJournal)?,
-    })
+    Ok((root.identity(), query_journal(root.directory_handle())?))
 }
 
 #[cfg(test)]

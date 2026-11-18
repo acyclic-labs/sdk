@@ -13,6 +13,9 @@ acyclic-auth = { path = "../auth", version = "=0.2.0" }
 acyclic-fs-native-contract = { path = "../filesystem-native-contract", version = "=0.2.0" }
 thiserror.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl"] }
+
 [features]
 test-support = []
 
