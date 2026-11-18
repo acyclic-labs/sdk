@@ -55,7 +55,7 @@ cargo_build_script(
 rust_shared_library(
     name = "acyclic_stream_cdylib",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/filtered_follow_fixture.rs","src/grpc/credential_tests.rs","src/grpc/receipt_tests.rs","src/grpc/tests.rs","src/head_tests.rs","src/http/http_follow_tests.rs","src/http/session_tests.rs","src/lib/path_text_tests.rs","src/local/tests/**","src/memory/tests/**","src/owned_bytes/header_tests.rs","src/owned_bytes/tests.rs","src/postgres/capability.rs","src/preparation/tests.rs","src/query_sync/parity.rs","src/record_header_tests.rs","src/session/authority_tests.rs","src/session/client/tests.rs","src/session/client/tests/**","src/session/interest_tests.rs","src/session/tests.rs","src/test_meter.rs","src/test_trace.rs","src/wire_codec/origin_tests.rs","src/wire_codec/read_response_tests/**","src/wire_codec/revision_tests.rs"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
         "//rust/crates/stream/publication-models:probe.rs",
@@ -127,7 +127,7 @@ rust_shared_library(
 rust_library(
     name = "acyclic_stream",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/filtered_follow_fixture.rs","src/grpc/credential_tests.rs","src/grpc/receipt_tests.rs","src/grpc/tests.rs","src/head_tests.rs","src/http/http_follow_tests.rs","src/http/session_tests.rs","src/lib/path_text_tests.rs","src/local/tests/**","src/memory/tests/**","src/owned_bytes/header_tests.rs","src/owned_bytes/tests.rs","src/postgres/capability.rs","src/preparation/tests.rs","src/query_sync/parity.rs","src/record_header_tests.rs","src/session/authority_tests.rs","src/session/client/tests.rs","src/session/client/tests/**","src/session/interest_tests.rs","src/session/tests.rs","src/test_meter.rs","src/test_trace.rs","src/wire_codec/origin_tests.rs","src/wire_codec/read_response_tests/**","src/wire_codec/revision_tests.rs"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
         "//rust/crates/stream/publication-models:probe.rs",
@@ -198,13 +198,21 @@ rust_library(
 
 rust_test(
     name = "acyclic_stream_test_cases",
-    crate = ":acyclic_stream",
-    compile_data = [
+    crate_name = "acyclic_stream",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/crates/stream/publication-models:change.rs",
+        "//rust/crates/stream/publication-models:interest.rs",
+        "//rust/crates/stream/publication-models:probe.rs",
+        "tests/support/session.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/stream/fuzz:corpus/grpc_status/objects-error-detail",
     ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
+    rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature, values(\"conformance\", \"js-bytes\", \"model-checking\", \"serde\", \"test-support\", \"wasm\", \"wasm-journal\"))",
@@ -215,27 +223,63 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        ":build_script",
+    ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/collections:acyclic_collections",
+        "//rust/crates/decimal-u64:acyclic_decimal_u64",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
+        "//rust/crates/log-frame:acyclic_log_frame",
         "//rust/crates/native-runtime:acyclic_native_runtime",
+        "//rust/crates/observability:acyclic_observability",
         "//rust/crates/process-resources:acyclic_process_resources",
+        "//rust/crates/stream-body:acyclic_stream_body",
         "//rust/crates/stream-trust:acyclic_stream_trust",
+        "//rust/crates/stream-wire:acyclic_stream_wire",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//axum-0.8.9",
+        "@sdk_crates//base64_0_23_1-0.23.1",
+        "@sdk_crates//blake3-1.8.7",
+        "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//ed25519-dalek-3.0.0",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//h2-0.4.20",
+        "@sdk_crates//http-1.5.0",
         "@sdk_crates//hyper-1.12.0",
         "@sdk_crates//hyper-util-0.1.21",
+        "@sdk_crates//loom-0.7.3",
+        "@sdk_crates//pin-project-lite-0.2.17",
         "@sdk_crates//proptest-1.12.0",
+        "@sdk_crates//prost-0.14.4",
         "@sdk_crates//rcgen-0.14.10",
+        "@sdk_crates//reqwest_0_12_28-0.12.28",
+        "@sdk_crates//rustls-0.23.46",
+        "@sdk_crates//rustls-platform-verifier-0.7.1",
+        "@sdk_crates//ruzstd-0.9.1",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
+        "@sdk_crates//sha2-0.11.1",
+        "@sdk_crates//smallvec-1.16.2",
         "@sdk_crates//tempfile-3.27.0",
+        "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//tokio-1.54.1",
+        "@sdk_crates//tokio-postgres-0.7.18",
         "@sdk_crates//tokio-stream-0.1.19",
+        "@sdk_crates//tonic-0.14.9",
+        "@sdk_crates//tonic-prost-0.14.6",
         "@sdk_crates//tonic-web-0.14.6",
         "@sdk_crates//tower-0.5.3",
         "@sdk_crates//tower-http-0.6.11",
+        "@sdk_crates//tracing-0.1.44",
         "@sdk_crates//tracing-subscriber-0.3.23",
+        "@sdk_crates//url-2.5.8",
+        "@sdk_crates//uuid-1.29.0",
         "@sdk_crates//web-time-1.1.0",
+    ],
+    proc_macro_deps = [
+        "//rust/crates/contract-derive:acyclic_contract_derive",
+        "@sdk_crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -1240,7 +1284,7 @@ rust_shared_library(
     name = "acyclic_stream_wasm_cdylib",
     crate_name = "acyclic_stream",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/filtered_follow_fixture.rs","src/grpc/credential_tests.rs","src/grpc/receipt_tests.rs","src/grpc/tests.rs","src/head_tests.rs","src/http/http_follow_tests.rs","src/http/session_tests.rs","src/lib/path_text_tests.rs","src/local/tests/**","src/memory/tests/**","src/owned_bytes/header_tests.rs","src/owned_bytes/tests.rs","src/postgres/capability.rs","src/preparation/tests.rs","src/query_sync/parity.rs","src/record_header_tests.rs","src/session/authority_tests.rs","src/session/client/tests.rs","src/session/client/tests/**","src/session/interest_tests.rs","src/session/tests.rs","src/test_meter.rs","src/test_trace.rs","src/wire_codec/origin_tests.rs","src/wire_codec/read_response_tests/**","src/wire_codec/revision_tests.rs"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
         "//rust/crates/stream/publication-models:probe.rs",
@@ -1312,7 +1356,7 @@ rust_library(
     name = "acyclic_stream_wasm",
     crate_name = "acyclic_stream",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**","src/filtered_follow_fixture.rs","src/grpc/credential_tests.rs","src/grpc/receipt_tests.rs","src/grpc/tests.rs","src/head_tests.rs","src/http/http_follow_tests.rs","src/http/session_tests.rs","src/lib/path_text_tests.rs","src/local/tests/**","src/memory/tests/**","src/owned_bytes/header_tests.rs","src/owned_bytes/tests.rs","src/postgres/capability.rs","src/preparation/tests.rs","src/query_sync/parity.rs","src/record_header_tests.rs","src/session/authority_tests.rs","src/session/client/tests.rs","src/session/client/tests/**","src/session/interest_tests.rs","src/session/tests.rs","src/test_meter.rs","src/test_trace.rs","src/wire_codec/origin_tests.rs","src/wire_codec/read_response_tests/**","src/wire_codec/revision_tests.rs"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
         "//rust/crates/stream/publication-models:probe.rs",
