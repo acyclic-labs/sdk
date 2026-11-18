@@ -150,7 +150,11 @@ impl Digest {
     /// Lowercase hexadecimal, the form used in storage keys.
     #[must_use]
     pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+        self.encoded_hex().as_ref().to_owned()
+    }
+
+    pub(crate) fn encoded_hex(&self) -> impl AsRef<str> {
+        blake3::Hash::from_bytes(self.0).to_hex()
     }
 
     /// The first two lowercase hexadecimal digits, the storage shard.
@@ -174,13 +178,13 @@ impl Digest {
 
 impl std::fmt::Debug for Digest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "Digest({})", self.to_hex())
+        write!(formatter, "Digest({self})")
     }
 }
 
 impl std::fmt::Display for Digest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.to_hex())
+        formatter.write_str(self.encoded_hex().as_ref())
     }
 }
 
