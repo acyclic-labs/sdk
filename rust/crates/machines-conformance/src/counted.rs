@@ -1,5 +1,5 @@
 //! Transparent forwarding at the Machines provider boundary.
-use crate::*;
+use acyclic_machines::*;
 use acyclic_stream::testing::{Counted, RequestClass};
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -212,9 +212,9 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
     }
     async fn read_results(
         &self,
-        cursor: crate::results::ResultCursor,
+        cursor: acyclic_machines::results::ResultCursor,
         credit: NonZeroU32,
-    ) -> Result<crate::results::ResultPage, ProviderError> {
+    ) -> Result<acyclic_machines::results::ResultPage, ProviderError> {
         self.record(RequestClass::Data);
         self.inner().read_results(cursor, credit).await
     }

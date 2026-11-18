@@ -164,6 +164,7 @@ rust_test(
         "//rust/crates/host-platform:tree",
         "//rust/crates/inference-wasm:tree",
         "//rust/crates/inference:tree",
+        "//rust/crates/machines-conformance:tree",
         "//rust/crates/machines-daytona:tree",
         "//rust/crates/machines-simulation:tree",
         "//rust/crates/machines-wasm:tree",

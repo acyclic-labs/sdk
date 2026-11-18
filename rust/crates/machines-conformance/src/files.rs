@@ -1,5 +1,5 @@
 //! The same binary workspace cases run against range and whole-file providers.
-use crate::*;
+use acyclic_machines::*;
 
 /// Verifies binary chunks, offset overwrite, sparse extension and truncation on
 /// one exclusively owned guest path. The fixture retains cleanup ownership.

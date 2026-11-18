@@ -169,6 +169,7 @@ filegroup(
         "//rust/crates/inference-wasm:Cargo.toml",
         "//rust/crates/inference:Cargo.toml",
         "//rust/crates/log-frame:Cargo.toml",
+        "//rust/crates/machines-conformance:Cargo.toml",
         "//rust/crates/machines-daytona:Cargo.toml",
         "//rust/crates/machines-limits:Cargo.toml",
         "//rust/crates/machines-simulation:Cargo.toml",

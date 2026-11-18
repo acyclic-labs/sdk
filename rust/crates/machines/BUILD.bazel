@@ -4,7 +4,6 @@ load("@rules_rust//cargo:defs.bzl", "cargo_build_script", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 FEATURES = [
-        "conformance",
         "http-codec",
         "javascript",
         "test-support",
@@ -38,7 +37,7 @@ cargo_build_script(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -65,7 +64,7 @@ rust_library(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -114,7 +113,7 @@ rust_test(
     crate_features = FEATURES,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -126,6 +125,7 @@ rust_test(
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth-action:acyclic_auth_action",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
+        "//rust/crates/machines-conformance:acyclic_machines_conformance",
         "//rust/crates/machines-simulation:acyclic_machines_simulation",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/stream:acyclic_stream",
@@ -175,7 +175,7 @@ rust_test(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -192,6 +192,7 @@ rust_test(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/machines-limits:acyclic_machines_limits",
+        "//rust/crates/machines-conformance:acyclic_machines_conformance",
         "//rust/crates/machines-simulation:acyclic_machines_simulation",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
@@ -260,7 +261,7 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -275,6 +276,7 @@ rust_binary(
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
+        "//rust/crates/machines-conformance:acyclic_machines_conformance",
         "//rust/crates/machines-simulation:acyclic_machines_simulation",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
@@ -322,7 +324,7 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -339,6 +341,7 @@ rust_binary(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/grpc-observability:acyclic_grpc_observability",
         "//rust/crates/machines-limits:acyclic_machines_limits",
+        "//rust/crates/machines-conformance:acyclic_machines_conformance",
         "//rust/crates/machines-simulation:acyclic_machines_simulation",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/observability:acyclic_observability",
@@ -389,7 +392,7 @@ cargo_build_script(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
@@ -418,7 +421,7 @@ rust_library(
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
         "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"conformance\", \"http-codec\", \"javascript\", \"test-support\"))",
+        "--check-cfg=cfg(feature, values(\"http-codec\", \"javascript\", \"test-support\"))",
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",

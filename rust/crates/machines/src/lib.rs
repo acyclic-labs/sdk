@@ -110,10 +110,6 @@ mod obs;
 #[cfg(not(target_arch = "wasm32"))]
 pub use grpc::Tls;
 
-/// Shared provider qualification, checked benchmarks and request accounting.
-#[cfg(feature = "conformance")]
-pub mod conformance;
-
 #[cfg(test)]
 mod admission_tests {
     use acyclic_auth::action::{Action, MachinesAction};

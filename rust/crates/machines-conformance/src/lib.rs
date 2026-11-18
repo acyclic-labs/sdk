@@ -1,6 +1,6 @@
 //! Public, backend-independent Machines qualification and request budgets.
 
-use crate::{
+use acyclic_machines::{
     Capability, CompatibilityPolicy, CreateMachine, ExecCommand, IdempotencyKey, Image,
     LifecycleClass, MachineId, MachineObservation, MachineState, MachinesProvider, MutationOutcome,
     OperatingSystem, OperationPhase, Platform, Precondition, ProviderCapability, ProviderError,
@@ -218,7 +218,7 @@ async fn exec_admitted(
         .exec(machine.id, probe(machine.contract.platform)?)
         .await
         .map_err(|error| error.to_string())?;
-    let output = crate::capture_exec(output, u64::MAX)
+    let output = acyclic_machines::capture_exec(output, u64::MAX)
         .await
         .map_err(|error| error.to_string())?;
     if output.exit_code != Some(0) || output.stop.is_some() {
@@ -419,7 +419,7 @@ macro_rules! machines_conformance_suite {
         #[tokio::test]
         async fn $name() -> std::result::Result<(), String> {
             let backend = $factory().await.map_err(|error| error.to_string())?;
-            $crate::conformance::verify(&backend).await
+            $crate::verify(&backend).await
         }
     };
 }
@@ -545,7 +545,7 @@ async fn verify_provider(
         }
     } else {
         require_unsupported(provider.recover_operation(create_key).await)?;
-        let operation = crate::OperationId::parse("00000000-0000-0000-0000-000000000001")
+        let operation = acyclic_machines::OperationId::parse("00000000-0000-0000-0000-000000000001")
             .map_err(|e| e.to_string())?;
         require_unsupported(provider.inspect_operation(operation).await)?;
         require_unsupported(provider.cancel(operation).await)?;
@@ -576,7 +576,7 @@ async fn verify_provider(
         };
         let children = provider
             .read_results(
-                crate::results::ResultCursor {
+                acyclic_machines::results::ResultCursor {
                     cut: results,
                     from: 0,
                 },
@@ -586,9 +586,9 @@ async fn verify_provider(
             .map_err(|error| error.to_string())?
             .machines;
         if provenance
-            != (crate::Provenance {
-                source: crate::ForkSource::Checkpoint(checkpoint.id),
-                inherited: crate::ForkFidelity::MemoryAndDisk,
+            != (acyclic_machines::Provenance {
+                source: acyclic_machines::ForkSource::Checkpoint(checkpoint.id),
+                inherited: acyclic_machines::ForkFidelity::MemoryAndDisk,
             })
         {
             return Err("fork substituted its checkpoint provenance".into());
@@ -626,7 +626,7 @@ async fn verify_provider(
         }
     } else {
         require_unsupported(provider.checkpoint(machine.id, key(2)?).await)?;
-        let checkpoint = crate::CheckpointId::parse("00000000-0000-0000-0000-000000000001")
+        let checkpoint = acyclic_machines::CheckpointId::parse("00000000-0000-0000-0000-000000000001")
             .map_err(|e| e.to_string())?;
         require_unsupported(provider.inspect_checkpoint(checkpoint).await)?;
         require_unsupported(provider.fork(checkpoint, NonZeroU32::MIN, key(3)?).await)?;
@@ -668,7 +668,7 @@ async fn verify_provider(
             .events
             .iter()
             .filter_map(|event| match event.fact {
-                crate::EventFact::State(state) => Some(state),
+                acyclic_machines::EventFact::State(state) => Some(state),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -699,7 +699,7 @@ async fn verify_provider(
             .await
             .map_err(|error| error.to_string())?;
         if usage.machine != machine.id
-            || (assurance == crate::ProviderAssurance::ProcessLocalSimulation)
+            || (assurance == acyclic_machines::ProviderAssurance::ProcessLocalSimulation)
                 != usage.receipt.is_empty()
         {
             return Err("simulation usage receipt is malformed".into());
@@ -762,7 +762,7 @@ async fn live_fork(
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            acyclic_machines::results::ResultCursor {
                 cut: *results,
                 from: 0,
             },
@@ -771,7 +771,7 @@ async fn live_fork(
         .await
         .map_err(|error| error.to_string())?
         .machines;
-    if provenance.source != crate::ForkSource::Machine(machine.id)
+    if provenance.source != acyclic_machines::ForkSource::Machine(machine.id)
         || provenance.inherited != expected
     {
         return Err("live fork substituted its source or declared fidelity".into());
@@ -826,7 +826,7 @@ async fn live_fork(
     {
         return Err("a fork source with live forks was not refused as LiveForks".into());
     }
-    crate::results::cleanup(provider, *results, NonZeroU32::MIN)
+    acyclic_machines::results::cleanup(provider, *results, NonZeroU32::MIN)
         .await
         .map_err(|error| error.to_string())?;
     if !machine
@@ -853,7 +853,7 @@ async fn live_fork(
     };
     let children = provider
         .read_results(
-            crate::results::ResultCursor {
+            acyclic_machines::results::ResultCursor {
                 cut: *results,
                 from: 0,
             },
@@ -862,7 +862,7 @@ async fn live_fork(
         .await
         .map_err(|error| error.to_string())?
         .machines;
-    if provenance.source != crate::ForkSource::Machine(machine.id)
+    if provenance.source != acyclic_machines::ForkSource::Machine(machine.id)
         || provenance.inherited != expected
     {
         return Err("suspended fork substituted its source or declared fidelity".into());
@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(measured.requests.data(), 256);
         assert_eq!(measured.requests.control(), 0);
         let before = fixture.requests().requests();
-        let missing = crate::MachineId::from_digest([0x55; 32]);
+        let missing = acyclic_machines::MachineId::from_digest([0x55; 32]);
         assert!(matches!(
             fixture
                 .provider()

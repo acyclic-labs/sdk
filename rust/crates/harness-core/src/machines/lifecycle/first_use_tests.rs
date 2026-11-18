@@ -322,7 +322,7 @@ async fn retained_refusals_leave_original_sources_for_their_last_fork() -> TestR
     ] {
         let (_release, ready) = watch::channel(true);
         conformance.push(
-            acyclic_machines::conformance::verify(&acyclic_machines::conformance::Fixture::new(
+            acyclic_machines_conformance::verify(&acyclic_machines_conformance::Fixture::new(
                 HeldInspection {
                     inner,
                     ready,
