@@ -17,9 +17,10 @@ impl Backoff {
     /// explicitly selects no computed delay; no fallback policy is introduced.
     #[must_use]
     pub fn new(base_delay_ms: u32, maximum_delay_ms: u32, seed: u32) -> Self {
+        let base_ms = base_delay_ms.min(maximum_delay_ms);
         Self {
-            base_ms: base_delay_ms.min(maximum_delay_ms),
-            ceiling_ms: base_delay_ms.min(maximum_delay_ms),
+            base_ms,
+            ceiling_ms: base_ms,
             maximum_ms: maximum_delay_ms,
             sample: seed,
         }
@@ -73,10 +74,9 @@ impl Backoff {
         doublings: u32,
         unit_sample: f64,
     ) -> f64 {
-        let factor = Self::ceiling_ms_at(1, 1 << 52, doublings);
         // A power of two is exact in binary64. Encode its biased exponent
         // directly to preserve fractional millisecond bounds.
-        let factor = f64::from_bits((1023 + u64::from(factor.trailing_zeros())) << 52);
+        let factor = f64::from_bits((1023 + u64::from(doublings.min(52))) << 52);
         ((base_ms * factor).min(maximum_ms) * (0.5 + unit_sample / 2.0)).ceil()
     }
 
