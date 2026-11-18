@@ -12,6 +12,17 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[package.metadata.bazel]
+build-script-inputs = [
+    "runner",
+    "src/execution/instruction.rs",
+    "src/execution/linux/device.rs",
+    "src/execution/linux/entry.rs",
+    "src/process_tree/packet_device_receipt.rs",
+    "src/process_tree/record.rs",
+    "src/process_tree/warden.rs",
+]
+
 [package.metadata.bazel.test-tools.main]
 node = "@nodejs//:node"
 
