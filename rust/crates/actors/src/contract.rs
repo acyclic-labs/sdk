@@ -92,7 +92,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         }
     }
     if !valid_jurisdiction(&request.jurisdiction, request.worker_limits.is_some())
-        || !domain::valid_code_sha256(&request.code_sha256)
+        || domain::CodeSha256::new(&request.code_sha256).is_err()
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
@@ -136,7 +136,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
 /// Validates a full compare-and-replace Actor configuration mutation.
 pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), ContractError> {
     if crate::addressing::NamespaceId::validate_deployment(request.namespace_id.as_bytes()).is_err()
-        || !domain::valid_code_sha256(&request.code_sha256)
+        || domain::CodeSha256::new(&request.code_sha256).is_err()
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.namespace_id)
         || !request
