@@ -12,18 +12,14 @@ use acyclic_fs_format::{
 };
 use acyclic_fs_work::performance::{WorkBudget, WorkCounters};
 
-#[path = "../../../support/memory_objects.rs"]
-mod memory;
-use memory::memory_objects;
-
-#[path = "../../../support/extent_objects.rs"]
-mod fixture;
+use super::super::extent_objects::put_extent_page;
+use super::super::memory::memory_objects;
 
 async fn put(
     store: &MemoryObjectBackend,
     extents: Vec<Extent>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    fixture::put_extent_page(store, &ExtentPage::Leaf(extents), 16).await
+    put_extent_page(store, &ExtentPage::Leaf(extents), 16).await
 }
 
 async fn extents(
