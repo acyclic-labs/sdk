@@ -1,12 +1,5 @@
 use super::InvalidPolicy;
 
-pub(super) fn spend(remaining: &mut usize, amount: usize) -> Result<(), InvalidPolicy> {
-    *remaining = remaining
-        .checked_sub(amount)
-        .ok_or(InvalidPolicy("glob compilation exceeds work limit"))?;
-    Ok(())
-}
-
 fn sum(values: impl IntoIterator<Item = usize>) -> Result<usize, InvalidPolicy> {
     values
         .into_iter()
@@ -41,26 +34,26 @@ pub(super) fn preparation(
         ))?;
     let identifiers = sum(policy.layers.iter().flatten().map(|rule| rule.id.len()))?;
     let records = sum([rules, grants])?;
-    let questions = if folded {
-        sum(policy
-            .layers
-            .iter()
-            .flatten()
-            .map(|rule| super::glob::question_count(&rule.resource.path))
-            .chain(
-                capability
-                    .layers
-                    .iter()
-                    .flatten()
-                    .map(|grant| super::glob::question_count(&grant.resource.path)),
-            ))?
-    } else {
-        0
-    };
+    let questions =
+        if folded {
+            sum(policy
+                .layers
+                .iter()
+                .flatten()
+                .map(|rule| acyclic_fs_access_glob::glob::question_count(&rule.resource.path))
+                .chain(capability.layers.iter().flatten().map(|grant| {
+                    acyclic_fs_access_glob::glob::question_count(&grant.resource.path)
+                })))?
+        } else {
+            0
+        };
     let nodes = sum([
         product(patterns, 2)?,
         product(records, 4)?,
-        product(questions, super::glob::folded_question_states())?,
+        product(
+            questions,
+            acyclic_fs_access_glob::glob::folded_question_states(),
+        )?,
     ])?;
     // Per-byte NFA nodes/edges, folding scratch and component vectors; fixed
     // per-record credit covers B-tree nodes, starts, rule/grant maps and ids.

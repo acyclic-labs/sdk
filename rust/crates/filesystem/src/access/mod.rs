@@ -22,7 +22,6 @@ pub(crate) use retry::{RetryError, observe_policy};
 /// Canonical policy setup for filesystem conformance tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
-mod glob;
 mod mount;
 mod names;
 pub(crate) mod projection;
@@ -312,7 +311,7 @@ impl ResourcePattern {
         {
             return Err(InvalidPolicy("generation range is reversed"));
         }
-        glob::validate(&self.path)
+        acyclic_fs_access_glob::glob::validate(&self.path).map_err(InvalidPolicy::from)
     }
 
     pub(super) fn matches_view(&self, resource: Resource<'_>) -> bool {
@@ -416,6 +415,12 @@ pub struct Policy {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("invalid filesystem access policy: {0}")]
 pub struct InvalidPolicy(pub &'static str);
+
+impl From<acyclic_fs_access_glob::GlobError> for InvalidPolicy {
+    fn from(error: acyclic_fs_access_glob::GlobError) -> Self {
+        Self(error.0)
+    }
+}
 
 impl Policy {
     /// Validate once at admission or compilation, including every glob.

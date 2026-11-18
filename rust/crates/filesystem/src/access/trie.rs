@@ -1,8 +1,8 @@
-use super::compilation::spend;
-use super::glob::{ClosureScratch, Nfa, Symbol};
 use super::{
     Action, Capability, Context, Decision, Denial, InvalidPolicy, Policy, Principal, Resource,
 };
+use acyclic_fs_access_glob::glob::{ClosureScratch, Nfa, Symbol};
+use acyclic_fs_access_glob::spend;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod reachability;

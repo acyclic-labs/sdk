@@ -231,7 +231,7 @@ impl Capability {
     ) -> Result<Self, InvalidPolicy> {
         let mut grant = Self::whole_volume(volume, actions);
         if !root.is_empty() {
-            grant.layers[0][0].resource.path = super::glob::literal_subtree(root)?;
+            grant.layers[0][0].resource.path = acyclic_fs_access_glob::glob::literal_subtree(root)?;
         }
         Ok(grant)
     }
