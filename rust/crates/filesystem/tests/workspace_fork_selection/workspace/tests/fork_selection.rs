@@ -1,6 +1,4 @@
-use acyclic_fs::{
-    ApplyOptions, ForkOptions, Fs, IdempotencyKey, JoinOutcome, PublicationPermit, WorkspaceError,
-};
+use acyclic_fs::{ApplyOptions, ForkOptions, Fs, IdempotencyKey, JoinOutcome, PublicationPermit};
 use std::error::Error;
 
 use crate::fixtures::{commit, fork_workspace};
