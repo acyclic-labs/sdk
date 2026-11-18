@@ -49,10 +49,12 @@ pub fn snapshot<R>(
     reserve: impl FnOnce(u64) -> Result<R, JsValue>,
 ) -> Result<(Vec<u8>, R), JsValue> {
     snapshot_with(view, |count| {
+        let capacity = usize::try_from(count)
+            .map_err(|_| JsValue::from_str("byte snapshot extent exceeds address space"))?;
         let reservation = reserve(count)?;
         let mut bytes = Vec::new();
         bytes
-            .try_reserve_exact(count as usize)
+            .try_reserve_exact(capacity)
             .map_err(|_| JsValue::from_str("byte snapshot allocation failed"))?;
         Ok((bytes, reservation))
     })
