@@ -102,7 +102,7 @@ test('leader exit retires its real live descendant before output closure', async
   } finally {
     if (group !== undefined) {
       try { process.kill(-group, 'SIGKILL'); } catch (error) {
-        if (error.code !== 'ESRCH') throw error;
+        if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error;
       }
     }
     await execution.catch(() => {});
