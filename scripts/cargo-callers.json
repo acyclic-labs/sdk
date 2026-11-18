@@ -26,7 +26,6 @@
   "rust/crates/native-runtime/tests/exit_status_control.py",
   "rust/crates/native-runtime/tests/signal-control.py",
   "rust/crates/native-runtime/tests/task_custody_control.py",
-  "rust/fuzz/experiment-negative-control.py",
   "rust/fuzz/native-codec-control.mjs",
   "rust/proofs/agent-path/run.py",
   "rust/proofs/qualify.mjs",

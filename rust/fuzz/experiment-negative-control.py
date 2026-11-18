@@ -1,6 +1,7 @@
 """Plant production defects; require the unchanged fuzz oracle to fail."""
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -310,9 +311,9 @@ def fail(step, detail, case=None):
 
 def run(inputs):
     return subprocess.run(
-        ["cargo", "run", "--locked", "-p", "acyclic-sdk-fuzz", "--bin", "experiment_files",
-         "--no-default-features", "--features", "experiments", "--", *map(str, inputs)],
-        cwd=ROOT / "rust", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        ["bazel", "run", "//rust/fuzz:experiment_files", "--", *map(str, inputs)],
+        cwd=ROOT, env={**os.environ, "ACYCLIC_TEST_SOURCE_ROOT": str(ROOT)},
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
 
 
@@ -341,7 +342,7 @@ try:
     positive = run(sorted(corpus.iterdir()))
     print(positive.stdout, flush=True)
     if positive.returncode != 0:
-        fail("original corpus replay", f"cargo returned {positive.returncode}; no mutation applied")
+        fail("original corpus replay", f"Bazel replay returned {positive.returncode}; no mutation applied")
     print("PASS original corpus replay", flush=True)
     for case in dict.fromkeys(args.cases):
         path, needle, replacement, seed, invariant = CASES[case]
@@ -360,14 +361,14 @@ try:
                     missed = run([corpus / seed])
                     print(missed.stdout, flush=True)
                     if missed.returncode != 0:
-                        fail("previous oracle comparison", f"cargo returned {missed.returncode}; expected missed defect", case)
+                        fail("previous oracle comparison", f"Bazel replay returned {missed.returncode}; expected missed defect", case)
                     print(f"RED confirmed {case}: previous unchanged oracle missed the same production defect", flush=True)
                 finally:
                     oracle.write_bytes(repaired)
             negative = run([corpus / seed])
             print(negative.stdout, flush=True)
             if not oracle_rejected(negative.returncode, negative.stdout, invariant):
-                fail("production mutant replay", f"cargo returned {negative.returncode}; expected original admission oracle failure was not observed", case)
+                fail("production mutant replay", f"Bazel replay returned {negative.returncode}; expected original admission oracle failure was not observed", case)
             if hashlib.sha256(oracle.read_bytes()).hexdigest() != oracle_hash:
                 fail("oracle identity", "fuzz oracle changed during control", case)
             print(f"PASS {case}: unchanged oracle {oracle_hash} rejected production mutant", flush=True)
