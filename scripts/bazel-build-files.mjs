@@ -891,7 +891,7 @@ ${platformSources.map(([platform, sources]) => `        ${q(platform)}: ${glob(s
   // it builds a bench only when its `test = true`.
   const separateDeps = () => deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro);
   const sharedDeps = !graph && p.metadata?.bazel?.["share-separate-deps"]
-    ? separateDeps().filter(([, value]) => value !== undefined)
+    ? separateDeps().filter(([, value]) => value !== undefined && value !== "[]")
     : [];
   const depVariable = key => `SEPARATE_${key.toUpperCase()}`;
   const separate = target => {
