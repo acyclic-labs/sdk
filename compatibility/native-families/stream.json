@@ -25,6 +25,7 @@
     "rust-toolchain.toml",
     "rust/crates/auth",
     "rust/crates/auth-action",
+    "rust/crates/auth-operation",
     "rust/crates/collections",
     "rust/crates/contract-derive",
     "rust/crates/differential",

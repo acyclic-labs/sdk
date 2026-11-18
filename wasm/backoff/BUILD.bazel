@@ -5,13 +5,11 @@ rust_shared_library(
     name = "module",
     crate_name = "acyclic_backoff_wasm",
     crate_root = "lib.rs",
-    srcs = [
-        "lib.rs",
-        "//rust/crates/auth:src/operation/backoff.rs",
-    ],
+    srcs = ["lib.rs"],
     edition = "2024",
     target_compatible_with = ["@platforms//os:none", "@platforms//cpu:wasm32"],
     deps = [
+        "//rust/crates/auth-operation:acyclic_auth_operation_wasm",
         "@wasm_crates//wasm-bindgen-0.2.117",
     ],
 )

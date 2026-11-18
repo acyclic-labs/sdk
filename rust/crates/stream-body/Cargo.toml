@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Transport body fragments retaining their original custody"
 
 [dependencies]
-acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 bytes.workspace = true
 
 [lints]

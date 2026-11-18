@@ -14,7 +14,7 @@ pub use bytes::{
     ProtectedBytes, bytes_owner_allocation_bytes, protect_bytes, reserve_protected_bytes,
 };
 
-#[cfg(all(target_arch = "wasm32", feature = "js-credential"))]
+#[cfg(all(target_arch = "wasm32", feature = "javascript"))]
 pub mod javascript;
 
 #[cfg(not(target_arch = "wasm32"))]

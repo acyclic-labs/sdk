@@ -1,5 +1,6 @@
 //! Body fragments retaining the original transport or allocation custody.
 
+use acyclic_auth_operation::bytes_owner_allocation_bytes;
 use bytes::{Buf, Bytes};
 
 /// One original body fragment and the owner that permits it to remain live.
@@ -36,9 +37,7 @@ impl<C: Send + 'static> BodyChunk<C> {
         self,
         admit: impl FnOnce(usize) -> Result<A, E>,
     ) -> Result<Bytes, E> {
-        let control = admit(acyclic_auth::operation::bytes_owner_allocation_bytes::<
-            BodyChunk<(C, A)>,
-        >())?;
+        let control = admit(bytes_owner_allocation_bytes::<BodyChunk<(C, A)>>())?;
         Ok(Bytes::from_owner(BodyChunk {
             bytes: self.bytes,
             _custody: (self._custody, control),

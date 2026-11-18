@@ -64,9 +64,7 @@ impl super::Clock for Clock {
     fn expires_at(&self, deadline: u64) -> Result<StopFuture, Stopped> {
         // Register eagerly with the retained custodian. Dropping this future
         // releases only this registration, never the original invocation.
-        let controller = AbortController::new().map_err(|_| Stopped::Cancelled)?;
-        let signal = controller.signal();
-        let registration = Cancel(Some(controller));
+        let (registration, signal) = AbortOnDrop::with_signal().map_err(|_| Stopped::Cancelled)?;
         let promise = self
             .expires
             .call2(&self.owner, &js_sys::BigInt::from(deadline), &signal)
@@ -92,9 +90,24 @@ async fn stop(promise: Promise) -> Stopped {
     }
 }
 
-pub(crate) struct Cancel(pub(crate) Option<AbortController>);
+/// Owns a browser abort signal until its operation settles or is dropped.
+pub struct AbortOnDrop(Option<AbortController>);
 
-impl Drop for Cancel {
+impl AbortOnDrop {
+    /// Create one signal and the guard that aborts it on drop.
+    pub fn with_signal() -> Result<(Self, AbortSignal), JsValue> {
+        let controller = AbortController::new()?;
+        let signal = controller.signal();
+        Ok((Self(Some(controller)), signal))
+    }
+
+    /// Release the guard after successful completion without aborting the signal.
+    pub fn disarm(mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         if let Some(controller) = self.0.take() {
             controller.abort();
@@ -118,8 +131,9 @@ pub fn context(
     ))
 }
 
-// Credential source watches and invocation stops share one drop-owned listener.
-pub(crate) fn listen(signal: AbortSignal) -> Result<SignalStop, JsValue> {
+/// Subscribe to a browser stop signal, including a signal that already stopped.
+/// Dropping the subscription unregisters its listener from the signal.
+pub fn listen(signal: AbortSignal) -> Result<SignalStop, JsValue> {
     let (send, receive) = oneshot::channel();
     let send = Rc::new(RefCell::new(Some(send)));
     let changed_send = send.clone();
@@ -152,7 +166,8 @@ fn reason(signal: &AbortSignal) -> Stopped {
     }
 }
 
-pub(crate) struct SignalStop {
+/// A single drop-owned browser stop subscription.
+pub struct SignalStop {
     signal: AbortSignal,
     changed: Closure<dyn FnMut(Event)>,
     receive: oneshot::Receiver<Stopped>,

@@ -1,10 +1,10 @@
 //! Lossless adapter for the public JavaScript CredentialProvider contract.
 use super::*;
-use crate::operation::javascript::Cancel;
+use acyclic_auth_operation::javascript::{AbortOnDrop, SignalStop, listen};
 use js_sys::{Function, JsString, Reflect};
 use std::task::{Context, Poll};
 use wasm_bindgen::{JsCast, prelude::*};
-use web_sys::{AbortController, AbortSignal};
+use web_sys::AbortSignal;
 
 #[wasm_bindgen(inline_js = r#"
 const encoder = new TextEncoder();
@@ -84,9 +84,7 @@ struct Source(Function);
 impl CredentialSource for Source {
     fn resolve(&self) -> CredentialResolution<'_> {
         Box::pin(async {
-            let controller = AbortController::new().map_err(invalid)?;
-            let signal = controller.signal();
-            let mut cancel = Cancel(Some(controller));
+            let (cancel, signal) = AbortOnDrop::with_signal().map_err(invalid)?;
             let resolve = get(&self.0, "resolveRequest")?;
             let is_request = !resolve.is_undefined();
             let function = if is_request {
@@ -100,7 +98,7 @@ impl CredentialSource for Source {
                 .map_err(invalid)?;
             // The source has settled. A raw request can retain this signal for
             // its own check, so successful resolution must not abort it.
-            cancel.0.take();
+            cancel.disarm();
             if !is_request {
                 let token = protected_text(&object)?;
                 if !super::valid_credential(&token) {
@@ -156,7 +154,7 @@ impl CredentialSource for Source {
             let signal = get(&owner.0, "changed")?
                 .dyn_into::<AbortSignal>()
                 .map_err(invalid)?;
-            let changed = crate::operation::javascript::listen(signal).map_err(invalid)?;
+            let changed = listen(signal).map_err(invalid)?;
             Ok(Some(CredentialWatch::from_custodian(
                 validity,
                 Registration {
@@ -216,7 +214,7 @@ impl Drop for Close {
 }
 struct Registration {
     // Unregister before closing the original source owner.
-    changed: crate::operation::javascript::SignalStop,
+    changed: SignalStop,
     _owner: Close,
 }
 impl Future for Registration {

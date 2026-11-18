@@ -13,7 +13,7 @@ description = "Shared capability chain contract and verification"
 [features]
 javascript = ["dep:js-sys", "dep:wasm-bindgen"]
 native-javascript = ["dep:napi", "dep:napi-derive"]
-js-credential = ["javascript", "dep:wasm-bindgen-futures", "dep:web-sys"]
+js-credential = ["javascript", "acyclic-auth-operation/javascript", "dep:wasm-bindgen-futures", "dep:web-sys"]
 grpc-metadata = ["dep:tonic"]
 grpc = ["grpc-metadata", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
 test-support = ["dep:acyclic-differential"]
@@ -21,6 +21,7 @@ client = ["dep:reqwest"]
 
 [dependencies]
 acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
+acyclic-auth-operation = { version = "=0.2.0", path = "../auth-operation" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
@@ -58,7 +59,7 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 js-sys = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
-web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Event", "EventTarget"], optional = true }
+web-sys = { workspace = true, features = ["AbortSignal"], optional = true }
 
 [dev-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
@@ -96,13 +97,6 @@ acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 [[test]]
 name = "main"
 path = "tests/main.rs"
-
-[[test]]
-name = "backoff"
-path = "tests/backoff.rs"
-
-[package.metadata.bazel.test-dependencies]
-backoff = ["proptest"]
 
 [[example]]
 name = "issuance_corpus"

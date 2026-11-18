@@ -1,5 +1,6 @@
 [
   "acyclic-auth-action",
+  "acyclic-auth-operation",
   "acyclic-proto-build",
   "acyclic-differential",
   "acyclic-collections",

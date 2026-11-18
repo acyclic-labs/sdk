@@ -1,6 +1,6 @@
 # One caller budget across transport stages
 
-`acyclic_auth::operation::Context` binds an absolute deadline to the host's expiry future and caller cancellation once. Clone that context across credential resolution, connection, response reading and any explicitly classified retry. A ready stop is checked before polling another stage. Actors HTTP `Client::with_context` consumes this contract around its complete operation; it does not start another deadline for each stage.
+`acyclic_auth_operation::Context` binds an absolute deadline to the host's expiry future and caller cancellation once. Auth also exposes it as `acyclic_auth::operation::Context`. Clone that context across credential resolution, connection, response reading and any explicitly classified retry. A ready stop is checked before polling another stage. Actors HTTP `Client::with_context` consumes this contract around its complete operation; it does not start another deadline for each stage.
 
 The host supplies the timer for the stated absolute deadline. The context has no clock, background task, task-local state or credential cache. `Stopped::Deadline` and `Stopped::Cancelled` describe the caller's wait. Neither establishes that a remote mutation was cancelled or failed to commit.
 

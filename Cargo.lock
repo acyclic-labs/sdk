@@ -127,6 +127,7 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-auth-operation",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-observability",
@@ -189,6 +190,23 @@ dependencies = [
  "serde_json",
  "syn 3.0.9",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-auth-operation"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "js-sys",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "zeroize",
 ]
 
 [[package]]
@@ -2003,7 +2021,7 @@ dependencies = [
 name = "acyclic-stream-body"
 version = "0.2.0"
 dependencies = [
- "acyclic-auth",
+ "acyclic-auth-operation",
  "bytes",
 ]
 

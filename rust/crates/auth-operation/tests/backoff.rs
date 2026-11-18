@@ -1,7 +1,4 @@
-#[path = "../src/operation/backoff.rs"]
-mod backoff;
-
-use backoff::Backoff;
+use acyclic_auth_operation::Backoff;
 use proptest::prelude::*;
 
 fn finite_milliseconds() -> impl Strategy<Value = f64> {
