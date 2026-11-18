@@ -1372,7 +1372,10 @@ rust_test(
         "tests/git_history/git_compat/tests/argv.rs",
         "tests/git_history/git_compat/tests/history.rs",
         "tests/git_history/git_compat/tests/mod.rs",
+        "tests/git_history/git_compat/tests/restore_paths.rs",
+        "tests/support/allow_publication.rs",
         "tests/support/git_history.rs",
+        "tests/support/transaction.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -1392,6 +1395,7 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/filesystem-format:acyclic_fs_format",
+        "//rust/crates/filesystem-work:acyclic_fs_work",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//thiserror-2.0.21",

@@ -247,7 +247,6 @@ mod model;
 #[cfg(loom)]
 mod model_store;
 mod properties;
-mod restore_paths;
 mod state;
 mod tree;
 mod wire;

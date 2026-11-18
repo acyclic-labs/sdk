@@ -4,3 +4,5 @@
 mod fixtures;
 #[path = "git_history/git_compat/mod.rs"]
 mod git_compat;
+#[path = "support/transaction.rs"]
+mod transaction;
