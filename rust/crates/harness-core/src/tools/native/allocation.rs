@@ -2,54 +2,54 @@
 use super::*;
 use crate::tool::ToolInvocation;
 
-fn tools() -> &'static [Arc<Tool>] {
-    static TOOLS: std::sync::OnceLock<Vec<Arc<Tool>>> = std::sync::OnceLock::new();
-    TOOLS.get_or_init(|| {
+fn tools() -> Result<&'static [Arc<Tool>]> {
+    static TOOLS: std::sync::OnceLock<Result<Vec<Arc<Tool>>>> = std::sync::OnceLock::new();
+    let tools = TOOLS.get_or_init(|| {
         let mut tools = Vec::new();
         for profile in [
             NativeToolProfile::Anthropic,
             NativeToolProfile::Openai,
             NativeToolProfile::Google,
         ] {
-            let mut registry = crate::tools::defaults().unwrap();
-            bind(&mut registry, profile).unwrap();
-            for definition in definitions(profile).unwrap() {
-                if let Some(tool) = registry.get(&definition.name, None, None).unwrap() {
-                    if tool.executor.capability().is_some() {
-                        tools.push(Arc::new(tool.clone()));
-                    }
+            let mut registry = crate::tools::defaults()?;
+            bind(&mut registry, profile)?;
+            for definition in definitions(profile)? {
+                if let Some(tool) = registry.get(&definition.name, None, None)?
+                    && tool.executor.capability().is_some()
+                {
+                    tools.push(Arc::new(tool.clone()));
                 }
             }
         }
-        tools
-    })
+        Ok(tools)
+    });
+    tools
+        .as_deref()
+        .map_err(|error| Error::Invalid(format!("native tool fixture: {error}")))
 }
 
 fn native_work(
     deny: bool,
     cancellation: &acyclic_fs::CancellationToken,
-) -> acyclic_fs::NativeMaterializationWork {
+) -> Result<acyclic_fs::NativeMaterializationWork> {
     let mut budget = acyclic_fs_work::performance::WorkBudget::UNBOUNDED;
     if deny {
         budget.peak_allocation_bytes =
             acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
     }
-    acyclic_fs::NativeMaterializationWork::new(budget, cancellation).unwrap()
+    acyclic_fs::NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
 /// The input is the JSON argument object passed to the production registry.
-pub fn check(
-    input: &[u8],
-) -> std::result::Result<(), acyclic_fs_work::performance::WorkObservationError> {
+pub fn check(input: &[u8]) -> Result<()> {
     if let Ok(arguments) = serde_json::from_slice(input) {
         check_value(arguments)?;
     }
     Ok(())
 }
 
-fn check_value(
-    arguments: Value,
-) -> std::result::Result<(), acyclic_fs_work::performance::WorkObservationError> {
+fn check_value(arguments: Value) -> Result<()> {
     use futures::FutureExt as _;
     let mut invocation = ToolInvocation {
         operation_id: crate::OperationId::from_bytes([7; 16]),
@@ -62,20 +62,15 @@ fn check_value(
             ("@operation_id", invocation.operation_id.to_string()),
             ("@call_id", invocation.call_id.clone()),
         ] {
-            let mut template = serde_json::json!({"identity":{"$case":selector}});
-            template["identity"][&text] = serde_json::json!(format!("${selector}"));
-            let arguments = arguments::Arguments::new(template, Vec::new()).unwrap();
+            let template =
+                serde_json::json!({"identity":{"$case":selector, (&text):format!("${selector}")}});
+            let arguments = arguments::Arguments::new(template, Vec::new())?;
             let expected = serde_json::json!({"identity":text});
             let cancellation = acyclic_fs::CancellationToken::new();
-            let work = native_work(false, &cancellation);
+            let work = native_work(false, &cancellation)?;
             let baseline = work.live_allocation_bytes()?;
             for budget in [None, Some(&work)] {
-                let result = arguments.adapt(&invocation, budget);
-                assert!(
-                    result.is_ok(),
-                    "identity selector rejected its emitted text"
-                );
-                let (actual, custody) = result.unwrap();
+                let (actual, custody) = arguments.adapt(&invocation, budget)?;
                 assert_eq!(actual, expected);
                 drop(actual);
                 drop(custody);
@@ -83,18 +78,18 @@ fn check_value(
             assert_eq!(work.live_allocation_bytes()?, baseline);
         }
     }
-    for tool in tools() {
+    for tool in tools()? {
         invocation.name.clone_from(&tool.definition.name);
         let expected = tool.executor.canonical(&invocation, None);
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = native_work(false, &cancellation);
+        let work = native_work(false, &cancellation)?;
         let baseline = work.live_allocation_bytes()?;
         let actual = tool.executor.canonical(&invocation, Some(&work));
         match (expected, actual) {
             (Ok(Some(expected)), Ok(Some(actual))) => {
                 assert_eq!(*actual, *expected, "{}", invocation.name);
                 let retained =
-                    std::mem::size_of::<Value>() as u64 + actual.retained_payload_bytes().unwrap();
+                    std::mem::size_of::<Value>() as u64 + actual.retained_payload_bytes()?;
                 assert_eq!(
                     work.live_allocation_bytes()?,
                     baseline + retained,
@@ -111,15 +106,17 @@ fn check_value(
                 drop(actual);
             }
             (Err(_), Err(_)) => {}
-            (expected, actual) => panic!(
-                "{} ordinary/native admission differs: {expected:?} / {actual:?}",
-                invocation.name
-            ),
+            (expected, actual) => {
+                return Err(Error::Invalid(format!(
+                    "{} ordinary/native admission differs: {expected:?} / {actual:?}",
+                    invocation.name
+                )));
+            }
         }
         assert_eq!(work.live_allocation_bytes()?, baseline);
         // These original entry points must also pass the ledger to adaptation;
         // none may fall back to an uncharged copy when credit is exhausted.
-        let denied = native_work(true, &cancellation);
+        let denied = native_work(true, &cancellation)?;
         let denied_baseline = denied.live_allocation_bytes()?;
         assert!(tool.executor.canonical(&invocation, Some(&denied)).is_err());
         assert!(
@@ -140,21 +137,17 @@ fn check_value(
         let replay = tool
             .executor
             .authorize_replay(None, &invocation, Some(&denied))
-            .unwrap();
+            .ok_or_else(|| Error::Invalid("native adapter omitted replay admission".into()))?;
         assert!(
-            replay
-                .now_or_never()
-                .expect("credit refusal is synchronous")
-                .is_err()
+            replay.now_or_never().is_some_and(|result| result.is_err()),
+            "replay must refuse exhausted credit synchronously"
         );
         assert_eq!(denied.live_allocation_bytes()?, denied_baseline);
         cancellation.cancel();
-        assert_eq!(
+        assert!(
             tool.executor
                 .canonical(&invocation, Some(&work))
-                .unwrap_err()
-                .code(),
-            crate::wire::ErrorCode::Cancelled
+                .is_err_and(|error| error.code() == crate::wire::ErrorCode::Cancelled)
         );
         assert_eq!(work.live_allocation_bytes()?, baseline);
     }
