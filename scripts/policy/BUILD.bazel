@@ -2,6 +2,15 @@ load(":node_test.bzl", "node_test")
 load("//:typescript_consumer.bzl", "typescript_consumer")
 
 node_test(
+    name = "objects_http_contract_test",
+    srcs = ["//:wasm_objects_node_modules"],
+    links = {"//:scripts/fixture-server.mjs": "wasm_objects_node_modules/scripts/fixture-server.mjs"},
+    entry = "wasm_objects_node_modules/node_modules/@acyclic-labs/objects/test/v1-conformance.mjs",
+    name_pattern = "Objects v1 HTTP serves every canonical route, typed errors and authentication",
+    preserve_symlinks = True,
+)
+
+node_test(
     name = "machines_http2_test",
     srcs = ["//:wasm_machines_node_modules"],
     links = {"//:scripts/fixture-server.mjs": "wasm_machines_node_modules/scripts/fixture-server.mjs"},

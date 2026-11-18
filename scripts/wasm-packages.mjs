@@ -18,7 +18,7 @@ export const wasmPackages = {
   actors: { family: true, runtime: true, build: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { family: true, runtime: true, runtimeDirectory: "node_modules" },
-  objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
+  objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm", runtime: true, build: true },
   manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],

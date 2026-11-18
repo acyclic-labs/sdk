@@ -291,6 +291,20 @@ proto_js(
 )
 
 filegroup(
+    name = "workspace_acyclic_labs_objects",
+    srcs = glob(["typescript/packages/objects/**"], exclude = ["typescript/packages/objects/generated/wasm/**","typescript/packages/objects/generated/proto/**"], allow_empty = True) + [],
+    visibility = ["//visibility:public"],
+)
+
+proto_js(
+    name = "workspace_acyclic_labs_objects_proto",
+    schemas = {
+        "//compatibility:proto/validation/v1/options.proto": "compatibility/proto/validation/v1/options.proto",
+        "//rust/crates/objects:proto/objects/v1/objects.proto": "rust/crates/objects/proto/objects/v1/objects.proto",
+    },
+)
+
+filegroup(
     name = "workspace_acyclic_labs_machines",
     srcs = glob(["typescript/packages/machines/**"], exclude = ["typescript/packages/machines/generated/wasm/**","typescript/packages/machines/generated/proto/**"], allow_empty = True) + [],
     visibility = ["//visibility:public"],
@@ -325,6 +339,7 @@ typescript_packages(
         "auth",
         "core",
         "actors",
+        "objects",
         "machines",
         "inference",
     ],
@@ -334,18 +349,21 @@ typescript_packages(
         ":workspace_acyclic_labs_auth",
         ":workspace_acyclic_labs_core",
         ":workspace_acyclic_labs_actors",
+        ":workspace_acyclic_labs_objects",
         ":workspace_acyclic_labs_machines",
         ":workspace_acyclic_labs_inference",
     ],
     protos = {
         ":workspace_acyclic_labs_auth_proto": "auth",
         ":workspace_acyclic_labs_actors_proto": "actors",
+        ":workspace_acyclic_labs_objects_proto": "objects",
         ":workspace_acyclic_labs_machines_proto": "machines",
         ":workspace_acyclic_labs_inference_proto": "inference",
     },
     wasms = {
         "//wasm:auth": "auth",
         "//wasm:actors": "actors",
+        "//wasm:objects": "objects",
         "//wasm:machines": "machines",
         "//wasm:inference": "inference",
     },
@@ -387,6 +405,14 @@ filegroup(
         ":sdk_typescript_packages",
     ],
     output_group = "actors",
+)
+
+filegroup(
+    name = "sdk_typescript_objects",
+    srcs = [
+        ":sdk_typescript_packages",
+    ],
+    output_group = "objects",
 )
 
 filegroup(
@@ -440,6 +466,19 @@ node_modules(
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
         ":workspace_acyclic_labs_stream_proto": "@acyclic-labs/stream/generated/proto=",
         "//wasm:stream": "@acyclic-labs/stream/generated/wasm=",
+    },
+    visibility = ["//visibility:public"],
+)
+
+node_modules(
+    name = "wasm_objects_node_modules",
+    packages = {
+        ":sdk_typescript_objects": "@acyclic-labs/objects=",
+        ":sdk_typescript_core": "@acyclic-labs/core=",
+        "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
+        "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
+        "@npm_workspace_connectrpc_connect_node//:files": "@connectrpc/connect-node=",
+        ":sdk_typescript_auth": "@acyclic-labs/auth=",
     },
     visibility = ["//visibility:public"],
 )
