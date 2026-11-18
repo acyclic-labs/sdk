@@ -682,13 +682,8 @@ mod tests {
     async fn session_files_resume_reopen_and_version_refusal() -> Result<(), Failure> {
         let directory = tempfile::tempdir()?;
         let provider = Arc::new(
-            ScriptedModelProvider::new(std::iter::empty::<ScriptedTurn>()).with_context_capacity(
-                acyclic_harness::context::ModelContextCapacity {
-                    context_tokens: 32_768,
-                    output_tokens: Some(4096),
-                    output_shares_context: false,
-                },
-            ),
+            ScriptedModelProvider::new(std::iter::empty::<ScriptedTurn>())
+                .with_context_capacity(super::super::tests::capacity()),
         );
         let harness = Arc::new(
             LocalHarness::open(local_harness_config(

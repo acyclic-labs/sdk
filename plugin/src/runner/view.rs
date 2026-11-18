@@ -1994,12 +1994,21 @@ async fn run_current(
 mod tests {
     use super::*;
 
+    /// The one capacity every view test's scripted provider declares.
+    pub(super) fn capacity() -> acyclic_harness::context::ModelContextCapacity {
+        acyclic_harness::context::ModelContextCapacity {
+            context_tokens: 32_768,
+            output_tokens: Some(4096),
+            output_shares_context: false,
+        }
+    }
+
     #[tokio::test]
     async fn stop_targets_the_active_input_while_a_later_prompt_is_pending() -> Result<(), Failure>
     {
         use acyclic_harness::{
             LocalHarness,
-            context::{CompactionPolicy, ModelContextCapacity},
+            context::CompactionPolicy,
             local::WorkspaceMounting,
             model::Model,
             test_support::{
@@ -2017,11 +2026,7 @@ mod tests {
                 ScriptedTurn::Text("later answer".into()),
                 ScriptedTurn::Text("completed before cancellation".into()),
             ])
-            .with_context_capacity(ModelContextCapacity {
-                context_tokens: 32_768,
-                output_tokens: Some(4096),
-                output_shares_context: false,
-            })
+            .with_context_capacity(capacity())
             .with_dispatch_observer(move |_| {
                 if let Some(entered) = gate.lock().unwrap().take() {
                     let _ = entered.send(());
@@ -2197,7 +2202,7 @@ mod tests {
     async fn restore_receipts_cannot_reopen_observed_settlement() -> Result<(), Failure> {
         use acyclic_harness::{
             LocalHarness,
-            context::{CompactionPolicy, ModelContextCapacity},
+            context::CompactionPolicy,
             local::WorkspaceMounting,
             model::Model,
             test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
@@ -2212,11 +2217,7 @@ mod tests {
                 ScriptedTurn::Text("fork ready".into()),
                 ScriptedTurn::Text("child settlement observed".into()),
             ])
-            .with_context_capacity(ModelContextCapacity {
-                context_tokens: 32_768,
-                output_tokens: Some(4096),
-                output_shares_context: false,
-            }),
+            .with_context_capacity(capacity()),
         );
         let harness = Arc::new(
             LocalHarness::open(
@@ -2603,13 +2604,7 @@ mod tests {
                                     error: "saved turn failure".into(),
                                 }]),
                             ])
-                            .with_context_capacity(
-                                acyclic_harness::context::ModelContextCapacity {
-                                    context_tokens: 32_768,
-                                    output_tokens: Some(4096),
-                                    output_shares_context: false,
-                                },
-                            ),
+                            .with_context_capacity(capacity()),
                         ),
                     ),
                 )?
