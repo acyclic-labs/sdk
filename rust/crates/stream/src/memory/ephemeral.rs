@@ -115,6 +115,7 @@ impl Ephemeral {
             };
         };
         let all = published.clone();
+        let mut pending = None;
         for path in published {
             if self.root_of(path.as_str()).is_some() {
                 continue;
@@ -124,10 +125,14 @@ impl Ephemeral {
             }
             if StreamPath::parent_text(path.as_str()).is_some_and(|parent| {
                 !paths.contains_key(parent)
-                    && !all
-                        .clone()
-                        .into_iter()
-                        .any(|other| other.as_str() == parent)
+                    && !pending
+                        .get_or_insert_with(|| {
+                            all.clone()
+                                .into_iter()
+                                .map(StreamPath::as_str)
+                                .collect::<std::collections::HashSet<_>>()
+                        })
+                        .contains(parent)
             }) {
                 return Err(StreamError::NotFound);
             }
