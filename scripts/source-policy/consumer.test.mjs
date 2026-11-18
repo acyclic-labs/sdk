@@ -81,3 +81,13 @@ test('a dormant function body does not change a module initialization dependency
  assert.ok(newProjectPollingSites(active, new Map(active).set(producer, active.get(producer).replace('true', 'false')))
   .some(site => site.file === consumer && site.kind === 'polling-module-initialization'));
 });
+
+test('unrelated source edits preserve dependencies on immutable literal bindings', () => {
+ const producer = 'lib/helper.ts', consumer = 'svc/consumer.ts';
+ const helper = 'const ticks = 1; export function settle() { return Bun.sleep(ticks); }';
+ const caller = "import {settle} from '../lib/helper.js'; export const out = settle();";
+ const before = new Map([[producer, helper], [consumer, caller]]);
+ const changes = source => newProjectPollingSites(before, new Map(before).set(producer, source));
+ assert.ok(!changes('export const label = "unrelated"; ' + helper).some(site => site.file === consumer));
+ assert.ok(changes(helper.replace('ticks = 1', 'ticks = 2')).some(site => site.file === consumer));
+});
