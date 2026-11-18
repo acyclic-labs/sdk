@@ -15,24 +15,20 @@ pub(super) fn assert_catalog_matches(fixture: &Fixture, data: &sdk_docs::DocsDat
 }
 
 pub(super) fn copy_tree(source: &Path, destination: &Path) {
-    copy_tree_inner(source, destination, CopyMode::Private);
+    copy_tree_inner(source, destination, false);
 }
 
 pub(super) fn copy_profile_output(source: &Path, destination: &Path) {
-    copy_tree_inner(source, destination, CopyMode::ProfileRoot);
+    copy_tree_inner(source, destination, true);
 }
 
-#[derive(Clone, Copy)]
-enum CopyMode {
-    Private,
-    ProfileRoot,
-    Immutable,
-}
-
-fn copy_tree_inner(source: &Path, destination: &Path, mode: CopyMode) {
+fn copy_tree_inner(source: &Path, destination: &Path, skip_profile_build: bool) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();
+        if skip_profile_build && entry.file_name() == ".profile-build" {
+            continue;
+        }
         let target = destination.join(entry.file_name());
         if source.file_name() == Some(std::ffi::OsStr::new(".git"))
             && entry.file_name() == "objects"
@@ -40,16 +36,7 @@ fn copy_tree_inner(source: &Path, destination: &Path, mode: CopyMode) {
             // Git objects are immutable; refs, index and configuration stay private.
             copy_git_objects(&entry.path(), &target);
         } else if entry.file_type().unwrap().is_dir() {
-            let child_mode = match mode {
-                CopyMode::ProfileRoot if entry.file_name() == ".profile-build" => {
-                    CopyMode::Immutable
-                }
-                CopyMode::ProfileRoot => CopyMode::Private,
-                other => other,
-            };
-            copy_tree_inner(&entry.path(), &target, child_mode);
-        } else if matches!(mode, CopyMode::Immutable) {
-            fs::hard_link(entry.path(), target).unwrap();
+            copy_tree_inner(&entry.path(), &target, false);
         } else {
             fs::copy(entry.path(), target).unwrap();
         }
@@ -85,6 +72,14 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
                         new.to_str().unwrap(),
                         cfg!(windows),
                     ) {
+                        let destination = Path::new(&rebased);
+                        if destination.starts_with(relocated.output.join(".profile-build"))
+                            && !destination.exists()
+                            && Path::new(text).is_file()
+                        {
+                            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                            fs::hard_link(text.as_str(), destination).unwrap();
+                        }
                         *text = rebased;
                         break;
                     }
