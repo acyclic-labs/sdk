@@ -2490,6 +2490,7 @@ rust_test(
     srcs = [
         "tests/checkout_read.rs",
         "tests/checkout_read/facade/mod.rs",
+        "tests/checkout_read/facade/tests/attributes.rs",
         "tests/checkout_read/facade/tests/generation_position.rs",
         "tests/checkout_read/facade/tests/mod.rs",
         "tests/checkout_read/facade/tests/paths.rs",

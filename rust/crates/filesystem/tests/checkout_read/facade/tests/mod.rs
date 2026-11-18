@@ -2,6 +2,7 @@ use acyclic_fs_work::performance::WorkBudget;
 
 #[path = "../../../support/allow_publication.rs"]
 mod allow_publication;
+mod attributes;
 #[path = "../../../support/checkout_fixture.rs"]
 mod checkout_fixture;
 #[path = "../../../support/volume_fixture.rs"]
