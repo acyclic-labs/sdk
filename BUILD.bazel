@@ -125,6 +125,7 @@ filegroup(
         "//rust/crates/differential:Cargo.toml",
         "//rust/crates/executable-search:Cargo.toml",
         "//rust/crates/filesystem-base:Cargo.toml",
+        "//rust/crates/filesystem-darwin-bridge:Cargo.toml",
         "//rust/crates/filesystem-format:Cargo.toml",
         "//rust/crates/filesystem-lock-order-tests:Cargo.toml",
         "//rust/crates/filesystem-merge:Cargo.toml",

@@ -122,7 +122,7 @@
       "sourceRepository": "https://github.com/marcelcotta/DarwinFUSE",
       "sourceCommit": "3026545a74084c006205fd43610904fb5d8a769b",
       "sourcePath": "include and src",
-      "destinationPath": "rust/crates/filesystem/vendor/darwinfuse",
+      "destinationPath": "rust/crates/filesystem-darwin-bridge/vendor/darwinfuse",
       "license": "MIT",
       "auditResult": "approved",
       "reviewer": "Acyclic Labs self-contained macOS mount transport audit"
