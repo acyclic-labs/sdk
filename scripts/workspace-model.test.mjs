@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {assertRegistryPinsCurrent, compareVersions, workspaceBrowserGraph, workspaceGraph, workspacePackages, workspaceProfileMetadata, versionMatches} from './workspace-model.mjs';
-import {workspacePackages as testPackages, wasmPackages} from './check-crate-tests.mjs';
+import {workspaceDefaults} from './workspace-defaults.mjs';
 
 function workspaceFixture(t, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -150,8 +150,8 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   const workspaceOnly = workspaceProfileMetadata(root, {workspaceOnly: true});
   assert.deepEqual(profile.packages.map(p => p.name), ['app', 'backend']);
   assert.deepEqual(workspaceOnly.packages.map(p => p.name), ['app']);
-  assert.deepEqual(testPackages(workspaceOnly), ['app']);
-  assert.deepEqual(wasmPackages(workspaceOnly), ['app']);
+  assert.deepEqual(workspaceDefaults(workspaceOnly).map(item => item.name), ['app']);
+  assert.deepEqual(workspaceOnly.packages.find(item => item.name === 'app')?.features.wasm, []);
   assert.deepEqual(profile.packages.find(p => p.name === 'app').targets.map(t => t.name), ['custom']);
   assert.equal(profile.packages.find(p => p.name === 'app').dependencies[0].rename, 'renamed');
   assert.deepEqual(profile.workspace_members, workspaceOnly.workspace_members);
@@ -187,9 +187,10 @@ test('crate test planning keeps default members and all wasm workspace members d
     write(`${name}/src/lib.rs`, '');
   }
   const metadata = workspaceProfileMetadata(root, {workspaceOnly: true});
-  assert.deepEqual(testPackages(metadata), ['app']);
-  assert.deepEqual(wasmPackages(metadata), ['tool']);
-  assert.deepEqual(consumers(metadata).map(item => item.name), ['app']);
+  assert.deepEqual(workspaceDefaults(metadata).map(item => item.name), ['app']);
+  const tool = metadata.packages.find(item => item.name === 'tool');
+  assert.ok(metadata.workspace_members.includes(tool?.id));
+  assert.deepEqual(tool.features.wasm, []);
 });
 
 test('captured sibling path dependencies stay inside the declared source boundary', t => {
