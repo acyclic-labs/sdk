@@ -76,6 +76,10 @@ path = "tests/workspace_contracts.rs"
 name = "workspace_merge"
 path = "tests/workspace_merge.rs"
 
+[[test]]
+name = "workspace_context_contracts"
+path = "tests/workspace_context_contracts.rs"
+
 [[bench]]
 name = "lease_paths"
 harness = false
