@@ -1,5 +1,5 @@
 use acyclic_fs::{
-    ApplyOptions, CancellationToken, ConflictKind, ConflictSide, ConflictValue,
+    ApplyOptions, CancellationToken, ConflictKind, ConflictSide, ConflictValue, ConflictView,
     DefaultTextMergeDriver, DriverError, ForkOptions, Fs, IdempotencyKey, JoinHistory, JoinOutcome,
     MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergeResolution,
     PublicationPermit, TransactionCommit,
