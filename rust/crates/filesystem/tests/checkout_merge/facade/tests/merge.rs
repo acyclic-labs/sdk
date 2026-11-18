@@ -407,3 +407,211 @@ async fn three_way_merge_pairs_a_replaced_file_with_the_identity_it_replaced() -
     }
     Ok(())
 }
+
+/// Pairing replacements costs each changed directory one diff, not one per
+/// replaced file: 64 files replaced in one directory and edited on the other
+/// side merge within a change limit far below 64 x 64.
+#[tokio::test]
+async fn replacement_pairing_charges_each_directory_once() -> TestResult {
+    const FILES: usize = 64;
+    let cancel = CancellationToken::new();
+    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let mut originals = Vec::with_capacity(FILES);
+    for index in 0..FILES {
+        originals.push(
+            create(
+                &mut seed,
+                &format!("file-{index:02}"),
+                OwnedBytes::from_static(b"one two three"),
+                &cancel,
+            )
+            .await?,
+        );
+    }
+    commit(&mut seed, &cancel).await?;
+    let mut ours = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    let mut theirs = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    for (index, original) in originals.iter().enumerate() {
+        let name = format!("file-{index:02}");
+        ours.mutate(
+            vec![Mutation::Remove {
+                path: path(&name)?,
+                expected_file_id: MetadataField::Value(*original),
+            }],
+            B,
+            &cancel,
+        )
+        .await?;
+        create(
+            &mut ours,
+            &name,
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+        theirs
+            .change_content(
+                path(&name)?,
+                ContentChange::Write {
+                    offset: 0,
+                    bytes: OwnedBytes::from_static(b"ONE"),
+                },
+                ContentTimes::Preserve,
+                B,
+                &cancel,
+            )
+            .await?;
+    }
+    commit(&mut theirs, &cancel).await?;
+    let limit = u32::try_from(FILES * 16)?;
+    let prepared = ours
+        .prepare_merge(theirs.generation_id(), Some(limit), Some(8), B, &cancel)
+        .await?
+        .value;
+    assert!(
+        matches!(prepared, MergePreparation::Prepared { .. }),
+        "{prepared:?}"
+    );
+    commit(&mut ours, &cancel).await?;
+    let mut merged = volume
+        .checkout(
+            GenerationSelector::Exact(ours.generation_id()),
+            CheckoutMode::read_only_pinned(),
+            B,
+            &cancel,
+        )
+        .await?
+        .value;
+    for (index, original) in originals.iter().enumerate() {
+        let record = merged
+            .lookup_no_follow(&path(&format!("file-{index:02}"))?, B, &cancel)
+            .await?
+            .value
+            .record
+            .ok_or("merged file is missing")?;
+        assert_eq!(record.file_id, *original);
+        assert_eq!(
+            read(&mut merged, *original, 0, 13, &cancel).await?.as_ref(),
+            b"ONE two three"
+        );
+    }
+    Ok(())
+}
+
+/// Whether a merge where theirs edits `doc.txt` and adds `additions` files
+/// beside it, and ours either replaces `doc.txt` (equal content, new
+/// identity) or leaves it, prepares within `limit` changes.
+async fn prepares_within(replace: bool, additions: usize, limit: u32) -> TestResult<bool> {
+    let cancel = CancellationToken::new();
+    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let original = create(
+        &mut seed,
+        "doc.txt",
+        OwnedBytes::from_static(b"one two three"),
+        &cancel,
+    )
+    .await?;
+    commit(&mut seed, &cancel).await?;
+    let mut ours = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    let mut theirs = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    if replace {
+        ours.mutate(
+            vec![Mutation::Remove {
+                path: path("doc.txt")?,
+                expected_file_id: MetadataField::Value(original),
+            }],
+            B,
+            &cancel,
+        )
+        .await?;
+        create(
+            &mut ours,
+            "doc.txt",
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+    } else {
+        create(
+            &mut ours,
+            "ours.txt",
+            OwnedBytes::from_static(b"ours"),
+            &cancel,
+        )
+        .await?;
+    }
+    theirs
+        .change_content(
+            path("doc.txt")?,
+            ContentChange::Write {
+                offset: 0,
+                bytes: OwnedBytes::from_static(b"ONE"),
+            },
+            ContentTimes::Preserve,
+            B,
+            &cancel,
+        )
+        .await?;
+    for index in 0..additions {
+        create(
+            &mut theirs,
+            &format!("added-{index:03}"),
+            OwnedBytes::from_static(b"added"),
+            &cancel,
+        )
+        .await?;
+    }
+    commit(&mut theirs, &cancel).await?;
+    match ours
+        .prepare_merge(theirs.generation_id(), Some(limit), Some(8), B, &cancel)
+        .await
+    {
+        Ok(receipt) => {
+            assert!(
+                matches!(receipt.value, MergePreparation::Prepared { .. }),
+                "{:?}",
+                receipt.value
+            );
+            Ok(true)
+        }
+        Err(failure) if matches!(failure.error, FsError::MergeChangeLimit) => Ok(false),
+        Err(failure) => Err(failure.error.into()),
+    }
+}
+
+/// The smallest change limit within which the merge prepares.
+async fn minimum_limit(replace: bool, additions: usize) -> TestResult<u32> {
+    let (mut low, mut high) = (1, 4_096);
+    if !prepares_within(replace, additions, high).await? {
+        return Err("merge does not prepare within 4096 changes".into());
+    }
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if prepares_within(replace, additions, middle).await? {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    Ok(low)
+}
+
+/// Pairing a replacement charges only the side that deleted the identity:
+/// unrelated additions on the editing side cost the merge the same with or
+/// without a replacement on the other side, so the replacement's overhead
+/// does not grow with them.
+#[tokio::test]
+async fn replacement_pairing_charges_only_the_deleting_side() -> TestResult {
+    let mut overheads = [0; 2];
+    for (overhead, additions) in overheads.iter_mut().zip([0, 64]) {
+        let replaced = i64::from(minimum_limit(true, additions).await?);
+        let edited = i64::from(minimum_limit(false, additions).await?);
+        *overhead = replaced - edited;
+    }
+    let [empty, populated] = overheads;
+    assert!(
+        populated <= empty,
+        "replacement overhead grew with the editing side's additions: {overheads:?}"
+    );
+    Ok(())
+}
