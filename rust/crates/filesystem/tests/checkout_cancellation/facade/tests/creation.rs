@@ -16,8 +16,8 @@ use super::allow_publication::allow;
 use super::checkout_fixture::{config, path, path_parts};
 use super::fixtures::{TestResult, create, fixture, open_checkout};
 
-fn cancelled<T>(result: Result<OperationReceipt<T>, OperationFailure<FsError>>) {
-    let failure = result.err().expect("cancelled operation succeeded");
+fn cancelled<T>(result: Result<OperationReceipt<T>, OperationFailure<FsError>>) -> TestResult {
+    let failure = result.err().ok_or("cancelled operation succeeded")?;
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&failure.error);
     let mut cancellation = matches!(
         failure.error,
@@ -28,7 +28,8 @@ fn cancelled<T>(result: Result<OperationReceipt<T>, OperationFailure<FsError>>) 
         source = error.source();
     }
     assert!(cancellation, "unexpected error: {:?}", failure.error);
-    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
+    assert_eq!(*failure.work()?, WorkCounters::default());
+    Ok(())
 }
 
 #[tokio::test]
@@ -39,7 +40,7 @@ async fn pre_cancelled_facade_operations_perform_zero_work() -> TestResult {
         Fs::memory()
             .create_volume_with_id(VolumeId::from_bytes([47; 16]), config(), B, &cancel)
             .await,
-    );
+    )?;
     Ok(())
 }
 
@@ -74,37 +75,37 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
                 &cancel,
             )
             .await,
-    );
-    cancelled(checkout.lookup_no_follow(&file, B, &cancel).await);
+    )?;
+    cancelled(checkout.lookup_no_follow(&file, B, &cancel).await)?;
     cancelled(
         checkout
             .lookup_batch_no_follow(std::slice::from_ref(&file), B, &cancel)
             .await,
-    );
+    )?;
     cancelled(
         checkout
             .list_directory(&path_parts(&[])?, None, 8, B, &cancel)
             .await,
-    );
-    cancelled(checkout.read_metadata(&file, B, &cancel).await);
-    cancelled(checkout.read_file_range(&file, range, B, &cancel).await);
+    )?;
+    cancelled(checkout.read_metadata(&file, B, &cancel).await)?;
+    cancelled(checkout.read_file_range(&file, range, B, &cancel).await)?;
     cancelled(
         checkout
             .plan_file_extents(&file, range, 8, B, &cancel)
             .await,
-    );
+    )?;
     cancelled(
         checkout
             .seek_file_extent(&file, 0, ExtentSeekTarget::Data, B, &cancel)
             .await,
-    );
-    cancelled(checkout.read_file_record_by_id(id, B, &cancel).await);
-    cancelled(checkout.read_file_range(id, range, B, &cancel).await);
+    )?;
+    cancelled(checkout.read_file_record_by_id(id, B, &cancel).await)?;
+    cancelled(checkout.read_file_range(id, range, B, &cancel).await)?;
     cancelled(
         checkout
             .read_named_attribute(&file, &attribute, B, &cancel)
             .await,
-    );
+    )?;
     cancelled(
         checkout
             .change_content(
@@ -118,7 +119,7 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
                 &cancel,
             )
             .await,
-    );
+    )?;
     cancelled(
         checkout
             .create(
@@ -132,9 +133,9 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
                 &cancel,
             )
             .await,
-    );
+    )?;
     let mut empty = std::io::Cursor::new(OwnedBytes::new());
-    cancelled(checkout.stage_content(&mut empty, 1, B, &cancel).await);
+    cancelled(checkout.stage_content(&mut empty, 1, B, &cancel).await)?;
     cancelled(
         checkout
             .commit(
@@ -148,8 +149,8 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
                 allow::<FsError>,
             )
             .await,
-    );
-    cancelled(detached.read_range(range, B, &cancel).await);
+    )?;
+    cancelled(detached.read_range(range, B, &cancel).await)?;
     cancelled(
         detached
             .change_content(
@@ -162,6 +163,6 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
                 &cancel,
             )
             .await,
-    );
+    )?;
     Ok(())
 }

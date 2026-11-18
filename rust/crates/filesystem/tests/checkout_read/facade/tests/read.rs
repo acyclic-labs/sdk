@@ -305,8 +305,9 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         .resolve_files(&[path("second")?, path("first")?], B, &cancel)
         .await?
         .value;
-    let second = resolved[0].as_ref().unwrap();
-    let first = resolved[1].as_ref().unwrap();
+    let [Some(second), Some(first)] = resolved.as_slice() else {
+        return Err("expected both files in request order".into());
+    };
     let requests = [
         ResolvedFileRangeReadRequest {
             file: second,
@@ -356,6 +357,9 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         .resolve_files(&[path("foreign")?], B, &cancel)
         .await?
         .value;
+    let [Some(foreign_file)] = foreign_files.as_slice() else {
+        return Err("expected the foreign file".into());
+    };
     let mixed = [
         ResolvedFileRangeReadRequest {
             file: first,
@@ -365,7 +369,7 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
             },
         },
         ResolvedFileRangeReadRequest {
-            file: foreign_files[0].as_ref().unwrap(),
+            file: foreign_file,
             range: ByteRange {
                 offset: 1,
                 length: 2,
@@ -393,7 +397,7 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
     );
     let link_path = path("link")?;
     let links = reader
-        .resolve_files(&[link_path.clone()], B, &cancel)
+        .resolve_files(std::slice::from_ref(&link_path), B, &cancel)
         .await?
         .value;
     writer
@@ -418,12 +422,10 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         .read_symbolic_link(&link_path, B, &cancel)
         .await?
         .value;
-    let resolved = links[0]
-        .as_ref()
-        .unwrap()
-        .read_symbolic_link(B, &cancel)
-        .await?
-        .value;
+    let [Some(link)] = links.as_slice() else {
+        return Err("expected the resolved symbolic link".into());
+    };
+    let resolved = link.read_symbolic_link(B, &cancel).await?.value;
     let current = writer
         .read_symbolic_link(&link_path, B, &cancel)
         .await?
@@ -445,9 +447,10 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         .resolve_directory_page(&path("first-directory")?, None, 1, B, &cancel)
         .await?
         .value;
-    assert_eq!(page.entries.len(), 1);
+    let [entry] = page.entries.as_slice() else {
+        return Err("expected one directory entry".into());
+    };
     assert!(page.has_more);
-    let entry = &page.entries[0];
     assert_eq!(entry.name.as_bytes(), b"a");
     assert_eq!(entry.file.description().kind, FileKind::Regular);
     assert_eq!(
@@ -470,11 +473,13 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
     let one = reader
         .read_file_range(&path("second")?, requests[0].range, B, &cancel)
         .await?;
-    let failure = reader
+    let Err(failure) = reader
         .read_resolved_ranges(&requests, 2, one.work, &cancel)
         .await
-        .unwrap_err();
-    failure.work.as_deref().unwrap().verify(one.work)?;
+    else {
+        return Err("batch unexpectedly fit a single-read budget".into());
+    };
+    failure.work()?.verify(one.work)?;
     let invalid = [
         ResolvedFileRangeReadRequest {
             file: second,
@@ -646,7 +651,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
             .read_named_attribute(id, &attribute, B, &cancel)
             .await?
             .value
-            .unwrap()
+            .ok_or("missing named attribute")?
             .bytes
             .as_ref(),
         b"first"
