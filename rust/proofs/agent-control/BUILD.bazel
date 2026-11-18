@@ -1,26 +1,166 @@
 load("//toolchains/kani:defs.bzl", "kani_test")
 
-config_setting(
-    name = "negative_control",
-    values = {"define": "agent_control=negative"},
+_SRCS = [
+    "//rust/crates/harness-control:src/agent.rs",
+    "//rust/crates/harness-core:src/agent/release.rs",
+    "//rust/crates/harness-core:tests/formal/agent_control_model.rs",
+    "//rust/crates/harness-core:tests/formal/agent_control_contract.rs",
+]
+
+_POSITIVE = "//rust/crates/harness-core:tests/formal/agent_control.rs"
+_NEGATIVE = "//rust/crates/harness-core:tests/formal/agent_control_negative.rs"
+
+kani_test(
+    name = "exactly_once",
+    src = _POSITIVE,
+    srcs = _SRCS,
+    harness = "agent_control_is_exactly_once_and_never_loses_a_wake",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "archive_cascade",
+    src = _POSITIVE,
+    srcs = _SRCS,
+    harness = "archive_cascade_drains_and_reports_exactly_once",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "released_generation",
+    src = _POSITIVE,
+    srcs = _SRCS,
+    harness = "released_generation_is_terminal_and_has_no_committed_turn",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
 )
 
 kani_test(
     name = "condition_wait",
-    src = select({
-        ":negative_control": "//rust/crates/harness-core:tests/formal/agent_control_negative.rs",
-        "//conditions:default": "//rust/crates/harness-core:tests/formal/agent_control.rs",
-    }),
-    srcs = [
-        "//rust/crates/harness-control:src/agent.rs",
-        "//rust/crates/harness-core:src/agent/release.rs",
-        "//rust/crates/harness-core:tests/formal/agent_control_model.rs",
-        "//rust/crates/harness-core:tests/formal/agent_control_contract.rs",
-    ],
-    harness = select({
-        ":negative_control": "an_unreachable_wait_parked_on_its_deadline_is_found",
-        "//conditions:default": "a_condition_wait_parks_only_when_its_open_children_can_meet_it",
-    }),
+    src = _POSITIVE,
+    srcs = _SRCS,
+    harness = "a_condition_wait_parks_only_when_its_open_children_can_meet_it",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "input_wait",
+    src = _POSITIVE,
+    srcs = _SRCS,
+    harness = "input_wait_wakes_on_input_without_a_timer",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "dropped_checkpoint_failure_report",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "dropped_checkpoint_failure_report_is_caught",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "arrival_step_during_condition_wait",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "arrival_step_during_condition_wait_is_caught",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "dropped_condition_deadline",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "dropped_condition_deadline_is_caught",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "history_alarm_loses_a_deadline",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "history_alarm_loses_a_deadline",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "unguarded_archive_report",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "unguarded_archive_report_sends_twice",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "archive_retaining_turn",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "archive_retaining_turn_is_caught",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "early_archive_report",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "early_archive_report_is_caught",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "unreachable_wait_on_deadline",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "an_unreachable_wait_parked_on_its_deadline_is_found",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "dropped_ended_ask",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "dropped_ended_ask_is_caught",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "unreviewed_ended_ask",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "unreviewed_ended_ask_is_caught",
+    expect_failure = True,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "lost_input_wait_wake",
+    src = _NEGATIVE,
+    srcs = _SRCS,
+    harness = "lost_input_wait_wake_is_caught",
+    expect_failure = True,
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     size = "small",
 )

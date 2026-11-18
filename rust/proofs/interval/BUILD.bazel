@@ -1,0 +1,24 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+_SRCS = [
+    "//rust/crates/observability:src/interval.rs",
+    "//rust/crates/observability:src/interval/unix.rs",
+]
+
+kani_test(
+    name = "duration",
+    src = "proof.rs",
+    srcs = _SRCS,
+    harness = "production::proofs::unix_projection_preserves_duration_or_refuses",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "midpoint",
+    src = "proof.rs",
+    srcs = _SRCS,
+    harness = "production::proofs::unix_projection_admits_representable_midpoint_intervals",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

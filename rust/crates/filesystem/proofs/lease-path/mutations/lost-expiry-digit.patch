@@ -1,8 +1,8 @@
 diff --git a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
 --- a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
 +++ b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
-@@ -56,7 +56,7 @@
-     );
+@@ -61,7 +61,7 @@
+     )?;
      cursor += lease.len() * 2;
      text[cursor] = b'/';
 -    let mut number = expires_at_millis;

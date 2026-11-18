@@ -1,10 +1,16 @@
 diff --git a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
 --- a/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
 +++ b/rust/crates/filesystem/src/operation_window/lease_path/encoding.rs
-@@ -75,5 +75,5 @@ pub(super) fn write_identity(
+@@ -78,11 +78,12 @@
+ pub(super) fn write_identity(
      identity: [u8; 16],
      text: &mut [u8; 32],
- ) -> Result<(), hex::FromHexError> {
--    hex::encode_to_slice(identity, text)
-+    hex::encode_to_slice([0_u8; 16], text)
+ ) -> Result<(), EncodingError> {
+     const ALPHABET: &[u8; 16] = b"0123456789abcdef";
++    let identity = [0_u8; 16];
+     for (byte, pair) in identity.iter().zip(text.as_mut_slice().as_chunks_mut::<2>().0) {
+         pair[0] = ALPHABET[usize::from(*byte >> 4)];
+         pair[1] = ALPHABET[usize::from(*byte & 15)];
+     }
+     Ok(())
  }

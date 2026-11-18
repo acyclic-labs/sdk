@@ -1,0 +1,43 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+_SRC = "//rust/crates/filesystem/proofs/lease-path:lib.rs"
+_SRCS = ["//rust/crates/filesystem:src/operation_window/lease_path/encoding.rs"]
+
+kani_test(
+    name = "expiry_length",
+    src = _SRC,
+    srcs = _SRCS,
+    harness = "proofs::every_u64_expiry_has_an_admitted_length",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "canonical_hex",
+    src = _SRC,
+    srcs = _SRCS,
+    harness = "proofs::every_identity_has_canonical_hex_bytes",
+    kani_args = ["-Z", "function-contracts"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "exact_buffer",
+    src = _SRC,
+    srcs = _SRCS,
+    harness = "proofs::every_lease_path_fits_its_exact_buffer",
+    kani_args = ["-Z", "function-contracts", "-Z", "stubbing"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
+
+kani_test(
+    name = "maximum_expiry_overflows",
+    src = _SRC,
+    srcs = _SRCS,
+    harness = "proofs::maximum_expiry_overflows_a_116_byte_buffer",
+    kani_args = ["-Z", "function-contracts", "-Z", "stubbing"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

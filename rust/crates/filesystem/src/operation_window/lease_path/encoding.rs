@@ -2,6 +2,13 @@ pub(super) const PREFIX: &[u8] = b"fs/operation-windows-v1/";
 pub(super) const SEPARATOR: &[u8] = b"/leases/";
 pub(crate) const MAX_ENCODED_BYTES: usize = PREFIX.len() + 32 + SEPARATOR.len() + 32 + 1 + 20;
 
+/// Refusal from the fixed-width lease path encoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EncodingError {
+    /// The destination cannot hold the fixed-width identity.
+    InvalidLength,
+}
+
 pub(super) fn length(expires_at_millis: u64) -> usize {
     let mut digits = 1_usize;
     let mut number = expires_at_millis;
@@ -19,7 +26,7 @@ pub(super) fn write<const N: usize>(
     expires_at_millis: u64,
     length: usize,
     text: &mut [u8; N],
-) -> Result<(), hex::FromHexError> {
+) -> Result<(), EncodingError> {
     const {
         assert!(N >= MAX_ENCODED_BYTES);
     };
@@ -34,14 +41,14 @@ pub(super) fn write_buffer<const N: usize>(
     expires_at_millis: u64,
     length: usize,
     text: &mut [u8; N],
-) -> Result<(), hex::FromHexError> {
+) -> Result<(), EncodingError> {
     text[..PREFIX.len()].copy_from_slice(PREFIX);
     let mut cursor = PREFIX.len();
     write_identity(
         workspace,
         text[cursor..cursor + workspace.len() * 2]
             .first_chunk_mut::<32>()
-            .ok_or(hex::FromHexError::InvalidStringLength)?,
+            .ok_or(EncodingError::InvalidLength)?,
     )?;
     cursor += workspace.len() * 2;
     text[cursor..cursor + SEPARATOR.len()].copy_from_slice(SEPARATOR);
@@ -50,7 +57,7 @@ pub(super) fn write_buffer<const N: usize>(
         lease,
         text[cursor..cursor + lease.len() * 2]
             .first_chunk_mut::<32>()
-            .ok_or(hex::FromHexError::InvalidStringLength)?,
+            .ok_or(EncodingError::InvalidLength)?,
     )?;
     cursor += lease.len() * 2;
     text[cursor] = b'/';
@@ -71,6 +78,11 @@ pub(super) fn write_buffer<const N: usize>(
 pub(super) fn write_identity(
     identity: [u8; 16],
     text: &mut [u8; 32],
-) -> Result<(), hex::FromHexError> {
-    hex::encode_to_slice(identity, text)
+) -> Result<(), EncodingError> {
+    const ALPHABET: &[u8; 16] = b"0123456789abcdef";
+    for (byte, pair) in identity.iter().zip(text.as_mut_slice().as_chunks_mut::<2>().0) {
+        pair[0] = ALPHABET[usize::from(*byte >> 4)];
+        pair[1] = ALPHABET[usize::from(*byte & 15)];
+    }
+    Ok(())
 }
