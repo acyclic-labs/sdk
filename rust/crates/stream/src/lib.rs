@@ -6,8 +6,6 @@ pub const SESSION_PROTOCOL_VERSION: u32 = 3;
 pub use acyclic_auth::addressing;
 pub mod completion;
 pub mod demand;
-#[cfg(feature = "serde")]
-pub mod serde_u64;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 

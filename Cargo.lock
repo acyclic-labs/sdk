@@ -333,6 +333,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-decimal-u64"
+version = "0.2.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "acyclic-differential"
 version = "0.2.0"
 
@@ -765,6 +772,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-collections",
+ "acyclic-decimal-u64",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-executable-search",
@@ -1814,6 +1822,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-collections",
+ "acyclic-decimal-u64",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-log-frame",

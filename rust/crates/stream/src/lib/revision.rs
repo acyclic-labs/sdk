@@ -46,7 +46,7 @@ pub struct Revision {
     #[cfg_attr(feature = "serde", serde(with = "serialization::incarnation"))]
     pub incarnation: u128,
     /// Monotonic publication index within that scope and incarnation.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_u64"))]
+    #[cfg_attr(feature = "serde", serde(with = "acyclic_decimal_u64"))]
     pub index: u64,
 }
 
@@ -658,7 +658,7 @@ mod tests {
             let positions = std::collections::BTreeMap::from([("original".to_owned(), index)]);
             #[derive(serde::Serialize, serde::Deserialize)]
             struct Positions(
-                #[serde(with = "crate::serde_u64::map")] std::collections::BTreeMap<String, u64>,
+                #[serde(with = "acyclic_decimal_u64::map")] std::collections::BTreeMap<String, u64>,
             );
             let encoded = serde_json::to_value(Positions(positions.clone()))?;
             assert_eq!(encoded["original"], index.to_string());

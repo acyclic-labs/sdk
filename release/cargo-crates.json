@@ -13,6 +13,7 @@
   "acyclic-tonic-web-wasm-client",
   "acyclic-grpc-observability",
   "acyclic-stream-wire",
+  "acyclic-decimal-u64",
   "acyclic-stream-body",
   "acyclic-stream",
   "acyclic-objects",
